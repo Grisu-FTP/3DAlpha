@@ -1,0 +1,15 @@
+set(CMAKE_HOST_SYSTEM "Linux-7.1.8-1-cachyos")
+set(CMAKE_HOST_SYSTEM_NAME "Linux")
+set(CMAKE_HOST_SYSTEM_VERSION "7.1.8-1-cachyos")
+set(CMAKE_HOST_SYSTEM_PROCESSOR "x86_64")
+
+include("/opt/devkitpro/cmake/3DS.cmake")
+
+set(CMAKE_SYSTEM "Nintendo3DS-1")
+set(CMAKE_SYSTEM_NAME "Nintendo3DS")
+set(CMAKE_SYSTEM_VERSION "1")
+set(CMAKE_SYSTEM_PROCESSOR "armv6k")
+
+set(CMAKE_CROSSCOMPILING "TRUE")
+
+set(CMAKE_SYSTEM_LOADED 1)

@@ -1,0 +1,9 @@
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/3dalpha_core.dir
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/3dalpha.dir
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/world_shader.dir
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/detail_shader.dir
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/quad_shader.dir
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/shaders.dir
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/3dalpha_3dsx.dir
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/edit_cache.dir
+/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles/rebuild_cache.dir

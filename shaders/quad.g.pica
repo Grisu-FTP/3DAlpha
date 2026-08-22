@@ -1,0 +1,82 @@
+; 3DAlpha quad geometry shader -- the geometry-shader path's second half.
+;
+; One input vertex per quad, four output vertices and two triangles. Everything
+; arithmetic already happened in quad.v.pica; what is left here is four adds,
+; four swizzles and four emits, and that is deliberate: turning the geometry
+; stage on costs the vertex stage one of its four shader units, so an
+; instruction moved out of this file is worth three moved out of that one.
+;
+; Inputs, the vertex shader's six outputs in declaration order -- which is what
+; the geometry-shader input stride of 6 in Renderer::buildQuadPipeline means:
+;
+;   v0  corner 0, in clip space
+;   v1  the e1 edge, in clip space
+;   v2  the e2 edge, in clip space
+;   v3  (u0, v0, u1, v1)
+;   v4  face shade in rgb, fog amount in a
+;   v5  lightmap texel centre in xy
+;
+; The four corners are v0 + i*v1 + j*v2 over (i,j) = (0,0), (1,0), (1,1), (0,1),
+; which is mesh::kFaceCorner's own order, counter-clockwise seen from outside.
+;
+; **They are emitted in strip order, not in that loop order.** The PICA's
+; primitive buffer holds three vertices: `setemit 0/1/2` chooses which slot the
+; next `emit` writes, `prim` closes a triangle over all three, and `inv` flips
+; the winding of the one being closed. So a quad is corner 0, corner 1, corner
+; 3, then corner 2 over the top of slot 0 with `inv prim`, which is the
+; triangle-strip order -- both triangles come out counter-clockwise, matching
+; what the index buffer 0,1,2 / 0,2,3 produces on the 12-byte path.
+
+.gsh point c0
+
+.out out_pos position
+.out out_uv  texcoord0
+.out out_lm  texcoord1
+.out out_col color
+
+.entry gmain
+.proc gmain
+	; Corner 0 goes to a temp first because the PICA reads at most one input
+	; register per instruction -- `add r0, v0, v1` does not assemble.
+	mov r3, v0            ; corner 0 = p0
+	add r0, v1, r3        ; corner 1 = p0 + e1
+	add r1, v2, r3        ; corner 3 = p0 + e2
+	add r2, v2, r0        ; corner 2 = p0 + e1 + e2
+
+	; Colour and the lightmap coordinate are per quad, but they are written per
+	; vertex all the same: whether an output register survives an `emit`
+	; untouched is not something this project has measured, and four wrong
+	; vertex colours would confound the measurement this shader exists to take.
+	; Hoisting these two out of the four blocks below saves six instructions and
+	; is the first thing to try once the path is known to draw correctly.
+
+	setemit 0
+	mov out_pos, v0
+	mov out_uv,  v3.xy
+	mov out_col, v4
+	mov out_lm,  v5.xy
+	emit
+
+	setemit 1
+	mov out_pos, r0
+	mov out_uv,  v3.zy
+	mov out_col, v4
+	mov out_lm,  v5.xy
+	emit
+
+	setemit 2, prim
+	mov out_pos, r1
+	mov out_uv,  v3.xw
+	mov out_col, v4
+	mov out_lm,  v5.xy
+	emit
+
+	setemit 0, inv prim
+	mov out_pos, r2
+	mov out_uv,  v3.zw
+	mov out_col, v4
+	mov out_lm,  v5.xy
+	emit
+
+	end
+.end

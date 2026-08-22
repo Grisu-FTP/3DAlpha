@@ -1,0 +1,62 @@
+# makerom config template. tools/configure.py substitutes the @...@ fields
+# per version; everything else is shared. See docs/build-versions.md.
+
+BasicInfo:
+  Title                         : "3DAlpha a1.1.2"
+  ProductCode                   : "CTR-P-3DAA"
+  Logo                          : Homebrew
+
+RomFs:
+  RootPath                      : romfs
+
+TitleInfo:
+  Category                      : Application
+  UniqueId                      : 0xFF3A0
+
+Option:
+  UseOnSD                       : true
+  FreeProductCode               : true
+  MediaFootPadding              : false
+  EnableCrypt                   : false
+  EnableCompress                : true
+
+AccessControlInfo:
+  # Worlds live in sdmc:/3dalpha, so a CIA build needs direct SD access.
+  FileSystemAccess:
+    - DirectSdmcWrite
+
+  IdealProcessor                : 0
+  AffinityMask                  : 1
+  Priority                      : 16
+  MaxCpu                        : 0x9E
+
+  MemoryType                    : Application
+  HandleTableSize               : 512
+
+  # New 3DS: extended memory, 804MHz clock, L2 cache, and the free third core
+  # for the chunk worker. Also call osSetSpeedupEnable(true) at runtime --
+  # recent Luma3DS no longer honours the clock from the exheader alone.
+  SystemModeExt                 : 124MB
+  CpuSpeed                      : 804MHz
+  EnableL2Cache                 : true
+  CanAccessCore2                : true
+
+  DisableDebug                  : true
+  EnableForceDebug              : false
+  CanWriteSharedPage            : false
+  CanUsePrivilegedPriority      : false
+  CanUseNonAlphabetAndNumber    : false
+  PermitMainFunctionArgument    : false
+  CanShareDeviceMemory          : false
+  RunnableOnSleep               : false
+  SpecialMemoryArrange          : false
+
+  CoreVersion                   : 2
+  DescVersion                   : 2
+  ReleaseKernelMajor            : "02"
+  ReleaseKernelMinor            : "33"
+
+SystemControlInfo:
+  SaveDataSize                  : 0KB   # worlds live on SD, not in title savedata
+  RemasterVersion               : 0
+  StackSize                     : 0x40000

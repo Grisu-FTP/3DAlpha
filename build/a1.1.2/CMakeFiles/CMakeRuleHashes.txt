@@ -1,0 +1,13 @@
+# Hashes of file build rules.
+ac6f8d10291ddff9030afe3658057dd8 .dkp-generated/shaders/detail_shader_shbin.S
+fc2dd1bc6c60acbd3ebff1d46c6adbc6 .dkp-generated/shaders/quad_shader_shbin.S
+0ecac406a3354e1d88a42da29a04161e .dkp-generated/shaders/world_shader_shbin.S
+bd9aa08d7bc931e9ec5ef17718e18a54 3DAlpha-a1.1.2.3dsx
+9d4df7efd7b0beb217f72e90a29e4164 3DAlpha-a1.1.2.smdh
+5c8371338c456bd08e51de85ae129c86 CMakeFiles/3dalpha_3dsx
+5c8371338c456bd08e51de85ae129c86 CMakeFiles/detail_shader
+5c8371338c456bd08e51de85ae129c86 CMakeFiles/quad_shader
+5c8371338c456bd08e51de85ae129c86 CMakeFiles/world_shader
+08a2f00fd9e5d6cc7cd87995e0c65e4a detail_shader.shbin
+bee0c725ec50d65a1cc77c38adb4bc99 quad_shader.shbin
+2149fd3a8c5c97458ce098cfaf4451fd world_shader.shbin

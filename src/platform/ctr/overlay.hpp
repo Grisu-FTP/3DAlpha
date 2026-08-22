@@ -1,0 +1,211 @@
+#pragma once
+
+// The bottom screen.
+//
+// Three pages, cycled with SELECT + Y (forward) and SELECT + X (back):
+//
+//   Normal    what a player sees. Empty of diagnostics on purpose -- this is
+//             where the hotbar and inventory go at M3, and until they exist it
+//             is the controls and nothing else.
+//   Info      the debug readout. Every number here answers a question the
+//             design has an opinion about, so a wrong opinion shows up as a
+//             number rather than as a vague sense that the game feels slow:
+//               * frame split busy/vsync -- whether there is headroom at all
+//               * quads and draw calls   -- whether the visibility walk works
+//               * pool residency, churn  -- whether the VBO budget holds
+//               * free linear and VRAM   -- fragmentation, over minutes
+//   Settings  the knobs that change what the renderer does rather than what
+//             it reports, plus the teleport row.
+//
+// **The settings page owns the d-pad, and that is what makes it the right home
+// for anything needing a button.** Nothing global has to be spent on a debug
+// action: the page is behind a SELECT chord, and while it is up the d-pad is
+// consumed here and returns before the rest of the frame sees it. So the
+// teleport row is opened with right on the d-pad, the same gesture that
+// already edits every other row, and it costs no binding that survival mode
+// will want later -- A and B in particular stay free.
+//
+// It is a text console, redrawn in place with ANSI cursor moves rather than
+// cleared, so it does not flicker and costs nothing worth measuring. Only a
+// page change clears.
+
+#include "platform/ctr/renderer.hpp"
+#include "core/render/world_streamer.hpp"
+
+namespace mc::ctr {
+
+// What the game loop spent, in milliseconds, outside the renderer. Filled in by
+// main.cpp because that is where the phases are.
+//
+// These exist to settle one question and settle it with numbers: a 17.5 ms
+// frame against a 0.8 ms GPU says nothing on its own, because the frame is
+// vsync-locked at 59.83 Hz and 16.7 ms of it is *supposed* to be waiting.
+// Walk + stream + submit against 16.7 is the figure that says whether there is
+// any headroom left, and it is the one that matters for M3.
+struct FrameTiming {
+    float walkMs = 0.0f;    // frustum + the visibility walk
+    float streamMs = 0.0f;  // columns in and out, and the meshing budget
+};
+
+// How far the *debug* settings page will let the render distance go.
+//
+// Not a play limit and deliberately not derived from one. It is the point past
+// which the console runs out of newlib heap and the chunk decode aborts -- not
+// gracefully, because `Section` allocates its palette and index arrays through
+// ordinary `new` and the build has no exceptions, so an allocation failure is
+// std::terminate rather than a column that fails to load. Making that
+// survivable means threading nothrow through the whole section decode, which
+// is worth doing when something needs it and is not worth doing for a debug
+// page.
+//
+// The number: the streamer holds (2d+3)^2 columns at a measured mean of 18,013
+// bytes, against a 40 MB newlib heap that also carries the mesher's scratch,
+// the builder's vectors and the storage buffers. Reserving 8 MB for those
+// leaves room for about 1,860 columns, which is 2d+3 = 43, so d = 20. 24 is
+// past that on purpose: a sparse world holds far less than the mean and a
+// maintainer asking for 24 should get 24 and find out, rather than be told no
+// by an estimate. What this bound prevents is only the case where the number
+// is so far past the heap that the console dies before drawing anything.
+//
+// A denser world than the measured one will abort below this. That is what a
+// debug page is for.
+inline constexpr int kDebugMaxDistance = 24;
+
+// What a *player* is offered, on the main menu's options screen. The
+// distinction from the debug ceiling above is the point: an old 3DS is bounded
+// by the 12 MB VBO pool it was measured against, a New one by the heap the
+// columns live in. Neither is a cliff -- the pool evicts and the streamer just
+// gets slower -- so these are where a player stops getting anything back for
+// the cost, and nothing more. Menu::init reads them.
+inline constexpr int kPlayMaxDistanceOld3DS = 8;
+inline constexpr int kPlayMaxDistanceNew3DS = 12;
+
+// The M2 frame-rate gate the settings page quotes, so the person holding the
+// console knows what the number on the Info page is being judged against.
+//
+// **A floor, not a target, and provisional.** The New 3DS gate was distance 10
+// until the sixth launch measured 0.208 us per quad and missed it by 3.2x.
+// 8 is what the rest of the engine is already sized around and puts the
+// baseline an estimated 2.1x away instead -- a gap the geometry-shader path
+// could plausibly close. Raise it back if it does. See docs/status.md section 2.
+inline constexpr int kGateDistanceOld3DS = 6;
+inline constexpr int kGateDistanceNew3DS = 8;
+
+// The settings page's state. The Overlay edits it; the caller applies it,
+// because applying a render distance means rebuilding the field, the pool and
+// the streamer's grid and none of that belongs to a text console.
+struct DebugSettings {
+    int renderDistance = 8;
+
+    // The geometry-shader cube path: one 8-byte vertex per quad instead of four
+    // 12-byte ones. **The measurement the M2 gate is waiting on**, which is why
+    // it is here at all -- see Renderer::setCubeFormat.
+    //
+    // Off by default, so what boots is the path that is known to draw correctly
+    // and the experiment is something a maintainer turns on deliberately. It
+    // costs a re-mesh of everything resident in either direction, so unlike
+    // wireframe it is not an instant A/B: give the world a second to settle
+    // before reading the numbers back.
+    bool geometryQuads = false;
+
+    bool wireframe = false;
+
+    // Bounds for the render distance, set once by the caller.
+    //
+    // **This is the debug page, so these are not the play limits.** The 8 and
+    // 12 a player will get at M3 are a judgement about where a 3DS stops
+    // giving anything back for the cost; they have no business stopping a
+    // maintainer from looking at distance 20 to see what breaks. The only
+    // ceiling left here is the one the hardware actually imposes -- see
+    // kDebugMaxDistance.
+    int minDistance = 2;
+    int maxDistance = kDebugMaxDistance;
+};
+
+class Overlay {
+public:
+    enum class Page {
+        Normal,
+        Info,
+        Settings,
+    };
+
+    // Remembered so a page change can reprint the header.
+    void begin(const char* worldName, const char* model);
+
+    // Which core the generation worker actually got, as a label for the debug
+    // page. Asked for and got are different questions -- a New 3DS launched
+    // without the core-2 exheader flag falls back to core 0 -- and the page is
+    // where that difference has to be visible.
+    void setWorkerCore(const char* label) { workerCore_ = label; }
+
+    // SELECT + Y / SELECT + X cycles the page; on the settings page the d-pad
+    // moves the cursor and changes the value under it. Returns true when
+    // `settings` changed and the caller has work to do.
+    //
+    // **`camera` is here because the teleport row writes to it directly**, and
+    // it is worth being explicit about why that is not a layering slip. A
+    // render distance is a *setting* -- the caller has to rebuild the pool and
+    // the streamer grid, so it is reported back and applied outside. A
+    // teleport is not a setting; it is a one-shot write of three numbers that
+    // the next frame picks up on its own, because WorldStreamer::update
+    // already re-centres on whatever chunk the camera is in and evicts what
+    // fell outside. Routing it through DebugSettings would mean inventing a
+    // "pending teleport" field that exists for one frame and means nothing
+    // afterwards.
+    bool handleInput(u32 down, u32 held, DebugSettings* settings, Camera* camera);
+
+    Page page() const { return page_; }
+
+    void draw(const Renderer& renderer, const render::WorldStreamer& world, const Camera& camera,
+              const FrameTiming& timing, float frameMs, float timeOfDay,
+              const DebugSettings& settings);
+
+private:
+    // Averaged before being believed: the GPU timers are per-frame and noisy,
+    // and a number that jumps every frame cannot be read off a screen anyway.
+    // Accumulated on every page, so switching to Info shows a settled figure
+    // rather than one frame's.
+    struct Accum {
+        float frame = 0.0f;
+        float draw = 0.0f;
+        float process = 0.0f;
+        float blocked = 0.0f;
+        float submit = 0.0f;
+        float walk = 0.0f;
+        float stream = 0.0f;
+    };
+
+    // Each draws its page starting at the body's first row and returns the
+    // first row it did not use, so the caller can blank the rest. They place
+    // every line absolutely and never write a newline -- see `row()` in
+    // overlay.cpp for why that is the whole point.
+    int drawNormal();
+    int drawInfo(const Renderer& renderer, const render::WorldStreamer& world,
+                 const Camera& camera, float timeOfDay);
+    int drawSettings(const Renderer& renderer, const DebugSettings& settings,
+                     const Camera& camera);
+
+    // Opens the system keyboard and, if it comes back with three valid numbers,
+    // moves the camera. Returns true if the camera moved.
+    //
+    // The applet takes over both screens while it runs, so the caller has to
+    // treat the bottom-screen console as destroyed and reprint it.
+    static bool teleportViaKeyboard(Camera* camera);
+
+    static constexpr int kSettingCount = 4;
+
+    Page page_ = Page::Normal;
+    int cursor_ = 0;
+    bool dirty_ = true;  // the page changed, so clear before drawing it
+
+    const char* worldName_ = "";
+    const char* model_ = "";
+    const char* workerCore_ = "?";
+
+    Accum accum_;
+    Accum shown_;
+    int samples_ = 0;
+};
+
+}  // namespace mc::ctr

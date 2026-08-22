@@ -1,0 +1,48 @@
+{
+  "$comment": [
+    "Build-time manifest for Minecraft Java Alpha v1.1.2 / v1.1.2_01 (server 0.2.1).",
+    "Consumed by tools/configure.py, which emits build/<id>/gen/. Nothing here is parsed at runtime.",
+    "See docs/build-versions.md."
+  ],
+  "id": "a1.1.2",
+  "display": "Alpha 1.1.2",
+  "appTitle": "3DAlpha a1.1.2",
+  "appDescription": "Minecraft Alpha 1.1.2 for Nintendo 3DS",
+  "releaseDate": "2010-09-18",
+  "serverVersion": "0.2.1",
+  "packaging": {
+    "uniqueId": "0xFF3A0",
+    "productCode": "CTR-P-3DAA",
+    "iconBadge": "a1.1.2"
+  },
+  "constants": {
+    "protocol": 2,
+    "worldHeight": 128,
+    "sectionSize": 16
+  },
+  "slots": {
+    "storage": "alpha_chunkfiles",
+    "strings": "modified_utf8",
+    "items": "b1_2",
+    "worldgen": "alpha_nobiome",
+    "containers": "none",
+    "entitydata": "none"
+  },
+  "features": {
+    "hasHealthPacket": false,
+    "hasRespawnPacket": false,
+    "hasUseEntity": false,
+    "hasEntityVelocity": false,
+    "hasEntityStatus": false,
+    "hasAttachEntity": false,
+    "hasExplosionPacket": false,
+    "hasWindows": false,
+    "hasEntityMetadata": false,
+    "hasLoginSeedAndDimension": false,
+    "hasNether": false,
+    "hasBiomes": false,
+    "hasHunger": false,
+    "hasServerSideDamage": false
+  },
+  "data": "data/a1.1.2"
+}

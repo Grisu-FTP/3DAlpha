@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

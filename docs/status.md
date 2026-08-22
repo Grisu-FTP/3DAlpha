@@ -1,0 +1,1428 @@
+# Project status and handoff
+
+The authoritative "where we are" document. Everything here is either a decision that has been made,
+a number that has been measured, or a task that is next. Estimates and guesses are labelled as such.
+
+Update this file when a milestone moves. It is the first thing to read when picking the project up
+cold.
+
+---
+
+## Milestones
+
+**What "ready" means, since the milestone names do not say it.** Nothing here is being shipped, so
+"first shippable" was never the right frame and has been dropped. Ready means **a faithful 1:1 port
+of Alpha 1.1.2**: it opens real Minecraft worlds, saves them, and generates them the same way the
+original does, on a 3DS. That makes M4 part of the definition of done rather than a later
+nice-to-have, and it is why worldgen is being built before gameplay — of the two, only worldgen has a
+hard oracle to check itself against.
+
+| Milestone | State |
+|---|---|
+| **M0** Toolchain, version-driven build, 3DSX packaging | **done** — validated on a New 3DS. `make cia` is wired but inert until `makerom` is on PATH |
+| **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
+| **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world |
+| **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, and needs a seventh launch to say whether it closes the gap |
+| M3 Singleplayer gameplay | not started, **except the main menu, which is built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b |
+| **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
+| M5 Multiplayer (protocol 2) | not started |
+| M6 Audio, mobs, texture-pack browser, packaging | not started |
+
+**354 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
+ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
+-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
+`WorldStreamer`'s worker: it found the first version reading the generator's counters from the main
+thread while the worker wrote them.
+
+**The sanitizers now instrument `3dalpha_core`, which they did not before.** They had been attached
+to the test executable alone, so they covered `tests/*.cpp` and nothing else — the NBT parser, the
+mesher and the world generator were all built unsanitised while the suite looked fully covered.
+Moving them onto the core library as `PUBLIC` found a zero-length `memcpy` from an empty vector's
+null `data()` in `MeshBuilder::copyTo` on the first run. `float-cast-overflow` is named explicitly
+because **GCC leaves it out of the `-fsanitize=undefined` group**.
+
+---
+
+## Environment facts worth not rediscovering
+
+| Thing | Where |
+|---|---|
+| Repo | `/home/grisu/Documents/GitHub/3DAlpha` — **not a git repository** |
+| Real a1.1.2 client jar | `~/.local/share/PrismLauncher/libraries/com/mojang/minecraft/a1.1.2_01/minecraft-a1.1.2_01-client.jar` — in `libraries/`, **not** in the instance directory |
+| Real a1.1.2 world (660 chunks) | `~/.local/share/PrismLauncher/instances/a1.1.2_01/minecraft/saves/World1` |
+| Shell | **fish** — does not word-split variables in `for` loops |
+| 3DSX main-thread stack | **32 KB**, and no symbol in the binary can enlarge it. Measured from a crash dump, not assumed: entry `sp` was `0x08008010` and everything below `0x08000000` faults. A CIA can set `StackSize` in the RSF; a 3DSX cannot |
+
+**The real world is only ever touched through a copy.** `storage.open()` writes `session.lock` and
+`close()` rewrites `level.dat`, so pointing a tool at the original modifies it. Copy to the
+scratchpad first. Verify afterwards by checking that no file in the original is newer than the
+session started.
+
+```sh
+make                 # -> build/a1.1.2/3DAlpha-a1.1.2.3dsx
+make test            # host unit tests, ASan/UBSan
+make host            # host binary only
+tools/check3dsx.py <file.3dsx>                      # would Luma's loader accept this image?
+tools/lumadump.py <dump.dmp> [--elf <elf>]          # read a Luma exception dump
+./build-host/3dalpha --mesh <world-dir> [quads]      # mesh a world, print every M2 number
+./build-host/3dalpha --generate [seed] [radius] [snow] [cache-columns] [raster]
+                                                    # make a fresh world, print every M4 number
+./build-host/3dalpha --fly <world-dir> [dist] [frames] [switch-to] [quads|flip|gen]
+```
+
+A trailing **`quads`** on either harness puts the cube range in the geometry-shader format — one
+8-byte vertex per quad instead of four 12-byte ones. **`flip`** (`--fly` only) starts in the 12-byte
+format and changes over halfway, which is what the settings page does and the path worth sanitizing.
+**`gen`** (`--fly` only) is the console's configuration rather than the harness's: a missing chunk is
+generated and written back instead of counted absent, and the world is created if the directory has
+none. `--fly <empty-dir> 8 2000 gen` is the whole recipe for exercising creation, generation,
+streaming, meshing and saving end to end under sanitizers. **It writes to the directory it is given.**
+It also sleeps a millisecond a frame, because generation is on another thread now and a host with
+nothing to draw would otherwise finish its frame budget before the worker had made anything; expect
+a sanitized run to fill far less than an `-O3` one in the same frame count.
+
+`--fly` is the one to reach for when something is wrong with the renderer. It runs everything the
+console does between reading the SD card and issuing a draw call — streaming, the walk, meshing,
+uploading, eviction — over a real world, under sanitizers, and prints counters instead of pixels.
+The console and the host run the same `core/render/` code; only who draws the result differs.
+
+---
+
+## What exists in the tree
+
+```
+core/nbt/         reader, writer, generic tree, preserved-tag passthrough
+core/world/       Section (palette), NibbleArray, ChunkColumn, LevelData, storage contract
+core/block/       BlockDef, RenderType, registry; the table is generated
+core/item/        ItemStack
+core/io/          FileSystem seam + the POSIX implementation both targets use
+core/mesh/        three vertex formats, MeshScratch, mesher, fluid, torch, visibility masks
+core/render/      SectionField + buildVisibleSet (the visibility walk); VboPool;
+                  ChunkRenderer (one frame, no GPU); WorldStreamer (columns in and out,
+                  and the chunk generator when the world has none)
+core/util/        types, span, nibble, compress, math (Vec3/Mat4/Plane), frustum,
+                  coord and seed text parsing (what a player types, parsed where it can be tested)
+core/world/       ...and the light engine: sky and block light as one fixed point;
+                  world_list -- the saves folder as a list, without opening anything
+impl/storage/alpha_chunkfiles/   chunk paths, chunk NBT, level.dat, storage slot
+impl/worldgen/alpha_nobiome/     noise, terrain, caves, the nine population generators,
+                  the pass driver, and ChunkGenerator -- `ft`, which decides what gets
+                  generated and when it gets populated
+platform/ctr/     heap policy, VBO allocator, atlas/lightmap/fog, citro3d renderer,
+                  citro2d main menu, debug overlay, game loop, M0 probe
+platform/host/    harness: --version, --mesh, --fly, --generate
+tools/            configure.py, extract_blocks.py, javap.py, nbtdiff.py, genref.java
+```
+
+The split that matters: **everything deciding *what* to draw is in `core/render/` and host-tested.**
+`platform/ctr/renderer.cpp` is left with the part that genuinely needs a GPU — bind a buffer, set a
+matrix, draw — and `platform/host/main.cpp --fly` drives the same core code with no GPU at all.
+
+---
+
+## Decisions that are settled
+
+These were argued or measured; do not relitigate without new evidence.
+
+- **C++17**, `-fno-exceptions -fno-rtti -fno-threadsafe-statics`.
+- **`opaque` and `opaqueCube` are two different columns and both are needed.** `opaque` is what
+  `isOpaqueCube()` answers at runtime and drives face culling; `opaqueCube` is
+  `Block.opaqueCubeLookup`, filled in the Block constructor, and is what world generation reads.
+  They differ for leaves (the live answer is `!fancyGraphics`, and a1.1.2 defaults to fancy) and for
+  the double slab. Do not collapse them -- headless they agree, so no oracle will catch it.
+- **Light is computed as a fixed point, not as a replay of the original's queue.** a1.1.2 relights
+  through a queue of bounding boxes that re-scans; the rule it applies has exactly one solution, so
+  a bucketed BFS that settles each cell once lands on the same numbers and is affordable on a
+  268 MHz ARM11. Verified against a real World drained to a standstill. The one divergence is block
+  light *inside* fully-opaque blocks — cave lava the original never schedules — which no cell can
+  receive from and the mesher never samples. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md).
+- **The Far Lands generate; the jitter does not.** The Far Lands are terrain — a `d2i` overflow at
+  block 12,550,824 that the generator drives into by design — so a 1:1 port reproduces them, and
+  four fixtures compare them byte-for-byte against the jar. The one-block camera stutter that Java
+  also shows out there is *not* terrain: it is float precision in the original's renderer, it
+  changes nothing that reaches a save file, and it is fixed by holding the camera in double (as
+  `Entity.posX` already is) and rendering relative to the camera's chunk. Faithful where the world
+  is concerned, fixed where only the screen is. See
+  [architecture.md](architecture.md), "Rendering far from the origin".
+- **One binary per Minecraft version.** Slots bound statically through `mcver::`, no vtables, no
+  runtime version branching, no JSON parsed at runtime.
+- **Cube vertex is 12 bytes, 4 vertices per quad**, one global immutable index buffer. Final.
+- **Non-cube geometry gets its own 16-byte vertex**, position in 1/1024 of a block. The 12-byte
+  format stores position as one byte per axis at one unit per block and cannot express anything
+  that is not a cube; widening it for everyone would add ~10 MB to a real world's geometry and put
+  render distance 8 over the old 3DS's 12 MB. Non-cube blocks are **2.7 % of a measured world**, so
+  they carry the cost alone.
+- **A section's mesh is one allocation holding three ranges**, drawn as three passes: cubes, opaque
+  detail, then translucent detail sorted back to front. `mesh::MeshRanges` is the layout and the
+  pool carries it. The split is about *draw order*, not ownership -- the passes are what change the
+  shader, the attribute layout and the blend state, and each of those changes a fixed number of
+  times per eye rather than once per section. All three share the one index buffer.
+- **Day/night is a lightmap texture**, not light baked into vertex colour. Measured free (M0b).
+- **Heap policy 40 MB newlib / 82 MB linear**, replacing libctru's 91/32. Measured on hardware.
+- **POSIX file descriptors, one implementation for both targets.** Settled by disassembling libctru
+  2.7.0: `archive_read` calls `FSFILE_Read` directly and `archive_dirnext` batches 32 entries per
+  `FSDIR_Read`. The devoptab is a thin wrapper; raw `FSFILE` would buy nothing.
+- **Tile entities are a per-chunk side table, not per-block objects.** Java gives every chest, sign,
+  furnace and spawner a heap object and walks all of them every tick, making a virtual call even for
+  the ones that do nothing. In a1.1.2 that is most of them: `ic.b()` is the tick the World calls, and
+  only `ke` (furnace, smelting) and `bd` (mob spawner) override it. **Chest and sign have no tick
+  behaviour at all** -- the chest lid animation people associate with the cost arrived later.
+
+  So contents live in a per-chunk table keyed by packed position, and **only furnaces and spawners
+  are visited by a tick list**. Chests and signs are pure data. Rendering needs nothing either:
+  chest and furnace are both render type `cube` with per-face textures, and nothing in the jar
+  renders the chest tile entity specially, so a chest is drawn by the same `faces[]` plus
+  neighbour-lookup path grass already uses. Signs are the exception -- not a cube, so they need a
+  mesh emitter -- but they are still not tickable.
+
+  **This is a runtime representation only. Saves stay byte-for-byte 1:1**: the same `TileEntities`
+  NBT list goes back out. Today it round-trips as an opaque blob, so compatibility is already there
+  and the work is about making the contents *functional*.
+- **Faithful including quirks.** 3DS conveniences are opt-in, default off.
+- **The player supplies nothing.** Textures and sounds are the only optional user-supplied assets.
+  All game data ships compiled into the binary. See CONTRIBUTING.md.
+
+### Reversed, and why (keep this — the reasoning matters)
+
+M2 measurement contradicted an inference recorded in `docs/3ds-performance.md §4`: that because 73 %
+of geometry is underground, the visibility search should decide what gets meshed. It saves only 15 %
+at render distance 8, because standing under open sky nearly everything *is* reachable. The bound is
+a **budgeted VBO pool with eviction**; the walk's job is priority order and cutting the per-frame
+draw list. The dead end is left in the doc deliberately.
+
+---
+
+## Measured numbers (do not re-derive)
+
+> **The reference world grew between M1 and the sixth launch, and the totals below are the 660-column
+> world.** It has been played in Java since: it is now **1,118 columns**, and a re-run gives
+> 2,132,350 quads and 107.29 MB of geometry against the 1,370,144 and 64.05 MB recorded here.
+> **Every per-column and per-section figure held** — 98.3 KB a column against 99.4, 30.0 µs a
+> section at `-O3` against 28.5 — and re-sweeping the size classes over 1.7× the geometry still
+> picks **ratio 1.15 at 7.6 % waste**, which is the strongest evidence yet that the ratio was not
+> overfitted. Only the totals moved. Anything below quoted as a total is a fact about the old world;
+> anything quoted per column or per section is still current.
+>
+> It also **has 24 torches now**, which several passages below say it does not — see the sixth
+> launch. Their metadata is 2, 3 and 5 only; the −X and +Z wall mounts remain unexercised.
+>
+> **It has grown again** and is now **1,119 columns**, 2,135,496 quads, 107.45 MB. Anything pinned to
+> a total moves with it: `--fly` at distance 10 over 1,200 frames now settles at **frame 273**, not
+> the 277 recorded further down. That was checked rather than assumed — the settle frame moved and
+> the column count moved with it, in the same run. Per-column and per-section figures are unaffected.
+
+**M0, New 3DS hardware.** Heap/linear 40/82 MB. VRAM free after two stereo top targets 5,019 of
+6,144 KB. Fill rate ~210 M fragments/s (4.777 ns each, two textures bound). Fixed cost ~562 µs per
+frame. SD cluster size **16 KB**, not the assumed 32.
+
+**M1, the real 660-chunk world.** 661/661 files semantically identical after a load/save round trip,
+0 byte-identical (correct — Java stores compounds in a `HashMap`). Mean **18,013 bytes per column in
+memory** against 81,920 raw = **4.55×**. 37 % of sections and 87 % of nibble planes come out
+uniform. Exactly one Palette8 section and zero Direct16 in the entire world. Median gzipped chunk
+file 2,917 bytes.
+
+**M4, a fresh world.** `--generate`, dev host at `-O3` with no sanitizers. **A generated column is
+milliseconds, not microseconds**: 5.9 ms nearest-first and **3.8 ms raster** at radius 11, which is
+roughly 25x the cost of meshing the same column. The order is worth 1.6x on its own, because each
+request sweeps a 6x6 and a spiral re-sweeps what a raster keeps -- 3.20 terrain columns generated per
+delivered column against 1.59. Peak resident in the generator is **two rings of frontier**, 98 / 162
+/ 210 columns at radius 4 / 8 / 11, so 3.1 to 6.6 MB of raw block arrays; `cacheColumnsFor()` is
+fitted to those three points and `evictedLive` is the counter that says it was fitted wrongly. A
+delivered column palette-compresses to **15.2 KB**, against the 18.0 KB mean of the real played
+world -- a fresh chunk has no player-made structures in it. Full table and the derivation in
+[worldgen-a1.1.2.md](worldgen-a1.1.2.md).
+
+**M2, the same world.** 1,282,900 cube quads and 87,244 in the 16-byte detail format -- 31,626 of
+them opaque and 55,618 translucent -- over 660 columns = **99.4 KB of vertex data per column**. Worst section **3,281 quads** against the 12,288
+the index buffer is sized for. 36 % of sections are uniform air and rejected before meshing; another
+517 of the 3,370 meshed produced nothing. **28.5 µs per section** on the dev host at `-O3`, split
+10.0 µs filling the scratch and 19.1 µs emitting faces. Metadata is about 1.3 µs of that fill and
+was added for the shapes that bend to it.
+
+**Every byte figure in this block is the 12-byte format's.** In the geometry-shader format the same
+world's geometry is 25.96 MB and 23.8 KB a column, and a section meshes in 28.7 µs rather than 31.6
+— identical quad counts, so it is a substitution and not a change. The quads, the height
+distribution, the render-type census and the atlas histogram below are properties of the world and
+do not move. See `docs/3ds-performance.md §2`.
+
+Fluid is 8.9 % of those bytes and 2.7 µs of that emit — **measured against the same world with the
+fluid emitter switched off**, not estimated, because "2.7 % of blocks" says nothing about cost when
+each of those blocks samples sixteen cells for its corner heights. Cube quad count is unchanged to
+the last quad, which is the check that fluid was added rather than substituted.
+
+Take these as best-of-five: the first `--mesh` after a rebuild reads 40 % high because it is also
+paging 660 chunk files in for the first time. Chasing that as a regression wastes an afternoon.
+
+That split is why it is no longer 30.4 µs. The scratch fill was 14.2 µs — **46 %** of the time to
+mesh a section, and it cost that whether the section produced 3,281 quads or none, because it is
+5,832 lookups either way. It was reading every cell through `ChunkColumn::block`, paying a bounds
+check, a division by the section height and a switch on the section's encoding 5,832 times over.
+
+Both `Section` and `MeshScratch` index Y-fastest, so a sixteen-block run of Y is contiguous in both;
+`Section::readBlocks` and `readPackedLight` now move one such run per call with the encoding switch
+hoisted out. That is 4,096 of the 5,832 cells no longer touching `ChunkColumn` at all. The fill fell
+**38 %** and the whole mesh **18 %** -- to 8.8 and 24.8 µs, before metadata was added -- with every
+output number over the 660-column world unchanged.
+`tests/scratch_test.cpp` keeps the old per-cell version as a reference implementation and checks the
+two agree across all four section encodings, every section height, partial neighbourhoods and both
+ends of the world.
+
+Height distribution — 73 % of all quads sit below y=64:
+
+```
+y   0- 15  31.1 %      y  64- 79  19.2 %
+y  16- 31  15.9 %      y  80- 95   7.1 %
+y  32- 47  11.9 %      y  96-111   0.3 %
+y  48- 63  14.4 %      y 112-127   0.0 %
+```
+
+**What is not a cube**, from the same run — the number the second vertex format was sized against:
+
+| render type | blocks | share of all solid blocks |
+|---|---|---|
+| cube | 11,417,426 | 97.263 % |
+| fluid | 320,790 | 2.733 % |
+| cross | 474 | 0.004 % |
+| cactus | 6 | 0.000 % |
+
+One lightly-built world, so a heavily-played one would have far more torches and the rails this has
+none of, but
+fluid dominating is a property of natural terrain rather than of this save. Cross geometry costs
+1,896 quads in the 16-byte format, 0.15 % of all quads and 0.11 MB across the whole world; fluid
+costs **85,348 quads and 5.21 MB**. That is 0.27 quads per fluid block — most of that 2.73 % is
+buried in a lake and emits nothing.
+
+Atlas coverage, from the same run: the world's geometry touches **22 of the 256 tiles**, and the top
+eight carry 98 % of it.
+
+| Tile | Quads | Share | |
+|---|---|---|---|
+| 1 | 672,797 | 52.4 % | stone |
+| 17 | 178,389 | 13.9 % | bedrock — the world's floor emits its downward faces |
+| 0 | 110,962 | 8.6 % | grass top |
+| 2 | 99,231 | 7.7 % | dirt |
+| 52 | 98,502 | 7.7 % | leaves |
+| 3 | 56,655 | 4.4 % | grass side |
+
+Tile 0 is the per-face table doing its job. It is grass's top, which is reachable only through
+`faces`; before this, those 110,962 quads — **8.6 % of the world**, all of it the ground the player
+walks on — drew the grass *side* texture. (Grass's bottom moved too, from tile 3 to tile 2, but
+those faces are almost all culled against the dirt underneath.)
+
+Reachable vs drawn, from the player's actual position:
+
+| Distance | Everything in range | Walk reaches | Drawn, real 70° frustum |
+|---|---|---|---|
+| 6 | 12.53 MB | 7.86 MB | 1.35–4.28 MB |
+| 8 | 22.76 MB | 19.49 MB | **2.95–8.01 MB** |
+| 10 | 34.76 MB | 28.60 MB | — |
+| 12 | 52.86 MB | 44.00 MB | — |
+
+**The VBO pool, same world, three full turns on the spot with a real frustum.** Size classes are
+geometric at **ratio 1.15**, 42 of them, smallest 2 KB — chosen by sweeping the ratio over all 2,853
+real section meshes *and* re-running the pool at its ceiling for each. Powers of two waste 46 % and
+fit only 8.12 MB of geometry in a 12 MB pool; 1.15 wastes 7.7 % and fits **11.15 MB**. The expected
+cost of finer classes — a freed block matching a new mesh less often — turned out to be six points
+of recycling rate and three and a half extra allocator calls per frame. Re-swept once fluid existed
+and **the answer did not move**, which is worth knowing: the ratio was not overfitted to an all-cube
+world.
+
+| Configuration | Peak resident | Held | Evictions / 48 frames | Refused |
+|---|---|---|---|---|
+| o3DS, distance 6, 12 MB | 7.69 MB | 8.29 MB | **0** | 0 |
+| o3DS, distance 8, 12 MB | 11.15 MB | 12.00 MB (ceiling) | 2,311 | 0 |
+| n3DS, distance 8, 32 MB | 18.49 MB | 19.92 MB | **0** | 0 |
+| n3DS, distance 10, 32 MB | 27.63 MB | 29.82 MB | **0** | 0 |
+
+**Both M2 gate configurations turn on the spot without evicting anything**, and n3DS distance 8 --
+the New 3DS gate since the frame-rate floor was lowered -- does it at 19.92 MB of a 32 MB pool.
+Distance 8 on an old 3DS is the one that runs at the ceiling and churns instead: 59 re-meshes per frame while turning, 75 % of them
+served from a recycled block with no allocator call, and never a refused upload. At the measured
+28.5 µs per section that is an *estimated* ~1.7 ms of worker-thread meshing per frame.
+
+**The tightest configuration is now n3DS distance 10**, which holds 29.82 MB of its 32 MB pool
+against 26.95 MB before fluid. Nothing is refused and nothing is evicted, but that is 2.18 MB of
+headroom, and it is the configuration the *next* render type to gain an emitter has to be measured
+against. Distance 8 on an old 3DS is no longer the interesting number: it was already at its
+ceiling, so fluid cost it 104 more evictions and not one byte of peak.
+
+Caveat on all M2 figures: one world, one player position, on the surface. An underground spawn would
+shift them.
+
+**The whole pipeline, `--fly` over the same world.** Streaming, walking, meshing, uploading and
+evicting, at 2 columns and 4 sections per frame, through three phases: stand still until the world
+settles, spin on the spot, then walk in a straight line until the field's centre has moved ten
+chunks. Frame counts are frames, so divide by 60 for seconds.
+
+`./build-host/3dalpha --fly <world> <distance> 1200`. The frame count is load-bearing and was not
+recorded the first time: `fly()` derives its phase boundaries from it, so a shorter run starts
+turning before the world has settled and reports a different settle frame. 1,200 is the count that
+makes the walk exactly the ten chunks the phase is described as.
+
+| Configuration | Settled | Peak, no fluid | Peak, with fluid | Refused |
+|---|---|---|---|---|
+| o3DS, distance 6, 12 MB | frame **121** | 8.14 MB | 8.52 MB | 0 |
+| distance 8, 12 MB | frame **201** | 11.13 MB | 11.15 MB | 0 |
+| n3DS, distance 10, 32 MB | frame **278** | 23.81 MB | 26.11 MB | 0 |
+
+Re-run on the grown 1,118-column world, and both columns re-measured in one session so the two
+formats are comparable. The settle frames moved by a frame or two because the world did, not because
+anything in the streamer changed; the peaks are the same measurement as above, in the "with fluid"
+sense:
+
+| Configuration | Settled | Peak, 4 × 12-byte | Peak, geoshader | Evictions |
+|---|---|---|---|---|
+| o3DS, distance 6, 12 MB | frame **123** | 8.24 MB | **1.66 MB** | 0 → 0 |
+| distance 8, 12 MB | frame **191** | 11.15 MB (ceiling) | **3.33 MB** | **1,014 → 0** |
+| n3DS, distance 10, 32 MB | frame **277** | 26.13 MB | **5.94 MB** | 0 → 0 |
+
+**Settling did not move between the two formats at all** — same frame, same uploads, same columns —
+which is the third independent confirmation that it is bound by the streamer's two columns a frame.
+What did move is meshing work at distance 8: 1,781 section meshes over the run become 928, because
+the 853 extra were re-meshes of sections the full pool had evicted.
+
+Three things this confirms rather than assumes. The peak at distance 8 is **11.15 MB against the
+11.15 MB the offline pool measurement predicted** — the real streaming path, with a real per-frame
+budget and a real frustum, lands on the same ceiling. Nothing was ever refused in any configuration,
+including while walking, which is the phase that moves the field's centre and hands whole columns'
+worth of slots back. And **the settle frames did not move when fluid was added**: settling is bound
+by the streamer's two columns a frame, not by how much geometry a column turns into.
+
+"Settled" is nothing left to load and nothing left to mesh: **2 seconds at distance 6, 4.6 at
+distance 10**, on a host with no SD card latency. The console will be slower, and this is what the
+loading screen has to cover.
+
+---
+
+## Facts recovered from the client jar
+
+Obfuscated names are version-specific; these are for a1.1.2_01 only.
+
+| What | Where |
+|---|---|
+| `Block` | `ly.class` |
+| `getRenderType` | `ly.f()` — identified by behaviour (the `()I` whose overrides spread across small integers), not by name |
+| `RenderBlocks` | `bc.class` — 15 methods taking `(Block,int,int,int)` |
+| `renderStandardBlockWithColorMultiplier` | `bc.b(ly,int,int,int,float,float,float)` |
+| Face shade | 0.5 bottom, 1.0 top, 0.8 both Z faces, 0.6 both X faces |
+| Face numbering | 0 −Y, 1 +Y, 2 −Z, 3 +Z, 4 −X, 5 +X — opposites differ in the low bit, which the walk relies on |
+| `blockID` / `blockIndexInTexture` | `ly.bc` / `ly.bb` — found by running the (id, texture, material) constructor with two marker values and seeing where they land |
+| `getBlockTexture` | three overloads: `ly.a(I)I`, `ly.a(II)I` (face, metadata), `ly.a(Lnm;IIII)I` (world, x, y, z, face) |
+| Blocks recovered | 70, ids 1–85 with a clean gap at 21–34 and 36 (the Beta-era additions) |
+| Terrain fog | `iq.class` — `glFogi(GL_FOG_MODE, GL_LINEAR)`, start `renderDistance * 0.25`, end `renderDistance`. The `-1` pass (sky and clouds) uses 0 to `renderDistance * 0.8` |
+| Render-type dispatch | `bc.a(ly,int,int,int)` switches on `getRenderType` — 0 cube `k`, 1 cross `h`, 2 torch `b`, 3 fire `d`, 4 fluid `j`, 5 redstone `e`, 6 crops `i`, 7 door `o`, 8 ladder `g`, 9 rail `f`, 10 stairs `n`, 11 fence `m`, 12 lever `c`, 13 cactus `l` |
+| Non-cube geometry constants | cross ±0.45 from centre; ladder 0.05; torch 0.4 tilt, 0.2 rise; fluid heights in ninths averaged over four corners, less a 0.01 lip; fence 0.375/0.4375/0.5625/0.625/0.75/0.9375; crops and rail 1/16 |
+| Cross shading | unshaded — `bc.h` calls `setColorOpaque_F` once with the block's own brightness and never consults the per-face table |
+| Fluid renderer | `bc.j(ly,int,int,int)`, transcribed whole into `core/mesh/fluid.cpp` |
+| Torch renderer | `bc.b(ly,int,int,int)` picks the mount and `bc.a(ly,DDDDD)` — renderTorchAtAngle — builds it. Both transcribed into `core/mesh/torch.cpp` |
+| Torch full-bright | `bc.b` reads the cell's brightness and then throws it away: `if (ly.t[blockID] > 0) brightness = 1.0f`. `ly.t` is the light-emission table, already the block table's `light` column |
+| Fluid surface height | `jp.b(I)F` is `if (level >= 8) level = 0; return (level + 1) / 9.0f` — **ninths, not eighths**. A source block's surface sits at 1 − 1/9 = **8/9** of a block |
+| Fluid corner heights | `bc.a(int,int,int,gb)`, transcribed below |
+| Fluid face culling | `jp.c(nm,IIII)`: no face against its own material, none against ice, **top face always**, otherwise `!isOpaqueCube` |
+| Fluid flow vector | `jp.e(nm,III)` and `jp.a(nm,IIILgb;)D` — `atan2(v.z, v.x) − π/2`, or −1000 when the horizontal components are both zero |
+| Fluid side texture | `u` spans the tile, `v` anchored to the tile's **top** and starting at `(1 − h) × 16`, so the texture is cropped by the fluid's height rather than squashed into it |
+| Fluid light | `jp.c(nm,III)F` overrides `getBlockBrightness` with **the brighter of a cell and the one above it**, and every face in the fluid renderer reads through it. So the underside of a lake is lit by the lake, not by the shadow it sits in |
+| Render pass | `getRenderBlockPass` is `ly.g()I`. **Water and ice only** — lava shares BlockFluid with water and is told apart solely by its material, which is why this is the one column the extractor cannot read as a constant |
+| `World` | `cn.class`. **`new World(File, String)` seeds itself with `new Random().nextLong()`** and there is no prompt anywhere in the game — which is why the create screen's seed box is ours rather than a1.1.2's |
+| `SnowCovered` | rolled in `cn`'s constructor, in the branch taken when there is no level.dat: `this.snowCovered = this.rand.nextInt(4) == 0`, where `rand` is the World's **unseeded** `new Random()`. A one-in-four coin flip at creation, **not a function of the seed**, persisted and never rolled again. The generator reads it and puts ice at sea level − 1 across every ocean |
+| `Material.isSolid` vs `blocksMovement` | `gb.a()` and `gb.c()`. **Identical for every one of a1.1.2's four material classes** — base overrides neither, air/liquid/no-collision override both to false — so the `solid` column answers both questions |
+
+**The fluid corner-height algorithm**, from `bc.a(int,int,int,gb)`. Each of a top face's four corners
+samples the four cells meeting at it:
+
+```java
+float corner(int x, int y, int z, Material self) {
+    int count = 0; float total = 0;
+    for (int i = 0; i < 4; i++) {
+        int px = x - (i & 1), pz = z - ((i >> 1) & 1);
+        if (material(px, y + 1, pz) == self) return 1.0f;   // fluid above: full height
+        Material m = material(px, y, pz);
+        if (m == self) {
+            int level = metadata(px, y, pz);
+            if (level >= 8 || level == 0) { total += heightPercent(level) * 10; count += 10; }
+            total += heightPercent(level); count += 1;
+        } else if (!m.isSolid()) {
+            total += 1.0f; count += 1;                       // empty: pulls the corner down
+        }
+        // a solid neighbour contributes to neither sum
+    }
+    return 1.0f - total / count;
+}
+```
+
+The ×10 weighting on sources and falling columns is what keeps a lake's surface flat instead of
+sagging toward its edges.
+
+Two of the three predicates it needs are already answerable from the block table: metadata now rides
+in `MeshScratch`, and **"the same fluid" is `render == Fluid` with an equal `texture`** — water's 8
+and 9 both carry 205, lava's 10 and 11 both carry 237. `faces[]` already distinguishes the still
+tile on top and bottom from the flowing tile on the sides, exactly as `getBlockTexture(face)` does.
+
+The third, **`Material.isSolid()`**, is now a column too. `blocks.json` carries `material` and
+`solid` for all 70 blocks, `--verify` checks both against the jar, and `configure.py` compiles the
+material names into a dense index. `BlockDef` did not grow: both fields fit in padding it already
+had, so it is still 40 bytes.
+
+Everything about it is derived rather than written down. The Material class comes from `Block`'s own
+constructor signature `(IILgb;)V`; the field it lands in is found by running that constructor with a
+marker, the same trick that names `blockID` and `blockIndexInTexture`; the 22 singletons are matched
+to their classes by reading `Material.<clinit>`'s `new`/`putstatic` pairs; and solidity is resolved
+per class, walking up to the base when a subclass does not override. Only *which* boolean method is
+`isSolid` had to be pinned by hand in `MEMBER_MAP` -- booleans carry no spread to recognise them by
+-- and it was named by its one caller, the fluid corner-height helper.
+
+**Solidity lines up with nothing else in the table**, which is why it had to be derived rather than
+inferred:
+
+| block | render | solid | opaque | fullCube |
+|---|---|---|---|---|
+| glass, leaves | cube | **yes** | no | yes |
+| wooden stairs, doors | stairs / door | **yes** | no | no |
+| stone button | **cube** | **no** | no | no |
+| snow layer | **cube** | **no** | no | no |
+
+Any rule guessed from the other columns -- "solid means opaque", "solid means a full cube", "solid
+means it renders as a cube" -- gets at least four of a1.1.2's blocks wrong. Pinned by
+`tests/block_registry_test.cpp`.
+
+Materials also give fluids a better "same kind" test than the texture-identity one noted above:
+flowing and still water share material `f`, lava shares `g`, and air's index 0 is one no
+constructed block takes. That is what `core/mesh/fluid.cpp` compares.
+
+**Ice is the one material the engine has to know by name.** `jp.c` refuses a face against
+`Material.ice` and there is no property behind it: ice's material is a bare `new Material()`, exactly
+like stone's, so nothing in the table separates them. `configure.py` therefore emits
+`mcver::kIceMaterial`, resolved from whichever block the version calls "ice", and 0 — a material no
+constructed block takes — when there is none, which compiles the comparison away entirely.
+
+**The flowing top face reads outside its own tile, and that is not a transcription error.** The
+still tile is sampled by a square centred on the tile's middle, which covers it exactly. The
+*flowing* tile is sampled by a square of the same size centred on the tile's bottom-right **corner**
+and rotated by the flow angle, so it straddles a 2×2. a1.1.2's terrain.png is built for it: 206, 207,
+222 and 223 are all water, and 238, 239, 254 and 255 are all lava, each a solid block of one fluid
+around the flowing tile. Checked against the jar's image rather than assumed. The consequence for us
+is that the placeholder atlas has to agree — `platform/ctr/textures.cpp` derives each fluid's group
+of five tiles from the block table and gives them one colour, or a river would be four colours.
+
+**A torch is not the cuboid it looks like.** `bc.a(ly,DDDDD)` emits **five quads**: four that span
+the *whole block* in width and height, and one small cap. The stick is carved out of those four by
+the texture's own transparency, so this render type lives or dies on the alpha test in the opaque
+detail pass — the same one the crossed squares need. There is no bottom face; the sixth quad was
+never written.
+
+The lean of a wall torch is a **shear, not a rotation**. Each side quad's *bottom* edge is displaced
+by (dx, dz) and its top edge is not, so a point at height t sits at `dx * (1 - t)`. The cap is
+placed independently at `dx * (1 - 0.625)`, which is that same line evaluated at the stick's top —
+the two agreeing is the check that the shear was transcribed the right way up, and
+`tests/torch_test.cpp` pins it by interpolating one against the other.
+
+`bc.b` picks the mount from metadata, and the pair of numbers reads backwards until you see what the
+tilt moves: the base offset and the tilt point the **same** way, and their sum is exactly half a
+block, so the bottom of the stick lands on the block face it hangs from.
+
+| metadata | base offset | tilt | stick base ends at |
+|---|---|---|---|
+| 1 | x − 0.1, y + 0.2 | dx = −0.4 | the −X face |
+| 2 | x + 0.1, y + 0.2 | dx = +0.4 | the +X face |
+| 3 | z − 0.1, y + 0.2 | dz = −0.4 | the −Z face |
+| 4 | z + 0.1, y + 0.2 | dz = +0.4 | the +Z face |
+| anything else | none | none | standing, centred |
+
+There is no case for 0 or 5 — both fall through to the untilted call, and so does anything else a
+corrupt world might hold. The stick is 2/16 wide and its top is at **0.625** of a block; the cap
+samples texels **7..9 across and 6..8 down** of the tile, which is where the flame sits.
+
+Those texel numbers are not free parameters: the side quads map the whole tile across the whole
+block, so texel column t is at t/16 of a block and texel row t is at 1 − t/16 of its height. The
+stick's top at 0.625 **is** row 6. That is why `platform/ctr/textures.cpp` can carve a correct
+placeholder torch from the geometry alone — and why it must. A solid placeholder tile draws a torch
+as a block-sized slab, which reads as a broken emitter and is not one. The three torch tiles (80,
+99, 115) are used by no other block in a1.1.2, checked, so carving them is safe.
+
+**Light is the part that would have been wrong by a plausible amount.** A lit torch stores block
+light 14, so reading its cell — which is what every other render type does — would draw every torch
+in the game at 0.93 of full brightness rather than 1.0. Close enough to look fine and wrong
+everywhere. The unlit redstone torch emits 0, so the override does not apply to it and it *does*
+read its cell, which is what makes it look dead rather than dimmed.
+
+| Blocks with per-face textures | 24 of the 70 |
+| Faces that depend on the world | grass, chest, furnace, lit furnace, both stairs |
+| Faces that depend on metadata | redstone wire, wheat, farmland, both doors, rail, both redstone torches |
+
+`tools/extract_blocks.py --verify data/a1.1.2/blocks.json` re-checks the table against a jar at any
+time. Textures come out of `tools/javap.py`, a small JVM interpreter that **runs** the block class;
+everything else is still pattern-matched from the static initialiser and only recovers **constant**
+returns, so `BlockStep.isOpaqueCube` (which branches on the block's own id) is corrected by hand,
+excluded from `--verify`, and pinned by a test.
+
+**`getRenderBlockPass` is the exception that had to be taught.** It is not constant in two different
+ways, and both are followed rather than guessed: `BlockFluid` returns `material == water ? 1 : 0`,
+and `BlockStairs` forwards the question to the block it is made of. The extractor recognises exactly
+those two shapes and reports "unknown" for anything else, so a version that does something new says
+so instead of silently emitting a 0 -- and a 0 here means a whole render pass quietly missing. The two passes cross-check each other on which
+blocks exist and what class each one is.
+
+Quirks the interpreter surfaced, both kept because faithful means faithful:
+
+- `BlockFurnace` answers its top and bottom with `Block.stone.blockID`, not with a texture index. It
+  looks right only because stone's id and texture are both 1.
+- `BlockDoor` returns a **negative** tile index meaning "mirror this face". `blocks.json` keeps the
+  sign; `configure.py` stores the magnitude and fails the build if a *cube* ever wants one, since
+  the 12-byte vertex has no flip bit.
+
+---
+
+## Next steps, in order
+
+### 0. The chunk worker — built, and the world it makes is the same world
+
+**Generation runs on its own thread.** A generated column is 3.7 ms on this host and therefore tens
+of milliseconds on a 268 MHz ARM11 — several whole frames each — so on the main thread it did not
+slow the game down, it stopped it. Off the main thread the frame rate is untouched and a column
+simply takes longer to appear.
+
+`std::thread`, `std::mutex` and `std::condition_variable` all compile and link for the 3DS, so this
+needed no `#ifdef _3DS` in core. The console lowers the worker one priority step below the main
+thread, which is what makes it free: the game loop spends most of every frame blocked on VBlank, and
+a strictly lower-priority thread turns that idle time into chunks. `Stats::workerRunning` says
+whether it started; if it did not, generation falls back into the frame, which stutters but is not
+broken.
+
+**Two locks, never nested.** `queueLock_` guards the job slot and the finished-column queue and is
+held for a pointer swap at a time; `storageLock_` guards the storage slot, which both threads reach.
+Verified with ThreadSanitizer — which found one race the first time, the main thread reading the
+generator's counters while the worker wrote them, and now reports none.
+
+#### The world must not depend on the clock, and making that true was most of the work
+
+Population order **is** the world in a1.1.2: two chunks whose passes reach the same ground come out
+differently depending on which ran first. So a worker that changed the *order* of requests would
+change the world, and a slower machine would produce a different one. Measured, before it was fixed:
+the same path produced **36 columns of world threaded against 48 inline**, disagreeing from the
+second column onwards.
+
+Four things were needed, and each was found by a test rather than by reasoning:
+
+- **A queue, not a fresh choice.** Picking "the nearest column still missing" each time the worker
+  went idle made the choice depend on how far behind the generator was. The scan appends to a queue
+  in spiral order and the worker consumes it in order, one at a time.
+- **Classification separated from loading.** Asking "does the world have this chunk" has a different
+  answer before and after a sweep writes it, and the answer decides whether a column is generated.
+  Every cell is now asked about once, and the grid is **three rings wider than the load radius** —
+  exactly a sweep's reach — so every column the generator can write has a cell of its own to be
+  asked about first. Nothing is queued until the whole grid is classified.
+- **Queue membership, not a flag on the cell.** The grid wraps, so a cell is recycled by whatever
+  column lands on it next; a flag on it is lost when the camera moves far enough, and a column that
+  came back was queued a second time.
+- **`jobDone_` in the post condition.** The worker can finish between the drain and the post in the
+  same frame, leaving the job neither pending nor active — the head was then handed out twice, two
+  completions arrived, two entries came off the queue, and the second was a column that was never
+  generated. A hole in the world that only appeared when the timing lined up.
+
+`a_worker_thread_produces_the_same_world_as_generating_inline` walks a fixed path with the camera
+moving *while generation is outstanding*, once on the worker and once inline, and compares every
+chunk file. The generation sequences are now identical, not merely the results.
+
+**What is still path-dependent is the path**, and that is a1.1.2's own property rather than ours: the
+original populates a chunk when its quadrant happens to be resident, so two clients with the same
+seed and different routes have always produced different worlds. Same route, same world, on any
+machine — that is the guarantee, and it is the one the original gives.
+
+#### What is not closed
+
+Columns the generator has started and not finished are dropped at `close()` and at a render-distance
+change. Next session regenerates them, and regenerating is not reloading — their neighbours' passes
+run a second time into columns that were already saved. The original does not have this because `ft`
+saves **every** chunk it evicts, populated or not, with `TerrainPopulated` riding along in the chunk
+NBT. The fix is the same: persist the unfinished frontier with its flag. It needs a decision about
+what light to store for a column that is not final yet, which is why it is written down here rather
+than guessed at.
+
+~~**Core 2 on a New 3DS.**~~ **Done, and the reasoning that deferred it was wrong in a way worth
+recording.** "The worker takes whatever core the pthread shim gives it, which is the main thread's;
+priority is what makes that work rather than affinity, and it is enough" — it was not enough, and the
+shim is worse than that sentence assumed. devkitARM's
+`__SYSCALL(thread_create)` is:
+
+```c
+Thread t = threadCreate((ThreadFunc)func, arg, stack_size, 0x3F, 0, false);
+```
+
+Core **and** priority are literals. Every `std::thread` on this toolchain lands on core 0 at `0x3F`,
+the bottom of the range — so the console's start hook, which read its own priority and lowered it by
+one, was reading `0x3F` and setting `0x3F`: **a no-op that had been getting credit for the design.**
+The intent held by accident, and the cost was invisible because nothing reported which core anything
+was on.
+
+The ARM11 schedules core 0 strictly by priority, so the worker only ever ran in what was left of a
+frame after the main thread blocked. On a console holding 30 fps that is a sliver, and it is the
+whole reason generation feels stopped rather than slow: a player walking at 4.3 blocks a second
+outruns it, and because the queue is strictly first-in — which it must be, since the order **is** the
+world — the ground under their feet goes in behind the whole horizon.
+
+**A New 3DS has core 2 free, and Luma already grants it.** `hbldrPatchExHeaderInfo` puts
+`0xFF002109` in the synthesised 3DSX exheader, and bit 13 of that is "Access core2"; nothing has to
+be installed or configured. The clock is already right — `osSetSpeedupEnable(true)` has had the
+MPCore at 804 MHz with L2 on since the third launch. What was missing was only the ability to say
+which core, and `std::thread` cannot say it.
+
+`WorldStreamer::setWorkerThreadOps(spawn, join)` is that seam, and it **replaced** the start hook
+rather than joining it: a hook that runs *on* the worker can never fix this, because by then the
+thread exists on core 0 and a 3DS thread cannot move. `src/platform/ctr/main.cpp` supplies
+`threadCreate(entry, arg, 64 KB, mainPriority, 2, false)` on a New 3DS, falling back to core 0 at
+`0x3F` on an old one or if core 2 is refused. **Unmeasured on hardware** — what the worker gets is a
+whole 804 MHz core instead of a fraction of a shared one, and the debug page now says which, but the
+number that matters is columns per second on a console and no one has read it yet.
+
+**What the debug page says now**, because "owed" alone could not tell slow from stalled: `owed` is
+columns in range that do not exist yet, `queue` is how many of those have been asked for, `refused`
+counts enqueues dropped at the cap, and `GATED` means the grid is not fully classified so nothing
+may be queued at all. Owed high with queue at zero is a stall; owed high with queue tracking it is a
+worker that cannot keep up. `--fly … gen` prints the same four.
+
+**Measured on the host, at distance 4 and 24 blocks a second** (`--fly <empty> 4 3000 gen`): the
+world settles at frame 773 while the camera is standing still, and once it starts moving the streamer
+never catches up again — 109 of 121 columns owed at frame 3000, with the queue tracking it exactly,
+nothing refused and nothing gated. That is the harness deliberately outrunning the streamer, so it is
+not itself a bug report; it is the shape of the failure, and it is the shape a console reproduces at
+walking pace because its worker is so much slower.
+
+### 0b. The main menu — the game starts from it now
+
+Before this, `runGame` opened `worlds[0]` — whatever `readdir` handed back first — and a console with
+no world on the card got a paragraph of `printf` explaining that worldgen was not written yet. Both
+are gone. `main` brings the GPU up once and then alternates: the menu picks or makes a world,
+`runGame` plays it, START comes back out to the menu, and Quit on the title screen is the only thing
+that ends the process.
+
+**`C3D_Init` moved out of `runGame` and into the shell**, which is the change that made a menu
+possible at all: it used to run *after* the no-world check, so everything before a world was chosen
+had only the bottom-screen text console to talk through. The menu's citro2d context and its
+top-screen render target are built and given back around each visit, so a 400×240 colour buffer and
+its depth buffer are not sitting in VRAM while the atlas and the VBO pool are measured against what
+is left.
+
+**The screens.** Title (Singleplayer, Multiplayer greyed until M5, Options, Quit); world list, with
+`+ Create New World` pinned above every world on the card, X to delete behind a confirmation; create,
+which asks for a name and then a seed through the system keyboard; options, which is render distance
+alone — 2 to `kPlayMaxDistanceOld3DS`/`New3DS`, the play limits that had been sitting in `overlay.hpp`
+with nothing reading them.
+
+**Three deliberate deviations, none of them accidents:**
+
+- **The list is every world on the card.** a1.1.2's own screen is five fixed slots — `World1`..
+  `World5`, `- empty -`, `Delete world...`, `Cancel`, in `jq.class` — and a card that holds hundreds
+  of saves has no use for five.
+- **The seed can be typed**, and blank rolls one. a1.1.2 never asks; `new World(File, String)` seeds
+  itself with `new Random().nextLong()`. Being able to type one is the player-facing proof that the
+  generator is seed-exact, which is worth a screen the original does not have. The rule for what a
+  typed seed *means* is the one Minecraft itself adopted later — a decimal integer that fits an i64
+  is that seed, anything else is `String.hashCode()` sign-extended — and `core/util/seed_text.cpp`
+  implements it against reference values printed by a real JVM, including the UTF-8 → UTF-16 decode
+  that makes a seed with an emoji in it hash the same on a console as on a PC.
+- **Nothing is textured.** The backdrop is shaded quads and the buttons are rectangles, drawn with
+  citro2d and the 3DS system font. We ship no Mojang assets, and there is no PNG decoder or RomFS in
+  the tree, so `default.png` and `widgets.png` are not available — same position as the placeholder
+  atlas, and `C2D_FontLoad` plus a widget sheet replace the drawing without touching the menu's
+  logic when [assets.md](assets.md) lands.
+
+**A listing never opens a world, and that is a rule rather than an optimisation.** `Storage::open()`
+writes `session.lock` and `close()` rewrites `level.dat`, so a menu built on them would re-stamp
+`LastPlayed` on every world the player merely scrolled past. `Storage::peekLevel` reads level.dat and
+stops; `world::listWorlds` is core, host-tested, and sorted newest-first with the name as tiebreak so
+the order never depends on what `readdir` felt like returning. A test asserts the level.dat bytes are
+identical before and after a listing.
+
+**Deleting is the only destructive thing in the project**, so it refuses anything without a level.dat
+in it — the caller bug that hands it the saves folder removes nothing — and it is behind a
+confirmation screen. `io::FileSystem` grew `removeDirectory` for it; the recursion lives in core
+where a test can run it, bounded to eight levels against a directory tree that loops back on itself.
+
+**Creating a world rolls `SnowCovered` here**, because a1.1.2 rolls it at world creation from the
+World's *unseeded* Random — see the jar table above. `Storage::create` cannot do it itself: core has
+no clock, and the harnesses want it off and deterministic.
+
+**What a new world does before it is playable.** It is empty, and the streamer fills it at the speed
+of one worker thread on an ARM11, so "Create New World" used to hand over an empty sky. `runGame` now
+runs its own frame loop first — the same loop, streaming the same way, not a second generation path —
+until there is geometry on the screen, or nine columns are resident (a section cannot be meshed until
+all eight of its column's neighbours are there), or the player presses START, or thirty seconds pass.
+The console shows the streamer's own `owed`/`queue` counts while it waits, so a slow console and a
+stalled one do not look the same.
+
+**Run on hardware, and the first launch crashed on the first frame of the first world.** The menu
+itself came up and worked -- the crash was at `renderer.drawFrame`, and it was not the renderer's.
+
+**citro3d remembers the last shader program bound and dereferences that pointer on the next bind,
+before it looks at the new program at all.** `C2D_Fini` frees citro2d's program, citro3d is never
+told, and the game's first `bindPipeline` read `oldProg->vertexShader->dvle` out of freed heap and
+data-aborted on `0x1008`. The fault lands on whoever binds next, never on the code that freed --
+and it is symmetric, because `Renderer::shutdown` frees its own three pipelines and would have taken
+the menu down on the way back, one lap later.
+
+`ctr::parkShaderProgram()` is the fix: one program built from the world shader, never freed, bound
+immediately before either side frees anything, so the next bind always dereferences something alive.
+Both teardowns call it. The exception, written down where it will be read, is a free immediately
+followed by `C3D_Fini` -- the M0 probe -- which throws the context and its pointer away together.
+
+The dump is `crashlogs/004-loading-a-world-from-the-menu/`, **the first in this project with its ELF
+archived before the fix was built**, so the call chain came out of `addr2line` in a minute instead of
+being reconstructed. The fix itself is unrun: it builds, links and passes `check3dsx.py`, and the
+3DSX is 528,536 bytes against 474,292 before citro2d came in.
+
+### 1. Run it on a console
+
+**This is the only thing that matters next, and none of it can be done here.** The renderer is
+written, builds, links and produces the right numbers on the host, but no part of it has drawn a
+pixel.
+
+**The first launch got none of the way in.** `runGame` held `WorldStreamer` — 36,208 bytes, almost
+all of it the mesher's 18³ scratch — as a local, giving it a 38,220-byte frame on a 32 KB stack. It
+data-aborted on the first instruction that touched the frame, before `findWorlds()` ran. Three
+things are worth keeping from it:
+
+- The host never could have caught this. `--fly` and `--mesh` do the same thing on an 8 MB stack,
+  and still do, deliberately.
+- `-Werror=stack-usage=8192` is now on the **3DS build only**, for that reason. The largest frame
+  left is `runGame`'s own 2,028 bytes; the next is `FogLut::build` at 1,548.
+- Luma exception dumps are worth reading properly rather than eyeballing. `sp`, `far` and an empty
+  stack dump named the fault; `addr2line` named the function, because a 3DSX loads at `0x00100000`
+  and the ELF addresses match one-for-one. `tools/lumadump.py <dump> --elf <elf>` does both.
+  **Archive the `.elf` next to the `.dmp`** — resolving against a later build answers confidently
+  and wrongly, which it did here the moment the fix was compiled.
+
+The dumps are kept in `crashlogs/`, not under `build/`, which a clean rebuild removes.
+
+**The second launch reached the render loop and died uploading a mesh.** `runGame` →
+`WorldStreamer::update` → `meshSection` → `VboPool::upload` → `memcpy`, faulting on a *write* to
+`0x1F38CA00`. That is VRAM, and **the CPU cannot write VRAM** — so the pool's VRAM tier could never
+have worked, and `docs/3ds-performance.md §3` now carries the reversal in full. `budget.vram` is 0
+and `GpuVboAllocator::allocate` refuses the tier. The two things worth carrying forward:
+
+- The bug was in a *seam that was one function too small*. `VboAllocator` abstracted `allocate`,
+  `release` and `flush` — everything about the memory except putting bytes in it. `Atlas::init`
+  had the rule right all along, in the same directory.
+- The pool's totals are unaffected: 12 and 32 MB ceilings, peak resident 7.12 and 23.75 MB, all
+  comfortably inside the linear heap alone. Only which allocator serves them changed.
+
+**The third launch booted and drew the world.** Three things came back from it, and the first two
+are fixed.
+
+*The overworld was dark.* `daylightFromTime` was an invented squared sine that peaked at noon, so
+the test world -- saved at `Time=412`, just after dawn -- rendered at **0.31 of full brightness**.
+Alpha holds full daylight for the whole first half of the day. The real curve is now derived from
+`cn.class` and lives in `core/world/daylight.{hpp,cpp}`, pinned by `tests/daylight_test.cpp`:
+
+| what | where | shape |
+|---|---|---|
+| `getCelestialAngle` | `cn.c(F)F` | raw day fraction, eased a third of the way toward a cosine |
+| `calculateSkylightSubtracted` | `cn.a(F)I` | an **integer 0..11** taken off stored sky light |
+| `lightBrightnessTable` | `cn.<clinit>` | `float[16]`, 0.05 ambient to 1.0, **monochrome** |
+
+Two things fell out of it. Alpha does not scale brightness smoothly -- it subtracts an integer, so
+dusk steps down eleven times between ticks 12041 and 13670 and the stepping is the original's look,
+not an artefact. And the table is monochrome, so the lightmap's warm block-light tint was invention
+and is gone: in a1.1.2 torchlight is exactly as warm as sunlight.
+
+*It crashed in 3D, sometimes.* **citro3d does not bounds-check its command buffer.**
+`GPUCMD_AddRawCommands` memcpys into `gpuCmdBuf + offset` and advances the offset; nothing compares
+it against `gpuCmdBufSize`. The draw list fills it and stereo doubles the cost, so the crash landed
+in whatever linear allocation followed, intermittently, depending on where the player looked.
+Sizing the buffer bigger only moves which view breaks it, so `drawPass` now checks the real
+headroom before each section and calls `C3D_FrameSplit` when it is short -- safe mid-pass, because
+GPU registers carry across command lists. `kCommandBufferBytes` is 4x the default on top of that,
+to make splits rare rather than to make them unnecessary. **The overlay reports the split count:
+anything above 0 is a frame that would have corrupted memory before this.**
+
+*The 3D was flat.* Reported as "it goes in front of the other stuff but then still stays in the
+same depth layer", which turns out to describe the arithmetic exactly. From citro3d's own
+`Mtx_PerspStereoTilt`, read out of `libcitro3d.a` — the tilt puts the parallax terms in row 1,
+which is the 400-pixel axis, so NDC maps to pixels at 200 per unit:
+
+```
+disparity_px(d) = 200 * (I/2) * [ 1/(F*t*a) - 1/d ]      t = tan(fovy/2), a = 400/240
+```
+
+At the old `I = 0.25` blocks, `F = 8`, full slider:
+
+| distance | 1.6 | 4 | 8 | 16 | 32 | 64 | 160 | ∞ |
+|---|---|---|---|---|---|---|---|---|
+| disparity px | −12.9 | −3.6 | −0.5 | +1.1 | +1.9 | +2.3 | +2.5 | +2.7 |
+
+**Across 32 to 160 blocks the disparity varies by 0.62 of one pixel.** The far world was a single
+flat card 2.5 px behind the screen; only things nearer than the 8-block focal plane separated at
+all, which is the "in front of the other stuff" half of the report. For scale, the 3DS convention
+for infinity is roughly 1/30 of screen width, about 13 px.
+
+The tunable is now **on-screen disparity in pixels** rather than an interocular distance in blocks,
+because pixels are what the eye judges and blocks are not — the same 0.25 blocks is dramatic at a
+focal distance of 1 and invisible at 100. The separation is derived from it. Default 10 px, which
+is a starting point and not an answer: **hold Y in game and use the d-pad** — left/right for
+strength, up/down for the focal plane — with both values on the overlay. Whatever settles, write it
+into `kInfinityDisparityPixels` / `kFocalBlocks`. Note the near field is inherently harsh in first
+person: at 10 px infinity the ground at 1.6 blocks sits at −48 px, and no choice of the two numbers
+avoids that, because the 1/d term always wins near the camera.
+
+*Light was inverted.* Caves and sea floors lit like open sky, open sky lit like a cave. The
+lightmap wrote sky light at memory row `sky` and the shader sampled it at `v = (sky+0.5)/16`, which
+reads row `15 - sky`.
+
+**`v = 0` samples the last row in memory, not the first.** Three independent confirmations, which is
+worth recording because the rule is invisible until something is upside down:
+
+- `Atlas::init` puts tile 0 at source row 0 and transfers with `GX_TRANSFER_FLIP_VERT(1)`, so tile
+  0 lands in the *last* rows — and `mesher.cpp` gives tile 0 a `v` of ~0. The atlas is right on
+  hardware, so v=0 must read the last row.
+- `probe.cpp`'s `buildAtlas` does the flip by hand and says why: "texture origin is bottom-left".
+  That code is M0, validated on hardware.
+- The console, twice: the atlas is right way up and the lightmap was not.
+
+The bug started in the M0 probe, whose *lightmap* omits the flip its own *atlas* two functions above
+performs — M0 was measuring fill rate and never asked which way up the light was. The renderer
+inherited it. Both are fixed; no M0 number moves, because fill rate does not care what the texels
+say. `tiledOffsetFlipped` in `textures.cpp` now carries the derivation so the next CPU-written
+texture does not rediscover it.
+
+Still unverified: the **block-light axis**. It is `u`, and a horizontal flip would be a different
+bug. **The strongest check in this world is lava in the dark**, not a torch: every one of the 24
+torches sits at sky light 9–15, where the sky term masks the block term, whereas 461 chunks hold
+lava that is exposed to air at **sky light 0 and block light 15**. The nearest to the player's
+saved position is **(256, 26, 221)**, about 44 blocks straight down. It must glow; black means `u`
+is flipped.
+
+**Torches now make this directly testable**, which is half the reason they were done before the
+other non-cube types. A torch draws at block light 15 by construction — the full-bright override,
+not the cell — so a torch that renders *dark* in a cave is the `u` axis flipped and nothing else.
+An unlit redstone torch next to it is the control: it reads its cell, so it is meant to be dark.
+
+**The fourth launch reported three things, and all three are now fixed or explained.** Fog too
+thick, shimmer at the left and right of the screen, and a 17.5 ms frame against a 0.8 ms GPU.
+
+*The fog was far too thick, and worse the further you could see.* The PICA's fog LUT is indexed by
+**window depth**, which is 1/d: with near 0.2 and far 176 the entire 40-to-160-block ramp fell
+inside LUT entries 0 and 1, so the hardware interpolated a single straight line across it -- 50 %
+fogged at 40 blocks where a1.1.2 wants 0 %, 83 % at 80 where it wants 33 %. Raising the render
+distance pushes the ramp further into 1/d's flat tail, which is why it read as "too thick for this
+render distance". Fog is now a line in `w` in both vertex shaders, carried to the fragment in the
+vertex colour's alpha and applied by an `INTERPOLATE` combiner stage; no extra texture fetch, and
+it scales with the render distance by construction. Full derivation and the before/after table in
+`docs/3ds-performance.md §5`; `FogLut` is deleted.
+
+*The frame is 17.5 ms because the top screen is 59.83 Hz.* `C3D_FrameBegin(C3D_FRAME_SYNCDRAW)`
+spins on `gspWaitForAnyEvent` until citro3d's VBlank callback bumps its frame counter -- read out
+of `renderqueue.o`, not assumed -- so **16.7 ms is a floor no amount of optimisation moves**, and
+17.5 is that floor with about one frame in twenty missed. The comment that SYNCDRAW is what
+serialises CPU and GPU was wrong: the `gxCmdQueueWait` immediately after it does that, with or
+without the flag, so the pool's VBO memory is safe either way and dropping SYNCDRAW would only
+render frames nobody sees.
+
+The overlay now reports the split, because "frame 17.5, GPU 0.8" cannot distinguish the two cases
+on its own: **`CPU busy` against `vsync`**, and under it `walk / stream / submit`. If busy is well
+under 16.7 the console is simply at its refresh rate; if vsync is near zero the CPU is the thing
+missing frames and the three phases say which one. The `Mtx_Multiply` per section per pass per eye
+is gone in passing -- the model matrix is a pure translation, so `mvp` is `vp` with one column
+replaced, 12 multiplies instead of 64 and exactly equal, about 1,800 times a stereo frame.
+
+*Shimmer.* Two defects found, both by arithmetic rather than by looking:
+
+- **A 16-bit depth buffer cannot describe this world.** Resolution is
+  `d^2 * (far-near) / (near*far*65536)`, which is 0.76 blocks at 100 away and 1.95 at 160, so past
+  ~110 blocks two surfaces a whole block apart share a depth value and rounding decides which one
+  is drawn. It changes as the camera moves and differs between the eyes, which is what makes it
+  shimmer rather than sit still. Both eyes are now `GPU_RB_DEPTH24_STENCIL8`: 256x the resolution,
+  375 KB of the ~5 MB of free VRAM. `docs/3ds-performance.md §6` carries the reversal.
+- **The cull frustum's `* 1.08` was a guess that fails as the 3D is turned up.** Derived from
+  `Mtx_PerspStereoTilt` the widening a stereo eye needs is `|iod|/(2*focal)` on the horizontal
+  half-extent, which is 1.025 at the default 10 px of disparity and passes 1.08 around 25 px. Past
+  that, sections the outer eye can see get culled, so they appear in one eye and not the other --
+  at the left and right edges of the screen specifically. Now computed from the live stereo
+  parameters. `docs/3ds-performance.md §10`.
+
+Not fixed, because it is not a defect: at 10 px of infinity disparity the two eyes' images of the
+far world are offset by 10 px, so a strip that wide at each edge of the screen is seen by one eye
+only. Every stereo renderer has this; it shrinks with the disparity, which is on Y + d-pad.
+
+**The fifth launch had torches, and they drew as four black squares each.** Predicted, in those
+words, by the torch entry in the check list below — which is the only reason it took one look
+rather than an evening.
+
+**The alpha test was only ever on in wireframe.** `C3D_AlphaTest(wireframe_, ...)`, on the
+reasoning recorded in the comment that "in the ordinary case the test is off entirely so nothing
+else has to care what a texture's alpha means". Nothing did care, until a render type arrived whose
+entire shape is carved out of transparency: a torch is four *full-block* quads, so with the test off
+every transparent texel — `rgba(0,0,0,0)` — was written as opaque black. Four quads, four black
+squares.
+
+The original's rule was never a judgement call. `iq.class` does exactly this once at startup and
+never touches either again:
+
+```
+glEnable(GL_ALPHA_TEST);          // 3008
+glAlphaFunc(GL_GREATER, 0.1f);    // 516
+```
+
+So it is on for **every pass in the game**, and `glAlphaFunc` is called from nowhere else in the
+jar. 0.1 of 255 is 25.5 and GL_GREATER passes what is strictly above the reference, so GL admits
+alpha ≥ 26 — and `GPU_GREATER` against **25** admits exactly that set. Written as 25 and not as a
+rounded 26 for that reason: 26 would discard a texel the original keeps.
+
+Two things worth carrying forward. The wireframe atlas is strictly 255 or 0, so it never needed a
+threshold of its own and the two cases collapse into one; what wireframe still changes is the
+*combiner*. And this was latent for more than the torch — **glass and leaves are `cube` render
+type with cutout textures**, so the same bug was waiting for the first texture pack with real alpha
+in it, in the pass that carries 97 % of the world's geometry.
+
+This raised a question — the PICA disables early-Z while the alpha test is on, and the cube pass
+carrying 97 % of the world is where that would show — which **the sixth launch answered: nothing
+measurable.** See §2. The toggle that answered it has been removed from the settings page; the test
+is on unconditionally, in every pass, set once per frame.
+
+**Controls and the bottom screen**, added after that launch and not yet run on hardware:
+
+| | |
+|---|---|
+| circle pad | move |
+| C-stick | look — through `ir:rst`, not `hid`, so a Circle Pad Pro on an **old** 3DS gets it too |
+| touch drag | look. **Yaw was inverted**: the view turned the opposite way from the finger. Both axes now follow the mouse convention, drag right look right, and the reason it is `+=` is that `Camera::look` sends yaw 0 to +Z and positive yaw toward −X — south turning to west, which is right |
+| L / R | down / up |
+| X | sprint, unless SELECT is held |
+| Y + d-pad | tune the 3D, unless SELECT is held |
+| SELECT + Y / X | cycle the bottom screen forward / back |
+
+The bottom screen is three pages: the player's screen (empty of diagnostics on purpose — it is
+where the hotbar goes at M3), the debug readout, and a **settings page**. Three settings, all live —
+one of them a measurement instrument rather than a setting anyone should ship with, which is why the
+page explains itself on screen. A fourth, the cube alpha test, was there and is gone; see below:
+
+- **Render distance**, 2 to **24**, which is the hardware's ceiling and deliberately not the
+  player's. The 8 and 12 that used to bound this page are a judgement about where a 3DS stops
+  giving anything back for the cost; they are a *play* limit and belong to the M3 settings menu,
+  where they now live as `kPlayMaxDistanceOld3DS` / `kPlayMaxDistanceNew3DS`. They have no business
+  stopping a maintainer from looking at distance 20 to see what breaks.
+
+  What 24 is: the streamer holds (2d+3)² columns at a measured mean of 18,013 bytes, against a
+  40 MB newlib heap that also carries the mesher's scratch and the storage buffers, so somewhere
+  around **d = 20** the heap runs out. It does not run out gracefully — `Section` allocates its
+  palette and index arrays through ordinary `new` and the build has no exceptions, so an allocation
+  failure is `std::terminate`, not a column that fails to load. 24 is past the estimate on purpose,
+  because a sparse world holds far less than the mean and a maintainer asking for 24 should get it
+  and find out; what the bound prevents is only the case where the number is so far past the heap
+  that the console dies before drawing anything. Making it genuinely unlimited means threading
+  nothrow through the whole section decode, which is worth doing when something needs it and is not
+  worth doing for a debug page.
+
+  Changing it rebuilds the
+  field, the size-class table and the VBO pool, and rebuilds the streamer's grid — whose width is
+  part of how a column is addressed, so a new radius genuinely means a new grid. **Columns already
+  in memory are moved across rather than reloaded**, because re-reading them costs seconds on a
+  console and this is a setting a player is expected to try both ways. The order is load-bearing
+  and is why `--fly` grew a switch-to argument: the renderer has to be rebuilt first, since the
+  streamer republishes every column it kept into whatever field it finds. Exercised under ASan in
+  both directions, 10→4 and 4→10, with nothing refused and 121 columns kept each way.
+- **Wireframe.** The PICA has no line primitive — triangles, strip, fan, geometry-shader, and no
+  polygon mode — so this is not a wireframe in the usual sense. Every quad in this renderer maps to
+  exactly one atlas tile, so a second atlas whose every tile is a one-texel outline over
+  transparency draws each quad's border and nothing else, and the alpha test discards the interior
+  before it writes depth so the mesh behind shows through. Unlit and unfogged, which is the reason
+  the lightmap and the fog are separate combiner stages rather than one. 256 KB of linear memory,
+  built on first use.
+- **Cube format**, 4-vertex or geoshader — **the M2 gate's open question**, and the reason to reach
+  for this page at all right now. Like the render distance it throws the pool away and re-meshes
+  everything, so it is not an instant A/B: give the world a second to settle before reading the
+  numbers back. Exercised under ASan by `--fly … flip`, which changes it halfway over a real world:
+  361 columns kept, nothing refused, nothing re-read from the SD card.
+- ~~**Cube alpha test.**~~ **Removed.** It was a measurement instrument, the question it was added
+  for is answered — turning it off changes GPU draw by nothing measurable — and a switch that can
+  only produce the same number twice is not worth a row on a 30-row page or a branch in `drawEye`.
+  The alpha test is now set once per frame and never touched again. If something later claims to be
+  fragment-bound, this is a five-line change to put back.
+
+`--fly <world> [distance] [frames] [switch-to] [quads|flip]` reproduces both of the page's rebuilds.
+The optional arguments all default to off, so every documented invocation still reports the numbers
+it always did — checked: distance 10 over 1,200 frames still settles at frame 277.
+
+**The page was scrolling, and the reason it looked like a lag symptom is the reason it took a while
+to see.** On a struggling console the bottom screen started showing the frame-time and GPU-time lines
+several times over, each copy one sample block older than the one below it. That is the page's own
+history: `newRow()` in libctru's console scrolls the whole window when the cursor passes row 30, and
+the body was walking off the bottom.
+
+Nothing was printing extra lines. **Lines were printing extra rows.** The console is 40 columns and
+wraps, the overlay ended every line with `\n` and trusted that to mean "one row", and six of the Info
+page's lines were 41 to 44 characters wide *with ordinary numbers in them* — `columns` was 44,
+`walked` and `queued` 42, `pool` and `xyz` 41. Each of those had always been silently taking two
+rows. The body fitted anyway, at exactly rows 4..30, until the generation rows appeared and pushed it
+over; and it got worse the busier the console was, because that is when the numbers are widest and
+`uploads` and `xyz` grow digits too. The correlation with lag was real and it was not causal.
+
+The fix is that **the overlay no longer writes a newline at all.** `row(line, fmt, ...)` places text
+at an absolute row and clips it to the console's width, so the cursor cannot advance a row on its own
+and `newRow()` cannot be reached from the drawing path. A line that outgrows the screen now loses its
+tail where you can see it, and a page that asks for a row outside its body does not get one. Every
+line was re-measured at its *widest* values rather than its typical ones — a Far Lands coordinate is
+eight digits, the generation queue cap is four — and `xyz` became two rows so that the one place
+those numbers matter is not the one place they get clipped. Info is 23 rows of the 24 available and
+Settings still spends all 24.
+
+Clipping counts drawn characters, not bytes: the settings cursor is `"\x1b[33m> \x1b[0m"`, nine bytes
+and two columns, and a byte-counted clip would cut that row seven characters short. That is fiddly
+enough to be worth testing, so it lives in `core/util/console_text.cpp` with ten cases on it rather
+than in the platform layer where nothing could reach it.
+
+**The seventh launch did not launch: black screen, red text, before a pixel.** The dump on it was
+`loader` — a system module — faulting on core 1, not 3DAlpha, which appears as `3dsx_app`. Since the
+game never started, nothing about its *runtime* can be the cause; only the image handed to the
+loader can, and that image had **doubled to 774 KB**.
+
+The cause was one symbol. `MathHelper::table_` is a1.1.2's 65,536-entry sine table, 256 KB, and it
+was a `.bss` array. It had been in the tree for weeks and never in the binary: nothing on the console
+called worldgen, so `-Wl,--gc-sections` dropped the lot. **Wiring the generator into `WorldStreamer`
+linked it in**, and `.bss` went from 56 KB to 319 KB in one step. It is on the heap now — the table
+is built at runtime either way, so the image was paying for a quarter of a megabyte of zeroes it
+could have asked for later — and `.bss` is back to 56,392 bytes against the 56,144 it was before
+worldgen existed. Image 774 KB → **497 KB**.
+
+Two things to keep from it. **`--gc-sections` means a subsystem's cost does not appear until
+something calls it**, so the binary can double on a commit that adds no code. And `tools/lumadump.py`
+now prints the **process name first** and refuses to decode `dfsr`/`far` on an exception that does
+not set them: it had reported this undefined-instruction trap as "permission fault on write to
+0xDFBFFFFF", which is a different bug with a different cause. See `crashlogs/003-loader-rejected-the-3dsx/`.
+
+~~**Unconfirmed:** that the size was the cause.~~ **The size was not the cause, and the dump says so
+outright.** The eighth launch failed identically at 497 KB, which is the test the paragraph above
+asked for, and reading the dump properly the second time answers it:
+
+- `pc` is `0xE7F000F0`, `udf #0` — GCC's `__builtin_trap()`. Luma's `panic()` in
+  `sysmodules/loader/source/util.h` is that one instruction and nothing else, and it is `noinline`,
+  so **this is a deliberate abort with its argument still in `r0`**, not a wild jump.
+- `pc` and `lr` are above `0x14000000` because Luma links its own sysmodules there
+  (`-Wl,--section-start,.text=0x14000000`). No ELF of ours will ever resolve them; the reader now
+  says so instead of shrugging.
+- **`r0 = 0xFFFFFFFF`.** Exactly one thing in that whole sysmodule hands `panic` a bare `-1`:
+  `hbldrLoadProcess` returning `(Result)-1` because `Ldr_Get3dsxSize` returned false. `r6`/`r7`
+  hold `0x000400000D921E00`, hb:ldr's 3DSX title id, so it is the homebrew path; the title's
+  codeset info (`0x00100000`, `0x20` pages) is on the stack two frames up, which is the "34-page
+  module" the first reading mistook for a size limit.
+
+`Ldr_Get3dsxSize` fails in three ways, and only three: it could not read 32 bytes of header, the
+magic was not `3DSX`, or a segment size overflowed when page-rounded. **The file loader opened was
+empty, truncated, or not a 3DSX.** Nothing about what we compiled is implicated. Our code never ran,
+and it was never going to: `LoadProcess` traps *before* `svcCreateProcess`.
+
+**`make run` is not exempt from this — it is the likeliest way in.** 3dslink does not hand the
+image to the console's memory; hbmenu's netloader writes it to **`sdmc:/3ds/<name>.3dsx`** and then
+passes hb:ldr that *path*, so loader reads it back off the card like any other file. The netloader
+checks `fwrite`, and **does not check `fclose`** — a card with no room left fails on the flush, and
+nothing on either end says so. The result is a silently short `/3ds/3DAlpha-a1.1.2.3dsx` that gets
+launched anyway. So: **check free space on the card, and check that file's length**, before
+suspecting anything in the build.
+
+The trap is why this is so hard to see from the couch. Luma has no channel to tell the Homebrew
+Launcher "I will not load that file", so **a rejected image and a crashing one look the same**:
+black screen, red text, a dump belonging to `loader`.
+
+`tools/check3dsx.py` now runs Luma's acceptance checks — `Ldr_Get3dsxSize`'s three, then every read
+`Ldr_CodesetFrom3dsx` performs, against the file's actual length — so the question "is the image bad
+or is the copy on the card bad?" is answerable without a console. **Point it at a copy taken from the
+SD card, not at `build/`**; the two being different is the entire finding. The image in `build/` at
+474,292 bytes passes.
+
+The 256 KB sine table was still worth moving to the heap. It just was not this.
+
+What has to be checked next, roughly in the order it will break:
+
+- **The atlas swizzle.** `Atlas::init` uses `C3D_SyncDisplayTransfer` with `FLIP_VERT(1)` to convert
+  a linear image into a tiled texture. That is the standard idiom and it is unverified here. A wrong
+  flip or a wrong flag reads as a scrambled or upside-down atlas — obvious at a glance, which is why
+  the placeholder pack gives each tile a distinct colour. The CPU Morton path in `textures.cpp` is
+  the fallback and *is* hardware-validated (M0 used it), so a mismatch has a known-good comparison.
+- ~~**The fog LUT.**~~ Gone — see the fourth launch above. What replaced it needs checking instead:
+  no fog at all up to a quarter of the render distance, and terrain reaching the sky colour exactly
+  at the render distance rather than being visibly clipped by the far plane one ring further out.
+  The second thing to look at is **water's alpha**, which must not change with distance: the
+  combiner chain deliberately routes alpha past all three stages so that fog cannot multiply it.
+- **Stereo.** ~~`kMaxInterocular` and `kFocalBlocks`~~ — done, and they were wrong. See below.
+- **Whether geometry appears at all**, which is the winding, the depth test sense (`GPU_GREATER`
+  against a depth cleared to 0) and the culling mode. All three match the M0 probe, which did render
+  a correct cube on hardware.
+- **Fluid surfaces**, which have never been seen. Four things fail visibly and differently: a
+  water surface at the wrong height (the corner algorithm), a surface at the right height with the
+  wrong texture on it (the flow rotation, or a placeholder atlas whose fluid group disagrees),
+  faces where there should be none (the culling rules), and water that is opaque or that vanishes
+  behind other water (the blend state and the back-to-front order). The test world has lakes at the
+  surface, so this is the first thing visible on stepping outside. Every rule below the blend state
+  is pinned by `tests/fluid_test.cpp` on the host, so a discrepancy on hardware means the
+  *renderer* is wrong, not the mesher.
+- **Torches.** The first of the four predicted failures happened on the fifth launch and is fixed:
+  a **block-sized slab** — black, in fact — was the alpha test, above. **The mount sign is now
+  settled too, and without hardware**: the world has 24 torches and in all 24 the block the mount
+  predicts is solid, several of them discriminating because the opposite face is air and a mirrored
+  convention would hang the torch on nothing. `tools/`-side scan, cross-checked against
+  `torchMount()` in `tests/torch_test.cpp`. Two left: a torch **lying flat or leaning the wrong
+  way** is the shear inverted, and a torch **dark in a cave** is the lightmap's `u` axis, above.
+- **The geometry-shader cube pass**, which has never run at all — a third program, a second DVLE, a
+  `GPU_GEOMETRY_PRIM` draw with no index buffer, and an 18-vec4 uniform table. It fails in ways that
+  are each distinct at a glance, which is the reason for listing them:
+
+  | what you see | what it is |
+  |---|---|
+  | nothing at all in the cube pass | the geometry shader is not emitting: the gsh input stride, or `GPU_GEOMETRY_PRIM` |
+  | the world inside out in patches | the strip's `inv prim`, i.e. the second triangle's winding |
+  | every face the same brightness | `faceBasis[].w` shade not reaching the shader — check the uniform table upload survives the bind |
+  | textures scrambled per face | `uvSign`, or `tileX`/`tileY` swapped |
+  | one corner of every quad wrong | `a0` read too soon after `mova` — the one hardware question §2 could not settle |
+  | garbage colour on three of four vertices | output registers do *not* persist across `emit`, which the shader currently assumes they might not and writes per vertex anyway |
+
+  The last two are the two unknowns worth watching for specifically. Everything else about the
+  format — corners, winding, UVs, shade, light, byte layout — is pinned on the host by
+  `tests/quad_format_test.cpp`, which expands every quad of a section through the same basis the
+  shader uses and compares it vertex for vertex against the 12-byte mesher.
+- **The translucent pass itself**, which is three GPU state changes that have never run. Blending
+  on, depth *writes* off with the depth *test* still on, and back-face culling back on — unlike the
+  opaque detail pass, because a fluid face is single-sided and drawing its back too would blend the
+  same surface in twice. Each fails differently: no blending is opaque water; depth writes left on
+  hides the further of two water surfaces; culling left off makes every lake read twice as deep.
+  The placeholder atlas gives water alpha 150 so all of this is judgeable at a glance.
+
+### 2. The M2 gate — **half measured, and the baseline fails**
+
+Performance gates: o3DS ≥ 30 fps at distance 6 with 3D off; n3DS ≥ 30 fps at distance **8** with
+3D on.
+
+**The New 3DS gate was distance 10 and is now 8, provisionally.** Distance 8 is what the rest of the
+engine is already sized around, so it is the honest floor to hold the renderer to while the
+geometry-shader path is unmeasured; distance 10 stays the number worth wanting and is the first
+thing to reconsider if the seventh launch says the cost was vertex fetch. **Lowering it does not
+rescue the baseline** — see the estimate below. Refine once there is a measurement rather than a
+judgement.
+
+**The 12-byte/4-vertex baseline was profiled on a New 3DS XL at the sixth launch and misses the
+second gate by 3.2× at distance 10** — and by an estimated 2.1× at distance 8, which is where the
+gate now sits. The comparison the gate asks for is half done, because only this format has run on
+hardware, but the half that exists is decisive about *why*, and the reason points straight at what
+`docs/3ds-performance.md §2` changes.
+
+**The cost is linear in quad count and indifferent to screen coverage.** Three views, one constant:
+
+| view | GPU draw, less the 0.8 ms fixed cost | quads | µs/quad |
+|---|---|---|---|
+| distance 10, looking along the surface | 16.2 ms | 76,077 | 0.213 |
+| distance 10, a denser view | 51.8 ms | 254,292 | 0.204 |
+| distance 4, same spot | 12.4 ms | 58,582 | 0.212 |
+
+Quad count moved **4.34×** between the last two and GPU time moved **4.18×**. Looking straight down
+— 2,838 quads covering the whole screen — costs 1.0 ms; looking along the surface at 27× the quads
+costs 16× more. Fill rate is not what is being spent.
+
+**0.208 µs per quad = 52 ns per vertex = 13.9 cycles at 268 MHz.** Against the gate:
+
+| configuration | quads, both eyes | GPU | |
+|---|---|---|---|
+| distance 10 dense, 3D off | 254,292 | 53.7 ms | 18.6 fps |
+| distance 10 dense, 3D on | 508,584 | 106.6 ms | 9.4 fps |
+| distance 10 along the surface, 3D on | 152,154 | 32.4 ms | 30.8 fps |
+
+30 fps with 3D on allows **78,433 quads per eye**. The dense view at distance 10 is 3.2× over it;
+60 fps is 6.6× over.
+
+**Distance 8 is the gate now, and it has not been measured — but the estimate says it fails too.**
+Nothing on hardware was taken at distance 8, so this is arithmetic and labelled as such. Two
+independent proxies agree on what dropping 10 to 8 buys: geometry in range falls from 34.76 MB to
+22.76, a factor of **0.65**, and a 70° wedge's area scales as *d²*, giving **0.64**. Against a dense
+view's 254,292 quads both eyes that is roughly **163,000–173,000**, or ~85,000 per eye with 3D on —
+call it **2.1×** over the 78,433 the gate allows, against 3.2× at distance 10.
+
+So the baseline fails the new gate as well, by a smaller factor. That is the point of moving it: a
+gate the answer has to clear by 2.1× is a target the geometry-shader path could plausibly hit, where
+3.2× was a number no vertex-side change was going to reach. **Take the real distance-8 dense figure
+at the seventh launch** — in both formats, one session, one position — and replace this paragraph
+with it.
+
+**The geometry-shader path is now built, and the seventh launch is what it is waiting for.** One
+8-byte vertex per quad, expanded by `shaders/quad.g.pica`. Everything a host can check about it is
+checked and in `docs/3ds-performance.md §2`; the summary is that **it costs nothing to adopt** —
+identical quad counts to the last quad, 107.34 MB of world geometry down to 25.96, 31.6 µs a section
+down to 28.7, and the VBO pool stops being a constraint at every configuration (distance 8 on an old
+3DS goes from 11.15 MB at its ceiling with 1,014 evictions to 3.33 MB with none). None of that is
+the gate. The gate is GPU time per quad, and it can only be re-taken on hardware:
+
+> **Settings page → cube format → geoshader.** Wait for the world to re-mesh, then compare GPU draw
+> on the Info page against the same view in the 12-byte format. Take both halves in one session, at
+> one position, or the comparison is between two different views.
+
+**Either answer is decisive, which is why it was worth building before the measurement rather than
+after.** The two paths emit *identical triangles* — same count, same positions, same winding — and
+differ only in what is fetched and how many times the vertex shader runs. So:
+
+- **Faster** means the cost was vertex fetch and shading. 60 bytes a quad becomes 8, and the vertex
+  shader runs once instead of four times. The remaining lever after it is a shorter shader.
+- **Unchanged** means the cost is per-triangle setup, and **no vertex-side optimisation will ever
+  help** — not a shorter shader, not a smaller vertex, not this. The only lever left is fewer
+  triangles, i.e. greedy meshing, and that has a blocker of its own recorded below.
+
+The risk in the design, stated in advance so the measurement is not read as confirming it: the
+vertex half is 44 instructions divided across three shader units, and the geometry half is 29
+divided across none. If a geometry-shader invocation is serial on one unit, the shading side gets
+*worse* and only the 7.5× less fetch is working in its favour. That is precisely the split §2 was
+never able to name, and this measurement names it.
+
+**Where the 13.9 cycles go, and why the vertex shader is the smaller half.** The PICA has four
+vertex-shader units, so a 22-instruction shader is 5.5 cycles of shading per vertex. The other
+**8.4 cycles are fetch**: at 12 bytes a vertex and four vertices a quad, plus six 2-byte indices,
+the dense view reads **15.3 MB per frame per eye — 295 MB/s of FCRAM**. Shortening the shader
+therefore addresses at most 40 % of the cost, which is why it is not the answer on its own.
+
+**This is the case for §2 restated in measured terms.** One 8-byte vertex per quad is 8 bytes where
+the present path spends 60, **7.5× less traffic**, against a cost that §2 already names: geoshader
+mode drops vertex-shader parallelism from four units to three. It attacks the 8.4 cycles, which is
+the part that dominates.
+
+Two things multiply with it and neither has been measured yet:
+
+- **Greedy meshing** reduces the quad count itself, so it multiplies with anything that reduces
+  cost per quad — and it is the *only* thing that helps if the cost turns out to be per-triangle.
+  It is listed under "deferred" as legal only when smooth lighting is off, and smooth lighting is
+  off, so lighting does not block it. **The atlas does.** A merged 4×1 face needs its tile repeated
+  four times across the quad, and the PICA's wrap mode is a property of the whole texture: with
+  every block sharing one 16×16 atlas, `GPU_REPEAT` repeats the atlas, not the tile. Nothing in the
+  mesher can work around that. The fixes are all changes to the atlas — a padded atlas where each
+  tile is stored as an *n×n* repeat, capping merge runs at *n*, or one texture per tile and a draw
+  call per tile per section — and each has a cost that has not been measured. This is a real
+  blocker and it was not recorded before.
+- **A shorter vertex shader.** The light-nibble unpack is 6 of the 22 instructions and a 256-entry
+  lightmap indexed by the packed byte would make it one; the two setup `mov`s go if the position
+  attribute is declared 3-component, since w then defaults to 1.0.
+
+**What is now known not to be the cost**, recorded because it was predicted in writing and the
+prediction was wrong. The fifth launch turned the alpha test on for every pass, and this file said
+to expect the PICA to disable early-Z and for the cube pass to show it. Toggling the cube pass's
+alpha test on hardware — a settings-page switch, sound only because the placeholder atlas has no
+cutout cube tiles — **changed GPU draw by nothing measurable**. Early-Z is a fragment-stage concern
+and this renderer never reaches the fragment stage in quantity. The alpha test is correct, faithful
+and free, so it is now unconditional and the switch is gone: `drawEye` no longer sets it per pass,
+`drawFrame` sets it once. Putting it back is five lines if anything ever claims to be
+fragment-bound.
+
+### Deferred but not forgotten
+
+- **The real texture pack.** The atlas is a placeholder generated in `platform/ctr/textures.cpp`:
+  our own colours, a natural one for each of the six tiles that carry 94 % of a real world's
+  geometry, one per fluid across its five-tile group, and a stable hash for the rest, so a wrong
+  texture index is visible rather than plausible. The bundled CC BY-SA pack in RomFS and the
+  jar/zip importer are the asset pipeline described in [assets.md](assets.md), and none of it is
+  built. **A real pack must keep the fluid groups intact** — the flowing top face samples across
+  the tile boundary, so a pack that puts something else at 207 or 254 will show it in the water.
+  The placeholder also **carves the three torch tiles** down to a 2/16 stick over transparency,
+  derived from the same geometry the emitter uses, because a solid tile there draws a torch as a
+  slab. A real pack supplies that shape itself; a *generated* one has to keep deriving it.
+- **Meshing on a worker thread.** Everything is on the main thread behind a 4-sections-per-frame
+  budget. `WorldStreamer` is the seam. Doing it now would be building on a guess: the budget that
+  makes the main thread survivable is measurable, and there is no frame time to measure yet.
+- **Smooth lighting / AO.** The 12-byte vertex format already carries per-vertex colour and light
+  for it; **the 8-byte quad format cannot carry it at all**, so if the geometry-shader path wins,
+  these two are mutually exclusive and that is a choice rather than an oversight.
+- **Greedy meshing.** Legal as far as lighting goes — smooth lighting is off — and blocked by the
+  atlas: see the note in §2 above. Whether it is worth unblocking depends entirely on the seventh
+  launch.
+- **Translucent cubes.** Ice is flagged `translucent` in the block table and the mesher emits it
+  into the *cube* stream, which is drawn in the opaque pass, so ice is currently solid. It is the
+  only such block in a1.1.2 and fixing it means either a fourth range in the 12-byte format or
+  promoting those blocks to the 16-byte one. Worth doing when a second version needs it; ice is not
+  worth a whole vertex range on its own.
+- **The rest of the non-cube render types.** The second vertex format and its draw pass exist, and
+  **cross** (saplings, flowers, mushrooms, sugar cane), **fluid** and **torch** are emitted through
+  them. `mesh::hasEmitter()` is the list, `--mesh` prints it, and a test meshes one block of every
+  render type to check it against what the dispatch actually reaches — "implemented" and "reached"
+  are different claims and the gap between them is invisible. Still missing:
+
+  | type | blocks in the measured world | what it needs beyond the format |
+  |---|---|---|
+  | rail, ladder, door, crops, lever | — | metadata |
+  | stairs, fence, cactus | 6 | shape only, no metadata |
+
+  None of these is worth much geometry — between them they are 0.004 % of the measured world's
+  blocks — but a torch that is invisible is worse than a lake that is opaque, so they are gameplay
+  work rather than renderer work. Measure any of them against **n3DS distance 10**, which is the
+  configuration with the least pool headroom left.
+
+  Torch cost nothing measurable, and that was checked rather than assumed: the world held none *at
+  the time this was measured*, so every `--mesh` number was unchanged to the last quad — 1,282,900
+  cube quads, 31,626 opaque and 55,618 translucent detail, 64.05 MB — and mesh time with and
+  without the dispatch,
+  best-of-five on the same host in the same session, was **30.8 against 30.6 µs**. (Both arms read
+  high against the 28.5 µs recorded above; that is this host today, not the change.)
+- **Face textures that depend on metadata or on the world.** `MeshScratch` carries metadata now,
+  but `blocks.json` only records the no-metadata, no-neighbours answer, so using either needs the
+  extractor to emit a fuller table. `extract_blocks.py` names the fourteen blocks affected on every
+  run — six on the world, eight on metadata — so the gap stays visible rather than silent. Grass
+  never wears snow, and chests and furnaces always face the same way. Seven of the eight
+  metadata cases are non-cube types with no emitter yet; for cubes it is farmland alone, wet
+  versus dry.
+- **The rest of the `MeshScratch` fill.** The interior is bulk-read now; the 1,736 shell cells still
+  go through `ChunkColumn` one at a time. Worth roughly 2 µs of the remaining 10.0, so it is the
+  smallest thing on this list rather than the obvious one it used to be.
+- **Chunk index cache** (`cache/<world>.idx`) so the base36 tree is not walked on every open.
+- **Protocol-2 field names/order** must be pinned against an OrnitheMC decompile and a live capture
+  before M5. Payload sizes are certain; names and order are inferred. The jar is available locally.
+- **Chests/furnaces/signs with contents** round-trip as opaque preserved blobs and have never been
+  parsed. The richest chunk tested had 3 tile entities and 2 entities.
+
+---
+
+## Open questions
+
+None outstanding. Both of M2's are answered below.
+
+### Answered
+
+**Grass and foliage tint** — a1.1.2 has **none**, and the mesher writing face shade with no tint was
+already right. Three independent checks from the jar, all agreeing:
+
+- `Block.colorMultiplier(world, x, y, z)` is `ly.d(Lnm;III)I` and its whole body is
+  `ldc 16777215; ireturn` — plain white. **No subclass overrides it**, checked across all 402
+  classes, so every block in the game multiplies by 0xFFFFFF.
+- There is no `misc/grasscolor.png` or `misc/foliagecolor.png` in the jar. The colour-map sampling
+  that question was about arrived later.
+- `terrain.png`'s grass and leaf tiles are already green (average RGB 117,176,73 and 59,191,40
+  against stone's neutral 125,125,125), not the greyscale masks a tinting renderer needs.
+
+`RenderBlocks` does still carry the multiplier through — `k(block,x,y,z)` splits the int into three
+floats and hands them to `a(block,x,y,z,r,g,b)` — so the *mechanism* exists in a1.1.2 and does
+nothing. That is why the vertex keeps its three colour bytes: later versions turn the same path on,
+and the field is already there for them.
+
+Consequence: **there is nothing to fold into the atlas and no `tint` byte to define.** The vertex's
+r,g,b carry face shade today and will carry face shade x AO when smooth lighting lands.
+
+Note for whoever builds the asset pipeline: those tile averages are stated here as evidence about
+a1.1.2's rendering, not as a palette to copy. The placeholder atlas colours in
+`platform/ctr/textures.cpp` were chosen independently and must stay that way — see the licensing
+rules in [assets.md](assets.md).
+
+**PICA clip range** — settled by disassembling citro3d rather than by testing on hardware.
+`Mtx_Persp` and `Mtx_PerspTilt` both write, for a right-handed projection:
+
+```
+M[2][2] = near / (near - far)      M[2][3] = far * near / (near - far)      M[3][2] = -1
+```
+
+which puts the **near plane at z/w = -1 and the far plane at z/w = 0**. That is neither OpenGL's
+range nor Direct3D's, so `ClipRange` grew a third entry, `NegativeOneToZero`, and the failure modes
+are not symmetric: reading a citro3d matrix as `ZeroToOne` takes `M[2]` alone as the near plane,
+which is the far plane negated and culls the entire world; reading it as `NegativeOneToOne` gets the
+near plane right and leaves a far plane that never rejects anything. `tests/frustum_test.cpp`
+reconstructs citro3d's matrix from the disassembly and pins all three readings.
+
+---
+
+## Standing constraints
+
+- **Never ship Mojang assets** — textures, sounds, fonts, jar contents. The bundled fallback pack
+  must be CC-licensed and attributed in `romfs/licenses.txt`.
+- **ViaLegacy is GPLv3: documentation only.** Protocol IDs and wire sizes are facts about a 2010
+  protocol; its code is never copied.
+- **craftus_reloaded is MIT** — reusable with attribution.
+- **Jar extraction is a maintainer step**, never a player step and never part of the build. Its
+  output is checked in.
+- **The real world is worked on through copies only.**

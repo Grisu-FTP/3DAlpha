@@ -1,0 +1,89 @@
+; 3DAlpha detail vertex shader: everything that is not a cube.
+;
+; Same lighting and texturing as world.v.pica -- the two must agree exactly or a
+; flower would be lit differently from the block it stands on. The only
+; difference is the position attribute, and the reason for it:
+;
+;   s16 x, y, z, n   offset 0    position in 1/1024 of a block, 0..16384
+;   s16 u, v         offset 8    atlas coords, 1/16384 units
+;   u8  r, g, b, l   offset 12   colour, packed light
+;
+; The cube format stores position as one byte per axis at one unit per block,
+; which cannot express a flower inset 0.05 from the block edge, a torch tilted
+; 0.4, or a fluid surface at eight ninths of a block. This one can: every value
+; on a power-of-two grid is exact, a1.1.2's handful of decimal constants land
+; within 1/2048 of a block, and a fluid corner -- which is an average of ninths
+; and lands nowhere near any grid -- is within 1/2048 too. 16 bytes rather than
+; 12, paid only by the 2.7 % of blocks that are not cubes.
+;
+; PICA byte/short attributes arrive as raw values converted to float -- they are
+; NOT normalised -- so the scaling happens here, exactly as in world.v.pica.
+
+.constf consts(0.0, 1.0, 0.00006103515625, 0.00097656250)
+.alias zeros     consts.xxxx
+.alias ones      consts.yyyy
+.alias div16384  consts.zzzz   ; UV scale:       1/16384
+.alias div1024   consts.wwww   ; position scale: 1/1024
+
+.constf colourconst(0.00392156862745, 0.0, 0.0, 0.0)
+.alias div255    colourconst.xxxx
+
+; 1/16 to scale a 0..15 light level into UV, and 0.5/16 to land on a texel
+; centre so nearest filtering cannot pick up a neighbour.
+.constf lightconst(0.0625, 16.0, 0.03125, 0.0)
+.alias div16   lightconst.xxxx
+.alias mul16   lightconst.yyyy
+.alias halftex lightconst.zzzz
+
+.fvec mvp[4]
+
+; Linear fog in view-space distance, identical to world.v.pica -- the two must
+; agree or a flower would fade at a different rate from the block it stands on.
+; See that file for why the PICA's own fog unit is not used.
+.fvec fogparam
+
+.out out_pos position
+.out out_uv  texcoord0
+.out out_lm  texcoord1
+.out out_col color
+
+.alias in_xyz v0
+.alias in_uv  v1
+.alias in_rgb v2
+
+.entry vmain
+.proc vmain
+	mul r0.xyz, div1024, in_xyz
+	mov r0.w,   ones
+
+	dp4 out_pos.x, mvp[0], r0
+	dp4 out_pos.y, mvp[1], r0
+	dp4 out_pos.z, mvp[2], r0
+	dp4 r3.w,      mvp[3], r0
+	mov out_pos.w, r3.w
+
+	mul out_uv, div16384, in_uv.xy
+
+	mul out_col.xyz, div255, in_rgb
+
+	; Fog amount into the vertex colour's alpha; see world.v.pica.
+	mul r3.x, fogparam.x, r3.w
+	add r3.x, fogparam.y, r3.x
+	max r3.x, zeros, r3.x
+	min out_col.w, ones, r3.x
+
+	; Unpack (sky << 4) | block. There are no integer ops in the PICA vertex
+	; ISA, so the nibble split is a divide, a floor, and a subtract.
+	mul r1.x, div16, in_rgb.w     ; light / 16
+	flr r1.y, r1.x                ; sky   = floor(light / 16)
+	mul r1.z, mul16, r1.y         ; sky * 16
+	add r1.w, in_rgb.w, -r1.z     ; block = light - sky * 16
+
+	; Texel centres: u = (block + 0.5)/16, v = (sky + 0.5)/16
+	mul r2.x, div16, r1.w
+	mul r2.y, div16, r1.y
+	add out_lm.xy, halftex, r2.xy
+	mov out_lm.zw, zeros
+
+	end
+.end

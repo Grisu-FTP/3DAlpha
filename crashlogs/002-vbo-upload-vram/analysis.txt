@@ -1,0 +1,38 @@
+crash_dump_00000000.dmp -- VboPool::upload memcpy into VRAM
+Resolved against 3DAlpha-a1.1.2.elf built 2026-08-15 23:44 (the binary that ran).
+THAT ELF WAS NOT ARCHIVED -- it was overwritten by a later build. This file is
+what survives of the resolution; do not re-resolve these addresses against any
+other build, it will answer plausibly and wrongly.
+
+ARM11 core 0, data abort
+  pc   = 0x001329E4   memcpy, at "str r6, [lr, #8]" (lr = dest, newlib's memcpy
+                      keeps the destination in lr)
+  sp   = 0x08007688
+  far  = 0x1F38CA08   = dest + 8
+  dfsr = 0x0000080D   permission fault (section), on WRITE
+  r1   = 0x08088060   source: WorldStreamer::staging_, a std::vector in the
+                      newlib heap
+  r2   = 0x00004440   17,472 bytes -- one section's mesh, a pool size class
+
+0x1F38CA00 is VRAM: OS_VRAM_VADDR 0x1F000000, OS_VRAM_SIZE 0x600000, so this is
+3.55 MB into the 6 MB region. Not a wild pointer -- exactly what vramAlloc
+returns.
+
+Call chain, from the return addresses in the 2,424-byte stack dump:
+
+  sp+0x0144  0x00101BBC  runGame                      main.cpp:273
+  sp+0x010C  0x0010CD48  WorldStreamer::update        world_streamer.cpp:302
+  sp+0x007C  0x0010C590  WorldStreamer::meshSection   world_streamer.cpp:214
+  sp+0x000C  0x00107BD0  VboPool::upload              vbo_pool.cpp:121
+             0x001329E4  memcpy                       <-- fault
+
+Corroboration that this is a rule and not one bad pointer: libcitro3d.a,
+C3D_TexLoadImage+0x40 range-checks every destination and never CPU-writes VRAM.
+
+    add  r3, r4, #0xE1000000   ; r4 - 0x1F000000
+    cmp  r3, #0x600000         ; OS_VRAM_SIZE
+    bcc  0x60                  ; in VRAM -> C3D_SyncTextureCopy(src,0,dst,0,n,8)
+    ...                        ; otherwise fall through to memcpy
+
+Fix: budget.vram = 0 and GpuVboAllocator::allocate refuses the VRAM tier.
+Reversal written up in docs/3ds-performance.md section 3.

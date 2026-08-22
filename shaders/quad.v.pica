@@ -1,0 +1,161 @@
+; 3DAlpha quad vertex shader -- the geometry-shader path's first half.
+;
+; One 8-byte vertex per *quad*, against the 60 bytes per quad the 12-byte path
+; costs once its four vertices and six indices are counted. See
+; docs/3ds-performance.md section 2, and core/mesh/vertex.hpp for what the
+; format gives up to get there.
+;
+;   u8 x, y, z, face      offset 0   the block cell inside the section, and which
+;                                    of its six faces this quad is
+;   u8 tileX, tileY       offset 4   the atlas tile, already split into column and
+;                                    row so the shader does not have to divide
+;   u8 light              offset 6   (skyLevel << 4) | blockLevel
+;   u8 ao                 offset 7   reserved, zero
+;
+; **Everything that can be done once per quad is done here rather than in the
+; geometry shader**, because the two are not equally cheap: enabling the
+; geometry stage costs the vertex stage one of its four shader units, so work
+; here is divided by three and work there is not divided at all. The geometry
+; shader is left with four adds, four swizzles and four emits.
+;
+; The face table is the one non-obvious piece. Each face's four corners are
+; base + i*e1 + j*e2 over (i,j) = (0,0), (1,0), (1,1), (0,1); the shader
+; transforms the base point and the two edge vectors and lets the geometry
+; shader add them, which is exact because a projection is linear. The table is
+; uploaded from mesh::kFaceBasis, which is static_asserted to rebuild
+; kFaceCorner and kFaceCornerUV -- the same tables the 12-byte path reads -- so
+; the two paths cannot disagree about winding or texture orientation.
+
+.constf consts(0.0, 1.0, 3.0, 0.0625)
+.alias zeros consts.xxxx
+.alias ones  consts.yyyy
+.alias three consts.zzzz
+.alias div16 consts.wwww   ; one atlas tile, and one light level
+
+.constf lightconst(16.0, 0.03125, 0.5, 0.0)
+.alias mul16   lightconst.xxxx
+.alias halftex lightconst.yyyy   ; 0.5/16: the centre of a lightmap texel
+.alias half    lightconst.zzzz
+
+.fvec mvp[4]
+
+; Linear fog as a line in view-space distance, exactly as world.v.pica carries
+; it and for the same reason: the PICA's own fog unit indexes its LUT by window
+; depth, which is 1/d, and the whole ramp lands in the first two entries.
+.fvec fogparam
+
+; Three vec4 per face, 18 in all, indexed by face*3:
+;   [0] = (base.x, base.y, base.z, faceShade)
+;   [1] = (e1.x,   e1.y,   e1.z,   uvSign)
+;   [2] = (e2.x,   e2.y,   e2.z,   0)
+.fvec faceBasis[18]
+
+; Outputs. All `dummy`, because these are not going to the rasteriser -- they
+; are the geometry shader's six input registers v0..v5, in this order, which is
+; what the gsh input stride of 6 means.
+.out o_p0  dummy   ; corner 0, in clip space
+.out o_d1  dummy   ; the e1 edge, in clip space
+.out o_d2  dummy   ; the e2 edge, in clip space
+.out o_uv  dummy   ; (u0, v0, u1, v1): the tile's two u and two v, ready to pick
+.out o_col dummy   ; face shade in rgb, fog amount in a
+.out o_lm  dummy   ; lightmap texel centre
+
+.alias in_pos v0   ; x, y, z, face
+.alias in_tex v1   ; tileX, tileY, light, ao
+
+.entry qmain
+.proc qmain
+	; a0.x indexes the face's three-entry block. The face arrives as an
+	; unsigned byte converted to float, so it is exactly 0..5 and mova needs
+	; no rounding help.
+	mul r0.x, three, in_pos.w
+	mova a0.x, r0.x
+
+	; The lightmap unpack sits here, between the mova and the first indexed
+	; read, and not because it belongs here.
+	;
+	; **Whether a0 can be read in the instruction straight after a mova is not
+	; something this project has established, and picasso supplies no delay**:
+	; the assembled vertex shader is exactly the instructions this file writes,
+	; counted out of the shbin, so nothing is being inserted on our behalf. The
+	; one devkitPro example that indexes uniforms happens to have four
+	; instructions in between. Six unrelated ones cost nothing here and settle
+	; the question by not asking it.
+	;
+	; Unpacking (sky << 4) | block: there are no integer ops in the PICA vertex
+	; ISA, so the nibble split is a divide, a floor and a subtract -- once per
+	; quad here, against once per vertex in world.v.pica.
+	mul r9.x, div16, in_tex.z
+	flr r9.y, r9.x                ; sky   = floor(light / 16)
+	mul r9.z, mul16, r9.y
+	add r9.x, in_tex.z, -r9.z     ; block = light - sky * 16
+	mul r10.xy, div16, r9.xy      ; (block, sky) / 16
+	add o_lm.xy, halftex, r10.xy  ; texel centres, so nearest filtering cannot
+	mov o_lm.zw, zeros            ; pick up a neighbouring level
+
+	; Corner 0 = the block cell plus the face's base offset. Positions are
+	; section-local, 0..16 in blocks; the section's world origin is in mvp.
+	; The uniform goes first: the PICA lets src1 be a uniform and src2 not, so
+	; an operand order that reads naturally does not assemble.
+	add r1.xyz, faceBasis[a0.x], in_pos
+	mov r1.w, ones
+
+	dp4 o_p0.x, mvp[0], r1
+	dp4 o_p0.y, mvp[1], r1
+	dp4 o_p0.z, mvp[2], r1
+	dp4 r5.w,   mvp[3], r1
+	mov o_p0.w, r5.w
+
+	; The two edges, as direction vectors -- w = 0, so the matrix's translation
+	; column does not contribute and adding them to a transformed point is the
+	; same as transforming the sum.
+	mov r2.xyz, faceBasis[a0.x + 1]
+	mov r2.w,   zeros
+	dp4 o_d1.x, mvp[0], r2
+	dp4 o_d1.y, mvp[1], r2
+	dp4 o_d1.z, mvp[2], r2
+	dp4 o_d1.w, mvp[3], r2
+
+	mov r3.xyz, faceBasis[a0.x + 2]
+	mov r3.w,   zeros
+	dp4 o_d2.x, mvp[0], r3
+	dp4 o_d2.y, mvp[1], r3
+	dp4 o_d2.z, mvp[2], r3
+	dp4 o_d2.w, mvp[3], r3
+
+	; The tile's four texture coordinates, packed so the geometry shader picks
+	; each corner's pair with a swizzle instead of an add: corner (i,j) is
+	; (u0 or u1, v0 or v1).
+	;
+	; u is i for every face. v is j for the bottom face and 1-j for the other
+	; five, which is the one number uvSign carries: the tile-local v of corner
+	; j is (1 - uvSign)/2 + j*uvSign. terrain.png's first row being its top is
+	; the whole reason five faces differ from one.
+	mul r4.x, div16, in_tex.x     ; u0 = tileX / 16
+	add r4.z, div16, r4.x         ; u1 = u0 + one tile
+
+	mov r6.x, faceBasis[a0.x + 1].wwww  ; uvSign, +1 or -1
+	add r6.y, ones, -r6.x
+	mul r6.y, half, r6.y          ; (1 - uvSign)/2, i.e. 0 or 1 tiles
+	add r6.z, in_tex.y, r6.y
+	mul r4.y, div16, r6.z         ; v0
+	mul r6.w, div16, r6.x
+	add r4.w, r4.y, r6.w          ; v1 = v0 + uvSign tiles
+	mov o_uv, r4
+
+	; Face shade, from the table rather than from the vertex: this format has no
+	; room for per-quad colour, which is exact for a1.1.2 -- its
+	; Block.colorMultiplier is white for every block in the game -- and is the
+	; reason a version with biome tint cannot use this path.
+	mov o_col.xyz, faceBasis[a0.x].wwww
+
+	; Fog in the colour's alpha, because primary colour is the only per-vertex
+	; value a texenv stage can read. out_pos.w is -z_view, which is what
+	; GL_LINEAR fog is defined against.
+	mul r8.x, fogparam.x, r5.w
+	add r8.x, fogparam.y, r8.x
+	max r8.x, zeros, r8.x
+	min o_col.w, ones, r8.x
+
+	end
+.end

@@ -1,0 +1,415 @@
+{
+  "$comment": [
+    "Protocol 2 packet tables for a1.1.0 - a1.1.2_01. Compiled into build/<id>/gen/packets.cpp.",
+    "Packet ids and payload SIZES are verified against ViaLegacy's frame-splitter table.",
+    "Field NAMES and ORDER are inferred from those sizes and must be pinned against an",
+    "OrnitheMC decompile plus a live capture before the codec is implemented.",
+    "See docs/protocol-a1.1.2.md."
+  ],
+  "protocol": 2,
+  "clientbound": {
+    "0x00": {
+      "name": "KeepAlive",
+      "fields": []
+    },
+    "0x01": {
+      "name": "Login",
+      "fields": [
+        "i32:entityId",
+        "string:unused1",
+        "string:unused2"
+      ]
+    },
+    "0x02": {
+      "name": "Handshake",
+      "fields": [
+        "string:connectionHash"
+      ]
+    },
+    "0x03": {
+      "name": "Chat",
+      "fields": [
+        "string:message"
+      ]
+    },
+    "0x04": {
+      "name": "TimeUpdate",
+      "fields": [
+        "i64:time"
+      ]
+    },
+    "0x05": {
+      "name": "PlayerInventory",
+      "fields": [
+        "i32:type",
+        "i16:count",
+        "itemstack[count]:items"
+      ]
+    },
+    "0x06": {
+      "name": "SpawnPosition",
+      "fields": [
+        "i32:x",
+        "i32:y",
+        "i32:z"
+      ]
+    },
+    "0x0A": {
+      "name": "PlayerGround",
+      "fields": [
+        "bool:onGround"
+      ]
+    },
+    "0x0B": {
+      "name": "PlayerPosition",
+      "fields": [
+        "f64:x",
+        "f64:y",
+        "f64:stance",
+        "f64:z",
+        "bool:onGround"
+      ]
+    },
+    "0x0C": {
+      "name": "PlayerLook",
+      "fields": [
+        "f32:yaw",
+        "f32:pitch",
+        "bool:onGround"
+      ]
+    },
+    "0x0D": {
+      "name": "PlayerPositionLook",
+      "fields": [
+        "f64:x",
+        "f64:y",
+        "f64:stance",
+        "f64:z",
+        "f32:yaw",
+        "f32:pitch",
+        "bool:onGround"
+      ]
+    },
+    "0x10": {
+      "name": "HoldingChange",
+      "fields": [
+        "i32:entityId",
+        "i16:itemId"
+      ]
+    },
+    "0x11": {
+      "name": "AddToInventory",
+      "fields": [
+        "i16:itemId",
+        "u8:count",
+        "i16:damage"
+      ]
+    },
+    "0x12": {
+      "name": "Animation",
+      "fields": [
+        "i32:entityId",
+        "u8:animation"
+      ]
+    },
+    "0x14": {
+      "name": "NamedEntitySpawn",
+      "fields": [
+        "i32:entityId",
+        "string:name",
+        "i32:x",
+        "i32:y",
+        "i32:z",
+        "u8:yaw",
+        "u8:pitch",
+        "i16:currentItem"
+      ]
+    },
+    "0x15": {
+      "name": "PickupSpawn",
+      "fields": [
+        "i32:entityId",
+        "i16:item",
+        "u8:count",
+        "i32:x",
+        "i32:y",
+        "i32:z",
+        "u8:yaw",
+        "u8:pitch",
+        "u8:roll"
+      ]
+    },
+    "0x16": {
+      "name": "CollectItem",
+      "fields": [
+        "i32:collectedId",
+        "i32:collectorId"
+      ]
+    },
+    "0x17": {
+      "name": "AddObject",
+      "fields": [
+        "i32:entityId",
+        "u8:type",
+        "i32:x",
+        "i32:y",
+        "i32:z"
+      ]
+    },
+    "0x18": {
+      "name": "MobSpawn",
+      "fields": [
+        "i32:entityId",
+        "u8:type",
+        "i32:x",
+        "i32:y",
+        "i32:z",
+        "u8:yaw",
+        "u8:pitch"
+      ]
+    },
+    "0x1D": {
+      "name": "DestroyEntity",
+      "fields": [
+        "i32:entityId"
+      ]
+    },
+    "0x1E": {
+      "name": "Entity",
+      "fields": [
+        "i32:entityId"
+      ]
+    },
+    "0x1F": {
+      "name": "EntityRelMove",
+      "fields": [
+        "i32:entityId",
+        "i8:dx",
+        "i8:dy",
+        "i8:dz"
+      ]
+    },
+    "0x20": {
+      "name": "EntityLook",
+      "fields": [
+        "i32:entityId",
+        "u8:yaw",
+        "u8:pitch"
+      ]
+    },
+    "0x21": {
+      "name": "EntityLookRelMove",
+      "fields": [
+        "i32:entityId",
+        "i8:dx",
+        "i8:dy",
+        "i8:dz",
+        "u8:yaw",
+        "u8:pitch"
+      ]
+    },
+    "0x22": {
+      "name": "EntityTeleport",
+      "fields": [
+        "i32:entityId",
+        "i32:x",
+        "i32:y",
+        "i32:z",
+        "u8:yaw",
+        "u8:pitch"
+      ]
+    },
+    "0x32": {
+      "name": "PreChunk",
+      "fields": [
+        "i32:chunkX",
+        "i32:chunkZ",
+        "bool:mode"
+      ]
+    },
+    "0x33": {
+      "name": "MapChunk",
+      "fields": [
+        "i32:x",
+        "i16:y",
+        "i32:z",
+        "u8:sizeXm1",
+        "u8:sizeYm1",
+        "u8:sizeZm1",
+        "i32:compressedLength",
+        "u8[compressedLength]:data"
+      ]
+    },
+    "0x34": {
+      "name": "MultiBlockChange",
+      "fields": [
+        "i32:chunkX",
+        "i32:chunkZ",
+        "i16:n",
+        "i16[n]:coords",
+        "u8[n]:types",
+        "u8[n]:metadata"
+      ]
+    },
+    "0x35": {
+      "name": "BlockChange",
+      "fields": [
+        "i32:x",
+        "u8:y",
+        "i32:z",
+        "u8:blockType",
+        "u8:metadata"
+      ]
+    },
+    "0x3B": {
+      "name": "ComplexEntity",
+      "fields": [
+        "i32:x",
+        "i16:y",
+        "i32:z",
+        "u16:payloadLength",
+        "u8[payloadLength]:payload"
+      ]
+    },
+    "0xFF": {
+      "name": "Disconnect",
+      "fields": [
+        "string:reason"
+      ]
+    }
+  },
+  "serverbound": {
+    "0x00": {
+      "name": "KeepAlive",
+      "fields": []
+    },
+    "0x01": {
+      "name": "Login",
+      "fields": [
+        "i32:protocolVersion",
+        "string:username",
+        "string:password"
+      ]
+    },
+    "0x02": {
+      "name": "Handshake",
+      "fields": [
+        "string:username"
+      ]
+    },
+    "0x03": {
+      "name": "Chat",
+      "fields": [
+        "string:message"
+      ]
+    },
+    "0x05": {
+      "name": "PlayerInventory",
+      "fields": [
+        "i32:type",
+        "i16:count",
+        "itemstack[count]:items"
+      ]
+    },
+    "0x0A": {
+      "name": "PlayerGround",
+      "fields": [
+        "bool:onGround"
+      ]
+    },
+    "0x0B": {
+      "name": "PlayerPosition",
+      "fields": [
+        "f64:x",
+        "f64:y",
+        "f64:stance",
+        "f64:z",
+        "bool:onGround"
+      ]
+    },
+    "0x0C": {
+      "name": "PlayerLook",
+      "fields": [
+        "f32:yaw",
+        "f32:pitch",
+        "bool:onGround"
+      ]
+    },
+    "0x0D": {
+      "name": "PlayerPositionLook",
+      "fields": [
+        "f64:x",
+        "f64:y",
+        "f64:stance",
+        "f64:z",
+        "f32:yaw",
+        "f32:pitch",
+        "bool:onGround"
+      ]
+    },
+    "0x0E": {
+      "name": "PlayerDigging",
+      "fields": [
+        "u8:status",
+        "i32:x",
+        "u8:y",
+        "i32:z",
+        "u8:face"
+      ]
+    },
+    "0x0F": {
+      "name": "PlaceBlock",
+      "fields": [
+        "i16:itemId",
+        "i32:x",
+        "u8:y",
+        "i32:z",
+        "u8:direction"
+      ]
+    },
+    "0x10": {
+      "name": "HoldingChange",
+      "fields": [
+        "i32:unused",
+        "i16:itemId"
+      ]
+    },
+    "0x12": {
+      "name": "ArmSwing",
+      "fields": [
+        "i32:entityId",
+        "u8:animation"
+      ]
+    },
+    "0x15": {
+      "name": "PickupSpawn",
+      "fields": [
+        "i32:entityId",
+        "i16:item",
+        "u8:count",
+        "i32:x",
+        "i32:y",
+        "i32:z",
+        "u8:yaw",
+        "u8:pitch",
+        "u8:roll"
+      ]
+    },
+    "0x3B": {
+      "name": "ComplexEntity",
+      "fields": [
+        "i32:x",
+        "i16:y",
+        "i32:z",
+        "u16:payloadLength",
+        "u8[payloadLength]:payload"
+      ]
+    },
+    "0xFF": {
+      "name": "Disconnect",
+      "fields": [
+        "string:reason"
+      ]
+    }
+  }
+}

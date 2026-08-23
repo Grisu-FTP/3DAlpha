@@ -751,7 +751,39 @@ sysmodule plus SD latency, which both APIs pay identically *per operation*. The 
 of operations, which is what the cached chunk index, the coalesced write-back queue and packed mode
 attack. Picking the API is worth a few percent; removing an operation is worth all of it.
 
-Plus: cached chunk index instead of per-chunk `stat`, and all I/O on the I/O thread.
+**A faster SD card is not a lever at all**, and it is worth saying plainly because it is the first
+thing anyone reaches for. A chunk file is 2,917 bytes at the median; even at a pessimistic 5 MB/s
+the transfer is under a millisecond, against four to six IPC round trips plus FAT metadata. Neither
+is internal storage a second tier — a title's save data and extdata live *on the SD card*, CTRNAND
+is not writable from a 3DSX, and both go through the same sysmodule. See
+[save-data.md](save-data.md).
+
+### What was built: core/world/chunk_cache.hpp
+
+Three pieces of SD work used to run on the render thread, and the symptom was a hitch exactly when
+chunks loaded and unloaded:
+
+| Where | What it cost | Now |
+|---|---|---|
+| `WorldStreamer::classifyCell` | one `stat` per newly exposed cell, unbudgeted — ~25–49 per chunk-boundary crossing at distance 8 | a lookup in the leaf-directory index, listed ahead of the player on the I/O thread |
+| `WorldStreamer::loadColumn` | `open`+`fstat`+`read`+`close` plus a gzip inflate, inside the frame, 1–2 a frame | a clone out of the cache, or a request posted and the cell retried next frame |
+| both of the above | queued behind the generation worker's `storageLock_` while it deflated and wrote a chunk file | the render thread does not take a storage lock at all |
+| `WorldStreamer::dropCell` | the column was freed, and re-read if the player turned round | given back to the cache and served from RAM |
+
+The cache is byte-capped (8 MB on a New 3DS, 2 MB on an Old one, against the heap split in §2b) and
+holds both the retention ring and a read-ahead band two chunks wider than the load radius. At
+distance 8 that band is 264 columns ≈ 4.6 MB at the measured 18,013-byte mean.
+
+The precedent is the original's own: `ft` holds `new ga[1024]`, a 32×32 direct-mapped chunk table
+that saves the previous occupant of a slot when a new chunk lands on it. 1024 columns is 18.4 MB,
+which is more than an Old 3DS heap has — hence the byte cap and LRU.
+
+**`Stats::mainThreadMicros` on the Storage debug page is the regression test**: it is main-thread
+time inside a storage call and is expected to read 0.0. The one thing that can raise it is the
+`stat` fallback when a directory group is asked about before its listing arrives, which is what
+sprinting into unwalked ground does.
+
+Plus: the chunk index instead of per-chunk `stat`, and all I/O on the I/O thread — both built.
 
 ## 8. Faster inflate
 

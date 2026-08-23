@@ -203,10 +203,13 @@ sdmc:/3dalpha/
                            are gameplay options worth writing to it
   resources/               not built -- user-supplied sounds, original layout
   cache/<pack>.3dtex       not built -- see below
-  cache/<world>.idx        not built -- chunk index per world
+  cache/<world>.idx        not built, and not planned -- the chunk index is built lazily in
+                           RAM instead, one leaf directory at a time, with no file to
+                           invalidate. See core/world/chunk_cache.hpp
 ```
 
-`3ds.ini` holds `render_distance` and `texture_pack`, is `key=value` with `#` comments, and is
+`3ds.ini` holds `render_distance`, `texture_pack`, `autosave_seconds` and `chunk_cache_mb`, is
+`key=value` with `#` comments, and is
 **rewritten from the keys the running build knows** — so a key a later version adds is dropped by an
 older one. An absent file is the ordinary first-boot state, and it is written through
 `writeFileAtomic`, so a console switched off mid-save keeps the settings it had.

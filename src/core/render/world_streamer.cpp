@@ -1,13 +1,12 @@
 #include "core/render/world_streamer.hpp"
 
+#include "core/util/worker.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 
 namespace mc::render {
-
-WorldStreamer::WorkerSpawn WorldStreamer::workerSpawn_ = nullptr;
-WorldStreamer::WorkerJoin WorldStreamer::workerJoin_ = nullptr;
 
 namespace {
 
@@ -21,12 +20,14 @@ int floorMod(i32 value, int modulus)
 
 bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
 {
-    if (storage_.open(worldDir, nowMillis) != world::OpenResult::Ok) {
+    cache_.configure(cacheConfig_);
+    if (cache_.open(worldDir, nowMillis) != world::OpenResult::Ok) {
         return false;
     }
 
     path_ = worldDir;
-    level_ = storage_.level();
+    level_ = cache_.level();
+    lastSaveMillis_ = nowMillis;
     open_ = true;
 
     meshDistance_ = meshDistance;
@@ -72,15 +73,18 @@ const world::ChunkColumn* WorldStreamer::generatorLoad(void* context, i32 chunkX
 {
     WorldStreamer& self = *static_cast<WorldStreamer*>(context);
 
-    // **Storage, and only storage.** An earlier version answered out of the
+    // **The cache, and only the cache.** An earlier version answered out of the
     // resident grid, which is faster and became wrong the moment this started
     // running on another thread: the grid is the main thread's, and it changes
-    // under the player's feet. Storage is authoritative anyway -- every column
-    // the generator finishes is written before it is handed over -- so the only
-    // thing lost is a shortcut, and the generator's own cache absorbs most of
-    // what that shortcut was saving.
-    std::lock_guard<std::mutex> guard(self.storageLock_);
-    return self.storage_.loadChunk(chunkX, chunkZ, scratch) ? scratch : nullptr;
+    // under the player's feet.
+    //
+    // ChunkCache is authoritative in the way storage was -- every column the
+    // generator finishes is stored here before it is handed over, and a read
+    // returns byte-identical content whether it comes from the table or the
+    // card -- so nothing about what the generator sees has changed. What has
+    // changed is the cost: a column the sweep wrote a moment ago used to be a
+    // deflate, a file write and a read back, and is now a clone.
+    return self.cache_.load(chunkX, chunkZ, scratch);
 }
 
 void WorldStreamer::generatorDeliver(void* context, world::ChunkColumn& column)
@@ -88,20 +92,18 @@ void WorldStreamer::generatorDeliver(void* context, world::ChunkColumn& column)
     WorldStreamer& self = *static_cast<WorldStreamer*>(context);
 
     // **Saving is not optional.** The generator evicts what it has handed over
-    // and reaches it again through load(); a column that was never written
-    // would come back as bare terrain with every neighbour's population
-    // missing, and the world would be quietly wrong rather than obviously so.
-    {
-        std::lock_guard<std::mutex> guard(self.storageLock_);
-        self.storage_.saveChunk(column);
-    }
+    // and reaches it again through load(); a column that was never stored would
+    // come back as bare terrain with every neighbour's population missing, and
+    // the world would be quietly wrong rather than obviously so.
+    //
+    // "Stored" now means the cache rather than the card -- the write follows on
+    // the I/O thread -- and that is the same guarantee, because the cache is
+    // what load() reads and it answers with this column from here on.
+    self.cache_.save(column);
 
     // Then the grid gets it, and **not from here**: this runs on the worker,
     // and the grid, the renderer and the visibility masks are the main
     // thread's. The column is queued and adopted in drainGenerated().
-    //
-    // The two locks are taken one after the other and never nested, which is
-    // the whole deadlock argument for this class.
     auto owned = std::make_unique<world::ChunkColumn>(std::move(column));
     {
         std::lock_guard<std::mutex> guard(self.queueLock_);
@@ -123,9 +125,10 @@ bool WorldStreamer::startWorker()
     }
 
     // The platform gets first refusal, because it is the only one that can say
-    // "core 2". See setWorkerThreadOps.
-    if (workerSpawn_ != nullptr && workerJoin_ != nullptr) {
-        platformWorker_ = workerSpawn_(&WorldStreamer::workerEntry, this);
+    // "core 2". See core/util/worker.hpp.
+    if (workerSpawn() != nullptr && workerJoin() != nullptr) {
+        platformWorker_ =
+            workerSpawn()(&WorldStreamer::workerEntry, this, WorkerRole::Generation);
         if (platformWorker_ == nullptr) {
             std::lock_guard<std::mutex> guard(queueLock_);
             workerRunning_ = false;
@@ -147,7 +150,20 @@ void WorldStreamer::waitForWorkerIdle()
         return;
     }
     std::unique_lock<std::mutex> guard(queueLock_);
-    idle_.wait(guard, [this] { return !jobPending_ && !jobActive_; });
+    // **Pause first, then wait.** The worker takes its own next job the moment
+    // it finishes one, so waiting for "not busy" without stopping it handing
+    // itself more work is a wait that can never end on a full queue.
+    queuePaused_ = true;
+    idle_.wait(guard, [this] { return !jobActive_; });
+}
+
+void WorldStreamer::resumeGeneration()
+{
+    {
+        std::lock_guard<std::mutex> guard(queueLock_);
+        queuePaused_ = false;
+    }
+    wake_.notify_one();
 }
 
 void WorldStreamer::stopWorker()
@@ -161,7 +177,7 @@ void WorldStreamer::stopWorker()
     }
     wake_.notify_all();
     if (platformWorker_ != nullptr) {
-        workerJoin_(platformWorker_);
+        workerJoin()(platformWorker_);
         platformWorker_ = nullptr;
     } else {
         worker_.join();
@@ -170,7 +186,21 @@ void WorldStreamer::stopWorker()
     workerRunning_ = false;
 }
 
-// The worker's whole life: wait for a column to be asked for, make it, repeat.
+// The worker's whole life: take the nearest column that is owed, make it,
+// repeat.
+//
+// **It takes its own next job**, and that is the whole reason this loop looks
+// the way it does. The main thread used to hand one out per `update()`, which
+// capped generation at one column per rendered frame -- thirty a second at
+// thirty frames a second -- however fast the worker actually was. On a New 3DS
+// the worker is on core 2 with nothing else on it and can beat that, and every
+// column it could have made and did not is a frame the frontier stays empty.
+//
+// What does *not* change is the rule: one column at a time, nearest to the
+// camera. The realised sequence does change, in the sense that finishing three
+// columns between two frames means the camera moved less between the picks --
+// which is the same speed-dependence a faster console already has and which
+// nearest-first accepted deliberately. See pumpGeneration.
 //
 // It holds no lock while generating, which is the point -- the main thread must
 // never wait on anything longer than a pointer swap. What it does share is the
@@ -179,22 +209,21 @@ void WorldStreamer::stopWorker()
 void WorldStreamer::workerMain()
 {
     for (;;) {
-        i32 cx = 0;
-        i32 cz = 0;
+        std::pair<i32, i32> at{0, 0};
         {
             std::unique_lock<std::mutex> guard(queueLock_);
-            wake_.wait(guard, [this] { return workerStop_ || jobPending_; });
+            wake_.wait(guard, [this] {
+                return workerStop_ || (!queuePaused_ && !generationQueue_.empty());
+            });
             if (workerStop_) {
                 jobActive_ = false;
                 return;
             }
-            cx = jobX_;
-            cz = jobZ_;
-            jobPending_ = false;
+            at = takeNearestQueuedLocked();
             jobActive_ = true;
         }
 
-        generateColumn(cx, cz);
+        generateColumn(at.first, at.second);
 
         // The generator's own counters are published here rather than read
         // from the main thread. They belong to the worker, which is the only
@@ -204,19 +233,20 @@ void WorldStreamer::workerMain()
         std::lock_guard<std::mutex> guard(queueLock_);
         workerPeakLive_ = generator_->stats().peakLive;
         workerEvictedLive_ = generator_->stats().evictedLive;
+        // The coordinate goes back to the main thread so it can be taken out of
+        // the membership set. A list rather than a single slot, because more
+        // than one column can now finish between two frames -- which is the
+        // point of the change.
+        completed_.push_back(at);
         jobActive_ = false;
-        jobDone_ = true;
         idle_.notify_all();
     }
 }
 
 bool WorldStreamer::generationIdle() const
 {
-    if (!generationQueue_.empty()) {
-        return false;
-    }
     std::lock_guard<std::mutex> guard(queueLock_);
-    return !jobPending_ && !jobActive_ && finished_.empty();
+    return generationQueue_.empty() && !jobActive_ && finished_.empty() && completed_.empty();
 }
 
 // Takes what the worker finished into the grid. Main thread, once a frame.
@@ -227,17 +257,16 @@ bool WorldStreamer::generationIdle() const
 void WorldStreamer::drainGenerated(ChunkRenderer& renderer)
 {
     std::vector<std::unique_ptr<world::ChunkColumn>> batch;
-    bool done = false;
+    std::vector<std::pair<i32, i32>> done;
     {
         std::lock_guard<std::mutex> guard(queueLock_);
         batch.swap(finished_);
+        done.swap(completed_);
         stats_.generatorPeakLive = workerPeakLive_;
         stats_.generatorEvictedLive = workerEvictedLive_;
-        done = jobDone_;
-        jobDone_ = false;
     }
-    if (done) {
-        queued_.erase(inFlight_);
+    for (const std::pair<i32, i32>& at : done) {
+        queued_.erase(at);
     }
     if (batch.empty()) {
         return;
@@ -333,6 +362,9 @@ void WorldStreamer::setMeshDistance(int meshDistance, ChunkRenderer& renderer)
     if (generator_ != nullptr) {
         waitForWorkerIdle();
         generator_->growCacheTo(mcver::ChunkGenerator::cacheColumnsFor(loadRadius_));
+        // The wait paused the queue so the worker could not hand itself another
+        // job while the generator's table was being moved under it. Let it go.
+        resumeGeneration();
     }
 
     // Nothing is published yet -- the renderer's field was rebuilt with the
@@ -410,11 +442,17 @@ void WorldStreamer::close(i64 nowMillis)
     if (generator_ != nullptr) {
         generator_->flush();
     }
-    storage_.close(nowMillis);
+
+    // close() blocks until the last column is on the card, which is what the
+    // "Saving level.." message on the way out is for. Everything the generator
+    // just flushed went into the cache, so this is where it becomes files.
+    cache_.close(nowMillis, player_);
     cells_.clear();
     finished_.clear();
+    completed_.clear();
     generationQueue_.clear();
     queued_.clear();
+    queuePaused_ = false;
     generator_.reset();
     open_ = false;
 }
@@ -460,24 +498,33 @@ const WorldStreamer::Cell* WorldStreamer::find(i32 chunkX, i32 chunkZ) const
     return &cell;
 }
 
-bool WorldStreamer::loadColumn(i32 chunkX, i32 chunkZ)
+// Takes a column the world does have. **Nothing here can touch a card.**
+//
+// A cache hit is a clone; a miss is a request posted to the I/O thread and a
+// cell left exactly as it was, to be asked about again next frame. That is the
+// whole change: this used to be an open, a read, a close and a gzip inflate,
+// inside the frame, behind a lock the generation worker held while it wrote.
+WorldStreamer::LoadResult WorldStreamer::loadColumn(i32 chunkX, i32 chunkZ)
 {
     Cell& cell = cells_[cellIndex(chunkX, chunkZ)];
 
-    auto column = std::make_unique<world::ChunkColumn>(chunkX, chunkZ);
-    {
-        std::lock_guard<std::mutex> guard(storageLock_);
-        if (!storage_.loadChunk(chunkX, chunkZ, column.get())) {
-            // Classified as present and unreadable now: a damaged file, or one
-            // removed under us. Treat it as the edge of the world rather than
-            // asking again every frame.
-            cell.state = CellState::Absent;
-            return false;
-        }
-    }
+    std::unique_ptr<world::ChunkColumn> column;
+    switch (cache_.tryTake(chunkX, chunkZ, &column)) {
+    case world::ChunkCache::Take::Took:
+        adoptColumn(cell, std::move(column));
+        return LoadResult::Loaded;
 
-    adoptColumn(cell, std::move(column));
-    return true;
+    case world::ChunkCache::Take::Missing:
+        // Classified as present and unreadable now: a damaged file, or one
+        // removed under us. Treat it as the edge of the world rather than
+        // asking again every frame.
+        cell.state = CellState::Absent;
+        return LoadResult::Failed;
+
+    case world::ChunkCache::Take::Pending:
+        break;
+    }
+    return LoadResult::Pending;
 }
 
 void WorldStreamer::classifyCell(Cell& cell, i32 chunkX, i32 chunkZ)
@@ -491,10 +538,16 @@ void WorldStreamer::classifyCell(Cell& cell, i32 chunkX, i32 chunkZ)
     // is a second trip to the SD card for every chunk that is about to be read
     // anyway: the cell goes straight to OnDisk and loadColumn finds out by
     // reading, exactly as it did before any of this existed.
+    //
+    // The question is answered from the cache's group index now rather than
+    // with a `stat` per cell. That is what removes the storm: crossing a chunk
+    // boundary used to re-classify a whole row of cells, each one an IPC round
+    // trip to the FS sysmodule taken on the render thread, and the symptom was
+    // a hitch exactly when chunks loaded and unloaded. See warmAndPrefetch for
+    // how the index is kept ahead of the cells that need it.
     bool exists = true;
     if (generator_ != nullptr) {
-        std::lock_guard<std::mutex> guard(storageLock_);
-        exists = storage_.hasChunk(chunkX, chunkZ);
+        exists = cache_.hasChunk(chunkX, chunkZ);
     }
 
     cell.column.reset();
@@ -523,6 +576,7 @@ void WorldStreamer::adoptColumn(Cell& cell, std::unique_ptr<world::ChunkColumn> 
     cell.chunkZ = chunkZ;
     cell.state = CellState::Loaded;
     cell.published = false;
+    cell.freshlyAdopted = true;
 }
 
 bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
@@ -554,11 +608,7 @@ bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
     // -------------------------------------------------------------------
     {
         auto stored = std::make_unique<world::ChunkColumn>(chunkX, chunkZ);
-        bool have = false;
-        {
-            std::lock_guard<std::mutex> guard(storageLock_);
-            have = storage_.loadChunk(chunkX, chunkZ, stored.get());
-        }
+        const bool have = cache_.load(chunkX, chunkZ, stored.get()) != nullptr;
         if (have && stored->terrainPopulated) {
             std::lock_guard<std::mutex> guard(queueLock_);
             finished_.push_back(std::move(stored));
@@ -573,10 +623,7 @@ bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
     // The column that was asked for is the one provide() writes out rather than
     // hands to deliver(), so it is saved and queued here. Everything else the
     // sweep finished has already gone through deliver().
-    {
-        std::lock_guard<std::mutex> guard(storageLock_);
-        storage_.saveChunk(*generated_);
-    }
+    cache_.save(*generated_);
     auto owned = std::make_unique<world::ChunkColumn>(std::move(*generated_));
     {
         std::lock_guard<std::mutex> guard(queueLock_);
@@ -588,43 +635,76 @@ bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
 // Hands the head of the generation queue to the worker, or makes it here if
 // there is no worker.
 //
-// One column is in flight at a time and the queue is consumed strictly in
-// order, which is what makes the world the same however fast the generator is:
-// when job N starts, jobs 1..N-1 have finished, on any machine.
+// One column is in flight at a time, and **the next one taken is the one
+// nearest the camera** -- which is a reversal, so the reasoning is here rather
+// than in a commit message.
+//
+// This queue used to be strictly FIFO, on the argument that population order is
+// the world and so the sequence of sweeps had to be a property of the game
+// rather than of how fast the generator ran. The order that bought was
+// *reproducible*, and it was not the original's. Sprinting made that plain: a
+// measured run at distance 8 ended with 702 columns queued, 341 of them ground
+// the camera had already left, and every one of the 361 columns under the
+// player's feet behind them. The frontier stops filling and stays a border
+// until the backlog drains -- which is the bug this reversal comes from.
+//
+// **a1.1.2 has no queue at all.** `ft.b` (provideChunk) loads the chunk and,
+// failing that, calls the generator *inline* on the game thread; nothing is
+// deferred and there is no worker. So the order is simply the order things ask
+// for chunks -- and what asks is the renderer, which does
+// `Arrays.sort(worldRenderers, new RenderSorter(player))` before it rebuilds
+// them. The original's generation order is nearest-to-the-player. Verified in
+// the jar: class `e` at bytecode 686, comparator `fb`, which orders on
+// `WorldRenderer.a(Entity)` ascending.
+//
+// So nearest-first is the *more* faithful of the two, and the strict FIFO was
+// reproducing an order a1.1.2 never had. Two things follow, and both matter:
+//
+//   * **For a player who is not outrunning generation the two are identical.**
+//     The scan appends in spiral order from the current centre, so the head of
+//     the queue already is the nearest column; they diverge only once a backlog
+//     exists, which is exactly the case that was broken.
+//   * **What is given up is threaded-equals-inline once behind.** With a
+//     backlog, which column is nearest depends on where the camera got to, so a
+//     slower console makes a different world than a faster one. The original
+//     does not have that problem because it stalls the game instead -- it never
+//     falls behind. We chose not to stall, and this is the price of that
+//     choice, not of this one.
+//
+// Nothing is dropped: a column that has gone out of range is still generated,
+// just after the ones the player can see. The queue still bounds itself.
 void WorldStreamer::pumpGeneration(const Budget& budget)
 {
-    if (generator_ == nullptr || generationQueue_.empty()) {
+    if (generator_ == nullptr) {
         return;
     }
 
     if (workerRunning_) {
+        // **Nothing is handed out here any more.** The worker takes its own
+        // next job the moment it finishes one; all this does is make sure it is
+        // awake. Dispatching from here capped generation at one column per
+        // rendered frame, which on a console holding thirty frames a second was
+        // thirty columns a second however fast core 2 could actually go.
         std::lock_guard<std::mutex> guard(queueLock_);
-        // **`jobDone_` is part of the test, and leaving it out cost a column.**
-        // The worker can finish between drainGenerated() and here, in the same
-        // frame: the job is then neither pending nor active, so without this
-        // the head would be handed out a second time. Two completions then
-        // arrive, two entries come off the queue, and the second one is a
-        // column that was never generated -- a hole in the world that only
-        // appears when the timing lines up.
-        if (jobPending_ || jobActive_ || jobDone_) {
-            return;
+        if (!generationQueue_.empty()) {
+            wake_.notify_one();
         }
-        inFlight_ = generationQueue_.front();
-        generationQueue_.erase(generationQueue_.begin());
-        jobX_ = inFlight_.first;
-        jobZ_ = inFlight_.second;
-        jobPending_ = true;
-        wake_.notify_one();
         return;
     }
 
     // No worker. This is the path that stutters, and it is kept only so a
     // console whose thread would not start still fills its world in. It takes
-    // from the same queue in the same order, which is why the two produce the
-    // same world.
-    for (int made = 0; made < budget.generatedPerFrame && !generationQueue_.empty(); ++made) {
-        const std::pair<i32, i32> at = generationQueue_.front();
-        generationQueue_.erase(generationQueue_.begin());
+    // from the same queue by the same rule, which is why the two produce the
+    // same world as long as neither is behind.
+    for (int made = 0; made < budget.generatedPerFrame; ++made) {
+        std::pair<i32, i32> at{0, 0};
+        {
+            std::lock_guard<std::mutex> guard(queueLock_);
+            if (generationQueue_.empty()) {
+                break;
+            }
+            at = takeNearestQueuedLocked();
+        }
         const auto begin = std::chrono::steady_clock::now();
         generateColumn(at.first, at.second);
         stats_.generateMicros += std::chrono::duration_cast<std::chrono::microseconds>(
@@ -634,23 +714,55 @@ void WorldStreamer::pumpGeneration(const Budget& budget)
     }
 }
 
+// The queued column nearest the camera, removed from the queue. **queueLock_
+// held**, and the camera position is the copy published under it rather than
+// `centreX_`, because this now runs on the worker.
+//
+// A scan rather than a sorted structure: the queue is capped at twice the grid
+// and this runs once per column, against a column that costs tens of
+// milliseconds to make. Ties break on the order the columns were queued in, so
+// a stationary player gets exactly the spiral order the scan appended.
+std::pair<i32, i32> WorldStreamer::takeNearestQueuedLocked()
+{
+    usize best = 0;
+    i64 bestDistance = -1;
+    for (usize i = 0; i < generationQueue_.size(); ++i) {
+        const i64 dx = i64(generationQueue_[i].first) - i64(queueCentreX_);
+        const i64 dz = i64(generationQueue_[i].second) - i64(queueCentreZ_);
+        const i64 distance = dx * dx + dz * dz;
+        if (bestDistance < 0 || distance < bestDistance) {
+            bestDistance = distance;
+            best = i;
+        }
+    }
+    const std::pair<i32, i32> at = generationQueue_[best];
+    generationQueue_.erase(generationQueue_.begin() + std::ptrdiff_t(best));
+    return at;
+}
+
 // Appends a column to the generation queue if it is not already on it.
 //
-// **Append only, and never reordered.** See the note on generationQueue_: the
-// order sweeps happen in is part of the world, so it must not depend on where
-// the camera got to while the last one was being made.
+// **Append only, and once each.** What is on the queue is a function of the
+// camera path and nothing else; which entry comes off it next is decided at
+// pump time, by distance. See the notes on generationQueue_ and pumpGeneration.
 void WorldStreamer::enqueueGeneration(i32 chunkX, i32 chunkZ)
 {
     const std::pair<i32, i32> at{chunkX, chunkZ};
     if (queued_.count(at) != 0) {
         return;
     }
-    if (generationQueue_.size() >= generationQueueCap_) {
-        ++stats_.generationRefused;
-        return;
+    {
+        // The queue is the worker's as well as this thread's now, so appending
+        // takes the lock. `queued_` is not: it is read and written only here
+        // and in drainGenerated, both on the main thread.
+        std::lock_guard<std::mutex> guard(queueLock_);
+        if (generationQueue_.size() >= generationQueueCap_) {
+            ++stats_.generationRefused;
+            return;
+        }
+        generationQueue_.push_back(at);
     }
     queued_.insert(at);
-    generationQueue_.push_back(at);
 }
 
 void WorldStreamer::dropCell(Cell& cell, ChunkRenderer& renderer)
@@ -661,6 +773,15 @@ void WorldStreamer::dropCell(Cell& cell, ChunkRenderer& renderer)
     ++unclassified_;
     if (cell.published) {
         renderer.dropColumn(cell.chunkX, cell.chunkZ);
+    }
+
+    // **Given back rather than freed.** A column that leaves the grid is one
+    // the player may walk straight back into, and re-reading it costs an open,
+    // a read and an inflate. The cache keeps it until its byte cap says
+    // otherwise, so turning round is free. It is also what makes the read-ahead
+    // band worth having: the two are the same table.
+    if (cell.column != nullptr) {
+        cache_.give(std::move(cell.column));
     }
     cell.column.reset();
     cell.state = CellState::Empty;
@@ -692,14 +813,52 @@ bool WorldStreamer::neighboursReady(i32 chunkX, i32 chunkZ) const
 void WorldStreamer::publishIfReady(i32 chunkX, i32 chunkZ, ChunkRenderer& renderer)
 {
     Cell* cell = find(chunkX, chunkZ);
-    if (cell == nullptr || cell->state != CellState::Loaded || cell->published) {
+    if (cell == nullptr || cell->state != CellState::Loaded) {
         return;
     }
-    if (!renderer.inRange(chunkX, chunkZ) || !neighboursReady(chunkX, chunkZ)) {
+    if (!renderer.inRange(chunkX, chunkZ)) {
         return;
     }
-    if (renderer.publishColumn(chunkX, chunkZ, cell->masks)) {
-        cell->published = true;
+
+    // ---------------------------------------------------------------------
+    // **`published` is a cache of "the renderer has this column", and the
+    // renderer can invalidate it without telling anyone.**
+    //
+    // The field wraps modulo the render distance, so a column one ring outside
+    // it shares a cell with the column on the opposite side -- and when that
+    // one is published, `publishColumn` releases this one's meshes and takes
+    // the cell. Nothing tells this class. Walk out past the render distance and
+    // back and the flag still says "published" while the field holds somebody
+    // else, so the column is never handed over again: the walk finds its cell
+    // occupied by a different column, treats this one as not loaded, and draws
+    // nothing of it. Changing the render distance put it right, because that
+    // rebuilds the field and republishes everything -- which is exactly the
+    // shape of the bug report this comes from.
+    //
+    // The streamer's grid is three rings wider than what it loads, so the band
+    // where this happens is real and a few chunks of walking wide. Asking the
+    // renderer costs one lookup and makes the flag advisory instead of load
+    // bearing.
+    // ---------------------------------------------------------------------
+    if (cell->published && renderer.hasColumn(chunkX, chunkZ)) {
+        return;
+    }
+    if (!neighboursReady(chunkX, chunkZ)) {
+        return;
+    }
+
+    // A column that has been read in since the renderer last saw it cannot
+    // inherit what the renderer still holds under its coordinates -- see
+    // Cell::freshlyAdopted. Dropping first is what makes publishColumn treat it
+    // as an arrival rather than as the same column coming back, so its sections
+    // are meshed again instead of drawing slots that belong to somebody else
+    // now.
+    if (cell->freshlyAdopted) {
+        renderer.dropColumn(chunkX, chunkZ);
+    }
+    cell->published = renderer.publishColumn(chunkX, chunkZ, cell->masks);
+    if (cell->published) {
+        cell->freshlyAdopted = false;
     }
 }
 
@@ -781,7 +940,9 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     // The first frame always takes this path even if the camera happens to be
     // standing at chunk (0, 0), because the renderer's centre has to be told
     // once before the walk can find anything.
-    if (!centreSet_ || cameraChunkX != centreX_ || cameraChunkZ != centreZ_) {
+    const bool centreMoved =
+        !centreSet_ || cameraChunkX != centreX_ || cameraChunkZ != centreZ_;
+    if (centreMoved) {
         centreSet_ = true;
         centreX_ = cameraChunkX;
         centreZ_ = cameraChunkZ;
@@ -796,6 +957,22 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
                 dropCell(cell, renderer);
             }
         }
+
+        // Only here, and deliberately: the set of groups worth listing and
+        // columns worth reading ahead changes when the centre does and at no
+        // other time, so doing this per frame would be several hundred lookups
+        // a frame to reach the same conclusion.
+        warmAndPrefetch();
+    }
+
+    // **The camera position the worker picks against**, published once a frame
+    // before anything can be queued. The worker takes its own jobs now, so it
+    // needs a copy of this under the lock -- and it needs it to be current
+    // before the scan below can put anything in front of it.
+    {
+        std::lock_guard<std::mutex> guard(queueLock_);
+        queueCentreX_ = centreX_;
+        queueCentreZ_ = centreZ_;
     }
 
     // Whatever the worker finished since the last frame, and after the centre
@@ -822,10 +999,31 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
         }
     }
 
+    // **Republish everything the camera has just brought back into range.**
+    //
+    // Publishing only ever happened where something arrived -- around a column
+    // that had just been read, or over the whole grid when a generated one was
+    // adopted. Walking back over ground that is already in memory and already
+    // on the card does neither: nothing is loaded and nothing is generated, so
+    // nothing published, and a column that had lost its cell to the field's
+    // wrap never got it back. That is the other half of the bug the note in
+    // publishIfReady describes, and it is why the symptom needed *revisiting*
+    // rather than merely arriving.
+    //
+    // Once per chunk-boundary crossing, and after classification so that a
+    // newly exposed neighbour has a state for neighboursReady to read. Most of
+    // the sweep exits on the range check; what is left is a lookup each.
+    if (centreMoved) {
+        for (const Offset& offset : spiral_) {
+            publishIfReady(centreX_ + offset.dx, centreZ_ + offset.dz, renderer);
+        }
+    }
+
     // Then read what the world already has, nearest first and within the
     // budget, and queue what it does not.
     int loaded = 0;
     int pending = 0;
+    int pendingReads = 0;
     int pendingGeneration = 0;
     for (const Offset& offset : spiral_) {
         const i32 cx = centreX_ + offset.dx;
@@ -855,7 +1053,18 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
         if (loaded >= budget.columnsPerFrame) {
             continue;
         }
-        if (loadColumn(cx, cz)) {
+
+        // **A pending column costs nothing and must not spend the budget.** It
+        // is a request posted to the I/O thread, not work done here, and
+        // counting it would mean one column still being read held up every
+        // other one in the spiral behind it -- which at a budget of one or two
+        // a frame is most of the world.
+        const LoadResult result = loadColumn(cx, cz);
+        if (result == LoadResult::Pending) {
+            ++pendingReads;
+            continue;
+        }
+        if (result == LoadResult::Loaded) {
             ++stats_.columnsLoadedThisFrame;
         }
         ++loaded;
@@ -870,13 +1079,16 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
         }
     }
     stats_.pendingGeneration = pendingGeneration;
-    stats_.generationQueued = int(generationQueue_.size());
     stats_.generationGated = unclassified_ != 0;
     stats_.generationStale = 0;
-    for (const std::pair<i32, i32>& at : generationQueue_) {
-        if (std::abs(at.first - centreX_) > loadRadius_
-            || std::abs(at.second - centreZ_) > loadRadius_) {
-            ++stats_.generationStale;
+    {
+        std::lock_guard<std::mutex> guard(queueLock_);
+        stats_.generationQueued = int(generationQueue_.size());
+        for (const std::pair<i32, i32>& at : generationQueue_) {
+            if (std::abs(at.first - centreX_) > loadRadius_
+                || std::abs(at.second - centreZ_) > loadRadius_) {
+                ++stats_.generationStale;
+            }
         }
     }
 
@@ -885,6 +1097,7 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     pumpGeneration(budget);
 
     stats_.pendingColumns = pending;
+    stats_.pendingReads = pendingReads;
 
     // With no worker the generator ran on this thread, so its counters can be
     // read directly. With one they arrive through drainGenerated, published by
@@ -903,7 +1116,112 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
         }
     }
 
+    // Last, so the counters describe the frame that just happened. Unthreaded
+    // this also does one unit of queued I/O, which is how the host harnesses
+    // make progress without a thread.
+    const world::ChunkCache::Stats before = cache_.stats();
+    cache_.pump();
+    stats_.io = cache_.stats();
+    stats_.prefetched = int(stats_.io.prefetchHits - before.prefetchHits);
+
     countResidency();
+}
+
+// Lists the directory groups the classification is about to ask about, and
+// reads ahead the columns just outside what is loaded.
+//
+// **One ring wider than the grid**, because a group has to be listed before the
+// cell that needs it is exposed, and a cell at `gridRadius_` was one chunk
+// outside the grid a crossing ago. Sprinting can still outrun it, which is what
+// the `stat` fallback in ChunkCache::hasChunk is for -- it is then as slow as it
+// always was, for one cell, instead of for a whole row.
+void WorldStreamer::warmAndPrefetch()
+{
+    // The index only earns anything where classification asks a question, and
+    // classification only asks one when there is a generator; see classifyCell.
+    if (generator_ != nullptr) {
+        const int warm = gridRadius_ + 1;
+        for (int dz = -warm; dz <= warm; ++dz) {
+            for (int dx = -warm; dx <= warm; ++dx) {
+                cache_.warmGroup(centreX_ + dx, centreZ_ + dz);
+            }
+        }
+    }
+
+    if (prefetchRings_ <= 0) {
+        return;
+    }
+
+    // Capped at the classification band: a cell further out than that has no
+    // cell of its own, so nothing here knows whether the world even has it.
+    const int reach = std::min(loadRadius_ + prefetchRings_, gridRadius_);
+    for (const Offset& offset : spiral_) {
+        if (std::abs(offset.dx) > reach || std::abs(offset.dz) > reach) {
+            continue;
+        }
+        if (std::abs(offset.dx) <= loadRadius_ && std::abs(offset.dz) <= loadRadius_) {
+            continue;  // inside the load radius: the ordinary path reads it
+        }
+        const i32 cx = centreX_ + offset.dx;
+        const i32 cz = centreZ_ + offset.dz;
+        const Cell& cell = cells_[cellIndex(cx, cz)];
+        if (cell.state == CellState::OnDisk && cell.chunkX == cx && cell.chunkZ == cz) {
+            cache_.prefetch(cx, cz);
+        }
+    }
+}
+
+void WorldStreamer::setPlayerState(double x, double y, double z, float yaw, float pitch,
+                                   i64 timeTicks)
+{
+    player_.valid = true;
+    player_.pos[0] = x;
+    player_.pos[1] = y;
+    player_.pos[2] = z;
+    player_.rotation[0] = yaw;
+    player_.rotation[1] = pitch;
+    player_.timeTicks = timeTicks;
+}
+
+void WorldStreamer::tickSaves(i64 nowMillis)
+{
+    if (!open_ || autosaveSeconds_ <= 0) {
+        return;
+    }
+    if (nowMillis - lastSaveMillis_ < i64(autosaveSeconds_) * 1000) {
+        return;
+    }
+    saveNow(nowMillis);
+}
+
+void WorldStreamer::saveNow(i64 nowMillis)
+{
+    if (!open_) {
+        return;
+    }
+    lastSaveMillis_ = nowMillis;
+
+    // level.dat and session.lock have no other trigger during a session --
+    // close() is the only thing that rewrites either today, so a console that
+    // loses power mid-session comes back with a LastPlayed from whenever the
+    // world was last left properly, and with a lock that has not been refreshed
+    // since it was claimed. docs/world-format.md says to run the lock on a
+    // timer; this is that timer.
+    //
+    // **Requested rather than done here.** Both are small files and it would be
+    // easy to write them from this thread, which is the render thread -- and a
+    // deflate plus an atomic write inside a frame every interval is precisely
+    // the thing this whole arrangement exists to stop.
+    cache_.requestHousekeeping(nowMillis, player_);
+    flushSaves(false);
+}
+
+void WorldStreamer::flushSaves(bool blocking)
+{
+    if (!open_) {
+        return;
+    }
+    cache_.flush(blocking);
 }
 
 void WorldStreamer::countResidency()

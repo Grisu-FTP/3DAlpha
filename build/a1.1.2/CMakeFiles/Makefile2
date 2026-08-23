@@ -97,12 +97,12 @@ clean: CMakeFiles/3dalpha_3dsx.dir/clean
 CMakeFiles/3dalpha_core.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66 "Built target 3dalpha_core"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68 "Built target 3dalpha_core"
 .PHONY : CMakeFiles/3dalpha_core.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/3dalpha_core.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 55
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 57
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/3dalpha_core.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 0
 .PHONY : CMakeFiles/3dalpha_core.dir/rule
@@ -114,7 +114,7 @@ CMakeFiles/3dalpha_core.dir/rule: cmake_check_build_system
 # codegen rule for target.
 CMakeFiles/3dalpha_core.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66 "Finished codegen for target 3dalpha_core"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68 "Finished codegen for target 3dalpha_core"
 .PHONY : CMakeFiles/3dalpha_core.dir/codegen
 
 # clean rule for target.
@@ -126,8 +126,8 @@ CMakeFiles/3dalpha_core.dir/clean:
 # Target rules for target CMakeFiles/3dalpha.dir
 
 # All Build rule for target.
-CMakeFiles/3dalpha.dir/all: CMakeFiles/shaders.dir/all
 CMakeFiles/3dalpha.dir/all: CMakeFiles/3dalpha_core.dir/all
+CMakeFiles/3dalpha.dir/all: CMakeFiles/shaders.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha.dir/build.make CMakeFiles/3dalpha.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha.dir/build.make CMakeFiles/3dalpha.dir/build
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9 "Built target 3dalpha"
@@ -135,7 +135,7 @@ CMakeFiles/3dalpha.dir/all: CMakeFiles/3dalpha_core.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/3dalpha.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 76
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 78
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/3dalpha.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 0
 .PHONY : CMakeFiles/3dalpha.dir/rule
@@ -162,7 +162,7 @@ CMakeFiles/3dalpha.dir/clean:
 CMakeFiles/world_shader.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/world_shader.dir/build.make CMakeFiles/world_shader.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/world_shader.dir/build.make CMakeFiles/world_shader.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=78 "Built target world_shader"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=80 "Built target world_shader"
 .PHONY : CMakeFiles/world_shader.dir/all
 
 # Build rule for subdir invocation for target.
@@ -179,7 +179,7 @@ world_shader: CMakeFiles/world_shader.dir/rule
 # codegen rule for target.
 CMakeFiles/world_shader.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/world_shader.dir/build.make CMakeFiles/world_shader.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=78 "Finished codegen for target world_shader"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=80 "Finished codegen for target world_shader"
 .PHONY : CMakeFiles/world_shader.dir/codegen
 
 # clean rule for target.
@@ -194,7 +194,7 @@ CMakeFiles/world_shader.dir/clean:
 CMakeFiles/detail_shader.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/detail_shader.dir/build.make CMakeFiles/detail_shader.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/detail_shader.dir/build.make CMakeFiles/detail_shader.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=67 "Built target detail_shader"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=69 "Built target detail_shader"
 .PHONY : CMakeFiles/detail_shader.dir/all
 
 # Build rule for subdir invocation for target.
@@ -211,7 +211,7 @@ detail_shader: CMakeFiles/detail_shader.dir/rule
 # codegen rule for target.
 CMakeFiles/detail_shader.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/detail_shader.dir/build.make CMakeFiles/detail_shader.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=67 "Finished codegen for target detail_shader"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=69 "Finished codegen for target detail_shader"
 .PHONY : CMakeFiles/detail_shader.dir/codegen
 
 # clean rule for target.
@@ -226,7 +226,7 @@ CMakeFiles/detail_shader.dir/clean:
 CMakeFiles/quad_shader.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/quad_shader.dir/build.make CMakeFiles/quad_shader.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/quad_shader.dir/build.make CMakeFiles/quad_shader.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=68 "Built target quad_shader"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=70 "Built target quad_shader"
 .PHONY : CMakeFiles/quad_shader.dir/all
 
 # Build rule for subdir invocation for target.
@@ -243,7 +243,7 @@ quad_shader: CMakeFiles/quad_shader.dir/rule
 # codegen rule for target.
 CMakeFiles/quad_shader.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/quad_shader.dir/build.make CMakeFiles/quad_shader.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=68 "Finished codegen for target quad_shader"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=70 "Finished codegen for target quad_shader"
 .PHONY : CMakeFiles/quad_shader.dir/codegen
 
 # clean rule for target.
@@ -255,12 +255,12 @@ CMakeFiles/quad_shader.dir/clean:
 # Target rules for target CMakeFiles/shaders.dir
 
 # All Build rule for target.
-CMakeFiles/shaders.dir/all: CMakeFiles/quad_shader.dir/all
 CMakeFiles/shaders.dir/all: CMakeFiles/world_shader.dir/all
 CMakeFiles/shaders.dir/all: CMakeFiles/detail_shader.dir/all
+CMakeFiles/shaders.dir/all: CMakeFiles/quad_shader.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/shaders.dir/build.make CMakeFiles/shaders.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/shaders.dir/build.make CMakeFiles/shaders.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=69,70,71,72,73,74,75,76,77 "Built target shaders"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=71,72,73,74,75,76,77,78,79 "Built target shaders"
 .PHONY : CMakeFiles/shaders.dir/all
 
 # Build rule for subdir invocation for target.
@@ -275,11 +275,11 @@ shaders: CMakeFiles/shaders.dir/rule
 .PHONY : shaders
 
 # codegen rule for target.
-CMakeFiles/shaders.dir/codegen: CMakeFiles/quad_shader.dir/all
 CMakeFiles/shaders.dir/codegen: CMakeFiles/world_shader.dir/all
 CMakeFiles/shaders.dir/codegen: CMakeFiles/detail_shader.dir/all
+CMakeFiles/shaders.dir/codegen: CMakeFiles/quad_shader.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/shaders.dir/build.make CMakeFiles/shaders.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=69,70,71,72,73,74,75,76,77 "Finished codegen for target shaders"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles --progress-num=71,72,73,74,75,76,77,78,79 "Finished codegen for target shaders"
 .PHONY : CMakeFiles/shaders.dir/codegen
 
 # clean rule for target.
@@ -299,7 +299,7 @@ CMakeFiles/3dalpha_3dsx.dir/all: CMakeFiles/3dalpha.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/3dalpha_3dsx.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 78
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 80
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/3dalpha_3dsx.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build/a1.1.2/CMakeFiles 0
 .PHONY : CMakeFiles/3dalpha_3dsx.dir/rule

@@ -689,6 +689,21 @@ src/core/util/seed_text.s:
 .PHONY : src/core/util/seed_text.s
 
 # target to build an object file
+src/core/util/worker.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.o
+.PHONY : src/core/util/worker.o
+
+# target to preprocess a source file
+src/core/util/worker.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.i
+.PHONY : src/core/util/worker.i
+
+# target to generate assembly for a file
+src/core/util/worker.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.s
+.PHONY : src/core/util/worker.s
+
+# target to build an object file
 src/core/world/chunk.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk.o
 .PHONY : src/core/world/chunk.o
@@ -702,6 +717,21 @@ src/core/world/chunk.i:
 src/core/world/chunk.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk.s
 .PHONY : src/core/world/chunk.s
+
+# target to build an object file
+src/core/world/chunk_cache.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.o
+.PHONY : src/core/world/chunk_cache.o
+
+# target to preprocess a source file
+src/core/world/chunk_cache.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.i
+.PHONY : src/core/world/chunk_cache.i
+
+# target to generate assembly for a file
+src/core/world/chunk_cache.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.s
+.PHONY : src/core/world/chunk_cache.s
 
 # target to build an object file
 src/core/world/daylight.o:
@@ -1294,9 +1324,15 @@ help:
 	@echo "... src/core/util/seed_text.o"
 	@echo "... src/core/util/seed_text.i"
 	@echo "... src/core/util/seed_text.s"
+	@echo "... src/core/util/worker.o"
+	@echo "... src/core/util/worker.i"
+	@echo "... src/core/util/worker.s"
 	@echo "... src/core/world/chunk.o"
 	@echo "... src/core/world/chunk.i"
 	@echo "... src/core/world/chunk.s"
+	@echo "... src/core/world/chunk_cache.o"
+	@echo "... src/core/world/chunk_cache.i"
+	@echo "... src/core/world/chunk_cache.s"
 	@echo "... src/core/world/daylight.o"
 	@echo "... src/core/world/daylight.i"
 	@echo "... src/core/world/daylight.s"

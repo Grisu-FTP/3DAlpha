@@ -131,6 +131,48 @@ i64 clockSeed()
     return i64(svcGetSystemTick()) ^ (i64(osGetTime()) << 20);
 }
 
+// **The autosave ladder, and why it is a ladder.**
+//
+// The interval is ours rather than the original's -- a1.1.2 has no timed
+// autosave at all; see WorldStreamer::setAutosaveSeconds -- so there is no
+// number to be faithful to, only one to be sensible about. A d-pad row that
+// stepped by one second would take four hundred presses to cross the useful
+// range, so the row walks these instead. 0 is Off, which means the world is
+// still written when the pause menu opens and when it is left.
+constexpr int kAutosaveSteps[] = {0, 15, 30, 45, 60, 120, 300};
+constexpr int kAutosaveStepCount = int(sizeof(kAutosaveSteps) / sizeof(kAutosaveSteps[0]));
+
+// The nearest rung at or below a value, so a number a player typed into 3ds.ini
+// by hand lands somewhere sensible rather than off the end of the row.
+int autosaveIndex(int seconds)
+{
+    int best = 0;
+    for (int i = 0; i < kAutosaveStepCount; ++i) {
+        if (kAutosaveSteps[i] <= seconds) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+int clampAutosave(int seconds)
+{
+    return kAutosaveSteps[autosaveIndex(seconds)];
+}
+
+void autosaveLabel(int seconds, char* out, usize size)
+{
+    if (seconds <= 0) {
+        std::snprintf(out, size, "Autosave: Off");
+    } else if (seconds < 60) {
+        std::snprintf(out, size, "Autosave: %ds", seconds);
+    } else if (seconds % 60 == 0) {
+        std::snprintf(out, size, "Autosave: %dm", seconds / 60);
+    } else {
+        std::snprintf(out, size, "Autosave: %dm %ds", seconds / 60, seconds % 60);
+    }
+}
+
 }  // namespace
 
 i64 nowMillis()
@@ -165,6 +207,22 @@ bool Menu::init(bool isNew3DS)
     }
     if (renderDistance_ < 2) {
         renderDistance_ = 2;
+    }
+
+    // -1 is "no file said", which is first boot or a file an older build wrote.
+    // 0 is a real answer -- the player turned the timer off -- so it cannot be
+    // the sentinel, which is why this one is not the render distance's 0.
+    if (autosaveSeconds_ < 0) {
+        autosaveSeconds_ = settings::kDefaultAutosaveSeconds;
+    }
+    autosaveSeconds_ = clampAutosave(autosaveSeconds_);
+
+    if (chunkCacheMB_ <= 0) {
+        // What is spare after the heap split in platform/ctr/heap.cpp: 40 MB of
+        // newlib heap on a New 3DS against ~15 MB of block data at the longest
+        // distance it offers, and ~21 MB on an Old one. A column is 18,013
+        // bytes on a real world, so 8 MB holds ~465 of them.
+        chunkCacheMB_ = isNew3DS ? 8 : 2;
     }
 
     // **1024 objects, and the number is arithmetic rather than taste.** citro2d
@@ -397,6 +455,8 @@ void Menu::loadSettings()
     }
     renderDistance_ = saved.renderDistance;
     packName_ = saved.texturePack;
+    autosaveSeconds_ = saved.autosaveSeconds;
+    chunkCacheMB_ = saved.chunkCacheMB;
 }
 
 void Menu::saveSettings()
@@ -404,6 +464,8 @@ void Menu::saveSettings()
     settings::GameSettings current;
     current.renderDistance = renderDistance_;
     current.texturePack = packName_;
+    current.autosaveSeconds = autosaveSeconds_;
+    current.chunkCacheMB = chunkCacheMB_;
 
     if (!fs_.makeDirectories(kRootDir)) {
         return;
@@ -569,6 +631,8 @@ MenuChoice Menu::run()
         }
         if (done) {
             choice.renderDistance = renderDistance_;
+            choice.autosaveSeconds = autosaveSeconds_;
+            choice.chunkCacheMB = chunkCacheMB_;
             choice.atlas = atlas_;
             return choice;
         }
@@ -580,6 +644,8 @@ MenuChoice Menu::run()
     // only honest answer is to stop rather than to open a world.
     choice.action = MenuChoice::Action::Quit;
     choice.renderDistance = renderDistance_;
+    choice.autosaveSeconds = autosaveSeconds_;
+    choice.chunkCacheMB = chunkCacheMB_;
     choice.atlas = atlas_;
     return choice;
 }
@@ -650,6 +716,7 @@ PauseChoice Menu::runPause(const char* worldName, int renderDistance)
     setScreen(resumeScreen_);
 
     choice.renderDistance = renderDistance_;
+    choice.autosaveSeconds = autosaveSeconds_;
     choice.atlasChanged = packRevision_ != revisionAtEntry;
     return choice;
 }
@@ -811,7 +878,7 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
 
 void Menu::handleOptions(u32 down)
 {
-    constexpr int kRows = 3;  // render distance, texture pack, back
+    constexpr int kRows = 4;  // render distance, autosave, texture pack, back
     optionsCursor_ = step(down, optionsCursor_, kRows);
 
     if (optionsCursor_ == 0) {
@@ -827,14 +894,29 @@ void Menu::handleOptions(u32 down)
         }
     }
 
-    if ((down & KEY_A) != 0 && optionsCursor_ == 1) {
+    if (optionsCursor_ == 1) {
+        const int before = autosaveSeconds_;
+        int index = autosaveIndex(autosaveSeconds_);
+        if ((down & kLeft) != 0 && index > 0) {
+            --index;
+        }
+        if ((down & kRight) != 0 && index < kAutosaveStepCount - 1) {
+            ++index;
+        }
+        autosaveSeconds_ = kAutosaveSteps[index];
+        if (autosaveSeconds_ != before) {
+            saveSettings();
+        }
+    }
+
+    if ((down & KEY_A) != 0 && optionsCursor_ == 2) {
         message_ = nullptr;
         refreshPacks();
         setScreen(Screen::TexturePacks);
         return;
     }
 
-    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 2)) {
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 3)) {
         setScreen(inGame_ ? Screen::Pause : Screen::Title);
     }
 }
@@ -1239,30 +1321,39 @@ int Menu::drawListChrome(int rows, int scroll)
 
 void Menu::drawOptions()
 {
-    drawLabelCentered("Options", kScreenWidth * 0.5f, 24.0f, 0.8f, kInk, true);
+    drawLabelCentered("Options", kScreenWidth * 0.5f, 16.0f, 0.8f, kInk, true);
 
     char distance[48];
     std::snprintf(distance, sizeof(distance), "Render distance: %d  (max %d)", renderDistance_,
                   maxDistance_);
 
+    char autosave[48];
+    autosaveLabel(autosaveSeconds_, autosave, sizeof(autosave));
+
     // A pack name comes off a card and can be as long as FAT allows, so the row
     // is a button with a clipped label on it rather than a centred one that
     // would draw off both edges of the screen.
+    //
+    // Four rows now rather than three, so they start higher and the heading
+    // moved up with them: 240 pixels does not stretch, and the alternative was
+    // a scrolling options screen for four items.
     const float x = (kScreenWidth - kButtonWidth) * 0.5f;
-    drawButton(Rect{x, 70.0f, kButtonWidth, kButtonHeight}, distance, optionsCursor_ == 0,
+    drawButton(Rect{x, 54.0f, kButtonWidth, kButtonHeight}, distance, optionsCursor_ == 0,
+               true);
+    drawButton(Rect{x, 90.0f, kButtonWidth, kButtonHeight}, autosave, optionsCursor_ == 1,
                true);
 
-    const Rect packRow{x, 106.0f, kButtonWidth, kButtonHeight};
-    drawButton(packRow, "", optionsCursor_ == 1, true);
+    const Rect packRow{x, 126.0f, kButtonWidth, kButtonHeight};
+    drawButton(packRow, "", optionsCursor_ == 2, true);
     drawLabel("Texture Pack:", packRow.x + 8.0f, packRow.y + 6.0f, 0.5f, kInkDim,
               C2D_AlignLeft, true);
     drawLabelClipped(packLabel(), packRow.x + 96.0f, packRow.y + 5.0f, 0.5f, kInk,
                      packRow.w - 104.0f);
 
-    drawButton(Rect{x, 142.0f, kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 2,
+    drawButton(Rect{x, 162.0f, kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 3,
                true);
 
-    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 186.0f, 0.45f,
+    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 206.0f, 0.45f,
                       kInkDim, true);
 }
 

@@ -91,12 +91,12 @@ clean: CMakeFiles/3dalpha_tests.dir/clean
 CMakeFiles/3dalpha_core.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46 "Built target 3dalpha_core"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53 "Built target 3dalpha_core"
 .PHONY : CMakeFiles/3dalpha_core.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/3dalpha_core.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 44
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 52
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/3dalpha_core.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 0
 .PHONY : CMakeFiles/3dalpha_core.dir/rule
@@ -108,7 +108,7 @@ CMakeFiles/3dalpha_core.dir/rule: cmake_check_build_system
 # codegen rule for target.
 CMakeFiles/3dalpha_core.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46 "Finished codegen for target 3dalpha_core"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53 "Finished codegen for target 3dalpha_core"
 .PHONY : CMakeFiles/3dalpha_core.dir/codegen
 
 # clean rule for target.
@@ -123,12 +123,12 @@ CMakeFiles/3dalpha_core.dir/clean:
 CMakeFiles/3dalpha.dir/all: CMakeFiles/3dalpha_core.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha.dir/build.make CMakeFiles/3dalpha.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha.dir/build.make CMakeFiles/3dalpha.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=1,2 "Built target 3dalpha"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=1 "Built target 3dalpha"
 .PHONY : CMakeFiles/3dalpha.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/3dalpha.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 46
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 53
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/3dalpha.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 0
 .PHONY : CMakeFiles/3dalpha.dir/rule
@@ -140,7 +140,7 @@ CMakeFiles/3dalpha.dir/rule: cmake_check_build_system
 # codegen rule for target.
 CMakeFiles/3dalpha.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha.dir/build.make CMakeFiles/3dalpha.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=1,2 "Finished codegen for target 3dalpha"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=1 "Finished codegen for target 3dalpha"
 .PHONY : CMakeFiles/3dalpha.dir/codegen
 
 # clean rule for target.
@@ -155,12 +155,12 @@ CMakeFiles/3dalpha.dir/clean:
 CMakeFiles/3dalpha_tests.dir/all: CMakeFiles/3dalpha_core.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87 "Built target 3dalpha_tests"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100 "Built target 3dalpha_tests"
 .PHONY : CMakeFiles/3dalpha_tests.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/3dalpha_tests.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 85
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 99
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/3dalpha_tests.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles 0
 .PHONY : CMakeFiles/3dalpha_tests.dir/rule
@@ -172,7 +172,7 @@ CMakeFiles/3dalpha_tests.dir/rule: cmake_check_build_system
 # codegen rule for target.
 CMakeFiles/3dalpha_tests.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87 "Finished codegen for target 3dalpha_tests"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles --progress-num=54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100 "Finished codegen for target 3dalpha_tests"
 .PHONY : CMakeFiles/3dalpha_tests.dir/codegen
 
 # clean rule for target.

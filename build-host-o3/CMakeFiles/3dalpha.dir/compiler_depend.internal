@@ -45,6 +45,11 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o
  /home/grisu/Documents/GitHub/3DAlpha/src/core/render/vbo_pool.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/render/visible_set.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/render/world_streamer.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/jar_import.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/pack_list.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/zip_archive.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/frustum.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp
@@ -53,7 +58,9 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp

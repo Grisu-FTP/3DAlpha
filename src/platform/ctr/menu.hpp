@@ -89,6 +89,13 @@ struct MenuChoice {
     // this model will be offered. The shell hands it to the renderer.
     int renderDistance = 0;
 
+    // Seconds between autosaves, and megabytes of chunk cache. Both come off
+    // 3ds.ini through the options screen; the shell hands them to the streamer
+    // before it opens the world, because both are read at open() and neither
+    // can be resized under a running I/O thread.
+    int autosaveSeconds = 0;
+    int chunkCacheMB = 0;
+
     // The block atlas for the chosen texture pack, already assembled and
     // already known to decode -- the pack screen builds it at the moment of
     // selection so a broken pack is refused there, in front of the player,
@@ -119,6 +126,10 @@ struct PauseChoice {
     // the pause menu over a world the debug page has pushed to distance 20 does
     // not quietly pull it back to the play maximum.
     int renderDistance = 0;
+
+    // What the Options screen settled on for the autosave timer. Applied to
+    // the running world -- unlike the cache size, which is fixed at open().
+    int autosaveSeconds = 0;
 
     // The player chose a different texture pack. The image is Menu::atlas();
     // the caller hands it to Renderer::setAtlas.
@@ -309,6 +320,8 @@ private:
 
     int renderDistance_ = 0;
     int maxDistance_ = 0;
+    int autosaveSeconds_ = 0;
+    int chunkCacheMB_ = 0;
     bool isNew3DS_ = false;
 
     // True for as long as runPause owns the loop. The shared screens read it in

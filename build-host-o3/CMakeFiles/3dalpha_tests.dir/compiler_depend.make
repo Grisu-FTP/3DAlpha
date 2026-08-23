@@ -22,9 +22,11 @@
   /usr/lib/libz.so \
   CMakeFiles/3dalpha_tests.dir/tests/big_tree_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/block_registry_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/chunk_nbt_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/chunk_path_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/chunk_renderer_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/console_text_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/coord_text_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/daylight_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/dungeon_test.cpp.o \
@@ -33,6 +35,7 @@
   CMakeFiles/3dalpha_tests.dir/tests/framework.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/frustum_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o \
@@ -43,22 +46,30 @@
   CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o \
   CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o \
+  CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o \
   lib3dalpha_core.a
 
 CMakeFiles/3dalpha_tests.dir/tests/big_tree_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/big_tree_test.cpp \
@@ -475,6 +486,302 @@ CMakeFiles/3dalpha_tests.dir/tests/block_registry_test.cpp.o: /home/grisu/Docume
   /usr/include/stdint.h \
   /usr/include/stdio.h \
   /usr/include/stdlib.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/single_threaded.h \
+  /usr/include/sys/types.h \
+  /usr/include/time.h \
+  /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/chunk_cache_test.cpp \
+  gen/blocks.hpp \
+  gen/version_config.hpp \
+  gen/version_slots.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/block_def.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/registry.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/posix_file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/item/item_stack.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/nbt.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/preserved.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/writer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/nibble.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/section.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/population_view.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/bitsperlong.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm-generic/int-ll64.h \
+  /usr/include/asm-generic/posix_types.h \
+  /usr/include/asm-generic/types.h \
+  /usr/include/asm/bitsperlong.h \
+  /usr/include/asm/errno.h \
+  /usr/include/asm/posix_types.h \
+  /usr/include/asm/posix_types_64.h \
+  /usr/include/asm/types.h \
+  /usr/include/assert.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/cpu-set.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/flt-eval-method.h \
+  /usr/include/bits/fp-fast.h \
+  /usr/include/bits/fp-logb.h \
+  /usr/include/bits/iscanonical.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/libm-simd-decl-stubs.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/math-vector.h \
+  /usr/include/bits/mathcalls-helper-functions.h \
+  /usr/include/bits/mathcalls-macros.h \
+  /usr/include/bits/mathcalls-narrow.h \
+  /usr/include/bits/mathcalls.h \
+  /usr/include/bits/pthread_stack_min-dynamic.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/sched.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/setjmp.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/timex.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct___jmp_buf_tag.h \
+  /usr/include/bits/types/struct_itimerspec.h \
+  /usr/include/bits/types/struct_sched_param.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/struct_tm.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/auto_ptr.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/align.h \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocated_ptr.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/atomic_base.h \
+  /usr/include/c++/16/bits/atomic_lockfree_defines.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/chrono.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/cxxabi_init_exception.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/exception_ptr.h \
+  /usr/include/c++/16/bits/functexcept.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/nested_exception.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/node_handle.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/parse_numbers.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/refwrap.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/shared_ptr.h \
+  /usr/include/c++/16/bits/shared_ptr_atomic.h \
+  /usr/include/c++/16/bits/shared_ptr_base.h \
+  /usr/include/c++/16/bits/specfun.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/std_mutex.h \
+  /usr/include/c++/16/bits/std_thread.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_map.h \
+  /usr/include/c++/16/bits/stl_multimap.h \
+  /usr/include/c++/16/bits/stl_multiset.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_raw_storage_iter.h \
+  /usr/include/c++/16/bits/stl_set.h \
+  /usr/include/c++/16/bits/stl_tempbuf.h \
+  /usr/include/c++/16/bits/stl_tree.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/this_thread_sleep.h \
+  /usr/include/c++/16/bits/unique_lock.h \
+  /usr/include/c++/16/bits/unique_ptr.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cassert \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/chrono \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/cmath \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/condition_variable \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cstring \
+  /usr/include/c++/16/ctime \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/exception \
+  /usr/include/c++/16/ext/aligned_buffer.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/atomicity.h \
+  /usr/include/c++/16/ext/concurrence.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/limits \
+  /usr/include/c++/16/map \
+  /usr/include/c++/16/memory \
+  /usr/include/c++/16/mutex \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/execution_defs.h \
+  /usr/include/c++/16/pstl/glue_memory_defs.h \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/ratio \
+  /usr/include/c++/16/set \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/thread \
+  /usr/include/c++/16/tr1/bessel_function.tcc \
+  /usr/include/c++/16/tr1/beta_function.tcc \
+  /usr/include/c++/16/tr1/ell_integral.tcc \
+  /usr/include/c++/16/tr1/exp_integral.tcc \
+  /usr/include/c++/16/tr1/gamma.tcc \
+  /usr/include/c++/16/tr1/hypergeometric.tcc \
+  /usr/include/c++/16/tr1/legendre_function.tcc \
+  /usr/include/c++/16/tr1/modified_bessel_func.tcc \
+  /usr/include/c++/16/tr1/poly_hermite.tcc \
+  /usr/include/c++/16/tr1/poly_laguerre.tcc \
+  /usr/include/c++/16/tr1/riemann_zeta.tcc \
+  /usr/include/c++/16/tr1/special_function_util.h \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/typeinfo \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/atomic_word.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/error_constants.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/gthr-default.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/gthr.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/errno.h \
+  /usr/include/linux/posix_types.h \
+  /usr/include/linux/sched/types.h \
+  /usr/include/linux/stddef.h \
+  /usr/include/linux/types.h \
+  /usr/include/locale.h \
+  /usr/include/math.h \
+  /usr/include/pthread.h \
+  /usr/include/sched.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/string.h \
+  /usr/include/strings.h \
   /usr/include/sys/cdefs.h \
   /usr/include/sys/select.h \
   /usr/include/sys/single_threaded.h \
@@ -1094,6 +1401,169 @@ CMakeFiles/3dalpha_tests.dir/tests/chunk_renderer_test.cpp.o: /home/grisu/Docume
   /usr/include/sys/single_threaded.h \
   /usr/include/sys/types.h \
   /usr/include/time.h \
+  /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+CMakeFiles/3dalpha_tests.dir/tests/console_text_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/console_text_test.cpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/console_text.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm/errno.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cstring \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/errno.h \
+  /usr/include/locale.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/string.h \
+  /usr/include/strings.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/types.h \
   /usr/include/wchar.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
@@ -2221,6 +2691,7 @@ CMakeFiles/3dalpha_tests.dir/tests/framework.cpp.o: /home/grisu/Documents/GitHub
   /usr/include/c++/16/cstddef \
   /usr/include/c++/16/cstdio \
   /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cstring \
   /usr/include/c++/16/cwchar \
   /usr/include/c++/16/debug/assertions.h \
   /usr/include/c++/16/debug/debug.h \
@@ -2254,6 +2725,8 @@ CMakeFiles/3dalpha_tests.dir/tests/framework.cpp.o: /home/grisu/Documents/GitHub
   /usr/include/stdc-predef.h \
   /usr/include/stdio.h \
   /usr/include/stdlib.h \
+  /usr/include/string.h \
+  /usr/include/strings.h \
   /usr/include/sys/cdefs.h \
   /usr/include/sys/select.h \
   /usr/include/sys/types.h \
@@ -2710,6 +3183,187 @@ CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.o: /home/grisu/Documents/Gi
   /usr/include/sys/types.h \
   /usr/include/time.h \
   /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/jar_import_test.cpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/posix_file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/vertex.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/jar_import.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/pack_list.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/zip_archive.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/compress.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/texture_support.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm/errno.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/confname.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/environments.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/getopt_core.h \
+  /usr/include/bits/getopt_posix.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/posix_opt.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/unistd_ext.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/close_range.h \
+  /usr/include/linux/errno.h \
+  /usr/include/locale.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/types.h \
+  /usr/include/unistd.h \
+  /usr/include/wchar.h \
+  /usr/include/zconf.h \
+  /usr/include/zlib.h \
+  /usr/include/zlib_name_mangling.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
@@ -4538,6 +5192,297 @@ CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o: /home/grisu/Documents/GitHub/
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
 
+CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/pack_test.cpp \
+  gen/blocks.hpp \
+  gen/version_config.hpp \
+  gen/version_slots.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/block_def.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/registry.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/posix_file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/item/item_stack.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/vertex.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/nbt.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/preserved.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/writer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/dev_art.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/pack_list.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/compress.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/nibble.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/section.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/population_view.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/texture_support.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/bitsperlong.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm-generic/int-ll64.h \
+  /usr/include/asm-generic/posix_types.h \
+  /usr/include/asm-generic/types.h \
+  /usr/include/asm/bitsperlong.h \
+  /usr/include/asm/errno.h \
+  /usr/include/asm/posix_types.h \
+  /usr/include/asm/posix_types_64.h \
+  /usr/include/asm/types.h \
+  /usr/include/assert.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/confname.h \
+  /usr/include/bits/cpu-set.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/environments.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/flt-eval-method.h \
+  /usr/include/bits/fp-fast.h \
+  /usr/include/bits/fp-logb.h \
+  /usr/include/bits/getopt_core.h \
+  /usr/include/bits/getopt_posix.h \
+  /usr/include/bits/iscanonical.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/libm-simd-decl-stubs.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/math-vector.h \
+  /usr/include/bits/mathcalls-helper-functions.h \
+  /usr/include/bits/mathcalls-macros.h \
+  /usr/include/bits/mathcalls-narrow.h \
+  /usr/include/bits/mathcalls.h \
+  /usr/include/bits/posix_opt.h \
+  /usr/include/bits/pthread_stack_min-dynamic.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/sched.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/setjmp.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/timex.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct___jmp_buf_tag.h \
+  /usr/include/bits/types/struct_itimerspec.h \
+  /usr/include/bits/types/struct_sched_param.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/struct_tm.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/unistd_ext.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/auto_ptr.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/align.h \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocated_ptr.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/atomic_base.h \
+  /usr/include/c++/16/bits/atomic_lockfree_defines.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/cxxabi_init_exception.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/exception_ptr.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/nested_exception.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/refwrap.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/shared_ptr.h \
+  /usr/include/c++/16/bits/shared_ptr_atomic.h \
+  /usr/include/c++/16/bits/shared_ptr_base.h \
+  /usr/include/c++/16/bits/specfun.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_raw_storage_iter.h \
+  /usr/include/c++/16/bits/stl_tempbuf.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/unique_ptr.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cassert \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/cmath \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cstring \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/exception \
+  /usr/include/c++/16/ext/aligned_buffer.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/atomicity.h \
+  /usr/include/c++/16/ext/concurrence.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/limits \
+  /usr/include/c++/16/memory \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/execution_defs.h \
+  /usr/include/c++/16/pstl/glue_memory_defs.h \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tr1/bessel_function.tcc \
+  /usr/include/c++/16/tr1/beta_function.tcc \
+  /usr/include/c++/16/tr1/ell_integral.tcc \
+  /usr/include/c++/16/tr1/exp_integral.tcc \
+  /usr/include/c++/16/tr1/gamma.tcc \
+  /usr/include/c++/16/tr1/hypergeometric.tcc \
+  /usr/include/c++/16/tr1/legendre_function.tcc \
+  /usr/include/c++/16/tr1/modified_bessel_func.tcc \
+  /usr/include/c++/16/tr1/poly_hermite.tcc \
+  /usr/include/c++/16/tr1/poly_laguerre.tcc \
+  /usr/include/c++/16/tr1/riemann_zeta.tcc \
+  /usr/include/c++/16/tr1/special_function_util.h \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/typeinfo \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/atomic_word.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/gthr-default.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/gthr.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/close_range.h \
+  /usr/include/linux/errno.h \
+  /usr/include/linux/posix_types.h \
+  /usr/include/linux/sched/types.h \
+  /usr/include/linux/stddef.h \
+  /usr/include/linux/types.h \
+  /usr/include/locale.h \
+  /usr/include/math.h \
+  /usr/include/pthread.h \
+  /usr/include/sched.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/string.h \
+  /usr/include/strings.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/single_threaded.h \
+  /usr/include/sys/types.h \
+  /usr/include/time.h \
+  /usr/include/unistd.h \
+  /usr/include/wchar.h \
+  /usr/include/zconf.h \
+  /usr/include/zlib.h \
+  /usr/include/zlib_name_mangling.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
 CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/plant_test.cpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
@@ -4733,6 +5678,180 @@ CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o: /home/grisu/Documents/GitHu
   /usr/include/sys/select.h \
   /usr/include/sys/types.h \
   /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/png_test.cpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/compress.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/texture_support.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm/errno.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/confname.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/environments.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/getopt_core.h \
+  /usr/include/bits/getopt_posix.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/posix_opt.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/unistd_ext.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/close_range.h \
+  /usr/include/linux/errno.h \
+  /usr/include/locale.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/types.h \
+  /usr/include/unistd.h \
+  /usr/include/wchar.h \
+  /usr/include/zconf.h \
+  /usr/include/zlib.h \
+  /usr/include/zlib_name_mangling.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
@@ -5771,6 +6890,329 @@ CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o: /home/grisu/Documents/Git
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
 
+CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/seed_text_test.cpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/seed_text.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm/errno.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/errno.h \
+  /usr/include/locale.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/types.h \
+  /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/settings_file_test.cpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/posix_file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/settings/settings_file.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm/errno.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/errno.h \
+  /usr/include/locale.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/types.h \
+  /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
 CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/sin_table_test.cpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
@@ -6263,7 +7705,316 @@ CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o: /home/grisu/Doc
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/section.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/population_view.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/bitsperlong.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm-generic/int-ll64.h \
+  /usr/include/asm-generic/posix_types.h \
+  /usr/include/asm-generic/types.h \
+  /usr/include/asm/bitsperlong.h \
+  /usr/include/asm/errno.h \
+  /usr/include/asm/posix_types.h \
+  /usr/include/asm/posix_types_64.h \
+  /usr/include/asm/types.h \
+  /usr/include/assert.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/cpu-set.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/flt-eval-method.h \
+  /usr/include/bits/fp-fast.h \
+  /usr/include/bits/fp-logb.h \
+  /usr/include/bits/iscanonical.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/libm-simd-decl-stubs.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/math-vector.h \
+  /usr/include/bits/mathcalls-helper-functions.h \
+  /usr/include/bits/mathcalls-macros.h \
+  /usr/include/bits/mathcalls-narrow.h \
+  /usr/include/bits/mathcalls.h \
+  /usr/include/bits/pthread_stack_min-dynamic.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/sched.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/setjmp.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/timex.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct___jmp_buf_tag.h \
+  /usr/include/bits/types/struct_itimerspec.h \
+  /usr/include/bits/types/struct_sched_param.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/struct_tm.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/auto_ptr.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/align.h \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocated_ptr.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/atomic_base.h \
+  /usr/include/c++/16/bits/atomic_lockfree_defines.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/chrono.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/cxxabi_init_exception.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/exception_ptr.h \
+  /usr/include/c++/16/bits/functexcept.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/nested_exception.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/node_handle.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/parse_numbers.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/refwrap.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/shared_ptr.h \
+  /usr/include/c++/16/bits/shared_ptr_atomic.h \
+  /usr/include/c++/16/bits/shared_ptr_base.h \
+  /usr/include/c++/16/bits/specfun.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/std_mutex.h \
+  /usr/include/c++/16/bits/std_thread.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_map.h \
+  /usr/include/c++/16/bits/stl_multimap.h \
+  /usr/include/c++/16/bits/stl_multiset.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_raw_storage_iter.h \
+  /usr/include/c++/16/bits/stl_set.h \
+  /usr/include/c++/16/bits/stl_tempbuf.h \
+  /usr/include/c++/16/bits/stl_tree.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/this_thread_sleep.h \
+  /usr/include/c++/16/bits/unique_lock.h \
+  /usr/include/c++/16/bits/unique_ptr.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cassert \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/chrono \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/cmath \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/condition_variable \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cstring \
+  /usr/include/c++/16/ctime \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/exception \
+  /usr/include/c++/16/ext/aligned_buffer.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/atomicity.h \
+  /usr/include/c++/16/ext/concurrence.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/limits \
+  /usr/include/c++/16/map \
+  /usr/include/c++/16/memory \
+  /usr/include/c++/16/mutex \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/execution_defs.h \
+  /usr/include/c++/16/pstl/glue_memory_defs.h \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/ratio \
+  /usr/include/c++/16/set \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/thread \
+  /usr/include/c++/16/tr1/bessel_function.tcc \
+  /usr/include/c++/16/tr1/beta_function.tcc \
+  /usr/include/c++/16/tr1/ell_integral.tcc \
+  /usr/include/c++/16/tr1/exp_integral.tcc \
+  /usr/include/c++/16/tr1/gamma.tcc \
+  /usr/include/c++/16/tr1/hypergeometric.tcc \
+  /usr/include/c++/16/tr1/legendre_function.tcc \
+  /usr/include/c++/16/tr1/modified_bessel_func.tcc \
+  /usr/include/c++/16/tr1/poly_hermite.tcc \
+  /usr/include/c++/16/tr1/poly_laguerre.tcc \
+  /usr/include/c++/16/tr1/riemann_zeta.tcc \
+  /usr/include/c++/16/tr1/special_function_util.h \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/typeinfo \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/atomic_word.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/error_constants.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/gthr-default.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/gthr.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/errno.h \
+  /usr/include/linux/posix_types.h \
+  /usr/include/linux/sched/types.h \
+  /usr/include/linux/stddef.h \
+  /usr/include/linux/types.h \
+  /usr/include/locale.h \
+  /usr/include/math.h \
+  /usr/include/pthread.h \
+  /usr/include/sched.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/string.h \
+  /usr/include/strings.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/single_threaded.h \
+  /usr/include/sys/types.h \
+  /usr/include/time.h \
+  /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/streamer_revisit_test.cpp \
+  gen/blocks.hpp \
+  gen/version_config.hpp \
+  gen/version_slots.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/block_def.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/registry.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/posix_file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/item/item_stack.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/mesher.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/scratch.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/vertex.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/visibility.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/nbt.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/preserved.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/writer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/render/chunk_renderer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/render/vbo_pool.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/render/visible_set.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/render/world_streamer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/frustum.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/math.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/nibble.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp \
@@ -6919,6 +8670,171 @@ CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o: /home/grisu/Documents/Git
   /usr/include/stdlib.h \
   /usr/include/string.h \
   /usr/include/strings.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/types.h \
+  /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/tiled_test.cpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/vertex.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/tiled.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm/errno.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/errno.h \
+  /usr/include/locale.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
   /usr/include/sys/cdefs.h \
   /usr/include/sys/select.h \
   /usr/include/sys/types.h \
@@ -8017,6 +9933,457 @@ CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: /home/grisu/Documents
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
 
+CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/world_list_test.cpp \
+  gen/blocks.hpp \
+  gen/version_config.hpp \
+  gen/version_slots.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/block_def.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/registry.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/posix_file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/item/item_stack.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/nbt.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/preserved.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/writer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/nibble.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/section.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/world_list.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/population_view.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/bitsperlong.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm-generic/int-ll64.h \
+  /usr/include/asm-generic/posix_types.h \
+  /usr/include/asm-generic/types.h \
+  /usr/include/asm/bitsperlong.h \
+  /usr/include/asm/errno.h \
+  /usr/include/asm/posix_types.h \
+  /usr/include/asm/posix_types_64.h \
+  /usr/include/asm/types.h \
+  /usr/include/assert.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/cpu-set.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/flt-eval-method.h \
+  /usr/include/bits/fp-fast.h \
+  /usr/include/bits/fp-logb.h \
+  /usr/include/bits/iscanonical.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/libm-simd-decl-stubs.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/math-vector.h \
+  /usr/include/bits/mathcalls-helper-functions.h \
+  /usr/include/bits/mathcalls-macros.h \
+  /usr/include/bits/mathcalls-narrow.h \
+  /usr/include/bits/mathcalls.h \
+  /usr/include/bits/pthread_stack_min-dynamic.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/sched.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/setjmp.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/timex.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct___jmp_buf_tag.h \
+  /usr/include/bits/types/struct_itimerspec.h \
+  /usr/include/bits/types/struct_sched_param.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/struct_tm.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/auto_ptr.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/align.h \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocated_ptr.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/atomic_base.h \
+  /usr/include/c++/16/bits/atomic_lockfree_defines.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/cxxabi_init_exception.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/exception_ptr.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/nested_exception.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/refwrap.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/shared_ptr.h \
+  /usr/include/c++/16/bits/shared_ptr_atomic.h \
+  /usr/include/c++/16/bits/shared_ptr_base.h \
+  /usr/include/c++/16/bits/specfun.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_raw_storage_iter.h \
+  /usr/include/c++/16/bits/stl_tempbuf.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/unique_ptr.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cassert \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/cmath \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cstring \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/exception \
+  /usr/include/c++/16/ext/aligned_buffer.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/atomicity.h \
+  /usr/include/c++/16/ext/concurrence.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/limits \
+  /usr/include/c++/16/memory \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/execution_defs.h \
+  /usr/include/c++/16/pstl/glue_memory_defs.h \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tr1/bessel_function.tcc \
+  /usr/include/c++/16/tr1/beta_function.tcc \
+  /usr/include/c++/16/tr1/ell_integral.tcc \
+  /usr/include/c++/16/tr1/exp_integral.tcc \
+  /usr/include/c++/16/tr1/gamma.tcc \
+  /usr/include/c++/16/tr1/hypergeometric.tcc \
+  /usr/include/c++/16/tr1/legendre_function.tcc \
+  /usr/include/c++/16/tr1/modified_bessel_func.tcc \
+  /usr/include/c++/16/tr1/poly_hermite.tcc \
+  /usr/include/c++/16/tr1/poly_laguerre.tcc \
+  /usr/include/c++/16/tr1/riemann_zeta.tcc \
+  /usr/include/c++/16/tr1/special_function_util.h \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/typeinfo \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/atomic_word.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/gthr-default.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/gthr.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/errno.h \
+  /usr/include/linux/posix_types.h \
+  /usr/include/linux/sched/types.h \
+  /usr/include/linux/stddef.h \
+  /usr/include/linux/types.h \
+  /usr/include/locale.h \
+  /usr/include/math.h \
+  /usr/include/pthread.h \
+  /usr/include/sched.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/string.h \
+  /usr/include/strings.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/single_threaded.h \
+  /usr/include/sys/types.h \
+  /usr/include/time.h \
+  /usr/include/wchar.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/zip_test.cpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/zip_archive.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/zip_builder.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/compress.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/tests/texture_support.hpp \
+  /usr/include/alloca.h \
+  /usr/include/asm-generic/errno-base.h \
+  /usr/include/asm-generic/errno.h \
+  /usr/include/asm/errno.h \
+  /usr/include/bits/atomic_wide_counter.h \
+  /usr/include/bits/byteswap.h \
+  /usr/include/bits/confname.h \
+  /usr/include/bits/endian.h \
+  /usr/include/bits/endianness.h \
+  /usr/include/bits/environments.h \
+  /usr/include/bits/errno.h \
+  /usr/include/bits/floatn-common.h \
+  /usr/include/bits/floatn.h \
+  /usr/include/bits/getopt_core.h \
+  /usr/include/bits/getopt_posix.h \
+  /usr/include/bits/libc-header-start.h \
+  /usr/include/bits/locale.h \
+  /usr/include/bits/long-double.h \
+  /usr/include/bits/posix_opt.h \
+  /usr/include/bits/pthreadtypes-arch.h \
+  /usr/include/bits/pthreadtypes.h \
+  /usr/include/bits/select.h \
+  /usr/include/bits/stdint-intn.h \
+  /usr/include/bits/stdint-least.h \
+  /usr/include/bits/stdint-uintn.h \
+  /usr/include/bits/stdio.h \
+  /usr/include/bits/stdio_lim.h \
+  /usr/include/bits/stdlib-bsearch.h \
+  /usr/include/bits/stdlib-float.h \
+  /usr/include/bits/struct_mutex.h \
+  /usr/include/bits/struct_rwlock.h \
+  /usr/include/bits/thread-shared-types.h \
+  /usr/include/bits/time64.h \
+  /usr/include/bits/timesize.h \
+  /usr/include/bits/types.h \
+  /usr/include/bits/types/FILE.h \
+  /usr/include/bits/types/__FILE.h \
+  /usr/include/bits/types/__fpos64_t.h \
+  /usr/include/bits/types/__fpos_t.h \
+  /usr/include/bits/types/__locale_t.h \
+  /usr/include/bits/types/__mbstate_t.h \
+  /usr/include/bits/types/__sigset_t.h \
+  /usr/include/bits/types/clock_t.h \
+  /usr/include/bits/types/clockid_t.h \
+  /usr/include/bits/types/cookie_io_functions_t.h \
+  /usr/include/bits/types/error_t.h \
+  /usr/include/bits/types/locale_t.h \
+  /usr/include/bits/types/mbstate_t.h \
+  /usr/include/bits/types/sigset_t.h \
+  /usr/include/bits/types/struct_FILE.h \
+  /usr/include/bits/types/struct_timespec.h \
+  /usr/include/bits/types/struct_timeval.h \
+  /usr/include/bits/types/time_t.h \
+  /usr/include/bits/types/timer_t.h \
+  /usr/include/bits/types/wint_t.h \
+  /usr/include/bits/typesizes.h \
+  /usr/include/bits/uintn-identity.h \
+  /usr/include/bits/unistd_ext.h \
+  /usr/include/bits/waitflags.h \
+  /usr/include/bits/waitstatus.h \
+  /usr/include/bits/wchar.h \
+  /usr/include/bits/wordsize.h \
+  /usr/include/c++/16/backward/binders.h \
+  /usr/include/c++/16/bit \
+  /usr/include/c++/16/bits/alloc_traits.h \
+  /usr/include/c++/16/bits/allocator.h \
+  /usr/include/c++/16/bits/basic_string.h \
+  /usr/include/c++/16/bits/basic_string.tcc \
+  /usr/include/c++/16/bits/char_traits.h \
+  /usr/include/c++/16/bits/charconv.h \
+  /usr/include/c++/16/bits/concept_check.h \
+  /usr/include/c++/16/bits/cpp_type_traits.h \
+  /usr/include/c++/16/bits/cxxabi_forced.h \
+  /usr/include/c++/16/bits/erase_if.h \
+  /usr/include/c++/16/bits/exception.h \
+  /usr/include/c++/16/bits/exception_defines.h \
+  /usr/include/c++/16/bits/functional_hash.h \
+  /usr/include/c++/16/bits/hash_bytes.h \
+  /usr/include/c++/16/bits/invoke.h \
+  /usr/include/c++/16/bits/localefwd.h \
+  /usr/include/c++/16/bits/memory_resource.h \
+  /usr/include/c++/16/bits/memoryfwd.h \
+  /usr/include/c++/16/bits/move.h \
+  /usr/include/c++/16/bits/new_allocator.h \
+  /usr/include/c++/16/bits/new_except.h \
+  /usr/include/c++/16/bits/new_throw.h \
+  /usr/include/c++/16/bits/ostream_insert.h \
+  /usr/include/c++/16/bits/postypes.h \
+  /usr/include/c++/16/bits/predefined_ops.h \
+  /usr/include/c++/16/bits/ptr_traits.h \
+  /usr/include/c++/16/bits/range_access.h \
+  /usr/include/c++/16/bits/requires_hosted.h \
+  /usr/include/c++/16/bits/std_abs.h \
+  /usr/include/c++/16/bits/stdexcept_throw.h \
+  /usr/include/c++/16/bits/stdexcept_throwfwd.h \
+  /usr/include/c++/16/bits/stl_algobase.h \
+  /usr/include/c++/16/bits/stl_bvector.h \
+  /usr/include/c++/16/bits/stl_construct.h \
+  /usr/include/c++/16/bits/stl_function.h \
+  /usr/include/c++/16/bits/stl_iterator.h \
+  /usr/include/c++/16/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/16/bits/stl_iterator_base_types.h \
+  /usr/include/c++/16/bits/stl_pair.h \
+  /usr/include/c++/16/bits/stl_uninitialized.h \
+  /usr/include/c++/16/bits/stl_vector.h \
+  /usr/include/c++/16/bits/string_view.tcc \
+  /usr/include/c++/16/bits/stringfwd.h \
+  /usr/include/c++/16/bits/uses_allocator.h \
+  /usr/include/c++/16/bits/uses_allocator_args.h \
+  /usr/include/c++/16/bits/utility.h \
+  /usr/include/c++/16/bits/vector.tcc \
+  /usr/include/c++/16/bits/version.h \
+  /usr/include/c++/16/cctype \
+  /usr/include/c++/16/cerrno \
+  /usr/include/c++/16/clocale \
+  /usr/include/c++/16/concepts \
+  /usr/include/c++/16/cstddef \
+  /usr/include/c++/16/cstdint \
+  /usr/include/c++/16/cstdio \
+  /usr/include/c++/16/cstdlib \
+  /usr/include/c++/16/cwchar \
+  /usr/include/c++/16/debug/assertions.h \
+  /usr/include/c++/16/debug/debug.h \
+  /usr/include/c++/16/ext/alloc_traits.h \
+  /usr/include/c++/16/ext/numeric_traits.h \
+  /usr/include/c++/16/ext/string_conversions.h \
+  /usr/include/c++/16/ext/type_traits.h \
+  /usr/include/c++/16/initializer_list \
+  /usr/include/c++/16/iosfwd \
+  /usr/include/c++/16/new \
+  /usr/include/c++/16/pstl/pstl_config.h \
+  /usr/include/c++/16/string \
+  /usr/include/c++/16/string_view \
+  /usr/include/c++/16/tuple \
+  /usr/include/c++/16/type_traits \
+  /usr/include/c++/16/vector \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h \
+  /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h \
+  /usr/include/ctype.h \
+  /usr/include/endian.h \
+  /usr/include/errno.h \
+  /usr/include/features-time64.h \
+  /usr/include/features.h \
+  /usr/include/gnu/stubs-64.h \
+  /usr/include/gnu/stubs.h \
+  /usr/include/linux/close_range.h \
+  /usr/include/linux/errno.h \
+  /usr/include/locale.h \
+  /usr/include/stdc-predef.h \
+  /usr/include/stdint.h \
+  /usr/include/stdio.h \
+  /usr/include/stdlib.h \
+  /usr/include/sys/cdefs.h \
+  /usr/include/sys/select.h \
+  /usr/include/sys/types.h \
+  /usr/include/unistd.h \
+  /usr/include/wchar.h \
+  /usr/include/zconf.h \
+  /usr/include/zlib.h \
+  /usr/include/zlib_name_mangling.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h \
+  /usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h
+
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/world/world_list.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/visibility_test.cpp:
 
@@ -8024,33 +10391,13 @@ CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: /home/grisu/Documents
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/torch.hpp:
 
+/home/grisu/Documents/GitHub/3DAlpha/tests/tiled_test.cpp:
+
 /home/grisu/Documents/GitHub/3DAlpha/tests/terrain_vectors.hpp:
 
-/usr/include/c++/16/x86_64-pc-linux-gnu/bits/error_constants.h:
-
-/usr/include/c++/16/ratio:
-
-/usr/include/c++/16/mutex:
-
-/usr/include/c++/16/chrono:
-
-/usr/include/c++/16/bits/this_thread_sleep.h:
-
-/usr/include/c++/16/ctime:
-
-/usr/include/c++/16/bits/std_thread.h:
-
-/usr/include/c++/16/bits/parse_numbers.h:
-
-/usr/include/c++/16/thread:
-
-/usr/include/c++/16/bits/functexcept.h:
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/streamer_generate_test.cpp:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/slot.hpp:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/slot.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/storage_test.cpp:
 
@@ -8060,15 +10407,23 @@ CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: /home/grisu/Documents
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/sin_table_test.cpp:
 
+/home/grisu/Documents/GitHub/3DAlpha/src/core/settings/settings_file.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/settings_file_test.cpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/seed_text_test.cpp:
+
 /home/grisu/Documents/GitHub/3DAlpha/tests/scratch_test.cpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/quad_format_test.cpp:
 
-/home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp:
+/home/grisu/Documents/GitHub/3DAlpha/tests/png_test.cpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/plants.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/plant_test.cpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/pack_test.cpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/ore.hpp:
 
@@ -8078,57 +10433,57 @@ CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: /home/grisu/Documents
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/noise_test.cpp:
 
-/usr/include/c++/16/bits/chrono.h:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/tree.hpp:
-
 /home/grisu/Documents/GitHub/3DAlpha/tests/mesher_test.cpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/liquid_vectors.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/liquids.hpp:
 
-/home/grisu/Documents/GitHub/3DAlpha/tests/liquid_test.cpp:
-
 /home/grisu/Documents/GitHub/3DAlpha/tests/light_vectors.hpp:
 
-/home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp:
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/seed_text.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/level_dat_test.cpp:
 
+/usr/include/zconf.h:
+
+/usr/include/linux/close_range.h:
+
+/usr/include/bits/unistd_ext.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/zip_builder.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/liquid_test.cpp:
+
+/usr/include/bits/posix_opt.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/tiled.hpp:
+
+/usr/include/bits/getopt_core.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/texture_support.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/zip_archive.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/pack_list.hpp:
+
 /home/grisu/Documents/GitHub/3DAlpha/tests/generate_vectors.hpp:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.hpp:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.hpp:
-
-/home/grisu/Documents/GitHub/3DAlpha/tests/strict_math_vectors.hpp:
-
-/home/grisu/Documents/GitHub/3DAlpha/tests/java_random_vectors.hpp:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.hpp:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/generate_test.cpp:
 
 /usr/include/c++/16/bits/stl_relops.h:
 
-/home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.hpp:
-
-/usr/include/c++/16/set:
-
-/usr/include/c++/16/bits/stl_multiset.h:
-
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/flowers.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/flower_test.cpp:
 
-/home/grisu/Documents/GitHub/3DAlpha/src/core/item/item_stack.hpp:
-
 /home/grisu/Documents/GitHub/3DAlpha/src/core/world/daylight.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/util/coord_text.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/console_text.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/console_text_test.cpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/tree_vectors.hpp:
 
@@ -8140,11 +10495,71 @@ CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: /home/grisu/Documents
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/chunk_renderer_test.cpp:
 
-/home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.hpp:
+/usr/include/c++/16/x86_64-pc-linux-gnu/bits/error_constants.h:
+
+/usr/include/c++/16/ratio:
+
+/usr/include/c++/16/mutex:
+
+/usr/include/c++/16/chrono:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/chunk_path_test.cpp:
 
 /usr/include/c++/16/bits/unique_lock.h:
 
-/home/grisu/Documents/GitHub/3DAlpha/tests/chunk_path_test.cpp:
+/usr/include/c++/16/bits/this_thread_sleep.h:
+
+/usr/include/c++/16/bits/stl_multiset.h:
+
+/usr/include/c++/16/ctime:
+
+/usr/include/c++/16/bits/std_thread.h:
+
+/usr/include/c++/16/bits/parse_numbers.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/tree.hpp:
+
+/usr/include/c++/16/bits/chrono.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/slot.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/strict_math_vectors.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/java_random_vectors.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/slot.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.hpp:
+
+/usr/include/c++/16/set:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp:
+
+/usr/include/unistd.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/item/item_stack.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp:
+
+/usr/include/c++/16/thread:
+
+/usr/include/c++/16/bits/functexcept.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/chunk_cache_test.cpp:
 
 /usr/include/time.h:
 
@@ -8220,6 +10635,8 @@ CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: /home/grisu/Documents
 
 /usr/include/asm/posix_types.h:
 
+/home/grisu/Documents/GitHub/3DAlpha/tests/zip_test.cpp:
+
 /usr/include/asm/bitsperlong.h:
 
 /usr/include/asm-generic/int-ll64.h:
@@ -8250,19 +10667,23 @@ gen/version_config.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/block_registry_test.cpp:
 
-/usr/include/bits/types/struct_timespec.h:
+/usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h:
 
-/usr/include/bits/types/struct_FILE.h:
+/usr/include/wchar.h:
 
-/usr/include/bits/types/mbstate_t.h:
+/usr/include/sys/types.h:
 
-/usr/include/bits/types/locale_t.h:
+/usr/include/sys/cdefs.h:
 
-/usr/include/asm/types.h:
+/usr/include/strings.h:
 
-CMakeFiles/3dalpha_tests.dir/tests/chunk_path_test.cpp.o:
+/usr/include/string.h:
+
+/usr/include/stdlib.h:
 
 /usr/include/c++/16/bits/stl_map.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/jar_import_test.cpp:
 
 /usr/include/linux/posix_types.h:
 
@@ -8289,8 +10710,6 @@ CMakeFiles/3dalpha_tests.dir/tests/chunk_path_test.cpp.o:
 /usr/include/bits/stdlib-bsearch.h:
 
 /usr/include/bits/types/__mbstate_t.h:
-
-/usr/include/bits/types/cookie_io_functions_t.h:
 
 /usr/include/bits/flt-eval-method.h:
 
@@ -8322,25 +10741,17 @@ gen/blocks.hpp:
 
 /usr/include/c++/16/x86_64-pc-linux-gnu/bits/cpu_defines.h:
 
-/usr/include/bits/types/timer_t.h:
-
-/home/grisu/Documents/GitHub/3DAlpha/tests/frustum_test.cpp:
-
-/usr/lib/Scrt1.o:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_nbt.hpp:
-
-/usr/include/c++/16/bits/ostream_insert.h:
-
-/usr/include/bits/setjmp.h:
-
-/usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h:
-
 /usr/include/c++/16/bits/refwrap.h:
 
 /usr/include/bits/mathcalls-narrow.h:
 
+CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o:
+
 CMakeFiles/3dalpha_tests.dir/tests/chunk_nbt_test.cpp.o:
+
+/usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h:
+
+/usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h:
 
 /usr/include/bits/long-double.h:
 
@@ -8349,16 +10760,6 @@ CMakeFiles/3dalpha_tests.dir/tests/chunk_nbt_test.cpp.o:
 /usr/include/bits/iscanonical.h:
 
 /usr/include/bits/fp-logb.h:
-
-/usr/include/bits/endianness.h:
-
-/home/grisu/Documents/GitHub/3DAlpha/tests/framework.cpp:
-
-/usr/include/bits/sched.h:
-
-/usr/include/bits/types/__FILE.h:
-
-/usr/include/features.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/section_test.cpp:
 
@@ -8376,9 +10777,51 @@ CMakeFiles/3dalpha_tests.dir/tests/chunk_nbt_test.cpp.o:
 
 /usr/include/bits/endian.h:
 
+/usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h:
+
+/usr/include/bits/stdint-uintn.h:
+
+/usr/include/asm/errno.h:
+
 /usr/include/bits/stdio.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/big_tree.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/jar_import.hpp:
+
+/usr/include/c++/16/debug/assertions.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/render/vbo_pool.hpp:
+
+/usr/include/c++/16/ext/alloc_traits.h:
+
+CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp:
+
+/usr/include/c++/16/bits/ptr_traits.h:
+
+/usr/include/bits/endianness.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/framework.cpp:
+
+/usr/include/bits/sched.h:
+
+/usr/include/bits/types/__FILE.h:
+
+/usr/include/features.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/fluid_test.cpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/big_tree_vectors.hpp:
+
+CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/world_list_test.cpp:
+
+CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o:
+
+CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.hpp:
 
@@ -8386,7 +10829,13 @@ CMakeFiles/3dalpha_tests.dir/tests/chunk_nbt_test.cpp.o:
 
 CMakeFiles/3dalpha_tests.dir/tests/frustum_test.cpp.o:
 
+CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o:
+
 CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o:
+
+CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/dev_art.hpp:
 
 /usr/include/c++/16/ext/numeric_traits.h:
 
@@ -8396,13 +10845,9 @@ CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o:
 
 /usr/include/asm-generic/errno-base.h:
 
+/usr/include/bits/types/mbstate_t.h:
+
 /usr/lib/gcc/x86_64-pc-linux-gnu/16/crtbeginS.o:
-
-CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o:
-
-CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o:
-
-CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/tree_test.cpp:
 
@@ -8411,6 +10856,10 @@ CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o:
 /usr/include/bits/stdio_lim.h:
 
 /usr/lib/gcc/x86_64-pc-linux-gnu/16/crtendS.o:
+
+CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o:
+
+/usr/include/c++/16/cstdio:
 
 gen/version_slots.hpp:
 
@@ -8424,13 +10873,9 @@ CMakeFiles/3dalpha_tests.dir/tests/block_registry_test.cpp.o:
 
 CMakeFiles/3dalpha_tests.dir/tests/big_tree_test.cpp.o:
 
+CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.o:
+
 /usr/include/c++/16/bits/cpp_type_traits.h:
-
-/home/grisu/Documents/GitHub/3DAlpha/tests/populate_vectors.hpp:
-
-/usr/include/c++/16/backward/binders.h:
-
-CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o:
 
 CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o:
 
@@ -8452,17 +10897,19 @@ CMakeFiles/3dalpha_tests.dir/tests/daylight_test.cpp.o:
 
 /usr/include/c++/16/bits/new_except.h:
 
+CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.o:
+
 /usr/lib/libm.so.6:
 
 /usr/lib/ld-linux-x86-64.so.2:
 
 CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.o:
 
+CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o:
+
 /usr/include/c++/16/ext/concurrence.h:
 
 CMakeFiles/3dalpha_tests.dir/tests/dungeon_test.cpp.o:
-
-CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o:
 
 /usr/lib/crti.o:
 
@@ -8470,11 +10917,13 @@ CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o:
 
 /usr/include/bits/typesizes.h:
 
+/home/grisu/Documents/GitHub/3DAlpha/tests/streamer_revisit_test.cpp:
+
 /home/grisu/Documents/GitHub/3DAlpha/tests/framework.hpp:
 
-/usr/include/c++/16/condition_variable:
-
 /home/grisu/Documents/GitHub/3DAlpha/tests/populate_test.cpp:
+
+/usr/include/c++/16/condition_variable:
 
 /usr/include/c++/16/tr1/modified_bessel_func.tcc:
 
@@ -8482,19 +10931,9 @@ CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o:
 
 /usr/include/bits/byteswap.h:
 
+CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o:
+
 /usr/include/c++/16/bits/requires_hosted.h:
-
-CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o:
-
-/usr/include/bits/struct_rwlock.h:
-
-CMakeFiles/3dalpha_tests.dir/tests/fluid_test.cpp.o:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp:
-
-/usr/include/c++/16/bits/ptr_traits.h:
-
-/usr/include/string.h:
 
 CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o:
 
@@ -8502,7 +10941,19 @@ CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o:
 
 /usr/include/c++/16/bits/predefined_ops.h:
 
+CMakeFiles/3dalpha_tests.dir/tests/fluid_test.cpp.o:
+
+/usr/include/alloca.h:
+
+CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o:
+
+CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o:
+
 /usr/lib/libm.so:
+
+CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o:
+
+CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o:
 
 /usr/include/bits/libm-simd-decl-stubs.h:
 
@@ -8514,15 +10965,11 @@ CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o:
 
 /usr/include/bits/libc-header-start.h:
 
-/usr/include/bits/stdint-uintn.h:
-
-/usr/include/asm/errno.h:
-
-/usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stddef.h:
-
 CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o:
 
-/usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdint.h:
+/usr/include/bits/types/struct_timeval.h:
+
+/usr/include/c++/16/pstl/pstl_config.h:
 
 /usr/include/c++/16/bits/cxxabi_forced.h:
 
@@ -8532,27 +10979,27 @@ CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o:
 
 /usr/include/c++/16/bits/range_access.h:
 
+/usr/include/bits/struct_rwlock.h:
+
+CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o:
+
 /usr/include/bits/types/__locale_t.h:
 
 /usr/include/c++/16/memory:
 
 CMakeFiles/3dalpha_tests.dir/tests/chunk_renderer_test.cpp.o:
 
-/home/grisu/Documents/GitHub/3DAlpha/tests/daylight_test.cpp:
-
-/usr/include/bits/types/sigset_t.h:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/dungeon.hpp:
-
-/usr/include/c++/16/bits/memory_resource.h:
-
-/usr/include/c++/16/cstdio:
-
-CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o:
-
 CMakeFiles/3dalpha_tests.dir/tests/flower_test.cpp.o:
 
+/usr/include/c++/16/tr1/exp_integral.tcc:
+
+/usr/include/bits/floatn-common.h:
+
 CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o:
+
+CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o:
+
+/usr/include/c++/16/tr1/beta_function.tcc:
 
 /usr/lib/gcc/x86_64-pc-linux-gnu/16/libatomic_asneeded.so:
 
@@ -8560,7 +11007,49 @@ CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o:
 
 CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o:
 
-/usr/include/bits/floatn.h:
+/usr/include/asm/types.h:
+
+CMakeFiles/3dalpha_tests.dir/tests/chunk_path_test.cpp.o:
+
+/usr/include/zlib.h:
+
+/usr/include/bits/types/locale_t.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/frustum_test.cpp:
+
+/usr/lib/Scrt1.o:
+
+/usr/include/bits/types/timer_t.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_nbt.hpp:
+
+/usr/include/c++/16/bits/ostream_insert.h:
+
+/usr/include/bits/setjmp.h:
+
+/usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h:
+
+/usr/include/c++/16/bits/stl_raw_storage_iter.h:
+
+lib3dalpha_core.a:
+
+/usr/include/bits/math-vector.h:
+
+CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o:
+
+/usr/include/bits/locale.h:
+
+/usr/include/c++/16/bits/stl_pair.h:
+
+/usr/include/bits/thread-shared-types.h:
+
+/usr/include/c++/16/ext/type_traits.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/ore_vectors.hpp:
+
+/usr/include/bits/types/__sigset_t.h:
+
+/usr/include/c++/16/iosfwd:
 
 /usr/include/c++/16/bits/vector.tcc:
 
@@ -8568,55 +11057,53 @@ CMakeFiles/3dalpha_tests.dir/tests/framework.cpp.o:
 
 CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o:
 
-CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o:
+/usr/include/bits/floatn.h:
 
-CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o:
+CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o:
+
+/usr/include/c++/16/initializer_list:
+
+/usr/include/c++/16/tr1/riemann_zeta.tcc:
+
+CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o:
 
 CMakeFiles/3dalpha_tests.dir/tests/coord_text_test.cpp.o:
 
-/home/grisu/Documents/GitHub/3DAlpha/tests/fluid_test.cpp:
+CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o:
 
-/home/grisu/Documents/GitHub/3DAlpha/tests/big_tree_vectors.hpp:
+/usr/include/bits/types/cookie_io_functions_t.h:
+
+/usr/include/sys/select.h:
+
+/usr/include/c++/16/ext/aligned_buffer.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/tests/daylight_test.cpp:
+
+/usr/include/bits/types/sigset_t.h:
+
+/usr/include/bits/confname.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/dungeon.hpp:
+
+/usr/include/c++/16/bits/memory_resource.h:
+
+/usr/include/bits/environments.h:
+
+/usr/include/bits/types/struct_FILE.h:
+
+/usr/include/bits/types/struct_timespec.h:
 
 /usr/include/bits/types/time_t.h:
 
 /usr/include/c++/16/bits/localefwd.h:
 
-/usr/include/c++/16/tr1/beta_function.tcc:
+/home/grisu/Documents/GitHub/3DAlpha/tests/populate_vectors.hpp:
 
-CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o:
+CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o:
 
-CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o:
+/usr/include/c++/16/backward/binders.h:
 
-/usr/include/alloca.h:
-
-CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o:
-
-CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o:
-
-CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o:
-
-/usr/include/c++/16/debug/assertions.h:
-
-/home/grisu/Documents/GitHub/3DAlpha/src/core/render/vbo_pool.hpp:
-
-/usr/include/c++/16/ext/alloc_traits.h:
-
-/usr/include/bits/thread-shared-types.h:
-
-/usr/include/c++/16/ext/type_traits.h:
-
-/usr/include/bits/math-vector.h:
-
-CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o:
-
-/usr/include/c++/16/bits/stl_raw_storage_iter.h:
-
-lib3dalpha_core.a:
-
-/usr/include/bits/locale.h:
-
-/usr/include/c++/16/bits/stl_pair.h:
+/usr/include/zlib_name_mangling.h:
 
 /usr/include/bits/uintn-identity.h:
 
@@ -8634,6 +11121,10 @@ lib3dalpha_core.a:
 
 /usr/include/bits/wchar.h:
 
+/usr/include/stdio.h:
+
+/usr/include/bits/wordsize.h:
+
 /usr/include/c++/16/bit:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp:
@@ -8643,6 +11134,8 @@ lib3dalpha_core.a:
 /usr/include/c++/16/bits/basic_string.h:
 
 /usr/include/bits/types/__fpos_t.h:
+
+CMakeFiles/3dalpha_tests.dir/tests/console_text_test.cpp.o:
 
 /usr/include/c++/16/bits/char_traits.h:
 
@@ -8668,21 +11161,17 @@ CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o:
 
 /usr/include/c++/16/bits/functional_hash.h:
 
-/usr/include/bits/wordsize.h:
-
-/usr/include/stdio.h:
-
 /usr/include/c++/16/bits/stdexcept_throwfwd.h:
 
 /usr/include/c++/16/bits/invoke.h:
 
 /usr/include/c++/16/cctype:
 
-/usr/include/wchar.h:
-
 /usr/include/c++/16/bits/memoryfwd.h:
 
 /usr/include/c++/16/bits/stl_construct.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp:
 
 /usr/include/c++/16/bits/move.h:
 
@@ -8695,6 +11184,8 @@ CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o:
 /usr/include/c++/16/bits/new_throw.h:
 
 /usr/include/c++/16/bits/node_handle.h:
+
+CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o:
 
 /usr/include/c++/16/bits/postypes.h:
 
@@ -8790,6 +11281,8 @@ CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o:
 
 /usr/include/bits/fp-fast.h:
 
+CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o:
+
 /usr/include/c++/16/tr1/hypergeometric.tcc:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp:
@@ -8804,27 +11297,13 @@ CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o:
 
 /usr/include/c++/16/tr1/ell_integral.tcc:
 
-/home/grisu/Documents/GitHub/3DAlpha/tests/ore_vectors.hpp:
-
-/usr/include/bits/types/__sigset_t.h:
-
-/usr/include/c++/16/iosfwd:
-
 /usr/include/bits/types/wint_t.h:
 
 /usr/include/c++/16/new:
 
-/usr/include/bits/types/struct_timeval.h:
-
-/usr/include/c++/16/pstl/pstl_config.h:
-
 /usr/include/bits/types/__fpos64_t.h:
 
 /usr/include/c++/16/string_view:
-
-/usr/include/bits/floatn-common.h:
-
-/usr/include/c++/16/tr1/exp_integral.tcc:
 
 /usr/include/c++/16/bits/erase_if.h:
 
@@ -8837,10 +11316,6 @@ CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o:
 /usr/include/c++/16/tr1/poly_hermite.tcc:
 
 /usr/include/c++/16/tr1/poly_laguerre.tcc:
-
-/usr/include/c++/16/initializer_list:
-
-/usr/include/c++/16/tr1/riemann_zeta.tcc:
 
 /home/grisu/Documents/GitHub/3DAlpha/tests/flower_vectors.hpp:
 
@@ -8855,6 +11330,8 @@ CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o:
 /usr/include/c++/16/vector:
 
 /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++allocator.h:
+
+/usr/include/bits/getopt_posix.h:
 
 /usr/include/errno.h:
 
@@ -8873,19 +11350,3 @@ CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o:
 /usr/include/c++/16/x86_64-pc-linux-gnu/bits/os_defines.h:
 
 /usr/include/stdc-predef.h:
-
-/usr/include/stdlib.h:
-
-/usr/include/strings.h:
-
-/usr/include/sys/cdefs.h:
-
-/usr/include/c++/16/ext/aligned_buffer.h:
-
-/usr/include/sys/select.h:
-
-/usr/include/sys/types.h:
-
-/usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++locale.h:
-
-/usr/lib/gcc/x86_64-pc-linux-gnu/16/include/stdarg.h:

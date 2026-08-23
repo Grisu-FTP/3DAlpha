@@ -1,6 +1,7 @@
 #include "framework.hpp"
 
 #include <cstdio>
+#include <cstring>
 
 namespace mc::test {
 
@@ -63,10 +64,28 @@ std::string describe(double value)
 
 }  // namespace mc::test
 
-int main()
+// An optional substring filter, so one test can be run on its own.
+//
+// The suite takes minutes -- worldgen fixtures and the streaming tests are the
+// bulk of it -- and iterating on a single case by running all of them is the
+// difference between a ten-second loop and a five-minute one. Substring rather
+// than a pattern language: the names are long and distinctive, and `revisit` is
+// all anyone is going to type.
+//
+// **It reports what it ran.** A filter that matched nothing and exited 0 would
+// look exactly like a passing run, which is the one way a convenience like this
+// can cost more than it saves.
+int main(int argc, char** argv)
 {
+    const char* filter = argc > 1 ? argv[1] : nullptr;
+
     int failed = 0;
+    int ran = 0;
     for (const auto& testCase : mc::test::registry()) {
+        if (filter != nullptr && std::strstr(testCase.name, filter) == nullptr) {
+            continue;
+        }
+        ++ran;
         mc::test::g_caseFailures = 0;
         std::printf("  %s\n", testCase.name);
         testCase.fn();
@@ -75,11 +94,15 @@ int main()
         }
     }
 
-    const int total = static_cast<int>(mc::test::registry().size());
+    if (filter != nullptr && ran == 0) {
+        std::printf("\nno test matches \"%s\"\n", filter);
+        return 1;
+    }
+
     if (failed == 0) {
-        std::printf("\n%d/%d passed\n", total, total);
+        std::printf("\n%d/%d passed\n", ran, ran);
         return 0;
     }
-    std::printf("\n%d/%d FAILED (%d checks)\n", failed, total, mc::test::failures());
+    std::printf("\n%d/%d FAILED (%d checks)\n", failed, ran, mc::test::failures());
     return 1;
 }

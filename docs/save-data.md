@@ -131,18 +131,77 @@ None of this is a problem, and it is the direct benefit of not using save data:
 Had we used title save data, every one of those rows would have required Checkpoint and
 console-bound decryption.
 
+## Autosave: what the original does, and what we do
+
+**a1.1.2 has no timed autosave.** Taken from the client jar rather than assumed:
+
+- `ft.a(boolean, nu)` — `ChunkProviderLoadOrGenerate.saveChunks(saveAll, progress)` — writes at
+  most **two dirty chunks per call** when `saveAll` is false. The relevant bytecode is
+  `iinc 3,1; iload_3; iconst_2; if_icmpne; iload_1; ifne; iconst_0; ireturn` at offset 145, which is
+  `if (++saved == 2 && !saveAll) return false`.
+- Its only periodic caller is the **"Saving level.." screen**, which calls `cn.a(int)`
+  (`World.quickSaveWorld`) once per *rendered frame* until it returns true. That screen is reached
+  from "Save and quit to title" and from nowhere else.
+- Otherwise a chunk is written **when it is evicted** from the provider's chunk table — `ft` holds
+  `new ga[1024]`, a 32×32 direct-mapped cache indexed by `(x & 31) + (z & 31) * 32`, and putting a
+  chunk into an occupied slot saves and drops the previous occupant. Synchronously, on the main
+  thread. That is the original's own version of the stutter this project has been chasing.
+
+So the autosave interval in `3ds.ini` is **ours, not a port**, and the default is a judgement rather
+than a recovered constant: 45 seconds. What it covers is everything: dirty columns, `level.dat` —
+which now carries the player's position, rotation and the world clock rather than only `LastPlayed`
+— and the `session.lock` refresh. Opening the pause menu does the same thing at a moment of the
+player's choosing, and leaving the world does it blocking.
+
+**Nothing is written outside those points.** That is the original's shape, and it was arrived at by
+reversing the opposite choice. Writing a generated column eagerly is *safer* than a1.1.2: population
+passes spill across chunk borders, so a column lost to a crash and later regenerated against
+neighbours already marked `terrainPopulated` comes back missing whatever their passes had put into
+it. But the original is more exposed to exactly that, not less — its table only evicts when
+something 32 chunks away collides with a slot — so eager writing was safety a1.1.2 does not have,
+bought with a deflate and six file operations per finished column. The interval bounds the exposure
+instead. The sole exception is memory: a dirty column cannot be evicted, since it is the only copy
+of that part of the world, so past the dirty budget whoever dirtied it writes one itself.
+
+The 1024-slot table is also the precedent for our own chunk cache: same idea, byte-capped and LRU
+instead of a fixed direct-mapped grid, and it sits below the generator rather than being it. See
+`src/core/world/chunk_cache.hpp`.
+
+## Internal storage is not a second tier
+
+Asked and answered, because it looks like an obvious win and is not:
+
+- **Title save data and extdata for an SD-installed title live on the SD card**, under
+  `Nintendo 3DS/<id0>/<id1>/`. Same medium, same FS sysmodule, worse API. The format objections
+  above are a second, independent reason.
+- **CTRNAND is not writable from a 3DSX.** It needs an exheader granting NAND read/write; Luma's
+  synthesised 3DSX exheader grants `DirectSdmcWrite` and not that. Free space on a normal system is
+  tens of megabytes, and filling or corrupting it is how a console bricks.
+- **There is no throughput to win.** Both media go through the same IPC path, and NAND traffic is
+  additionally AES-encrypted per block by the hardware engine. The bottleneck is per-operation
+  latency, not bandwidth — a chunk file is 2,917 bytes at the median, so even at a pessimistic
+  5 MB/s the transfer is under a millisecond against four to six IPC round trips.
+
+The useful version of the idea — a buffer zone wider than what is drawn, filled ahead of the player
+— is real and is built, in RAM. See the chunk cache.
+
 ## Implementation requirements
 
 - **Atomic writes.** FAT32 has no journal and a 3DS can be switched off mid-write. Write
   `c.x.z.dat.tmp`, close it, then rename over the target. Same for `level.dat` — never rewrite it in
   place, or a bad moment costs the player their spawn, inventory and seed.
-- **Only save dirty chunks.** The original saved everything loaded on a timer; on SD that means
-  constant rewriting of unchanged data and needless flash wear.
+- **Only save dirty chunks.** Note that the claim this used to make about the original — that it
+  "saved everything loaded on a timer" — is wrong; see the autosave section above. The requirement
+  stands on its own: rewriting unchanged data is needless flash wear either way.
+- **All of it on the I/O thread, behind a write-back cache.** `core/world/chunk_cache.hpp` is the
+  only thing in the process that touches the storage slot, and the render thread's half of its API
+  never blocks on it.
 - **Few open handles.** Open, read, close per chunk. Do not hold thousands of files open.
 - **Chunk index cache.** Enumerating 4,096 subdirectories per world is slow; build the index once
   and cache it (see [world-format.md](world-format.md)). It must always be rebuildable, because it
   is a cache and the card may be edited on a PC.
-- **`session.lock`** on open, refreshed periodically, as the original does.
+- **`session.lock`** on open, refreshed periodically, as the original does. The autosave timer is
+  what runs the refresh; before it existed, `refreshLock()` was written and never called.
 - **Free-space guard.** Check `freeClusters` before a save flush; warn early rather than failing
   halfway through writing a world.
 

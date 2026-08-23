@@ -1,0 +1,347 @@
+#include "framework.hpp"
+
+#include "core/render/chunk_renderer.hpp"
+#include "core/render/world_streamer.hpp"
+#include "core/util/frustum.hpp"
+#include "core/world/chunk.hpp"
+#include "core/world/chunk_cache.hpp"
+#include "version_slots.hpp"
+
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <string>
+#include <thread>
+
+using namespace mc;
+using render::ChunkRenderer;
+using render::ChunkRendererConfig;
+using render::SectionField;
+using render::VboAllocator;
+using render::VboTier;
+using render::WorldStreamer;
+using mc::ClipRange;
+using mc::Frustum;
+using mc::Mat4;
+
+namespace {
+
+constexpr i64 kNow = 1284768000000LL;
+
+struct TempDir {
+    char path[64] = {};
+
+    TempDir()
+    {
+        std::snprintf(path, sizeof(path), "/tmp/3dalpha_revisit_XXXXXX");
+        if (::mkdtemp(path) == nullptr) {
+            path[0] = '\0';
+        }
+    }
+
+    ~TempDir()
+    {
+        if (path[0] != '\0') {
+            char command[128];
+            std::snprintf(command, sizeof(command), "rm -rf '%s'", path);
+            if (std::system(command) != 0) {
+                std::fprintf(stderr, "warning: could not clean up %s\n", path);
+            }
+        }
+    }
+
+    std::string world(const char* name) const { return std::string(path) + "/" + name; }
+};
+
+class TestAllocator : public VboAllocator {
+public:
+    void* allocate(usize bytes, VboTier) override { return std::malloc(bytes); }
+    void release(void* pointer, usize, VboTier) override { std::free(pointer); }
+};
+
+Frustum openFrustum()
+{
+    Frustum f;
+    f.setFromViewProjection(Mat4{}, ClipRange::NegativeOneToOne);
+    return f;
+}
+
+void frame(WorldStreamer& streamer, ChunkRenderer& renderer, u32 n, i32 cx, i32 cz,
+           const WorldStreamer::Budget& budget)
+{
+    renderer.beginFrame(n, openFrustum(), cx, 4, cz);
+    streamer.update(renderer, cx, cz, budget);
+}
+
+// Runs until the world has nothing outstanding *and* the walk has stopped
+// asking for meshes, which is a stricter stop than the generation tests use:
+// this is about what is on screen, not about what is on the card.
+int settle(WorldStreamer& streamer, ChunkRenderer& renderer, i32 cx, i32 cz,
+           const WorldStreamer::Budget& budget, u32* counter, int maxFrames)
+{
+    int n = 0;
+    for (; n < maxFrames; ++n) {
+        frame(streamer, renderer, (*counter)++, cx, cz, budget);
+        if (streamer.stats().pendingColumns == 0 && streamer.stats().pendingGeneration == 0
+            && streamer.stats().pendingReads == 0 && streamer.generationIdle()
+            && streamer.storageIdle() && renderer.meshQueue().empty()) {
+            // One more frame, so the queue emptying is observed rather than
+            // guessed: the walk runs at the top of a frame and the mesh at the
+            // bottom of it.
+            frame(streamer, renderer, (*counter)++, cx, cz, budget);
+            if (renderer.meshQueue().empty()) {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return n;
+}
+
+// What every section in range has been meshed to: its geometry in bytes, or the
+// two states that are not geometry. Keyed by coordinate rather than by cell, so
+// the grid wrapping cannot make two snapshots agree by accident.
+struct MeshShot {
+    std::map<std::tuple<i32, int, i32>, long long> sections;
+
+    // -1 never meshed, -2 meshed and empty; otherwise the byte size.
+    static constexpr long long kNever = -1;
+    static constexpr long long kEmpty = -2;
+};
+
+MeshShot shoot(const ChunkRenderer& renderer, i32 cx, i32 cz, int distance)
+{
+    MeshShot out;
+    const SectionField& field = renderer.field();
+    for (i32 x = cx - distance; x <= cx + distance; ++x) {
+        for (i32 z = cz - distance; z <= cz + distance; ++z) {
+            if (!field.isLoaded(x, z)) {
+                continue;
+            }
+            for (int sy = 0; sy < SectionField::kSectionsY; ++sy) {
+                const u16 slot = field.meshSlot(x, sy, z);
+                long long value = MeshShot::kNever;
+                if (slot == SectionField::kEmptyMesh) {
+                    value = MeshShot::kEmpty;
+                } else if (slot != SectionField::kNoMesh) {
+                    value = static_cast<long long>(renderer.pool().size(slot));
+                }
+                out.sections[{x, sy, z}] = value;
+            }
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+// **After the camera stops, the ground under it must be made before the ground
+// it has already left.**
+//
+// Reported from hardware: flying around leaves a border of chunks that never
+// fill, a few appear if you wait a long time, and it comes right much later.
+// That is a queue served in the wrong order. The generation queue used to be
+// strictly FIFO, so a player who outran the generator was behind every column
+// they had already passed: a measured sprint at distance 8 ended with 702
+// columns queued, 341 of them out of range, and all 361 columns in range behind
+// them.
+//
+// The assertion is deliberately **not** a time or a frame count -- both measure
+// the host rather than the ordering. It counts *columns generated* between the
+// camera stopping and the area around it being complete. Nearest-first spends
+// that budget on the columns in range; oldest-first spends it on the backlog
+// first and needs several times as many.
+TEST(the_ground_under_a_stopped_camera_is_made_before_the_ground_it_left)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("World");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 90210LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    constexpr int kDistance = 3;
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = kDistance;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    world::ChunkCache::Config cache;
+    cache.threaded = true;
+    streamer.setCacheConfig(cache);
+    CHECK(streamer.open(dir.c_str(), kDistance, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    u32 counter = 0;
+
+    // Outrun it: one chunk every few frames, far enough to build a backlog the
+    // generator cannot have finished.
+    for (i32 x = 1; x <= 24; ++x) {
+        for (int i = 0; i < 3; ++i) {
+            frame(streamer, renderer, counter++, x, 0, budget);
+        }
+    }
+
+    const int owedAtStop = streamer.stats().pendingGeneration;
+    const int queuedAtStop = streamer.stats().generationQueued;
+    // The premise of the test: the camera really did outrun generation, and
+    // there really is a backlog of ground it has left. Without this the
+    // assertion below could pass vacuously.
+    CHECK(owedAtStop > 0);
+    CHECK(queuedAtStop > owedAtStop);
+
+    // Now stand still and count what gets made until the area is complete.
+    int generated = 0;
+    int frames = 0;
+    for (; frames < 40000; ++frames) {
+        frame(streamer, renderer, counter++, 24, 0, budget);
+        generated += streamer.stats().generatedThisFrame;
+        if (streamer.stats().pendingGeneration == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    CHECK_EQ(streamer.stats().pendingGeneration, 0);
+
+    // Generous: nearest-first should spend roughly `owedAtStop` columns, plus
+    // whatever a sweep finishes on the way. Oldest-first has to drain the whole
+    // backlog, which is several times larger -- that is the difference the
+    // border was made of.
+    if (generated > owedAtStop * 3) {
+        std::printf("  owed at stop %d, queued %d, generated before filling %d\n", owedAtStop,
+                    queuedAtStop, generated);
+    }
+    CHECK(generated <= owedAtStop * 3);
+
+    streamer.close(kNow);
+    renderer.shutdown();
+}
+
+// **Walking away from a column and back must put the same geometry on screen.**
+//
+// Reported from hardware: revisited chunks came back with their lower sections
+// missing -- the terrain appeared to start at sea level -- and some columns did
+// not draw at all, and changing the render distance put both right. That last
+// detail is the diagnosis: setMeshDistance rebuilds the field and the pool and
+// republishes everything, so whatever was wrong lived in per-section renderer
+// state that survived a drop and a re-publish.
+//
+// The camera goes far enough away that every column is dropped, then comes
+// back. Nothing about the world has changed in between, so every section must
+// mesh to exactly the byte count it did the first time -- including the ones
+// that legitimately mesh to nothing, because a section wrongly marked empty is
+// a section that never comes back.
+TEST(revisiting_a_column_meshes_it_to_exactly_what_it_was)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("World");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 4242LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    constexpr int kDistance = 2;
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = kDistance;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    world::ChunkCache::Config cache;
+    cache.threaded = true;
+    streamer.setCacheConfig(cache);
+    streamer.setPrefetchRings(1);
+    CHECK(streamer.open(dir.c_str(), kDistance, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    u32 counter = 0;
+
+    // Make the ground once, and let it finish.
+    settle(streamer, renderer, 0, 0, budget, &counter, 60000);
+    const MeshShot before = shoot(renderer, 0, 0, kDistance);
+    CHECK(before.sections.size() > 0);
+
+    // **Out of the renderer's range, and no further -- the distance is the
+    // whole point of the test.**
+    //
+    // The streamer's grid is three rings wider than what it loads, which is
+    // itself one ring wider than what is drawn, so there is a band where a
+    // column has left the render distance and is still held in the grid. Going
+    // far enough to leave the grid entirely drops the column and reloads it
+    // from scratch, which is the easy path and the one that always worked.
+    // This walks just past the field and back, one chunk at a time, the way a
+    // player does.
+    for (i32 x = 1; x <= kDistance + 3; ++x) {
+        settle(streamer, renderer, x, 0, budget, &counter, 60000);
+    }
+    for (i32 x = kDistance + 2; x >= 0; --x) {
+        settle(streamer, renderer, x, 0, budget, &counter, 60000);
+    }
+    const MeshShot after = shoot(renderer, 0, 0, kDistance);
+
+    int missing = 0;
+    int differing = 0;
+    int firstBadX = 0;
+    int firstBadY = -1;
+    int firstBadZ = 0;
+    long long firstWas = 0;
+    long long firstNow = 0;
+    for (const auto& entry : before.sections) {
+        auto other = after.sections.find(entry.first);
+        if (other == after.sections.end()) {
+            ++missing;
+            continue;
+        }
+        if (other->second != entry.second) {
+            if (differing == 0) {
+                firstBadX = std::get<0>(entry.first);
+                firstBadY = std::get<1>(entry.first);
+                firstBadZ = std::get<2>(entry.first);
+                firstWas = entry.second;
+                firstNow = other->second;
+            }
+            ++differing;
+        }
+    }
+
+    CHECK_EQ(missing, 0);
+    if (differing != 0) {
+        // Reports which section and what happened to it: -1 never meshed,
+        // -2 meshed to nothing, anything else a byte count.
+        std::printf("  first divergence at chunk (%d, %d) section %d: was %lld, now %lld\n",
+                    firstBadX, firstBadZ, firstBadY, firstWas, firstNow);
+    }
+    CHECK_EQ(differing, 0);
+
+    streamer.close(kNow);
+    renderer.shutdown();
+}

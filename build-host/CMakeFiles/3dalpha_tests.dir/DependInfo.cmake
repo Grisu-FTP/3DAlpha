@@ -10,6 +10,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/grisu/Documents/GitHub/3DAlpha/tests/big_tree_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/big_tree_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/big_tree_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/block_registry_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/block_registry_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/block_registry_test.cpp.o.d"
+  "/home/grisu/Documents/GitHub/3DAlpha/tests/chunk_cache_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/chunk_nbt_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/chunk_nbt_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/chunk_nbt_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/chunk_path_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/chunk_path_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/chunk_path_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/chunk_renderer_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/chunk_renderer_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/chunk_renderer_test.cpp.o.d"
@@ -46,6 +47,7 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/grisu/Documents/GitHub/3DAlpha/tests/sin_table_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/storage_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/streamer_generate_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o.d"
+  "/home/grisu/Documents/GitHub/3DAlpha/tests/streamer_revisit_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/strict_math_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/terrain_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o.d"
   "/home/grisu/Documents/GitHub/3DAlpha/tests/tiled_test.cpp" "CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o" "gcc" "CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o.d"

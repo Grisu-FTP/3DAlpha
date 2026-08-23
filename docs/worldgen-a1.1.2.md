@@ -903,14 +903,20 @@ a second session **reads** it instead of making it again — which matters more 
 because population order follows the sequence of loads and a second pass over the same ground is a
 different world.
 
-**Generation runs on a worker thread**, and the rule that constrains it is this document's own: the
-population order is the world, so the thread must not change the sequence of sweeps. The main thread
-appends columns to a queue in spiral order and the worker consumes it strictly in order, one at a
-time, so job N always starts against the world left by jobs 1..N-1 — on any machine, at any frame
-rate. `a_worker_thread_produces_the_same_world_as_generating_inline` walks a path with the camera
-moving while generation is outstanding, once threaded and once inline, and compares every chunk file;
-the two generation *sequences* come out identical, not merely the results. The full account of what
-that took is in [status.md](status.md) §0.
+**Generation runs on a worker thread.** The main thread appends columns to a queue in spiral order
+and the worker consumes them one at a time, so job N always starts against the world left by every
+job before it. Which column is job N is **the one nearest the camera**, not the oldest — see
+[status.md](status.md) §0g for why, and for the measurement that forced it: strict oldest-first
+stranded a player who outran the generator behind hundreds of columns of ground they had already
+left, and a1.1.2 keeps no queue to be faithful to, generating inline and nearest-to-the-player.
+
+The consequence for this document's own rule — population order is the world — is that the order is
+a function of the camera path **while the generator keeps up**, and of how far behind it got once it
+is not. `a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` pins down the first
+half: it settles at each waypoint so nothing is behind, then compares every chunk file across
+inline, threaded, and threaded-with-the-chunk-cache. What is a pure function of the seed regardless
+is the land itself — terrain, caves, ores, the Far Lands — which is checked against a real JVM
+elsewhere in this document. The full account is in [status.md](status.md) §0 and §0g.
 
 Two rules the wiring has to keep, both learned the hard way:
 

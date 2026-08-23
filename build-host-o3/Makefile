@@ -526,6 +526,198 @@ src/core/render/world_streamer.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/render/world_streamer.cpp.s
 .PHONY : src/core/render/world_streamer.cpp.s
 
+src/core/settings/settings_file.o: src/core/settings/settings_file.cpp.o
+.PHONY : src/core/settings/settings_file.o
+
+# target to build an object file
+src/core/settings/settings_file.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/settings/settings_file.cpp.o
+.PHONY : src/core/settings/settings_file.cpp.o
+
+src/core/settings/settings_file.i: src/core/settings/settings_file.cpp.i
+.PHONY : src/core/settings/settings_file.i
+
+# target to preprocess a source file
+src/core/settings/settings_file.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/settings/settings_file.cpp.i
+.PHONY : src/core/settings/settings_file.cpp.i
+
+src/core/settings/settings_file.s: src/core/settings/settings_file.cpp.s
+.PHONY : src/core/settings/settings_file.s
+
+# target to generate assembly for a file
+src/core/settings/settings_file.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/settings/settings_file.cpp.s
+.PHONY : src/core/settings/settings_file.cpp.s
+
+src/core/texture/atlas_image.o: src/core/texture/atlas_image.cpp.o
+.PHONY : src/core/texture/atlas_image.o
+
+# target to build an object file
+src/core/texture/atlas_image.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/atlas_image.cpp.o
+.PHONY : src/core/texture/atlas_image.cpp.o
+
+src/core/texture/atlas_image.i: src/core/texture/atlas_image.cpp.i
+.PHONY : src/core/texture/atlas_image.i
+
+# target to preprocess a source file
+src/core/texture/atlas_image.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/atlas_image.cpp.i
+.PHONY : src/core/texture/atlas_image.cpp.i
+
+src/core/texture/atlas_image.s: src/core/texture/atlas_image.cpp.s
+.PHONY : src/core/texture/atlas_image.s
+
+# target to generate assembly for a file
+src/core/texture/atlas_image.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/atlas_image.cpp.s
+.PHONY : src/core/texture/atlas_image.cpp.s
+
+src/core/texture/dev_art.o: src/core/texture/dev_art.cpp.o
+.PHONY : src/core/texture/dev_art.o
+
+# target to build an object file
+src/core/texture/dev_art.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/dev_art.cpp.o
+.PHONY : src/core/texture/dev_art.cpp.o
+
+src/core/texture/dev_art.i: src/core/texture/dev_art.cpp.i
+.PHONY : src/core/texture/dev_art.i
+
+# target to preprocess a source file
+src/core/texture/dev_art.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/dev_art.cpp.i
+.PHONY : src/core/texture/dev_art.cpp.i
+
+src/core/texture/dev_art.s: src/core/texture/dev_art.cpp.s
+.PHONY : src/core/texture/dev_art.s
+
+# target to generate assembly for a file
+src/core/texture/dev_art.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/dev_art.cpp.s
+.PHONY : src/core/texture/dev_art.cpp.s
+
+src/core/texture/jar_import.o: src/core/texture/jar_import.cpp.o
+.PHONY : src/core/texture/jar_import.o
+
+# target to build an object file
+src/core/texture/jar_import.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/jar_import.cpp.o
+.PHONY : src/core/texture/jar_import.cpp.o
+
+src/core/texture/jar_import.i: src/core/texture/jar_import.cpp.i
+.PHONY : src/core/texture/jar_import.i
+
+# target to preprocess a source file
+src/core/texture/jar_import.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/jar_import.cpp.i
+.PHONY : src/core/texture/jar_import.cpp.i
+
+src/core/texture/jar_import.s: src/core/texture/jar_import.cpp.s
+.PHONY : src/core/texture/jar_import.s
+
+# target to generate assembly for a file
+src/core/texture/jar_import.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/jar_import.cpp.s
+.PHONY : src/core/texture/jar_import.cpp.s
+
+src/core/texture/pack_list.o: src/core/texture/pack_list.cpp.o
+.PHONY : src/core/texture/pack_list.o
+
+# target to build an object file
+src/core/texture/pack_list.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/pack_list.cpp.o
+.PHONY : src/core/texture/pack_list.cpp.o
+
+src/core/texture/pack_list.i: src/core/texture/pack_list.cpp.i
+.PHONY : src/core/texture/pack_list.i
+
+# target to preprocess a source file
+src/core/texture/pack_list.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/pack_list.cpp.i
+.PHONY : src/core/texture/pack_list.cpp.i
+
+src/core/texture/pack_list.s: src/core/texture/pack_list.cpp.s
+.PHONY : src/core/texture/pack_list.s
+
+# target to generate assembly for a file
+src/core/texture/pack_list.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/pack_list.cpp.s
+.PHONY : src/core/texture/pack_list.cpp.s
+
+src/core/texture/png.o: src/core/texture/png.cpp.o
+.PHONY : src/core/texture/png.o
+
+# target to build an object file
+src/core/texture/png.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/png.cpp.o
+.PHONY : src/core/texture/png.cpp.o
+
+src/core/texture/png.i: src/core/texture/png.cpp.i
+.PHONY : src/core/texture/png.i
+
+# target to preprocess a source file
+src/core/texture/png.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/png.cpp.i
+.PHONY : src/core/texture/png.cpp.i
+
+src/core/texture/png.s: src/core/texture/png.cpp.s
+.PHONY : src/core/texture/png.s
+
+# target to generate assembly for a file
+src/core/texture/png.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/png.cpp.s
+.PHONY : src/core/texture/png.cpp.s
+
+src/core/texture/zip_archive.o: src/core/texture/zip_archive.cpp.o
+.PHONY : src/core/texture/zip_archive.o
+
+# target to build an object file
+src/core/texture/zip_archive.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_archive.cpp.o
+.PHONY : src/core/texture/zip_archive.cpp.o
+
+src/core/texture/zip_archive.i: src/core/texture/zip_archive.cpp.i
+.PHONY : src/core/texture/zip_archive.i
+
+# target to preprocess a source file
+src/core/texture/zip_archive.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_archive.cpp.i
+.PHONY : src/core/texture/zip_archive.cpp.i
+
+src/core/texture/zip_archive.s: src/core/texture/zip_archive.cpp.s
+.PHONY : src/core/texture/zip_archive.s
+
+# target to generate assembly for a file
+src/core/texture/zip_archive.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_archive.cpp.s
+.PHONY : src/core/texture/zip_archive.cpp.s
+
+src/core/texture/zip_builder.o: src/core/texture/zip_builder.cpp.o
+.PHONY : src/core/texture/zip_builder.o
+
+# target to build an object file
+src/core/texture/zip_builder.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_builder.cpp.o
+.PHONY : src/core/texture/zip_builder.cpp.o
+
+src/core/texture/zip_builder.i: src/core/texture/zip_builder.cpp.i
+.PHONY : src/core/texture/zip_builder.i
+
+# target to preprocess a source file
+src/core/texture/zip_builder.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_builder.cpp.i
+.PHONY : src/core/texture/zip_builder.cpp.i
+
+src/core/texture/zip_builder.s: src/core/texture/zip_builder.cpp.s
+.PHONY : src/core/texture/zip_builder.s
+
+# target to generate assembly for a file
+src/core/texture/zip_builder.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_builder.cpp.s
+.PHONY : src/core/texture/zip_builder.cpp.s
+
 src/core/util/compress.o: src/core/util/compress.cpp.o
 .PHONY : src/core/util/compress.o
 
@@ -598,6 +790,30 @@ src/core/util/coord_text.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/coord_text.cpp.s
 .PHONY : src/core/util/coord_text.cpp.s
 
+src/core/util/fat_name.o: src/core/util/fat_name.cpp.o
+.PHONY : src/core/util/fat_name.o
+
+# target to build an object file
+src/core/util/fat_name.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/fat_name.cpp.o
+.PHONY : src/core/util/fat_name.cpp.o
+
+src/core/util/fat_name.i: src/core/util/fat_name.cpp.i
+.PHONY : src/core/util/fat_name.i
+
+# target to preprocess a source file
+src/core/util/fat_name.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/fat_name.cpp.i
+.PHONY : src/core/util/fat_name.cpp.i
+
+src/core/util/fat_name.s: src/core/util/fat_name.cpp.s
+.PHONY : src/core/util/fat_name.s
+
+# target to generate assembly for a file
+src/core/util/fat_name.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/fat_name.cpp.s
+.PHONY : src/core/util/fat_name.cpp.s
+
 src/core/util/frustum.o: src/core/util/frustum.cpp.o
 .PHONY : src/core/util/frustum.o
 
@@ -622,6 +838,54 @@ src/core/util/frustum.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/frustum.cpp.s
 .PHONY : src/core/util/frustum.cpp.s
 
+src/core/util/seed_text.o: src/core/util/seed_text.cpp.o
+.PHONY : src/core/util/seed_text.o
+
+# target to build an object file
+src/core/util/seed_text.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.o
+.PHONY : src/core/util/seed_text.cpp.o
+
+src/core/util/seed_text.i: src/core/util/seed_text.cpp.i
+.PHONY : src/core/util/seed_text.i
+
+# target to preprocess a source file
+src/core/util/seed_text.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.i
+.PHONY : src/core/util/seed_text.cpp.i
+
+src/core/util/seed_text.s: src/core/util/seed_text.cpp.s
+.PHONY : src/core/util/seed_text.s
+
+# target to generate assembly for a file
+src/core/util/seed_text.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.s
+.PHONY : src/core/util/seed_text.cpp.s
+
+src/core/util/worker.o: src/core/util/worker.cpp.o
+.PHONY : src/core/util/worker.o
+
+# target to build an object file
+src/core/util/worker.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o
+.PHONY : src/core/util/worker.cpp.o
+
+src/core/util/worker.i: src/core/util/worker.cpp.i
+.PHONY : src/core/util/worker.i
+
+# target to preprocess a source file
+src/core/util/worker.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.i
+.PHONY : src/core/util/worker.cpp.i
+
+src/core/util/worker.s: src/core/util/worker.cpp.s
+.PHONY : src/core/util/worker.s
+
+# target to generate assembly for a file
+src/core/util/worker.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.s
+.PHONY : src/core/util/worker.cpp.s
+
 src/core/world/chunk.o: src/core/world/chunk.cpp.o
 .PHONY : src/core/world/chunk.o
 
@@ -645,6 +909,30 @@ src/core/world/chunk.s: src/core/world/chunk.cpp.s
 src/core/world/chunk.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.s
 .PHONY : src/core/world/chunk.cpp.s
+
+src/core/world/chunk_cache.o: src/core/world/chunk_cache.cpp.o
+.PHONY : src/core/world/chunk_cache.o
+
+# target to build an object file
+src/core/world/chunk_cache.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o
+.PHONY : src/core/world/chunk_cache.cpp.o
+
+src/core/world/chunk_cache.i: src/core/world/chunk_cache.cpp.i
+.PHONY : src/core/world/chunk_cache.i
+
+# target to preprocess a source file
+src/core/world/chunk_cache.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.i
+.PHONY : src/core/world/chunk_cache.cpp.i
+
+src/core/world/chunk_cache.s: src/core/world/chunk_cache.cpp.s
+.PHONY : src/core/world/chunk_cache.s
+
+# target to generate assembly for a file
+src/core/world/chunk_cache.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.s
+.PHONY : src/core/world/chunk_cache.cpp.s
 
 src/core/world/daylight.o: src/core/world/daylight.cpp.o
 .PHONY : src/core/world/daylight.o
@@ -765,6 +1053,30 @@ src/core/world/storage.s: src/core/world/storage.cpp.s
 src/core/world/storage.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.s
 .PHONY : src/core/world/storage.cpp.s
+
+src/core/world/world_list.o: src/core/world/world_list.cpp.o
+.PHONY : src/core/world/world_list.o
+
+# target to build an object file
+src/core/world/world_list.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o
+.PHONY : src/core/world/world_list.cpp.o
+
+src/core/world/world_list.i: src/core/world/world_list.cpp.i
+.PHONY : src/core/world/world_list.i
+
+# target to preprocess a source file
+src/core/world/world_list.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.i
+.PHONY : src/core/world/world_list.cpp.i
+
+src/core/world/world_list.s: src/core/world/world_list.cpp.s
+.PHONY : src/core/world/world_list.s
+
+# target to generate assembly for a file
+src/core/world/world_list.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.s
+.PHONY : src/core/world/world_list.cpp.s
 
 src/impl/storage/alpha_chunkfiles/chunk_nbt.o: src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o
 .PHONY : src/impl/storage/alpha_chunkfiles/chunk_nbt.o
@@ -1270,6 +1582,30 @@ tests/block_registry_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/block_registry_test.cpp.s
 .PHONY : tests/block_registry_test.cpp.s
 
+tests/chunk_cache_test.o: tests/chunk_cache_test.cpp.o
+.PHONY : tests/chunk_cache_test.o
+
+# target to build an object file
+tests/chunk_cache_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.o
+.PHONY : tests/chunk_cache_test.cpp.o
+
+tests/chunk_cache_test.i: tests/chunk_cache_test.cpp.i
+.PHONY : tests/chunk_cache_test.i
+
+# target to preprocess a source file
+tests/chunk_cache_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.i
+.PHONY : tests/chunk_cache_test.cpp.i
+
+tests/chunk_cache_test.s: tests/chunk_cache_test.cpp.s
+.PHONY : tests/chunk_cache_test.s
+
+# target to generate assembly for a file
+tests/chunk_cache_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.s
+.PHONY : tests/chunk_cache_test.cpp.s
+
 tests/chunk_nbt_test.o: tests/chunk_nbt_test.cpp.o
 .PHONY : tests/chunk_nbt_test.o
 
@@ -1558,6 +1894,30 @@ tests/generate_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.s
 .PHONY : tests/generate_test.cpp.s
 
+tests/jar_import_test.o: tests/jar_import_test.cpp.o
+.PHONY : tests/jar_import_test.o
+
+# target to build an object file
+tests/jar_import_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o
+.PHONY : tests/jar_import_test.cpp.o
+
+tests/jar_import_test.i: tests/jar_import_test.cpp.i
+.PHONY : tests/jar_import_test.i
+
+# target to preprocess a source file
+tests/jar_import_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.i
+.PHONY : tests/jar_import_test.cpp.i
+
+tests/jar_import_test.s: tests/jar_import_test.cpp.s
+.PHONY : tests/jar_import_test.s
+
+# target to generate assembly for a file
+tests/jar_import_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.s
+.PHONY : tests/jar_import_test.cpp.s
+
 tests/java_cast_test.o: tests/java_cast_test.cpp.o
 .PHONY : tests/java_cast_test.o
 
@@ -1798,6 +2158,30 @@ tests/ore_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.s
 .PHONY : tests/ore_test.cpp.s
 
+tests/pack_test.o: tests/pack_test.cpp.o
+.PHONY : tests/pack_test.o
+
+# target to build an object file
+tests/pack_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o
+.PHONY : tests/pack_test.cpp.o
+
+tests/pack_test.i: tests/pack_test.cpp.i
+.PHONY : tests/pack_test.i
+
+# target to preprocess a source file
+tests/pack_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.i
+.PHONY : tests/pack_test.cpp.i
+
+tests/pack_test.s: tests/pack_test.cpp.s
+.PHONY : tests/pack_test.s
+
+# target to generate assembly for a file
+tests/pack_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.s
+.PHONY : tests/pack_test.cpp.s
+
 tests/plant_test.o: tests/plant_test.cpp.o
 .PHONY : tests/plant_test.o
 
@@ -1821,6 +2205,30 @@ tests/plant_test.s: tests/plant_test.cpp.s
 tests/plant_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.s
 .PHONY : tests/plant_test.cpp.s
+
+tests/png_test.o: tests/png_test.cpp.o
+.PHONY : tests/png_test.o
+
+# target to build an object file
+tests/png_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o
+.PHONY : tests/png_test.cpp.o
+
+tests/png_test.i: tests/png_test.cpp.i
+.PHONY : tests/png_test.i
+
+# target to preprocess a source file
+tests/png_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.i
+.PHONY : tests/png_test.cpp.i
+
+tests/png_test.s: tests/png_test.cpp.s
+.PHONY : tests/png_test.s
+
+# target to generate assembly for a file
+tests/png_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.s
+.PHONY : tests/png_test.cpp.s
 
 tests/populate_test.o: tests/populate_test.cpp.o
 .PHONY : tests/populate_test.o
@@ -1942,6 +2350,54 @@ tests/section_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.s
 .PHONY : tests/section_test.cpp.s
 
+tests/seed_text_test.o: tests/seed_text_test.cpp.o
+.PHONY : tests/seed_text_test.o
+
+# target to build an object file
+tests/seed_text_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o
+.PHONY : tests/seed_text_test.cpp.o
+
+tests/seed_text_test.i: tests/seed_text_test.cpp.i
+.PHONY : tests/seed_text_test.i
+
+# target to preprocess a source file
+tests/seed_text_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.i
+.PHONY : tests/seed_text_test.cpp.i
+
+tests/seed_text_test.s: tests/seed_text_test.cpp.s
+.PHONY : tests/seed_text_test.s
+
+# target to generate assembly for a file
+tests/seed_text_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.s
+.PHONY : tests/seed_text_test.cpp.s
+
+tests/settings_file_test.o: tests/settings_file_test.cpp.o
+.PHONY : tests/settings_file_test.o
+
+# target to build an object file
+tests/settings_file_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o
+.PHONY : tests/settings_file_test.cpp.o
+
+tests/settings_file_test.i: tests/settings_file_test.cpp.i
+.PHONY : tests/settings_file_test.i
+
+# target to preprocess a source file
+tests/settings_file_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.i
+.PHONY : tests/settings_file_test.cpp.i
+
+tests/settings_file_test.s: tests/settings_file_test.cpp.s
+.PHONY : tests/settings_file_test.s
+
+# target to generate assembly for a file
+tests/settings_file_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.s
+.PHONY : tests/settings_file_test.cpp.s
+
 tests/sin_table_test.o: tests/sin_table_test.cpp.o
 .PHONY : tests/sin_table_test.o
 
@@ -2014,6 +2470,30 @@ tests/streamer_generate_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.s
 .PHONY : tests/streamer_generate_test.cpp.s
 
+tests/streamer_revisit_test.o: tests/streamer_revisit_test.cpp.o
+.PHONY : tests/streamer_revisit_test.o
+
+# target to build an object file
+tests/streamer_revisit_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.o
+.PHONY : tests/streamer_revisit_test.cpp.o
+
+tests/streamer_revisit_test.i: tests/streamer_revisit_test.cpp.i
+.PHONY : tests/streamer_revisit_test.i
+
+# target to preprocess a source file
+tests/streamer_revisit_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.i
+.PHONY : tests/streamer_revisit_test.cpp.i
+
+tests/streamer_revisit_test.s: tests/streamer_revisit_test.cpp.s
+.PHONY : tests/streamer_revisit_test.s
+
+# target to generate assembly for a file
+tests/streamer_revisit_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.s
+.PHONY : tests/streamer_revisit_test.cpp.s
+
 tests/strict_math_test.o: tests/strict_math_test.cpp.o
 .PHONY : tests/strict_math_test.o
 
@@ -2061,6 +2541,30 @@ tests/terrain_test.s: tests/terrain_test.cpp.s
 tests/terrain_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.s
 .PHONY : tests/terrain_test.cpp.s
+
+tests/tiled_test.o: tests/tiled_test.cpp.o
+.PHONY : tests/tiled_test.o
+
+# target to build an object file
+tests/tiled_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o
+.PHONY : tests/tiled_test.cpp.o
+
+tests/tiled_test.i: tests/tiled_test.cpp.i
+.PHONY : tests/tiled_test.i
+
+# target to preprocess a source file
+tests/tiled_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.i
+.PHONY : tests/tiled_test.cpp.i
+
+tests/tiled_test.s: tests/tiled_test.cpp.s
+.PHONY : tests/tiled_test.s
+
+# target to generate assembly for a file
+tests/tiled_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.s
+.PHONY : tests/tiled_test.cpp.s
 
 tests/torch_test.o: tests/torch_test.cpp.o
 .PHONY : tests/torch_test.o
@@ -2182,6 +2686,54 @@ tests/visible_set_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.s
 .PHONY : tests/visible_set_test.cpp.s
 
+tests/world_list_test.o: tests/world_list_test.cpp.o
+.PHONY : tests/world_list_test.o
+
+# target to build an object file
+tests/world_list_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o
+.PHONY : tests/world_list_test.cpp.o
+
+tests/world_list_test.i: tests/world_list_test.cpp.i
+.PHONY : tests/world_list_test.i
+
+# target to preprocess a source file
+tests/world_list_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.i
+.PHONY : tests/world_list_test.cpp.i
+
+tests/world_list_test.s: tests/world_list_test.cpp.s
+.PHONY : tests/world_list_test.s
+
+# target to generate assembly for a file
+tests/world_list_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.s
+.PHONY : tests/world_list_test.cpp.s
+
+tests/zip_test.o: tests/zip_test.cpp.o
+.PHONY : tests/zip_test.o
+
+# target to build an object file
+tests/zip_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o
+.PHONY : tests/zip_test.cpp.o
+
+tests/zip_test.i: tests/zip_test.cpp.i
+.PHONY : tests/zip_test.i
+
+# target to preprocess a source file
+tests/zip_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.i
+.PHONY : tests/zip_test.cpp.i
+
+tests/zip_test.s: tests/zip_test.cpp.s
+.PHONY : tests/zip_test.s
+
+# target to generate assembly for a file
+tests/zip_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.s
+.PHONY : tests/zip_test.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -2239,6 +2791,30 @@ help:
 	@echo "... src/core/render/world_streamer.o"
 	@echo "... src/core/render/world_streamer.i"
 	@echo "... src/core/render/world_streamer.s"
+	@echo "... src/core/settings/settings_file.o"
+	@echo "... src/core/settings/settings_file.i"
+	@echo "... src/core/settings/settings_file.s"
+	@echo "... src/core/texture/atlas_image.o"
+	@echo "... src/core/texture/atlas_image.i"
+	@echo "... src/core/texture/atlas_image.s"
+	@echo "... src/core/texture/dev_art.o"
+	@echo "... src/core/texture/dev_art.i"
+	@echo "... src/core/texture/dev_art.s"
+	@echo "... src/core/texture/jar_import.o"
+	@echo "... src/core/texture/jar_import.i"
+	@echo "... src/core/texture/jar_import.s"
+	@echo "... src/core/texture/pack_list.o"
+	@echo "... src/core/texture/pack_list.i"
+	@echo "... src/core/texture/pack_list.s"
+	@echo "... src/core/texture/png.o"
+	@echo "... src/core/texture/png.i"
+	@echo "... src/core/texture/png.s"
+	@echo "... src/core/texture/zip_archive.o"
+	@echo "... src/core/texture/zip_archive.i"
+	@echo "... src/core/texture/zip_archive.s"
+	@echo "... src/core/texture/zip_builder.o"
+	@echo "... src/core/texture/zip_builder.i"
+	@echo "... src/core/texture/zip_builder.s"
 	@echo "... src/core/util/compress.o"
 	@echo "... src/core/util/compress.i"
 	@echo "... src/core/util/compress.s"
@@ -2248,12 +2824,24 @@ help:
 	@echo "... src/core/util/coord_text.o"
 	@echo "... src/core/util/coord_text.i"
 	@echo "... src/core/util/coord_text.s"
+	@echo "... src/core/util/fat_name.o"
+	@echo "... src/core/util/fat_name.i"
+	@echo "... src/core/util/fat_name.s"
 	@echo "... src/core/util/frustum.o"
 	@echo "... src/core/util/frustum.i"
 	@echo "... src/core/util/frustum.s"
+	@echo "... src/core/util/seed_text.o"
+	@echo "... src/core/util/seed_text.i"
+	@echo "... src/core/util/seed_text.s"
+	@echo "... src/core/util/worker.o"
+	@echo "... src/core/util/worker.i"
+	@echo "... src/core/util/worker.s"
 	@echo "... src/core/world/chunk.o"
 	@echo "... src/core/world/chunk.i"
 	@echo "... src/core/world/chunk.s"
+	@echo "... src/core/world/chunk_cache.o"
+	@echo "... src/core/world/chunk_cache.i"
+	@echo "... src/core/world/chunk_cache.s"
 	@echo "... src/core/world/daylight.o"
 	@echo "... src/core/world/daylight.i"
 	@echo "... src/core/world/daylight.s"
@@ -2269,6 +2857,9 @@ help:
 	@echo "... src/core/world/storage.o"
 	@echo "... src/core/world/storage.i"
 	@echo "... src/core/world/storage.s"
+	@echo "... src/core/world/world_list.o"
+	@echo "... src/core/world/world_list.i"
+	@echo "... src/core/world/world_list.s"
 	@echo "... src/impl/storage/alpha_chunkfiles/chunk_nbt.o"
 	@echo "... src/impl/storage/alpha_chunkfiles/chunk_nbt.i"
 	@echo "... src/impl/storage/alpha_chunkfiles/chunk_nbt.s"
@@ -2332,6 +2923,9 @@ help:
 	@echo "... tests/block_registry_test.o"
 	@echo "... tests/block_registry_test.i"
 	@echo "... tests/block_registry_test.s"
+	@echo "... tests/chunk_cache_test.o"
+	@echo "... tests/chunk_cache_test.i"
+	@echo "... tests/chunk_cache_test.s"
 	@echo "... tests/chunk_nbt_test.o"
 	@echo "... tests/chunk_nbt_test.i"
 	@echo "... tests/chunk_nbt_test.s"
@@ -2368,6 +2962,9 @@ help:
 	@echo "... tests/generate_test.o"
 	@echo "... tests/generate_test.i"
 	@echo "... tests/generate_test.s"
+	@echo "... tests/jar_import_test.o"
+	@echo "... tests/jar_import_test.i"
+	@echo "... tests/jar_import_test.s"
 	@echo "... tests/java_cast_test.o"
 	@echo "... tests/java_cast_test.i"
 	@echo "... tests/java_cast_test.s"
@@ -2398,9 +2995,15 @@ help:
 	@echo "... tests/ore_test.o"
 	@echo "... tests/ore_test.i"
 	@echo "... tests/ore_test.s"
+	@echo "... tests/pack_test.o"
+	@echo "... tests/pack_test.i"
+	@echo "... tests/pack_test.s"
 	@echo "... tests/plant_test.o"
 	@echo "... tests/plant_test.i"
 	@echo "... tests/plant_test.s"
+	@echo "... tests/png_test.o"
+	@echo "... tests/png_test.i"
+	@echo "... tests/png_test.s"
 	@echo "... tests/populate_test.o"
 	@echo "... tests/populate_test.i"
 	@echo "... tests/populate_test.s"
@@ -2416,6 +3019,12 @@ help:
 	@echo "... tests/section_test.o"
 	@echo "... tests/section_test.i"
 	@echo "... tests/section_test.s"
+	@echo "... tests/seed_text_test.o"
+	@echo "... tests/seed_text_test.i"
+	@echo "... tests/seed_text_test.s"
+	@echo "... tests/settings_file_test.o"
+	@echo "... tests/settings_file_test.i"
+	@echo "... tests/settings_file_test.s"
 	@echo "... tests/sin_table_test.o"
 	@echo "... tests/sin_table_test.i"
 	@echo "... tests/sin_table_test.s"
@@ -2425,12 +3034,18 @@ help:
 	@echo "... tests/streamer_generate_test.o"
 	@echo "... tests/streamer_generate_test.i"
 	@echo "... tests/streamer_generate_test.s"
+	@echo "... tests/streamer_revisit_test.o"
+	@echo "... tests/streamer_revisit_test.i"
+	@echo "... tests/streamer_revisit_test.s"
 	@echo "... tests/strict_math_test.o"
 	@echo "... tests/strict_math_test.i"
 	@echo "... tests/strict_math_test.s"
 	@echo "... tests/terrain_test.o"
 	@echo "... tests/terrain_test.i"
 	@echo "... tests/terrain_test.s"
+	@echo "... tests/tiled_test.o"
+	@echo "... tests/tiled_test.i"
+	@echo "... tests/tiled_test.s"
 	@echo "... tests/torch_test.o"
 	@echo "... tests/torch_test.i"
 	@echo "... tests/torch_test.s"
@@ -2446,6 +3061,12 @@ help:
 	@echo "... tests/visible_set_test.o"
 	@echo "... tests/visible_set_test.i"
 	@echo "... tests/visible_set_test.s"
+	@echo "... tests/world_list_test.o"
+	@echo "... tests/world_list_test.i"
+	@echo "... tests/world_list_test.s"
+	@echo "... tests/zip_test.o"
+	@echo "... tests/zip_test.i"
+	@echo "... tests/zip_test.s"
 .PHONY : help
 
 

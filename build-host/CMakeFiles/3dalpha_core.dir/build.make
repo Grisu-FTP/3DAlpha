@@ -478,10 +478,24 @@ CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/src/core/util/seed_text.cpp -o CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.s
 
+CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
+CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.cpp
+CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.cpp
+
+CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.cpp > CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.i
+
+CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.cpp -o CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.s
+
 CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.cpp
 CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.cpp
 
 CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.i: cmake_force
@@ -492,10 +506,24 @@ CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.cpp -o CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.s
 
+CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
+CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.cpp
+CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.cpp
+
+CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.cpp > CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.i
+
+CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.cpp -o CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.s
+
 CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/daylight.cpp
 CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/world/daylight.cpp
 
 CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.i: cmake_force
@@ -509,7 +537,7 @@ CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.s: cmake_force
 CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.cpp
 CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.cpp
 
 CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.i: cmake_force
@@ -523,7 +551,7 @@ CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.s: cmake_force
 CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.cpp
 CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.cpp
 
 CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.i: cmake_force
@@ -537,7 +565,7 @@ CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.s: cmake_force
 CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/section.cpp
 CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/world/section.cpp
 
 CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.i: cmake_force
@@ -551,7 +579,7 @@ CMakeFiles/3dalpha_core.dir/src/core/world/section.cpp.s: cmake_force
 CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.cpp
 CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.cpp
 
 CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.i: cmake_force
@@ -565,7 +593,7 @@ CMakeFiles/3dalpha_core.dir/src/core/world/storage.cpp.s: cmake_force
 CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/world_list.cpp
 CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building CXX object CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/core/world/world_list.cpp
 
 CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.i: cmake_force
@@ -579,7 +607,7 @@ CMakeFiles/3dalpha_core.dir/src/core/world/world_list.cpp.s: cmake_force
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.i: cmake_force
@@ -593,7 +621,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_nbt.cpp.s: c
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.i: cmake_force
@@ -607,7 +635,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/chunk_path.cpp.s: 
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/level_dat.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/level_dat.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.i: cmake_force
@@ -621,7 +649,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/level_dat.cpp.s: c
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/storage.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/storage.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.i: cmake_force
@@ -635,7 +663,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/storage/alpha_chunkfiles/storage.cpp.s: cma
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/big_tree.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/big_tree.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.i: cmake_force
@@ -649,7 +677,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/big_tree.cpp.s: cmak
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_44) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.i: cmake_force
@@ -663,7 +691,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/caves.cpp.s: cmake_f
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_45) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.i: cmake_force
@@ -677,7 +705,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_generator.cpp.
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_44) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_46) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.i: cmake_force
@@ -691,7 +719,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/chunk_provider.cpp.s
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/dungeon.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_45) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_47) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/dungeon.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.i: cmake_force
@@ -705,7 +733,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/dungeon.cpp.s: cmake
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/flowers.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_46) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_48) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/flowers.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.i: cmake_force
@@ -719,7 +747,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/flowers.cpp.s: cmake
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/liquids.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_47) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_49) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/liquids.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.i: cmake_force
@@ -733,7 +761,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/liquids.cpp.s: cmake
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/math_helper.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_48) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_50) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/math_helper.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.i: cmake_force
@@ -747,7 +775,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/math_helper.cpp.s: c
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_49) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_51) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.i: cmake_force
@@ -761,7 +789,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/noise.cpp.s: cmake_f
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/ore.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_50) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_52) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/ore.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.i: cmake_force
@@ -775,7 +803,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/ore.cpp.s: cmake_for
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/plants.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_51) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_53) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/plants.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.i: cmake_force
@@ -789,7 +817,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/plants.cpp.s: cmake_
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/populate.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_52) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_54) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/populate.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.i: cmake_force
@@ -803,7 +831,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/populate.cpp.s: cmak
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/population_view.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_53) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_55) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/population_view.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.i: cmake_force
@@ -817,7 +845,7 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/population_view.cpp.
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o: CMakeFiles/3dalpha_core.dir/flags.make
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/trees.cpp
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o: CMakeFiles/3dalpha_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_54) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_56) "Building CXX object CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o -MF CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o.d -o CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/trees.cpp
 
 CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.i: cmake_force
@@ -859,7 +887,9 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.s: cmake_f
 "CMakeFiles/3dalpha_core.dir/src/core/util/fat_name.cpp.o" \
 "CMakeFiles/3dalpha_core.dir/src/core/util/frustum.cpp.o" \
 "CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.o" \
+"CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o" \
 "CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o" \
+"CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o" \
 "CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o" \
 "CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o" \
 "CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o" \
@@ -917,7 +947,9 @@ lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/util/coord_text.cpp.o
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/util/fat_name.cpp.o
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/util/frustum.cpp.o
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.o
+lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.o
+lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/world/daylight.cpp.o
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/world/lighting.cpp.o
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/core/world/nibble_array.cpp.o
@@ -944,7 +976,7 @@ lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/p
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.cpp.o
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/build.make
 lib3dalpha_core.a: CMakeFiles/3dalpha_core.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_55) "Linking CXX static library lib3dalpha_core.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_57) "Linking CXX static library lib3dalpha_core.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/3dalpha_core.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/3dalpha_core.dir/link.txt --verbose=$(VERBOSE)
 

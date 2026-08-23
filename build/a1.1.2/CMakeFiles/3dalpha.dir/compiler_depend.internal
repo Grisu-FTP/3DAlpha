@@ -340,7 +340,9 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/main.o
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/daylight.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp
@@ -435,6 +437,8 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/main.o
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_funcs.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_types.h
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_map.h
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multimap.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multiset.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_pair.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_raw_storage_iter.h
@@ -480,6 +484,7 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/main.o
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/initializer_list
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/iosfwd
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/limits
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/map
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/math.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/memory
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/mutex
@@ -702,7 +707,9 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/menu.o
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp
@@ -795,6 +802,8 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/menu.o
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_funcs.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_types.h
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_map.h
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multimap.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multiset.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_pair.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_raw_storage_iter.h
@@ -840,6 +849,7 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/menu.o
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/initializer_list
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/iosfwd
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/limits
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/map
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/math.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/memory
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/mutex
@@ -1060,7 +1070,9 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/overlay.o
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp
+ /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp
  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp
@@ -1151,6 +1163,8 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/overlay.o
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_funcs.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_types.h
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_map.h
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multimap.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multiset.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_pair.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_raw_storage_iter.h
@@ -1197,6 +1211,7 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/overlay.o
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/initializer_list
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/iosfwd
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/limits
+ /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/map
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/math.h
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/memory
  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/mutex

@@ -33,7 +33,27 @@ struct GameSettings {
     // Dev Art. A name rather than a path, so moving the card's 3dalpha folder
     // does not orphan the setting.
     std::string texturePack;
+
+    // Seconds between autosaves; 0 is off, meaning the world is written when
+    // the pause menu opens and when it is left, and at no other time.
+    //
+    // -1 means "not chosen yet", the same convention renderDistance uses: the
+    // menu fills in kDefaultAutosaveSeconds rather than this file inventing a
+    // number. A file written by an older build has no such key and gets it.
+    int autosaveSeconds = -1;
+
+    // Megabytes of chunk cache -- retained columns and the read-ahead band.
+    // 0 means "not chosen yet"; the menu picks per model, because what is
+    // spare depends on the heap split and that depends on the console.
+    int chunkCacheMB = 0;
 };
+
+// **Ours, not the original's.** a1.1.2 has no timed autosave: it writes a chunk
+// when the chunk falls out of its 1024-slot cache, and everything else only on
+// Save and quit to title. 45 seconds is a compromise between how much world a
+// power-off can cost and how often a console with a card in it should be
+// writing to it; generated columns do not wait for it in any case.
+inline constexpr int kDefaultAutosaveSeconds = 45;
 
 // False when there is no file, which is the ordinary first-boot state; *out is
 // left at its defaults either way. A malformed line is skipped rather than

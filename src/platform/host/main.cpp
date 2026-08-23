@@ -19,6 +19,7 @@
 #include "core/texture/pack_list.hpp"
 #include "core/texture/zip_archive.hpp"
 #include "core/world/chunk.hpp"
+#include "core/world/chunk_cache.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_generator.hpp"
 #include "version_config.hpp"
 #include "version_slots.hpp"
@@ -553,7 +554,8 @@ render::VboPool::Budget flyBudget(int distance)
 }
 
 void fly(const char* worldDir, int distance, int frames, int switchTo,
-         mesh::CubeFormat cubeFormat, bool flipFormat, bool generate)
+         mesh::CubeFormat cubeFormat, bool flipFormat, bool generate, bool cacheThreaded,
+         int prefetchRings)
 {
     HostVboAllocator allocator;
 
@@ -577,6 +579,22 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
     // The world is created if there is none, so `--fly <empty-dir> 8 400 gen`
     // is the whole recipe for exercising generation, streaming, meshing and
     // saving end to end under sanitizers.
+    // **The console's chunk cache, on the harness too.** `--fly` is the one
+    // place the streaming path runs under sanitizers, so the threaded cache and
+    // the read-ahead band have to run here or they are never checked; and
+    // ThreadSanitizer has already earned its keep on this class once.
+    //
+    // The cap is the console's New 3DS number, so a host run fills and evicts
+    // at the same point a console does rather than never evicting at all.
+    world::ChunkCache::Config cacheConfig;
+    cacheConfig.cleanCapBytes = 8u << 20;
+    cacheConfig.threaded = cacheThreaded;
+    streamer.setCacheConfig(cacheConfig);
+    streamer.setPrefetchRings(prefetchRings);
+    // Seconds, and deliberately short: a --fly run is a handful of wall-clock
+    // seconds, and an interval the console would use would never fire once.
+    streamer.setAutosaveSeconds(1);
+
     if (generate) {
         streamer.setGenerateMissing(true);
         io::PosixFileSystem fs;
@@ -662,6 +680,16 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
         // enough for the run to mean something.
         if (generate) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+            // **The console's save path, exercised under sanitizers.** The
+            // camera has no body here, but the position and the world clock go
+            // into level.dat exactly as they do on hardware, and the autosave
+            // interval is short so a run of a few hundred frames trips it
+            // several times rather than never. This is the only place the
+            // housekeeping job, the write-back flush and the player round trip
+            // run outside a console.
+            streamer.setPlayerState(px, py, pz, 0.0f, 0.0f, i64(frame));
+            streamer.tickSaves(nowMillis());
         }
         // Changing the render distance mid-flight, which is what the debug
         // settings page does. The order is load-bearing and is the reason this
@@ -1360,10 +1388,23 @@ int main(int argc, char** argv)
     // meshes in the geometry-shader format throughout; `flip` starts in the
     // 12-byte one and changes over halfway, which is the settings page's path
     // and the one worth having a sanitizer walk through.
+    //
+    // `gen` is the console's configuration: generation on, and the chunk cache
+    // threaded with a read-ahead band. `gensync` is the same world made the way
+    // it was made before any of that existed -- every read and write on the
+    // calling thread, nothing read ahead -- and it is there for exactly one
+    // reason: **generating a seed both ways and diffing the two trees is the
+    // test that the cache changed what chunk I/O costs and not what it says.**
+    //
+    // Everything else leaves the cache unthreaded, because every documented
+    // --fly invocation measures a fixed world and has to keep reporting the
+    // numbers it always did; a read posted to a thread is a column that is
+    // pending this frame rather than loaded, and the table would move.
     const char* last = argc > 2 ? argv[argc - 1] : "";
     const bool quads = std::strcmp(last, "quads") == 0;
     const bool flip = std::strcmp(last, "flip") == 0;
-    const bool generate = std::strcmp(last, "gen") == 0;
+    const bool generateSync = std::strcmp(last, "gensync") == 0;
+    const bool generate = std::strcmp(last, "gen") == 0 || generateSync;
     const bool trailingWord = quads || flip || generate;
     const mesh::CubeFormat cubeFormat =
         quads ? mesh::CubeFormat::Quads : mesh::CubeFormat::Vertices;
@@ -1402,7 +1443,9 @@ int main(int argc, char** argv)
         // Optional, and 0 by default so every documented invocation reports the
         // same numbers it always did.
         const int switchTo = (argc > 5 && !(trailingWord && argc == 6)) ? std::atoi(argv[5]) : 0;
-        fly(argv[2], distance, frames, switchTo, cubeFormat, flip, generate);
+        const bool threadedCache = generate && !generateSync;
+        fly(argv[2], distance, frames, switchTo, cubeFormat, flip, generate, threadedCache,
+            threadedCache ? 2 : 0);
         return 0;
     }
 
@@ -1425,7 +1468,11 @@ int main(int argc, char** argv)
     std::printf("  path the settings page takes and the one worth sanitizing\n");
     std::printf("  `gen` (--fly only) generates missing chunks and writes them back,\n");
     std::printf("  creating the world if the directory has none -- the console's\n");
-    std::printf("  configuration. It writes to the directory it is given.\n");
+    std::printf("  configuration, chunk cache and read-ahead included. It writes to\n");
+    std::printf("  the directory it is given.\n");
+    std::printf("  `gensync` is the same, with every read and write on the calling\n");
+    std::printf("  thread and nothing read ahead. Generate a seed both ways and diff\n");
+    std::printf("  the trees: they must be identical.\n");
     std::printf("Run the unit tests with: make test\n");
     return 0;
 }

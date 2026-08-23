@@ -1842,7 +1842,9 @@ CMakeFiles/3dalpha_core.dir/src/core/render/world_streamer.o: /home/grisu/Docume
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp \
@@ -1933,6 +1935,8 @@ CMakeFiles/3dalpha_core.dir/src/core/render/world_streamer.o: /home/grisu/Docume
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_funcs.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_types.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_map.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multimap.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multiset.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_pair.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_raw_storage_iter.h \
@@ -1980,6 +1984,7 @@ CMakeFiles/3dalpha_core.dir/src/core/render/world_streamer.o: /home/grisu/Docume
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/initializer_list \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/iosfwd \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/limits \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/map \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/memory \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/mutex \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/new \
@@ -3522,6 +3527,9 @@ CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.o: /home/grisu/Documents/Git
   /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stddef.h \
   /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stdint.h
 
+CMakeFiles/3dalpha_core.dir/src/core/util/worker.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.cpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp
+
 CMakeFiles/3dalpha_core.dir/src/core/world/chunk.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.cpp \
   gen/version_config.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/block/block_def.hpp \
@@ -3619,6 +3627,7 @@ CMakeFiles/3dalpha_core.dir/src/core/world/chunk.o: /home/grisu/Documents/GitHub
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdint \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdio \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdlib \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstring \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cwchar \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/debug/assertions.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/debug/debug.h \
@@ -3659,6 +3668,7 @@ CMakeFiles/3dalpha_core.dir/src/core/world/chunk.o: /home/grisu/Documents/GitHub
   /opt/devkitpro/devkitARM/arm-none-eabi/include/stdint.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/stdio.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/stdlib.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/string.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_intsup.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_pthreadtypes.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_sigset.h \
@@ -3674,6 +3684,239 @@ CMakeFiles/3dalpha_core.dir/src/core/world/chunk.o: /home/grisu/Documents/GitHub
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/sched.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/signal.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/stdio.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/string.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/timespec.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/types.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/unistd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/time.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/unistd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/wchar.h \
+  /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stdarg.h \
+  /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stddef.h \
+  /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stdint.h
+
+CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.o: /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.cpp \
+  gen/blocks.hpp \
+  gen/version_config.hpp \
+  gen/version_slots.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/block_def.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/registry.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/item/item_stack.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/nbt.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/preserved.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/writer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/nibble.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/section.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/slot.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/storage.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_generator.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/chunk_provider.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/noise.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/population_view.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/slot.hpp \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/_ansi.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/_newlib_version.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/assert.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/algorithm \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/atomic_word.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/c++allocator.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/c++config.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/c++locale.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/cpu_defines.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/error_constants.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/gthr-default.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/gthr.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/os_defines.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/backward/auto_ptr.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/backward/binders.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bit \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/algorithmfwd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/align.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/alloc_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/allocated_ptr.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/allocator.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/atomic_base.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/atomic_lockfree_defines.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/basic_string.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/basic_string.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/char_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/charconv.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/chrono.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/concept_check.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/cpp_type_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/cxxabi_forced.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/cxxabi_init_exception.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/erase_if.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception_defines.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception_ptr.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/functexcept.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/functional_hash.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/hash_bytes.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/invoke.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/localefwd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/memory_resource.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/memoryfwd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/move.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/nested_exception.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/new_allocator.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/new_except.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/new_throw.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/node_handle.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/ostream_insert.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/parse_numbers.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/postypes.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/predefined_ops.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/ptr_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/range_access.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/refwrap.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/requires_hosted.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/shared_ptr.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/shared_ptr_atomic.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/shared_ptr_base.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/specfun.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_abs.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_function.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_mutex.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_thread.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stdexcept_throw.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stdexcept_throwfwd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_algo.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_algobase.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_bvector.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_construct.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_function.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_heap.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_funcs.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_types.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_map.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multimap.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multiset.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_pair.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_raw_storage_iter.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_set.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_tempbuf.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_tree.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_uninitialized.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_vector.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/string_view.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stringfwd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/this_thread_sleep.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/uniform_int_dist.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/unique_lock.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/unique_ptr.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/uses_allocator.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/uses_allocator_args.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/utility.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/vector.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/version.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cassert \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cctype \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cerrno \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/chrono \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/clocale \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cmath \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/concepts \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/condition_variable \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstddef \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdint \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdio \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdlib \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstring \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ctime \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cwchar \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/debug/assertions.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/debug/debug.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/exception \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/aligned_buffer.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/alloc_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/atomicity.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/concurrence.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/numeric_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/string_conversions.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/type_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/initializer_list \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/iosfwd \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/limits \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/map \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/memory \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/mutex \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/new \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/pstl/execution_defs.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/pstl/glue_algorithm_defs.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/pstl/glue_memory_defs.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/pstl/pstl_config.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ratio \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/set \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/string \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/string_view \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/thread \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/bessel_function.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/beta_function.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/ell_integral.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/exp_integral.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/gamma.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/hypergeometric.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/legendre_function.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/modified_bessel_func.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/poly_hermite.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/poly_laguerre.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/riemann_zeta.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/special_function_util.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tuple \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/type_traits \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/typeinfo \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/vector \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/ctype.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/errno.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/locale.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/_default_types.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/_types.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/ieeefp.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/stdlib.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/time.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/types.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/math.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/newlib.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/pthread.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sched.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/signal.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/stdint.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/stdio.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/stdlib.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/string.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_intsup.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_pthreadtypes.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_sigset.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_stdint.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_timespec.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_types.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/cdefs.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/config.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/errno.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/features.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/lock.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/reent.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/sched.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/signal.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/stdio.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/string.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/timespec.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/types.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/unistd.h \
@@ -6182,6 +6425,8 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.o: /home/grisu
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.cpp:
 
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.cpp:
+
 /home/grisu/Documents/GitHub/3DAlpha/src/core/util/seed_text.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/chunk_path.cpp:
@@ -6232,11 +6477,23 @@ CMakeFiles/3dalpha_core.dir/src/impl/worldgen/alpha_nobiome/trees.o: /home/grisu
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/mutex:
 
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/map:
+
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/unique_lock.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/uniform_int_dist.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/this_thread_sleep.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_tree.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/fat_name.hpp:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_set.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multiset.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multimap.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/vector:
 
@@ -6508,6 +6765,8 @@ gen/version_config.hpp:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/ptr_traits.h:
 
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp:
+
 /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/types.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/pstl/pstl_config.h:
@@ -6554,10 +6813,6 @@ gen/version_config.hpp:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stdexcept_throwfwd.h:
 
-/home/grisu/Documents/GitHub/3DAlpha/src/core/util/fat_name.hpp:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_set.h:
-
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/algorithmfwd.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_function.h:
@@ -6601,8 +6856,6 @@ gen/version_config.hpp:
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_bvector.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/atomic_base.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_multiset.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/atomic_lockfree_defines.h:
 
@@ -6664,12 +6917,6 @@ gen/blocks.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/render/chunk_renderer.hpp:
 
-/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception_defines.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_abs.h:
-
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_raw_storage_iter.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bit:
@@ -6687,6 +6934,8 @@ gen/blocks.hpp:
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cctype:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/clocale:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.cpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/util/coord_text.hpp:
 
@@ -6715,6 +6964,8 @@ gen/blocks.hpp:
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/ell_integral.tcc:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/vertex.hpp:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_map.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/pthread.h:
 
@@ -6788,6 +7039,14 @@ gen/blocks.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp:
 
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception_defines.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_abs.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp:
+
 /opt/devkitpro/devkitARM/arm-none-eabi/include/string.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp:
@@ -6807,5 +7066,3 @@ gen/blocks.hpp:
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_mutex.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_heap.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_tree.h:

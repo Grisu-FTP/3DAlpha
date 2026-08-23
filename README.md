@@ -86,18 +86,42 @@ per-frame draw list. Both measurements, and the wrong turn, are in
 
 **The game starts at a main menu.** Title screen, the world list — every world on the card, with
 `+ Create New World` above them and delete behind a confirmation — a create screen that asks for a
-name and a seed through the system keyboard, and an options screen for render distance and texture
-packs. Blank seed rolls one; a typed seed follows the rule Minecraft itself adopted later, so a seed
-swapped with someone on a PC makes the same world, which is the player-facing proof that generation
-is seed-exact. It is drawn with citro2d and the 3DS system font, and nothing in the menu itself is
+name and a seed through the system keyboard, and an options screen for render distance,
+autosave interval and texture packs. Blank seed rolls one; a typed seed follows the rule Minecraft
+itself adopted later, so a seed swapped with someone on a PC makes the same **land** — height,
+caves, ores, the Far Lands are a pure function of the seed and the chunk, checked byte-for-byte
+against a real JVM. Where the trees end up has always depended on the order chunks were visited in,
+in a1.1.2 as much as here. It is drawn with citro2d and the 3DS system font, and nothing in the menu itself is
 textured — we ship no Mojang assets, so the backdrop is shaded quads and the buttons are rectangles.
 a1.1.2's own screen is five fixed slots and never asks for a seed — both deviations are deliberate
 and are written down in [docs/status.md](docs/status.md).
 
-**START pauses.** Resume, Options, Exit World, over a world that stops dead while the menu is up —
-nothing streamed, nothing generated, and the sun stands still. Options there is literally the title
-screen's own, so render distance and texture pack can be changed in a world and apply the moment you
-go back to it. Exiting saves, the way closing a world any other way does.
+**START pauses, and saves.** Resume, Options, Exit World, over a world that stops dead while the
+menu is up — nothing streamed, nothing generated, and the sun stands still. Opening the menu hands
+everything unwritten to the I/O thread, which has the whole pause to itself, so the card is caught
+up before you resume and nothing ever waited for it. Options there is literally the title screen's
+own, so render distance, autosave and texture pack can be changed in a world and apply the moment
+you go back to it. Exiting saves, the way closing a world any other way does.
+
+**Nothing on the render thread touches the SD card.** Chunk reads, writes, existence checks and
+directory listings all happen on an I/O thread behind a write-back cache, which doubles as a buffer
+zone: a column that leaves the view is kept in RAM rather than freed, and columns just beyond it are
+read ahead, so turning round or crossing a chunk boundary costs no card access at all. The original
+does the same thing — Alpha's chunk provider holds a 1024-slot table and writes a chunk when it is
+evicted — with a byte cap and LRU instead of a fixed direct-mapped grid.
+
+**Chunks are generated nearest-to-the-player first**, which is what a1.1.2 does — it keeps no
+generation queue at all, and the renderer that asks for chunks sorts its list by distance to the
+player before rebuilding them. Outrun the generator and the ground under your feet is made before
+the ground you have already left; nothing is skipped, it just waits its turn. a1.1.2 never has to
+choose, because it generates inline and freezes instead — which is a limitation of doing it inline,
+not something worth reproducing.
+
+**Nothing is written outside a save**, which is the original's shape too: the autosave interval, the
+pause menu, or leaving the world. A save writes the dirty columns and `level.dat` — your position,
+your rotation and the world clock, so a world reopens where you left it and at the hour you left it.
+The interval defaults to 45 seconds and is adjustable; a1.1.2 has no timed autosave of its own,
+which the jar settles rather than folklore.
 
 **Options → Texture Pack** lists every pack on the card, with the generated "Dev Art" pinned first,
 and applies the one you pick. **Extract from a jar** turns your own `minecraft.jar` into a pack —

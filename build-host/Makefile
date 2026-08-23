@@ -862,6 +862,30 @@ src/core/util/seed_text.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/seed_text.cpp.s
 .PHONY : src/core/util/seed_text.cpp.s
 
+src/core/util/worker.o: src/core/util/worker.cpp.o
+.PHONY : src/core/util/worker.o
+
+# target to build an object file
+src/core/util/worker.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.o
+.PHONY : src/core/util/worker.cpp.o
+
+src/core/util/worker.i: src/core/util/worker.cpp.i
+.PHONY : src/core/util/worker.i
+
+# target to preprocess a source file
+src/core/util/worker.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.i
+.PHONY : src/core/util/worker.cpp.i
+
+src/core/util/worker.s: src/core/util/worker.cpp.s
+.PHONY : src/core/util/worker.s
+
+# target to generate assembly for a file
+src/core/util/worker.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/worker.cpp.s
+.PHONY : src/core/util/worker.cpp.s
+
 src/core/world/chunk.o: src/core/world/chunk.cpp.o
 .PHONY : src/core/world/chunk.o
 
@@ -885,6 +909,30 @@ src/core/world/chunk.s: src/core/world/chunk.cpp.s
 src/core/world/chunk.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk.cpp.s
 .PHONY : src/core/world/chunk.cpp.s
+
+src/core/world/chunk_cache.o: src/core/world/chunk_cache.cpp.o
+.PHONY : src/core/world/chunk_cache.o
+
+# target to build an object file
+src/core/world/chunk_cache.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.o
+.PHONY : src/core/world/chunk_cache.cpp.o
+
+src/core/world/chunk_cache.i: src/core/world/chunk_cache.cpp.i
+.PHONY : src/core/world/chunk_cache.i
+
+# target to preprocess a source file
+src/core/world/chunk_cache.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.i
+.PHONY : src/core/world/chunk_cache.cpp.i
+
+src/core/world/chunk_cache.s: src/core/world/chunk_cache.cpp.s
+.PHONY : src/core/world/chunk_cache.s
+
+# target to generate assembly for a file
+src/core/world/chunk_cache.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/world/chunk_cache.cpp.s
+.PHONY : src/core/world/chunk_cache.cpp.s
 
 src/core/world/daylight.o: src/core/world/daylight.cpp.o
 .PHONY : src/core/world/daylight.o
@@ -1533,6 +1581,30 @@ tests/block_registry_test.s: tests/block_registry_test.cpp.s
 tests/block_registry_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/block_registry_test.cpp.s
 .PHONY : tests/block_registry_test.cpp.s
+
+tests/chunk_cache_test.o: tests/chunk_cache_test.cpp.o
+.PHONY : tests/chunk_cache_test.o
+
+# target to build an object file
+tests/chunk_cache_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.o
+.PHONY : tests/chunk_cache_test.cpp.o
+
+tests/chunk_cache_test.i: tests/chunk_cache_test.cpp.i
+.PHONY : tests/chunk_cache_test.i
+
+# target to preprocess a source file
+tests/chunk_cache_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.i
+.PHONY : tests/chunk_cache_test.cpp.i
+
+tests/chunk_cache_test.s: tests/chunk_cache_test.cpp.s
+.PHONY : tests/chunk_cache_test.s
+
+# target to generate assembly for a file
+tests/chunk_cache_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/chunk_cache_test.cpp.s
+.PHONY : tests/chunk_cache_test.cpp.s
 
 tests/chunk_nbt_test.o: tests/chunk_nbt_test.cpp.o
 .PHONY : tests/chunk_nbt_test.o
@@ -2398,6 +2470,30 @@ tests/streamer_generate_test.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.s
 .PHONY : tests/streamer_generate_test.cpp.s
 
+tests/streamer_revisit_test.o: tests/streamer_revisit_test.cpp.o
+.PHONY : tests/streamer_revisit_test.o
+
+# target to build an object file
+tests/streamer_revisit_test.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.o
+.PHONY : tests/streamer_revisit_test.cpp.o
+
+tests/streamer_revisit_test.i: tests/streamer_revisit_test.cpp.i
+.PHONY : tests/streamer_revisit_test.i
+
+# target to preprocess a source file
+tests/streamer_revisit_test.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.i
+.PHONY : tests/streamer_revisit_test.cpp.i
+
+tests/streamer_revisit_test.s: tests/streamer_revisit_test.cpp.s
+.PHONY : tests/streamer_revisit_test.s
+
+# target to generate assembly for a file
+tests/streamer_revisit_test.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_tests.dir/build.make CMakeFiles/3dalpha_tests.dir/tests/streamer_revisit_test.cpp.s
+.PHONY : tests/streamer_revisit_test.cpp.s
+
 tests/strict_math_test.o: tests/strict_math_test.cpp.o
 .PHONY : tests/strict_math_test.o
 
@@ -2737,9 +2833,15 @@ help:
 	@echo "... src/core/util/seed_text.o"
 	@echo "... src/core/util/seed_text.i"
 	@echo "... src/core/util/seed_text.s"
+	@echo "... src/core/util/worker.o"
+	@echo "... src/core/util/worker.i"
+	@echo "... src/core/util/worker.s"
 	@echo "... src/core/world/chunk.o"
 	@echo "... src/core/world/chunk.i"
 	@echo "... src/core/world/chunk.s"
+	@echo "... src/core/world/chunk_cache.o"
+	@echo "... src/core/world/chunk_cache.i"
+	@echo "... src/core/world/chunk_cache.s"
 	@echo "... src/core/world/daylight.o"
 	@echo "... src/core/world/daylight.i"
 	@echo "... src/core/world/daylight.s"
@@ -2821,6 +2923,9 @@ help:
 	@echo "... tests/block_registry_test.o"
 	@echo "... tests/block_registry_test.i"
 	@echo "... tests/block_registry_test.s"
+	@echo "... tests/chunk_cache_test.o"
+	@echo "... tests/chunk_cache_test.i"
+	@echo "... tests/chunk_cache_test.s"
 	@echo "... tests/chunk_nbt_test.o"
 	@echo "... tests/chunk_nbt_test.i"
 	@echo "... tests/chunk_nbt_test.s"
@@ -2929,6 +3034,9 @@ help:
 	@echo "... tests/streamer_generate_test.o"
 	@echo "... tests/streamer_generate_test.i"
 	@echo "... tests/streamer_generate_test.s"
+	@echo "... tests/streamer_revisit_test.o"
+	@echo "... tests/streamer_revisit_test.i"
+	@echo "... tests/streamer_revisit_test.s"
 	@echo "... tests/strict_math_test.o"
 	@echo "... tests/strict_math_test.i"
 	@echo "... tests/strict_math_test.s"

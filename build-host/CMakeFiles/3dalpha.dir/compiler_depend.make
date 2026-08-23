@@ -59,7 +59,9 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o: /home/grisu/Documents/GitHu
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/strict_math.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/lighting.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/nibble_array.hpp \
@@ -422,19 +424,13 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o: /home/grisu/Documents/GitHu
 
 /usr/include/c++/16/ext/aligned_buffer.h:
 
-/usr/include/linux/posix_types.h:
-
-/usr/include/bits/types/FILE.h:
+/usr/include/c++/16/exception:
 
 /usr/include/bits/types/__mbstate_t.h:
 
 /usr/include/c++/16/x86_64-pc-linux-gnu/bits/c++config.h:
 
 /usr/include/bits/setjmp.h:
-
-/usr/include/bits/flt-eval-method.h:
-
-/usr/lib/gcc/x86_64-pc-linux-gnu/16/libstdc++.so:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/zip_archive.hpp:
 
@@ -498,6 +494,14 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o: /home/grisu/Documents/GitHu
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/visibility.hpp:
 
+/usr/lib/gcc/x86_64-pc-linux-gnu/16/libstdc++.so:
+
+/usr/include/bits/flt-eval-method.h:
+
+/usr/include/linux/posix_types.h:
+
+/usr/include/bits/types/FILE.h:
+
 /usr/include/linux/types.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/world/section.hpp:
@@ -518,6 +522,12 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o: /home/grisu/Documents/GitHu
 
 /usr/include/c++/16/bits/requires_hosted.h:
 
+/home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp:
+
+/usr/include/c++/16/map:
+
+/usr/include/c++/16/bits/new_allocator.h:
+
 /usr/include/asm/posix_types_64.h:
 
 /usr/include/c++/16/bits/exception_ptr.h:
@@ -529,6 +539,8 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o: /home/grisu/Documents/GitHu
 /usr/include/bits/mathcalls-macros.h:
 
 /usr/lib/gcc/x86_64-pc-linux-gnu/16/libatomic.so:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk_cache.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp:
 
@@ -580,6 +592,12 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/nbt.hpp:
 
+/usr/include/c++/16/tr1/bessel_function.tcc:
+
+/usr/include/bits/libm-simd-decl-stubs.h:
+
+/usr/include/c++/16/bits/algorithmfwd.h:
+
 /usr/include/bits/pthread_stack_min-dynamic.h:
 
 /usr/lib/Scrt1.o:
@@ -587,12 +605,6 @@ CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o:
 /usr/include/bits/types/timer_t.h:
 
 /usr/include/c++/16/bits/ostream_insert.h:
-
-/usr/include/c++/16/tr1/bessel_function.tcc:
-
-/usr/include/c++/16/bits/algorithmfwd.h:
-
-/usr/include/bits/libm-simd-decl-stubs.h:
 
 /usr/include/bits/stdio_lim.h:
 
@@ -631,6 +643,8 @@ gen/version_slots.hpp:
 /usr/include/c++/16/bits/char_traits.h:
 
 /usr/lib/libasan.so:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/util/worker.hpp:
 
 /usr/lib/libm.so:
 
@@ -710,18 +724,6 @@ gen/blocks.hpp:
 
 /usr/include/c++/16/bits/stl_iterator_base_types.h:
 
-/usr/include/bits/select.h:
-
-/usr/include/features.h:
-
-/usr/include/bits/sched.h:
-
-/usr/include/bits/types/__FILE.h:
-
-/usr/include/c++/16/bits/stl_tree.h:
-
-/usr/include/c++/16/cerrno:
-
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/worldgen/alpha_nobiome/caves.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/preserved.hpp:
@@ -729,6 +731,8 @@ gen/blocks.hpp:
 /usr/include/bits/types/struct_timespec.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/render/chunk_renderer.hpp:
+
+/usr/include/bits/select.h:
 
 /usr/lib/ld-linux-x86-64.so.2:
 
@@ -752,12 +756,6 @@ gen/blocks.hpp:
 
 /usr/include/c++/16/bits/basic_string.h:
 
-/home/grisu/Documents/GitHub/3DAlpha/src/core/world/level_data.hpp:
-
-/usr/include/c++/16/map:
-
-/usr/include/c++/16/bits/new_allocator.h:
-
 /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/pack_list.hpp:
 
 /usr/include/bits/math-vector.h:
@@ -773,6 +771,16 @@ gen/version_config.hpp:
 /usr/include/bits/struct_mutex.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/world/chunk.hpp:
+
+/usr/include/features.h:
+
+/usr/include/bits/sched.h:
+
+/usr/include/bits/types/__FILE.h:
+
+/usr/include/c++/16/bits/stl_tree.h:
+
+/usr/include/c++/16/cerrno:
 
 /usr/include/c++/16/string_view:
 
@@ -938,6 +946,14 @@ gen/version_config.hpp:
 
 /usr/include/c++/16/bits/stl_algobase.h:
 
+/usr/include/c++/16/debug/debug.h:
+
+/usr/include/asm-generic/bitsperlong.h:
+
+/usr/include/asm-generic/types.h:
+
+/usr/include/c++/16/bits/stl_bvector.h:
+
 /usr/include/asm-generic/posix_types.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/util/math.hpp:
@@ -1001,13 +1017,3 @@ gen/version_config.hpp:
 /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/jar_import.hpp:
 
 /usr/include/c++/16/debug/assertions.h:
-
-/usr/include/asm-generic/bitsperlong.h:
-
-/usr/include/asm-generic/types.h:
-
-/usr/include/c++/16/bits/stl_bvector.h:
-
-/usr/include/c++/16/debug/debug.h:
-
-/usr/include/c++/16/exception:

@@ -249,14 +249,37 @@ has one byte per block and a truncating write would produce a plausible-looking 
 The Alpha format is hostile to FAT on an SD card: thousands of small files and slow directory
 enumeration. Compatibility is a hard requirement, so we adapt around it rather than changing it.
 
-- **Chunk index**: walk the 64×64 directory tree once on a worker thread at world open and cache the
-  result in `sdmc:/3dalpha/cache/<world>.idx`. Subsequent chunk lookups never `stat`. The index is
-  invalidated by a mismatch in `level.dat`'s mtime/size, and can always be rebuilt.
-  *Not built yet.* `AlphaChunkFileStorage::forEachChunk` performs the uncached walk it would be
-  built from, and `hasChunk` still costs a `stat`. Adding the cache before there is a device
-  measurement to size it against would be guessing.
-- **All chunk I/O on the I/O thread**, with a write-back queue. Dirty chunks are coalesced and
-  flushed on a timer, on world exit, and when the queue grows past a cap.
+- **Chunk index — built, and lazily rather than up front.** An earlier version of this document
+  asked for a walk of the whole 64×64 tree at world open, cached to `sdmc:/3dalpha/cache/<world>.idx`
+  and invalidated against `level.dat`. That is not what was built, and the incremental form is
+  strictly cheaper.
+
+  The layout puts a chunk in `<x & 63>/<z & 63>/`, so **one leaf directory holds only chunks spaced
+  64 apart**: walking one chunk lands in a different directory every step and returns to a given one
+  only after 64. So a single `listDirectory` settles up to a thousand `hasChunk` answers for the
+  rest of the session, an unvisited region costs nothing at all, and there is no cache file and
+  nothing to invalidate. `AlphaChunkFileStorage::listChunkGroup` is the primitive;
+  `core/world/chunk_cache.hpp` holds the index and keeps it ahead of the player by listing the ring
+  one chunk beyond the streamer's grid whenever the centre moves. A group asked about before its
+  listing arrives falls back to one `stat`, which is what it always cost.
+
+  This is what removed the per-boundary stat storm: crossing a chunk boundary used to re-classify a
+  whole row of cells, one IPC round trip each, on the render thread.
+- **All chunk I/O on the I/O thread**, with a write-back queue — built, in `core/world/chunk_cache.hpp`.
+  Reads, writes, existence and directory listings all happen there; the render thread's half of the
+  API returns "not yet" rather than blocking. Dirty columns are coalesced and flushed on the autosave
+  timer, when the pause menu opens, and on world exit — **and at no other time**, which is the shape
+  a1.1.2 has. The one exception is the dirty budget: a dirty column cannot be evicted because it is
+  the only copy of that part of the world, so past the cap whoever dirtied it writes one itself,
+  which is back-pressure paid by the generation worker rather than by the frame.
+
+  **The invariant it holds:** every read returns byte-identical content to what the card would
+  return, and `hasChunk` answers true from the moment a save is accepted rather than from the moment
+  bytes land. Deferring a write therefore changes no answer that cell classification or a generator
+  sweep can observe — which matters because classification feeds the generation queue and population
+  order *is* the world. The third arm of
+  `a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` compares whole world trees to prove
+  it.
 - **POSIX `open`/`read`/`write`, not `fopen`/`fread`.** An earlier version of this document said to
   prefer raw `FSFILE` handles because "the devoptab adds real per-call overhead". Disassembling the
   installed libctru shows that is wrong: `archive_read` calls `FSFILE_Read` directly, `fsync` calls

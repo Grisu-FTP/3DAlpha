@@ -23,17 +23,19 @@ hard oracle to check itself against.
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
 | **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world |
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, and needs a seventh launch to say whether it closes the gap |
-| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, Options, Exit World, over a world that stays open and stops dead while the menu is up. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d |
+| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, Options, Exit World, over a world that stays open and stops dead while the menu is up. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and it costs nothing, because the world is stopped and the I/O thread has the whole pause to itself. Options has an autosave row beside render distance and texture pack |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
 | M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Only `terrain.png` has a consumer** -- a pack's gui, font and mob textures are carried and counted and nothing reads them yet. See §0c and [assets.md](assets.md) |
 
-**407 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**421 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
-`WorldStreamer`'s worker: it found the first version reading the generator's counters from the main
-thread while the worker wrote them.
+`WorldStreamer`'s worker or `ChunkCache`: it found the first version reading the generator's counters
+from the main thread while the worker wrote them, and then found the same shape again in
+`ChunkCache::stats()`, which handed out a reference to counters the I/O thread writes. Both return
+locked copies now.
 
 **The sanitizers now instrument `3dalpha_core`, which they did not before.** They had been attached
 to the test executable alone, so they covered `tests/*.cpp` and nothing else — the NBT parser, the
@@ -48,7 +50,7 @@ because **GCC leaves it out of the `-fsanitize=undefined` group**.
 
 | Thing | Where |
 |---|---|
-| Repo | `/home/grisu/Documents/GitHub/3DAlpha` — **not a git repository** |
+| Repo | `/home/grisu/Documents/GitHub/3DAlpha` — **a git repository**, whose `build/` and `build-host/` are committed, so filter status with `git status --short -- src tests docs README.md CMakeLists.txt` |
 | Real a1.1.2 client jar | `~/.local/share/PrismLauncher/libraries/com/mojang/minecraft/a1.1.2_01/minecraft-a1.1.2_01-client.jar` — in `libraries/`, **not** in the instance directory |
 | Real a1.1.2 world (660 chunks) | `~/.local/share/PrismLauncher/instances/a1.1.2_01/minecraft/saves/World1` |
 | Shell | **fish** — does not word-split variables in `for` loops |
@@ -68,7 +70,7 @@ tools/lumadump.py <dump.dmp> [--elf <elf>]          # read a Luma exception dump
 ./build-host/3dalpha --mesh <world-dir> [quads]      # mesh a world, print every M2 number
 ./build-host/3dalpha --generate [seed] [radius] [snow] [cache-columns] [raster]
                                                     # make a fresh world, print every M4 number
-./build-host/3dalpha --fly <world-dir> [dist] [frames] [switch-to] [quads|flip|gen]
+./build-host/3dalpha --fly <world-dir> [dist] [frames] [switch-to] [quads|flip|gen|gensync]
 ./build-host/3dalpha --pack <zip|dir|devart>        # assemble a pack's atlas, write atlas.pam
 ./build-host/3dalpha --extract-jar <jar> <packs-dir> # the console's jar importer, sanitised
 ```
@@ -77,8 +79,12 @@ A trailing **`quads`** on either harness puts the cube range in the geometry-sha
 8-byte vertex per quad instead of four 12-byte ones. **`flip`** (`--fly` only) starts in the 12-byte
 format and changes over halfway, which is what the settings page does and the path worth sanitizing.
 **`gen`** (`--fly` only) is the console's configuration rather than the harness's: a missing chunk is
-generated and written back instead of counted absent, and the world is created if the directory has
-none. `--fly <empty-dir> 8 2000 gen` is the whole recipe for exercising creation, generation,
+generated and written back instead of counted absent, the world is created if the directory has
+none, and the chunk cache is threaded with a two-ring read-ahead band. **`gensync`** is the same
+world made the old way — every read and write on the calling thread, nothing read ahead — and it is
+there for one purpose: *generate a seed both ways and diff the trees.* They must be identical, and
+that is the check that the cache changed what chunk I/O costs rather than what it says. Every other
+`--fly` invocation leaves the cache unthreaded so the documented numbers keep meaning what they did. `--fly <empty-dir> 8 2000 gen` is the whole recipe for exercising creation, generation,
 streaming, meshing and saving end to end under sanitizers. **It writes to the directory it is given.**
 It also sleeps a millisecond a frame, because generation is on another thread now and a host with
 nothing to draw would otherwise finish its frame budget before the worker had made anything; expect
@@ -95,18 +101,21 @@ The console and the host run the same `core/render/` code; only who draws the re
 
 ```
 core/nbt/         reader, writer, generic tree, preserved-tag passthrough
-core/world/       Section (palette), NibbleArray, ChunkColumn, LevelData, storage contract
+core/world/       Section (palette), NibbleArray, ChunkColumn, LevelData, storage contract,
+                  ChunkCache -- the write-back chunk cache, the leaf-directory existence
+                  index and the I/O thread; the only thing that touches the storage slot
 core/block/       BlockDef, RenderType, registry; the table is generated
 core/item/        ItemStack
 core/io/          FileSystem seam + the POSIX implementation both targets use
 core/texture/     PNG decoder, zip reader/writer, pack listing, atlas assembly, Dev Art, jar import,
                   the PICA tiling map the CPU writes textures through
-core/settings/    3ds.ini -- render distance and the chosen texture pack
+core/settings/    3ds.ini -- render distance, texture pack, autosave interval, cache size
 core/mesh/        three vertex formats, MeshScratch, mesher, fluid, torch, visibility masks
 core/render/      SectionField + buildVisibleSet (the visibility walk); VboPool;
                   ChunkRenderer (one frame, no GPU); WorldStreamer (columns in and out,
                   and the chunk generator when the world has none)
-core/util/        types, span, nibble, compress, math (Vec3/Mat4/Plane), frustum,
+core/util/        types, span, nibble, compress, math (Vec3/Mat4/Plane), frustum, the
+                  worker-thread seam (which core a background thread gets, per role),
                   coord and seed text parsing (what a player types, parsed where it can be tested)
 core/world/       ...and the light engine: sky and block light as one fixed point;
                   world_list -- the saves folder as a list, without opening anything
@@ -131,6 +140,50 @@ matrix, draw — and `platform/host/main.cpp --fly` drives the same core code wi
 These were argued or measured; do not relitigate without new evidence.
 
 - **C++17**, `-fno-exceptions -fno-rtti -fno-threadsafe-statics`.
+- **Nothing on the render thread touches the SD card.** `core/world/chunk_cache.hpp` owns the
+  storage slot and is the only thing in the process that reaches it. Reads, writes, existence
+  checks and directory listings happen on an I/O thread; the main thread's half of the API answers
+  "not yet" and retries next frame rather than blocking. The card is not the limiter and a faster
+  one changes nothing — a chunk file is 2,917 bytes at the median, so the cost is four to six IPC
+  round trips per operation, not bandwidth. **Internal storage is not a second tier either**: a
+  title's save data and extdata live on the SD card, CTRNAND is not writable from a 3DSX, and both
+  go through the same sysmodule. See [save-data.md](save-data.md).
+- **The chunk cache changes what a read costs, never what it says.** Every read returns
+  byte-identical content whether it comes from the table or the card, and `hasChunk` answers true
+  from the moment a save is accepted rather than from the moment bytes land. That is not a nicety:
+  cell classification feeds the generation queue and population order *is* the world, so an
+  existence answer that moved in time would produce a different world. Held in place by the third
+  arm of `a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up`, which fills the same
+  seed three ways — inline, on a worker, and on a worker with the cache threaded and reading ahead —
+  and compares the trees chunk file for chunk file.
+- **a1.1.2 has no timed autosave, so the interval is ours.** From the jar: `ft.saveChunks(saveAll,
+  progress)` writes at most two dirty chunks per call when `saveAll` is false, and its only periodic
+  caller is the "Saving level.." screen reached from Save and quit to title; otherwise a chunk is
+  written when it falls out of the provider's 1024-slot table, synchronously, on the main thread.
+  Ours defaults to 45 seconds and covers dirty columns, `level.dat` (position, rotation and the
+  world clock), the `session.lock` refresh and — from M3 — player edits.
+- **Nothing is written outside a save**, and this was argued and then reversed. The first version
+  queued a generated column for writing the moment it was made, on the grounds that a power-off
+  would otherwise lose finished world *and lose it in a way regenerating cannot reproduce*:
+  population passes spill across chunk borders, so a column that comes back regenerated against
+  neighbours already marked `terrainPopulated` is missing whatever their passes had put into it.
+
+  That reasoning is sound and the conclusion was still wrong, because **the original has the same
+  hazard in a worse form**. `ft`'s table is indexed by `(x & 31, z & 31)`, so a chunk is only
+  written when something 32 chunks away collides with its slot and can otherwise sit unwritten for
+  an entire session; task-killing Alpha loses it identically. Writing eagerly made us safer than
+  a1.1.2 rather than correct where it was wrong, and it put a deflate and six file operations on
+  the card every time a column was finished. What bounds the exposure is the autosave interval,
+  which is what the interval is for. The one exception is memory: a dirty column cannot be evicted
+  because it is the only copy of that world, so over `dirtyCapBytes` the thread that dirtied it
+  writes one itself.
+- **A background thread's core is a platform decision, and it now carries a role.**
+  `mc::setWorkerThreadOps` in `core/util/worker.hpp` takes `WorkerRole::Generation` or
+  `WorkerRole::Io`, because the two want opposite things: generation is tens of milliseconds of pure
+  CPU and wants core 2 on a New 3DS, while I/O is almost entirely blocked in FS IPC and wants core 0
+  one priority step below the main thread, where it runs in the VBlank slack and cannot delay a
+  frame. It used to be a pair of statics on `WorldStreamer`; it moved out when the cache gained a
+  thread of its own.
 - **`opaque` and `opaqueCube` are two different columns and both are needed.** `opaque` is what
   `isOpaqueCube()` answers at runtime and drives face culling; `opaqueCube` is
   `Block.opaqueCubeLookup`, filled in the Block constructor, and is what world generation reads.
@@ -607,11 +660,18 @@ change the world, and a slower machine would produce a different one. Measured, 
 the same path produced **36 columns of world threaded against 48 inline**, disagreeing from the
 second column onwards.
 
-Four things were needed, and each was found by a test rather than by reasoning:
+Four things were needed, and each was found by a test rather than by reasoning. **The first of them
+was later revised on new evidence from the jar; see §0g.**
 
 - **A queue, not a fresh choice.** Picking "the nearest column still missing" each time the worker
   went idle made the choice depend on how far behind the generator was. The scan appends to a queue
-  in spiral order and the worker consumes it in order, one at a time.
+  in spiral order and the worker consumes it one at a time.
+  **Superseded in part — read §0g.** Consuming it *strictly oldest-first* turned out to strand a
+  player who outran the generator behind ground they had already left, and the jar shows a1.1.2
+  generates nearest-to-the-player: it has no queue at all, and the renderer that asks for chunks
+  sorts by distance. The queue's *membership* is still a function of the camera path alone and
+  nothing is ever dropped; which entry comes off it next is now the nearest. What that gives up is
+  threaded-equals-inline once a backlog exists — see §0g for why that hole was already there.
 - **Classification separated from loading.** Asking "does the world have this chunk" has a different
   answer before and after a sweep writes it, and the answer decides whether a column is generated.
   Every cell is now asked about once, and the grid is **three rings wider than the load radius** —
@@ -620,19 +680,27 @@ Four things were needed, and each was found by a test rather than by reasoning:
 - **Queue membership, not a flag on the cell.** The grid wraps, so a cell is recycled by whatever
   column lands on it next; a flag on it is lost when the camera moves far enough, and a column that
   came back was queued a second time.
-- **`jobDone_` in the post condition.** The worker can finish between the drain and the post in the
-  same frame, leaving the job neither pending nor active — the head was then handed out twice, two
-  completions arrived, two entries came off the queue, and the second was a column that was never
-  generated. A hole in the world that only appeared when the timing lined up.
+- **`jobDone_` in the post condition.** The worker could finish between the drain and the post in
+  the same frame, leaving the job neither pending nor active — the head was then handed out twice,
+  two completions arrived, two entries came off the queue, and the second was a column that was
+  never generated. A hole in the world that only appeared when the timing lined up.
+  **The flag no longer exists**: the worker takes its own next job, so nothing hands one out and
+  there is no window to guard. Kept here because the *shape* of the bug is worth remembering — two
+  threads agreeing on whose turn it is, through flags read a frame apart. See §0g.
 
-`a_worker_thread_produces_the_same_world_as_generating_inline` walks a fixed path with the camera
-moving *while generation is outstanding*, once on the worker and once inline, and compares every
-chunk file. The generation sequences are now identical, not merely the results.
+`a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` walks a fixed path, once on
+the worker and once inline, and compares every chunk file.
 
-**What is still path-dependent is the path**, and that is a1.1.2's own property rather than ours: the
+**Read §0g before relying on this.** The queue now takes the column nearest the camera rather than
+the oldest, so "same route, same world, on any machine" holds *while the generator keeps up* and not
+once it is behind — which is why the test settles at each waypoint and why its name says so. That is
+not a1.1.2's guarantee being given up: a1.1.2 keeps no queue and never falls behind, so it never has
+to make the choice at all.
+
+**What is path-dependent is the path**, and that *is* a1.1.2's own property rather than ours: the
 original populates a chunk when its quadrant happens to be resident, so two clients with the same
-seed and different routes have always produced different worlds. Same route, same world, on any
-machine — that is the guarantee, and it is the one the original gives.
+seed and different routes have always produced different worlds. What is a pure function of the seed
+is the land — height, caves, ores, the Far Lands — and that is checked against a real JVM.
 
 #### What is not closed
 
@@ -954,6 +1022,312 @@ buttons laid out top to bottom as **Back to game** (`h/4+24`), **Save and quit t
   offering it as a choice would describe a decision nobody is being given. The console line under the
   screen says it happens, and the world's teardown prints the original's own `Saving level..` while
   it does.
+
+### 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
+
+The symptom was a hitch whenever chunks loaded or unloaded, and the first guess was the SD card.
+The card is not the limiter. **Three separate pieces of SD work ran on the render thread, and a
+fourth blocked it through a lock**:
+
+| Where | What it was | What it cost |
+|---|---|---|
+| `classifyCell` | one `stat` per newly exposed cell, unbudgeted, over the whole grid | 625 on the first frame at distance 8, and ~25–49 *every time the camera crossed a chunk boundary* |
+| `loadColumn` | `open`+`fstat`+`read`+`close`, then a gzip inflate to ~46 KB, then `decodeChunk` | 1–2 a frame, inside the frame |
+| both | took `storageLock_` | which the generation worker held while it deflated and wrote a chunk file — `open`, `write`, `fsync`, `close`, `unlink`, `rename` |
+| `dropCell` | freed the column outright | and re-read it from the card if the player turned round |
+
+The stat storm is the one that lines up exactly with the symptom: a whole row of cells reclassified
+in one frame, one IPC round trip each, at every boundary.
+
+**A faster card fixes none of it.** A chunk file is 2,917 bytes at the median, so even at a
+pessimistic 5 MB/s the transfer is under a millisecond — the cost is four to six IPC round trips to
+the FS sysmodule plus FAT metadata, per operation. Which is what §7 of
+[3ds-performance.md](3ds-performance.md) already said: *the lever is the number of operations.*
+
+`core/world/chunk_cache.hpp` is now the only thing in the process that touches the storage slot, and
+it is three things that are the same table looked at three ways:
+
+- **A write-back cache.** A finished column is stored and written afterwards, so nothing that
+  dirties a column waits for a card. Coalescing falls out of it.
+- **A read-through cache with a retention ring and a read-ahead band.** `dropCell` gives the column
+  back instead of freeing it, and cells between the load radius and the classification ring are read
+  ahead on the I/O thread. Crossing a boundary, or turning round, then costs no SD operation at all.
+  This is **the original's own idea**: `ft` holds `new ga[1024]`, a 32×32 direct-mapped table
+  indexed by `(x & 31) + (z & 31) * 32` that saves the previous occupant of a slot. 1024 columns is
+  18.4 MB at our measured mean, which an Old 3DS heap does not have — hence a byte cap and LRU.
+- **An existence index, lazily built.** The layout puts a chunk in `<x & 63>/<z & 63>/`, so one leaf
+  directory holds only chunks spaced 64 apart and **one listing settles up to a thousand `hasChunk`
+  answers for the session**. The streamer lists the ring one chunk beyond its grid whenever the
+  centre moves, so the listing is there before the cell that needs it. This replaces the
+  "walk 4,096 directories at open and cache to a file" design in
+  [world-format.md](world-format.md), and is strictly cheaper: incremental, self-limiting to where
+  the player goes, no cache file, nothing to invalidate.
+
+**Columns are handed out as clones**, and that is what makes it simple: the cache keeps a shared
+immutable column, so there is never a moment when an entry exists but its contents have been handed
+to someone else, and no lock is held while 46 KB of NBT is built and deflated on the I/O thread. An
+18 KB clone against an SD read plus an inflate is not a close call. An entry whose column the grid
+takes and that the card already agrees with is dropped, so a resident column is not stored twice.
+
+**The I/O thread is core 0 at one priority step below the main thread**, on both consoles. It is
+almost always blocked in FS IPC, so a core of its own would be wasted — and core 2 is the generation
+worker's, which genuinely needs all of it. At a lower priority on core 0 it is preempted the instant
+the main thread is ready and runs in exactly the VBlank slack, so SD reads overlap with the GPU.
+
+#### When anything is actually written — and one reversal
+
+**Nothing reaches the card outside a save.** The saves are: the autosave interval, opening the pause
+menu, and leaving the world. That is deliberately the shape a1.1.2 has, and it is a reversal — the
+first version queued a generated column for writing the moment it was made. The argument for that
+was real: a power-off loses finished world, and it is lost in a way regenerating cannot reproduce,
+because population passes spill across chunk borders and a column regenerated against neighbours
+already marked `terrainPopulated` comes back missing whatever their passes had put into it.
+
+The conclusion was still wrong. **The original has that hazard in a worse form** — `ft`'s table is
+indexed by `(x & 31, z & 31)`, so a chunk is only written when something 32 chunks away collides
+with its slot, and can otherwise sit unwritten for an entire session. Eager writing made us safer
+than a1.1.2 rather than correct where it was wrong, and it cost a deflate and six file operations
+every time a column was finished. The autosave interval is what bounds the exposure; that is what
+the interval is for.
+
+The one thing that writes outside a save is memory pressure. A dirty column cannot be evicted — it
+is the only copy of that part of the world — so over `dirtyCapBytes` (4 MB, ~220 columns) whoever
+dirtied it performs a write itself. That is back-pressure paid by the generation worker, which is
+the thread that outran the card. It is never the main thread, and an M3 edit path reaching it should
+give up frame budget instead.
+
+**What a save writes**, beyond the dirty columns: `level.dat` and the `session.lock` refresh,
+neither of which had any trigger but `close()` — `refreshLock()` was written and never called,
+despite [world-format.md](world-format.md) saying to run it on a timer. And `level.dat` now carries
+**the player's position, rotation and the world clock**. Before this it was rewritten only to change
+`LastPlayed`, so a world always reopened at the position it was first entered at and at the time it
+was created: the fields were read at open and never written back. The clock is stored absolutely,
+because `Time` is a running tick count and the day is `Time % 24000` — saving the remainder would
+put the world back on day zero every time. From M3 the timer is also where player edits plug in, and
+that is where it genuinely pays: coalescing many edits to one column into one deflate is something
+eager writing cannot do.
+
+#### How it is held honest
+
+`a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` grew a third arm. The same seed and
+the same camera path, filled three ways — generation inline, generation on a worker, and the
+console's own configuration with the cache threaded and reading ahead — compared chunk file for
+chunk file. Its cache cap is set small enough that eviction happens during the run, because an entry
+evicted and re-read is where a stale answer would show. `tests/chunk_cache_test.cpp` covers the
+pieces underneath with a counting `FileSystem`, because "served from memory" and "read again"
+produce the same column and differ only in whether a file was opened.
+
+**ThreadSanitizer found one race on the first run**, and it was the same shape as the one it found
+in the generation worker: `ChunkCache::stats()` handed out a reference to counters the I/O thread
+writes, so every locked write raced an unlocked read. It returns a locked copy now. "It is only a
+counter" remains not a reason.
+
+#### What to read on the console
+
+A **Storage** page joins Info and Settings on SELECT+Y. The first row is the answer: `main` is
+main-thread microseconds inside a storage call and **is expected to read 0.0**.
+
+**Read the `now` column, not the total.** The cache's counters are cumulative, and the first version
+of this page showed only the totals — which on hardware read `main 4000 ms` over a session that felt
+perfectly smooth. Four seconds accumulated, not four seconds in a frame. Opening a world classifies
+the whole grid in one pass before any directory listing has landed, so it stats a few hundred chunks
+at once, and that cost then sits in the total for the rest of the session looking like a live fault.
+The page now shows the delta over one sample block beside each total: the delta is the diagnosis,
+the total is the history. A cumulative counter cannot answer "is it happening *now*", which is the
+only question this page exists to answer. It can be non-zero
+for exactly one reason — `hasChunk` fell back to a `stat` because a group was asked about before its
+listing arrived, which is what sprinting into unwalked ground does. A steady non-zero number means
+something else is reaching the card from inside the frame. After that, `hit` counts columns served
+with no SD operation and `pre` how many of those the read-ahead band earned rather than retention: a
+low `pre` with plenty of `hit` means the band is memory spent for nothing and can go to zero.
+
+### 0f. Revisited chunks not drawing — a stale `published` flag
+
+Reported from hardware after §0e: walking away from chunks and back left some columns not drawing at
+all and others apparently cut off at sea level, and **changing the render distance put it right**.
+That last detail is the whole diagnosis. `setMeshDistance` rebuilds the field, resets every cell's
+`published` flag and republishes the grid, so whatever was wrong lived in the streamer's record of
+what the renderer had — not in the columns, the cache or the meshes.
+
+**Three defects**, all of them in how the streamer and the renderer agree on who holds what,
+and none of them in the chunk cache. Any one alone reproduces part of the symptom.
+
+**`published` was a claim about the renderer that the renderer could invalidate on its own.** The
+`SectionField` wraps modulo the render distance, so a column one ring outside it shares a cell with
+the column on the opposite side. When that one is published, `publishColumn` releases the outgoing
+occupant's meshes and takes the cell — and nothing tells `WorldStreamer`, whose `Cell::published`
+still says yes. Walk out past the render distance and back and `publishIfReady` returns early on a
+flag that is now a lie: the field holds somebody else, the walk finds the cell occupied by a
+different column, `isLoaded` says no, and the column is never drawn. The streamer's grid is three
+rings wider than what it loads, so the band where this happens is several chunks of ordinary walking
+wide.
+
+The flag is now advisory: it is believed only when `ChunkRenderer::hasColumn` agrees, which is one
+lookup.
+
+**Nothing republished when the camera moved.** `publishIfReady` was only ever called where something
+*arrived* — the nine cells around a freshly read column, or the whole grid when a generated one was
+adopted. Walking back over ground that is already in memory and already on the card does neither:
+nothing loads, nothing generates, so nothing publishes. That is why the symptom needed *revisiting*
+rather than merely arriving, and why it was quiet in a world still being generated — there, the
+adopt sweep was hiding it by republishing the grid constantly. `update()` now sweeps the spiral once
+per chunk-boundary crossing, after classification so a newly exposed neighbour has a state for
+`neighboursReady` to read.
+
+**A readopted column inherited meshes that were not its own.** The renderer keeps a column's meshes
+when the *same* column is published again — that is what a neighbour arriving should do — and it
+decides "same" by comparing coordinates, which is all it can see. A column that left the render
+distance, was dropped from the grid while it was out there, and has since been read back in has the
+same coordinates and none of the same meshes: their pool slots went to other sections long ago.
+Republished as "the same column" it keeps those slots and draws whatever is in them now — the
+likeliest source of the sections that came back *wrong* rather than absent. `Cell` now carries
+`freshlyAdopted`, and such a column is dropped from the field before it is published, so the
+renderer treats it as an arrival.
+
+Tracing that one also explained why the failing test *hung* instead of reporting a difference: when
+the field holds a column the streamer no longer has, `meshSection` returns without marking anything,
+so the walk queues those sections again every frame for ever. On a console that is the mesh budget
+being spent on sections that can never finish — its own reason for chunks not appearing. A fresh
+adopt clearing the field entry bounds it again.
+
+**None of the three is new** — all predate the chunk cache, and the retention ring only made
+revisiting ordinary enough to notice. Worth saying plainly, because the obvious suspect was the
+cache and it was not the cache.
+
+`revisiting_a_column_meshes_it_to_exactly_what_it_was` holds it: it walks out just past the render
+distance and back one chunk at a time, then compares every section's mesh byte count against what it
+was the first time — including the sections that legitimately mesh to nothing, since a section
+wrongly marked `kEmptyMesh` is one that never comes back. **The distance is the test**: an earlier
+version teleported 64 chunks away, which drops every cell from the grid and forces a clean reload,
+and it passed against the broken code.
+
+It was checked both ways rather than only against the fix, which is the only thing that makes a
+regression test worth having: with the three changes reverted the same test does not finish in 300
+seconds, and with them it passes in a few.
+
+`tests/framework.cpp` grew a substring filter for that — `./build-host/3dalpha_tests revisit` runs
+one case. Proving a fix by running a five-minute suite is how a fix stops being proved.
+
+### 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
+
+Reported from hardware after §0f: flying around leaves a **border of chunks that never fill**, a few
+appear if you wait a long time, and it comes right much later. Higher render distances let you cover
+more ground before it starts.
+
+Measured on the host, sprinting at distance 8 for 6,000 frames:
+
+| | |
+|---|---|
+| columns generated | 646 |
+| columns still queued | **702** |
+| ...of those, already out of range | **341** |
+| columns owed inside the load radius | **361** — the whole 19×19 |
+| refused by the queue cap | 0 |
+| classification gated | no |
+
+Neither the cap nor the gate. The queue was **strictly FIFO**, so a player who outran the generator
+was queued behind every column they had already passed: the ground under their feet sat behind 341
+columns of ground they had left. That is the border; that is why waiting yields "a few"; that is why
+it comes right once the backlog drains.
+
+`pumpGeneration` now takes the queued column **nearest the camera**. Nothing is dropped — a column
+that has gone out of range is still generated, just after the ones the player can see — so the set
+of columns the world ends up with is still a function of the camera path alone.
+
+#### Why that is a correction rather than a deviation
+
+The FIFO rule was a settled decision, so it needed evidence rather than an argument. Two things,
+and the second is the one that actually settles it.
+
+**a1.1.2 generates nearest-to-the-player.** `ft.b` (`provideChunk`) loads the chunk and, failing
+that, calls the generator **inline on the game thread**; class `e` (`RenderGlobal`) runs
+`Arrays.sort(worldRenderers, new RenderSorter(player))` before rebuilding them — comparator `fb`,
+ordering on `WorldRenderer.a(Entity)` ascending. Nearest first.
+
+**a1.1.2 has no queue at all**, and that is the load-bearing fact. It re-derives what it wants every
+frame from where the player is *now*; there is no memory of requests made from an old position. So
+the natural asynchronous form of a1.1.2 is not a FIFO queue — it is "nearest to the player,
+re-evaluated continuously", which is what this now does. **The FIFO queue was our invention**, and
+inventing it is what built the border.
+
+The freeze a1.1.2 shows when you move faster than it can generate is a technical limitation of
+generating inline, in the same category as lag — not a design decision to be faithful to. An
+a1.1.2 that did not freeze, moving at the speed our free-fly camera moves, would behave the way this
+does now.
+
+#### What that costs, stated plainly
+
+**Threaded no longer equals inline once a backlog exists.** With a backlog, which column is nearest
+depends on where the camera got to, so a slower console makes a different world than a faster one
+from the same seed and the same path.
+
+That property was never a1.1.2's either — the hypothetical unfrozen a1.1.2 above loses it too. It
+was a property of *our own asynchrony*, bought with the queue, and paid for with the border. Worth
+recording that the old arrangement did not fully have it anyway: the queue **cap** refuses a column
+when the queue is full and lets it be re-enqueued later, at a position that depends on how fast the
+worker drained, so the guarantee already had a hole in it exactly when the queue was under pressure.
+
+**What still holds, and should not be overstated in either direction:**
+
+- **Terrain is seed-exact and path-independent.** Height, caves, ores, the Far Lands are a pure
+  function of the seed and the chunk coordinate, verified byte-for-byte against a real JVM in
+  `generate_test`. A seed typed on a PC still makes the same land.
+- **Population has always been path-dependent**, in a1.1.2 as much as here: walk a different route
+  and the trees fall differently. What is new is that it is now also *speed*-dependent when the
+  generator is behind.
+- **Nothing is lost.** Every column that is owed is still generated, just in a different order.
+
+`a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` is the old three-way test with
+its premise corrected: it settles at each waypoint, so the generator is never behind, and all three
+arms must still agree chunk file for chunk file. That is the regime the game is in whenever a player
+is moving at a speed a person moves at, and it still catches what the test was written for — a
+column handed out twice, a sweep reaching ground the synchronous path never would.
+
+`the_ground_under_a_stopped_camera_is_made_before_the_ground_it_left` is the new one. It outruns the
+generator on purpose, stops, and counts **columns generated** — not frames or seconds, which would
+measure the host — before the area around the camera is complete. Checked both ways: **1 second with
+nearest-first, and over four minutes without finishing under oldest-first.**
+
+#### Considered and rejected: clamping the camera at the frontier
+
+Holding the camera where the world is not made yet would keep the generator from ever falling
+behind, which would keep FIFO and nearest-first identical and preserve everything above. It was
+rejected: a1.1.2's freeze is a limitation rather than an intent, and reproducing it as a movement
+restriction would be porting the limitation instead of the game. It is also worth noting for
+whoever revisits this that at a1.1.2's actual movement speeds the generator keeps up anyway — the
+border is reachable because the M2 free-fly camera does 12 blocks a second, and 40 sprinting, which
+is several times what a player on foot does. M3's player body may make the whole question quiet.
+
+#### And the throughput cap it was hiding: one column per rendered frame
+
+Found while measuring the above and fixed after it. `pumpGeneration` ran once per `update()` and
+posted at most one job, so **generation was capped at one column per rendered frame** — thirty a
+second at thirty frames a second — however fast the worker actually was. On a New 3DS the worker has
+core 2 to itself and can beat that, and every column it could have made and did not is a frame the
+frontier stays empty.
+
+The worker takes its own next job now. `pumpGeneration` no longer dispatches; it publishes the
+camera position under `queueLock_` and wakes the thread. The queue moved under that lock with it,
+since both threads reach it, and finished coordinates come back through a list rather than a single
+`inFlight_` slot — more than one column can finish between two frames, which is the point.
+`jobPending_` and `jobDone_` are gone; the handshake they guarded no longer exists.
+
+**The rule is unchanged: one column at a time, nearest to the camera.** The realised sequence does
+change, in that finishing three columns between two frames means the camera moved less between the
+picks. That is the same speed-dependence nearest-first already accepted rather than a new kind of
+it, and `a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` still passes — at a
+settled centre the order converges to distance order whatever the rate, which is why that test
+settles at each waypoint.
+
+One thing the change had to add: `waitForWorkerIdle` now **pauses** the queue before waiting.
+Waiting for "not busy" without stopping the worker handing itself more work is a wait that never
+ends on a full queue, and `setMeshDistance` calls it to grow the generator's cache — moving a table
+the worker walks. `resumeGeneration()` lets it go again.
+
+Measured on the same 6,000-frame sprint at distance 8: **619 columns generated against 522–546**
+before, 43 resident columns against 16, and the settle point moved from frame 1632 to 1487. The host
+worker was never the bottleneck, so that is the floor of what this buys; the console, where a frame
+is 33 ms and a column is tens of milliseconds, is where the cap actually bit.
 
 ### 1. Run it on a console
 

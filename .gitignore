@@ -1,3 +1,20 @@
+# Build directories (CMake out-of-source builds)
+/build/
+/build-*/
+/out/
+/cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CTestTestfile.cmake
+cmake_install.cmake
+install_manifest.txt
+CMakeUserPresets.json
+compile_commands.json
+Testing/
+
 # Prerequisites
 *.d
 
@@ -13,6 +30,7 @@
 
 # Compiled Dynamic libraries
 *.so
+*.so.*
 *.dylib
 *.dll
 
@@ -30,3 +48,22 @@
 *.exe
 *.out
 *.app
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

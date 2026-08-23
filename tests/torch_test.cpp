@@ -309,8 +309,8 @@ TEST(torch_sides_take_the_whole_tile)
     const int originU = (tile & 15) << 4;
     constexpr int kTexel = mesh::kUvUnitsPerTile / 16;
 
-    CHECK_EQ(int(negX[0].u), originU * kTexel);
-    CHECK_EQ(int(negX[2].u), (originU + 16) * kTexel);
+    CHECK_EQ(int(negX[0].u), originU * kTexel + mesh::kUvInset);
+    CHECK_EQ(int(negX[2].u), (originU + 16) * kTexel - mesh::kUvInset);
 
     // v runs downward, so the tile's top row is the quad's top edge.
     CHECK(negX[0].v < negX[1].v);
@@ -330,8 +330,8 @@ TEST(torch_reads_face_zero_and_not_the_blocks_bare_texture)
 
     const int tile = block::def(kRedstoneTorch).faces[0];
     constexpr int kTexel = mesh::kUvUnitsPerTile / 16;
-    CHECK_EQ(int(negX[0].u), ((tile & 15) << 4) * kTexel);
-    CHECK_EQ(int(negX[0].v), (tile & 240) * kTexel);
+    CHECK_EQ(int(negX[0].u), ((tile & 15) << 4) * kTexel + mesh::kUvInset);
+    CHECK_EQ(int(negX[0].v), (tile & 240) * kTexel + mesh::kUvInset);
 }
 
 TEST(a_light_emitting_torch_is_drawn_full_bright_regardless_of_its_cell)

@@ -114,6 +114,58 @@ inline constexpr int kAtlasTileCount = kAtlasTilesPerEdge * kAtlasTilesPerEdge;
 // and 16384 was chosen over 32768 so the far edge still fits a signed short.
 inline constexpr int kUvUnitsPerAtlas = 16384;
 inline constexpr int kUvUnitsPerTile = kUvUnitsPerAtlas / kAtlasTilesPerEdge;
+// 16 texels to a tile, which is the pre-1.5 layout kAtlasTilesPerEdge already
+// assumes; core/texture/ names the same number but is not included here.
+inline constexpr int kUvUnitsPerTexel = kUvUnitsPerTile / 16;
+
+// **A quad's UVs stop an eighth of a texel short of its tile, and that is a fix
+// for hardware rather than a matter of taste.**
+//
+// Emitting the tile's exact edges -- u from c/16 to (c+1)/16, which 1024 units
+// over 16384 expresses exactly -- puts a sample on the boundary between two
+// tiles, and the PICA does not reliably resolve which side of it a fragment is
+// on. On a real console this showed as **one texel row of every block face
+// drawn from somewhere other than its tile**, at the tile's v = 0 edge and no
+// other: the top edge of all four side faces and the -Z edge of the top and
+// bottom faces, which is exactly where kFaceCornerUV puts v = 0. It is the low
+// v end and not the high one because `Atlas::init` uploads flipped, so the
+// sampled v axis runs opposite to memory and the rounding falls off the other
+// end.
+//
+// **The inset fixed that and did not fix the thing that looked like it.** A
+// gray line stayed on the top row of grass, dirt, stone and the flowers -- the
+// tiles in atlas *row 0*, and no others -- because the atlas's own v = 0 edge
+// is the last row in memory and the display transfer that used to tile the
+// upload lost it. That was a bad texture, not a bad UV; see
+// `platform/ctr/textures.cpp` and docs/status.md. Keep the two apart: the inset
+// answers "which tile does this fragment read", the upload answers "what is in
+// the tile".
+//
+// An eighth of a texel, not a half. Half is the usual inset and it lands the
+// face exactly on texel centres, but with GPU_NEAREST it also makes the first
+// and last texel of a magnified face half as wide as the fourteen between them,
+// which is visible with a block against the camera. Eight units of the 64 in a
+// texel clears the boundary by a margin some four hundred times the
+// interpolator's error over a one-tile span, and costs an eighth of a texel of
+// edge width that nothing can see.
+//
+// Fluid is deliberately not inset: `core/mesh/fluid.cpp` reads across a tile
+// boundary on purpose for the flowing top face, so the rule here does not apply
+// to it. See docs/3ds-performance.md.
+inline constexpr int kUvInset = kUvUnitsPerTexel / 8;
+
+// The inset UV range of one tile along one axis, in tile-grid coordinates.
+// Every emitter that maps a whole tile onto a quad goes through these two, so
+// the inset cannot be applied in one place and forgotten in another.
+constexpr i16 tileUvMin(int tileAxis)
+{
+    return static_cast<i16>(tileAxis * kUvUnitsPerTile + kUvInset);
+}
+
+constexpr i16 tileUvMax(int tileAxis)
+{
+    return static_cast<i16>((tileAxis + 1) * kUvUnitsPerTile - kUvInset);
+}
 
 struct WorldVertex {
     i16 u, v;    // atlas coordinates, 1/16384 units

@@ -8,6 +8,7 @@
 // day/night free -- see docs/3ds-performance.md section 1b. The fog LUT is 128
 // entries built once per render distance.
 
+#include "core/texture/atlas_image.hpp"
 #include "core/util/types.hpp"
 
 #include <citro3d.h>
@@ -15,16 +16,24 @@
 namespace mc::ctr {
 
 // 16x16 tiles of 16 px, which is the pre-1.5 terrain.png layout the mesher's
-// UVs assume (core/mesh/vertex.hpp: kAtlasTilesPerEdge).
-inline constexpr int kAtlasTilesPerEdge = 16;
-inline constexpr int kAtlasTilePixels = 16;
-inline constexpr int kAtlasEdge = kAtlasTilesPerEdge * kAtlasTilePixels;
+// UVs assume. Aliases of core/texture/atlas_image.hpp rather than a second
+// definition: an atlas assembled in core and an atlas uploaded here have to
+// agree on its size or the display transfer reads past the buffer.
+inline constexpr int kAtlasTilesPerEdge = texture::kAtlasTilesPerEdge;
+inline constexpr int kAtlasTilePixels = texture::kAtlasTilePixels;
+inline constexpr int kAtlasEdge = texture::kAtlasEdge;
 
 class Atlas {
 public:
-    // Builds the placeholder pack. False when there is no VRAM for it, which is
-    // fatal for rendering and worth saying so rather than drawing untextured.
-    bool init();
+    // Uploads an assembled atlas -- a pack's terrain.png, or the generated Dev
+    // Art, both built by core/texture/. False when there is no VRAM for it,
+    // which is fatal for rendering and worth saying so rather than drawing
+    // untextured.
+    //
+    // **The image is R,G,B,A in memory and the GPU wants A,B,G,R.** The
+    // reversal happens here, in the one loop that fills the linear staging
+    // buffer, and nowhere else. See the note in the implementation.
+    bool init(const texture::AtlasImage& image);
     void shutdown();
 
     // The debug wireframe, built on first use and kept afterwards.

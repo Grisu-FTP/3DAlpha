@@ -14,7 +14,6 @@ namespace {
 // One atlas texel. Tiles are 16x16 and a tile is kUvUnitsPerTile, so the
 // original's pixel-denominated UV arithmetic converts by a constant.
 static_assert(kUvUnitsPerTile % 16 == 0, "a tile must be a whole number of texels");
-constexpr int kUvUnitsPerTexel = kUvUnitsPerTile / 16;
 
 // The original insets the far edge of a fluid's side texture by 0.01 of a
 // texel, to keep a filtered sample off the next tile. That is 0.64 of our UV

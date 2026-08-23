@@ -65,10 +65,16 @@ WorldVertex expandCorner(const QuadVertex& q, int corner)
     v.z = u8(q.z + b.base[2] + i * b.e1[2] + j * b.e2[2]);
     v.face = q.face;
 
-    // u = tileX + i tiles; v = tileY + (1 - uvSign)/2 + j*uvSign tiles.
+    // u = tileX + i tiles; v = tileY + (1 - uvSign)/2 + j*uvSign tiles -- and
+    // both pulled kUvInset back off the tile boundary, which quad.v.pica does
+    // with `insetP`/`insetN` for u and with uvSign * inset for v. The direction
+    // has to follow which end of the tile the corner is on, or the two formats
+    // would texture a block differently and only hardware would say so.
     const int vTile = (1 - b.uvSign) / 2 + j * b.uvSign;
-    v.u = i16((int(q.tileX) + i) * mesh::kUvUnitsPerTile);
-    v.v = i16((int(q.tileY) + vTile) * mesh::kUvUnitsPerTile);
+    v.u = i16((int(q.tileX) + i) * mesh::kUvUnitsPerTile
+              + (i == 0 ? mesh::kUvInset : -mesh::kUvInset));
+    v.v = i16((int(q.tileY) + vTile) * mesh::kUvUnitsPerTile
+              + (vTile == 0 ? mesh::kUvInset : -mesh::kUvInset));
 
     const u8 shade = mesh::kFaceShade[q.face];
     v.r = shade;

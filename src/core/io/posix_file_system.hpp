@@ -24,6 +24,7 @@ public:
     bool writeFileAtomic(const char* path, ConstByteSpan data) override;
     bool exists(const char* path) override;
     bool isDirectory(const char* path) override;
+    bool fileSize(const char* path, usize* out) override;
     bool makeDirectories(const char* path) override;
     bool removeFile(const char* path) override;
     bool removeDirectory(const char* path) override;

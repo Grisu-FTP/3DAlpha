@@ -1,5 +1,7 @@
 #include "core/world/world_list.hpp"
 
+#include "core/util/fat_name.hpp"
+
 #include "version_slots.hpp"
 
 #include <algorithm>
@@ -144,37 +146,10 @@ std::string defaultWorldName(const std::vector<WorldEntry>& existing)
 
 bool sanitizeWorldName(std::string_view typed, std::string* out)
 {
-    out->clear();
-    for (const char c : typed) {
-        const u8 byte = u8(c);
-        // FAT's reserved set, plus every control character and DEL. Bytes above
-        // 0x7F are kept: the card's long-name entries are UTF-16 and libctru
-        // transcodes, so an accented world name is fine.
-        if (byte < 0x20 || byte == 0x7F) {
-            continue;
-        }
-        if (std::strchr("\\/:*?\"<>|", c) != nullptr) {
-            continue;
-        }
-        if (c == ' ' && (out->empty() || out->back() == ' ')) {
-            continue;  // no leading name and no doubled spaces
-        }
-        out->push_back(c);
-        if (out->size() >= 63) {
-            break;
-        }
-    }
-
-    // Trailing spaces and dots: FAT stores them, Windows refuses to open what
-    // it made, and a name that is only dots is "." or ".." to every listing
-    // there is.
-    while (!out->empty() && (out->back() == ' ' || out->back() == '.')) {
-        out->pop_back();
-    }
-    while (!out->empty() && out->front() == '.') {
-        out->erase(out->begin());
-    }
-    return !out->empty();
+    // The rule lives in core/util/fat_name.cpp now: the pack importer needs the
+    // same one for a pack file's name, and two copies of "which bytes will a
+    // card accept" is two chances to get it subtly different.
+    return util::sanitizeFatName(typed, out);
 }
 
 bool deleteWorld(io::FileSystem& fs, std::string_view worldDir)

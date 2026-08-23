@@ -195,8 +195,16 @@ flight, not just at spawn — fragmentation shows up over minutes.
 The process is a shell around this loop rather than the loop itself: `C3D_Init`, then menu, then
 game, then menu again, with the menu owning its own frame loop while it is up (citro2d, top screen,
 one target it creates and gives back around each visit) and `runGame` owning the one below. START
-leaves the game for the menu; only the title screen's Quit ends the process. See
+opens the **pause menu** — Resume, Options, Exit World — which is the *same* `Menu` object running
+the *same* frame loop over a world that is still open, so the world is genuinely stopped while it is
+up; Exit World leaves for the main menu and only the title screen's Quit ends the process. See
 `platform/ctr/menu.hpp`.
+
+**A menu takes the top screen and does not hand it back.** citro3d holds one linked target per
+screen output, so the menu's own target evicts the left eye and deleting it leaves the slot empty —
+`Renderer::reclaimScreen()` is what re-links both eyes and re-syncs `gfxSet3D` after every pause.
+Nothing needed it while a Renderer was built and torn down around each menu visit; a pause menu is
+the first thing that outlives one.
 
 ```
 poll input, HID + touch

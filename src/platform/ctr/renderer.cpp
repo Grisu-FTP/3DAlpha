@@ -1,6 +1,7 @@
 #include "platform/ctr/renderer.hpp"
 
 #include "core/mesh/vertex.hpp"
+#include "core/texture/dev_art.hpp"
 
 #include <3ds.h>
 
@@ -309,7 +310,18 @@ bool Renderer::init(const Config& config, bool isNew3DS)
     }
     GSPGPU_FlushDataCache(indices_, u32(usize(maxIndices) * sizeof(u16)));
 
-    if (!atlas_.init() || !lightmap_.init()) {
+    // Dev Art when nothing was handed in, so a caller with no menu in front of
+    // it still gets a textured world. Building it here rather than holding a
+    // static keeps the 256 KB off .bss for the ordinary case, where the menu
+    // has already built one.
+    texture::AtlasImage fallback;
+    if (config_.atlas == nullptr) {
+        texture::buildDevArt(&fallback.rgba);
+    }
+    const texture::AtlasImage& atlasImage =
+        config_.atlas != nullptr ? *config_.atlas : fallback;
+
+    if (!atlas_.init(atlasImage) || !lightmap_.init()) {
         return false;
     }
 
@@ -370,6 +382,51 @@ bool Renderer::setWireframe(bool on)
     }
     wireframe_ = on;
     return true;
+}
+
+void Renderer::reclaimScreen()
+{
+    // Both eyes, though only the left one can have been displaced -- the menu
+    // draws in 2D and never creates a right-eye target. Re-linking the right
+    // one costs a store and a queue drain outside a frame, and it means this
+    // says "the eyes own the top screen" rather than "the left eye probably
+    // lost it".
+    C3D_RenderTargetSetOutput(eye_[0], GFX_TOP, GFX_LEFT, kDisplayTransferFlags);
+    C3D_RenderTargetSetOutput(eye_[1], GFX_TOP, GFX_RIGHT, kDisplayTransferFlags);
+
+    stereo_ = false;
+}
+
+bool Renderer::setAtlas(const texture::AtlasImage& image)
+{
+    // The old texture is handed back *first*. Atlas::init asks for VRAM before
+    // it will settle for linear, and holding 256 KB of the old one while the
+    // new one asks would quietly demote the new one to linear on a console
+    // that is close to full -- a silent bandwidth loss with no symptom to
+    // trace it by.
+    atlas_.shutdown();
+
+    if (atlas_.init(image)) {
+        // shutdown() took the outline atlas with it. The setting survives the
+        // swap or it does not, but it must not survive as a flag with nothing
+        // behind it -- bind() would fall back to the real atlas and the
+        // wireframe would be on and invisible.
+        if (wireframe_ && !atlas_.ensureWireframe()) {
+            wireframe_ = false;
+        }
+        return true;
+    }
+
+    // The upload failed with the old texture already given back, so there is
+    // nothing bound at all. Dev Art is generated rather than read off a card,
+    // which makes it the one atlas that cannot fail for want of a file; if even
+    // this will not fit there is no memory left and the next frame has larger
+    // problems than its colours.
+    texture::AtlasImage devArt;
+    texture::buildDevArt(&devArt.rgba);
+    atlas_.init(devArt);
+    wireframe_ = false;
+    return false;
 }
 
 void parkShaderProgram()
@@ -737,6 +794,14 @@ void Renderer::drawFrame(const Camera& camera)
 
     C3D_CullFace(GPU_CULL_BACK_CCW);
     C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
+
+    // Stated rather than inherited. drawEye leaves this exactly here on its way
+    // out of the translucent pass, so within a run of frames it is already
+    // right -- but the *first* frame after anything else has drawn inherits
+    // whatever that left, and citro2d leaves src-alpha blending on. That used
+    // to happen once, on the way out of the main menu; with a pause menu it
+    // happens every time a player resumes.
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
 
     atlas_.bind(0, wireframe_);
     lightmap_.bind(1);

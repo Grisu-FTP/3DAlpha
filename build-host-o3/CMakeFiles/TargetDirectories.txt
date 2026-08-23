@@ -1,6 +1,0 @@
-/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles/3dalpha_core.dir
-/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles/3dalpha.dir
-/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles/3dalpha_tests.dir
-/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles/test.dir
-/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles/edit_cache.dir
-/home/grisu/Documents/GitHub/3DAlpha/build-host-o3/CMakeFiles/rebuild_cache.dir

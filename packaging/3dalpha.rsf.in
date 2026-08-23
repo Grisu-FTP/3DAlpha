@@ -6,8 +6,11 @@ BasicInfo:
   ProductCode                   : "@PRODUCT_CODE@"
   Logo                          : Homebrew
 
-RomFs:
-  RootPath                      : romfs
+# No RomFs section: nothing ships inside the title. Game data is compiled in
+# and the only user-supplied files (texture packs, sounds) are read from
+# sdmc:/3dalpha -- see docs/assets.md. makerom fails outright on a RootPath
+# that does not exist, so this stays absent until there is something to put
+# in it (licences.txt is the first candidate).
 
 TitleInfo:
   Category                      : Application
@@ -55,6 +58,104 @@ AccessControlInfo:
   DescVersion                   : 2
   ReleaseKernelMajor            : "02"
   ReleaseKernelMinor            : "33"
+
+  # The kernel checks every SVC against this list and kills the process on one
+  # it did not grant, so an exheader without it does not merely warn -- makerom
+  # refuses to build. This is the standard homebrew set: everything libctru
+  # reaches for at runtime and nothing that creates or inspects other
+  # processes. Numbers are the SVC ids from 3dbrew, in decimal.
+  SystemCallAccess:
+    ArbitrateAddress: 34
+    Break: 60
+    CancelTimer: 28
+    ClearEvent: 25
+    ClearTimer: 29
+    CloseHandle: 35
+    ConnectToPort: 45
+    ControlMemory: 1
+    CreateAddressArbiter: 33
+    CreateEvent: 23
+    CreateMemoryBlock: 30
+    CreateMutex: 19
+    CreateSemaphore: 21
+    CreateThread: 8
+    CreateTimer: 26
+    DuplicateHandle: 39
+    ExitProcess: 3
+    ExitThread: 9
+    GetCurrentProcessorNumber: 17
+    GetHandleInfo: 41
+    GetProcessId: 53
+    GetProcessIdOfThread: 54
+    GetProcessIdealProcessor: 6
+    GetProcessInfo: 43
+    GetResourceLimit: 56
+    GetResourceLimitCurrentValues: 58
+    GetResourceLimitLimitValues: 57
+    GetSystemInfo: 42
+    GetSystemTick: 40
+    GetThreadContext: 59
+    GetThreadId: 55
+    GetThreadIdealProcessor: 15
+    GetThreadInfo: 44
+    GetThreadPriority: 11
+    MapMemoryBlock: 31
+    OutputDebugString: 61
+    QueryMemory: 2
+    ReleaseMutex: 20
+    ReleaseSemaphore: 22
+    ReplyAndReceive: 79
+    ReplyAndReceive1: 75
+    ReplyAndReceive2: 76
+    ReplyAndReceive3: 77
+    ReplyAndReceive4: 78
+    SendSyncRequest: 50
+    SendSyncRequest1: 46
+    SendSyncRequest2: 47
+    SendSyncRequest3: 48
+    SendSyncRequest4: 49
+    SetThreadPriority: 12
+    SetTimer: 27
+    SignalEvent: 24
+    SleepThread: 10
+    UnmapMemoryBlock: 32
+    WaitSynchronization1: 36
+    WaitSynchronizationN: 37
+
+  # Same rule for services: a name absent here makes srvGetServiceHandle fail
+  # at runtime. ptm:sysm is the one that is easy to miss and specific to this
+  # project -- osSetSpeedupEnable() goes through PTMSYSM, so dropping it costs
+  # the New 3DS clock silently.
+  ServiceAccessControl:
+    - APT:U
+    - ac:u
+    - am:net
+    - boss:U
+    - cam:u
+    - cecd:u
+    - cfg:nor
+    - cfg:u
+    - csnd:SND
+    - dsp::DSP
+    - frd:u
+    - fs:USER
+    - gsp::Gpu
+    - gsp::Lcd
+    - hid:USER
+    - http:C
+    - ir:USER
+    - ir:rst
+    - ir:u
+    - mic:u
+    - ndm:u
+    - news:u
+    - nwm::UDS
+    - ptm:sysm
+    - ptm:u
+    - pxi:dev
+    - soc:U
+    - ssl:C
+    - y2r:u
 
 SystemControlInfo:
   SaveDataSize                  : 0KB   # worlds live on SD, not in title savedata

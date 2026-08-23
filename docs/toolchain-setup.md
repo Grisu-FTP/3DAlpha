@@ -37,7 +37,10 @@ ls $DEVKITPRO/libctru/lib/libcitro3d.a
 `.3dsx` builds work with what's installed. **CIA packaging does not**: devkitPro does not distribute
 `makerom` or `bannertool`, so neither is on this machine. Both come from
 [3DSGuy/Project_CTR](https://github.com/3DSGuy/Project_CTR) (or a maintained community fork) and go
-somewhere on `PATH`.
+somewhere on `PATH`. CI builds `makerom` from source at a pinned tag rather than downloading the
+release binary, which is linked against a newer glibc than the devkitPro image has — see
+[build-versions.md §CI](build-versions.md#ci). `bannertool` is not needed: the icon comes from
+`ctr_generate_smdh` and the CIA takes it with `-icon`.
 
 This matters as soon as multiple versions are in play: `.3dsx` files coexist by filename, but
 installing several versions onto the HOME menu at once requires CIAs with distinct title IDs — see
@@ -85,7 +88,17 @@ file so neither can silently drift.
 ## Packaging: the RSF file
 
 An RSF template drives `makerom`; `tools/configure.py` substitutes the per-version `Title`,
-`ProductCode` and `UniqueId` into it. The shared settings that matter for performance:
+`ProductCode` and `UniqueId` into it.
+
+Two exheader sections are **mandatory** and were missing until the CI build first exercised this
+path: `SystemCallAccess` and `ServiceAccessControl`. Without them `makerom` does not warn, it fails
+(`[EXHEADER ERROR] Parameter Not Found`). Both are the standard homebrew lists, with one entry that
+is specific to us: **`ptm:sysm`**, because `osSetSpeedupEnable()` goes through PTMSYSM — leave it
+out and the New 3DS clock is lost silently. There is also no `RomFs` section: nothing ships inside
+the title (see [assets.md](assets.md)), and `makerom` fails outright on a `RootPath` that does not
+exist.
+
+The shared settings that matter for performance:
 
 ```
 SystemModeExt  : 124MB    # New 3DS extended memory

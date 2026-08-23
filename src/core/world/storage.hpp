@@ -30,6 +30,25 @@
 //
 //   bool forEachChunk(void* context, ChunkVisitor visit);
 //
+//   u32  chunkGroupKey(i32 x, i32 z) const;
+//   bool listChunkGroup(i32 x, i32 z, void* context, ChunkVisitor visit);
+//
+// The last two are what lets a cache answer "does the world have this chunk"
+// without a `stat` per chunk, and without knowing the on-disk layout.
+//
+// A **group** is the set of chunks whose existence one listing answers. For the
+// Alpha format that is a leaf directory -- `<x & 63>/<z & 63>` -- so a group
+// holds only chunks spaced 64 apart, and one listing settles every one of them
+// for the rest of the session. `chunkGroupKey` names the group a chunk belongs
+// to; two chunks with the same key are answered by the same listing.
+// `listChunkGroup` reports every chunk in the group containing (x, z), and
+// succeeds on a group that does not exist on disk yet -- an empty group is an
+// answer, not a failure.
+//
+// A backend whose existence check is already cheap (a packed region's header is
+// its own index) may give every chunk its own key and report just that chunk,
+// which degenerates to one `hasChunk` per question and stays correct.
+//
 // `nowMillis` is passed in rather than read from a clock. Core has no clock
 // seam, the value only ever lands in session.lock and LastPlayed, and tests
 // need it to be deterministic.

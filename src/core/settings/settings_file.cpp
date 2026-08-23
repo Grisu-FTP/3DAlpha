@@ -28,8 +28,18 @@ std::string_view trim(std::string_view text)
 // A decimal integer, or false. Deliberately not atoi: "12abc" is a line
 // somebody mistyped, and taking the 12 out of it silently is worse than
 // ignoring the line.
+//
+// A leading '-' is accepted because the settings that mean "not chosen yet"
+// say so with -1, and a value the game writes has to be one the game can read
+// back -- otherwise the file round-trips through the parse failure rather than
+// through the parser, which works by accident and stops working the moment
+// anything else reads it.
 bool parseInt(std::string_view text, int* out)
 {
+    const bool negative = !text.empty() && text.front() == '-';
+    if (negative) {
+        text.remove_prefix(1);
+    }
     if (text.empty() || text.size() > 9) {
         return false;
     }
@@ -40,7 +50,7 @@ bool parseInt(std::string_view text, int* out)
         }
         value = value * 10 + (c - '0');
     }
-    *out = value;
+    *out = negative ? -value : value;
     return true;
 }
 
@@ -79,6 +89,20 @@ bool loadSettings(io::FileSystem& fs, const char* path, GameSettings* out)
             }
             continue;
         }
+        if (key == "autosave_seconds") {
+            int seconds = 0;
+            if (parseInt(value, &seconds)) {
+                out->autosaveSeconds = seconds;
+            }
+            continue;
+        }
+        if (key == "chunk_cache_mb") {
+            int megabytes = 0;
+            if (parseInt(value, &megabytes)) {
+                out->chunkCacheMB = megabytes;
+            }
+            continue;
+        }
         if (key == "texture_pack") {
             // A pack name is a file name and must stay one: a value with a
             // separator in it would let an edited ini point the loader outside
@@ -102,6 +126,11 @@ bool saveSettings(io::FileSystem& fs, const char* path, const GameSettings& sett
 
     char line[128];
     std::snprintf(line, sizeof(line), "render_distance=%d\n", settings.renderDistance);
+    text += line;
+
+    std::snprintf(line, sizeof(line), "autosave_seconds=%d\n", settings.autosaveSeconds);
+    text += line;
+    std::snprintf(line, sizeof(line), "chunk_cache_mb=%d\n", settings.chunkCacheMB);
     text += line;
 
     text += "texture_pack=";

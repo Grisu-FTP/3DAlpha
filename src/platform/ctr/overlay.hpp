@@ -127,8 +127,10 @@ public:
     enum class Page {
         Normal,
         Info,
+        Storage,
         Settings,
     };
+    static constexpr int kPageCount = 4;
 
     // Remembered so a page change can reprint the header.
     void begin(const char* worldName, const char* model);
@@ -191,6 +193,11 @@ private:
     int drawNormal();
     int drawInfo(const Renderer& renderer, const render::WorldStreamer& world,
                  const Camera& camera, float timeOfDay);
+    // **The page this whole arrangement is answerable to.** `main` is
+    // main-thread microseconds spent inside a storage call; it is expected to
+    // read 0.0, and anything else means the card is back on the render thread.
+    int drawStorage(const render::WorldStreamer& world);
+
     int drawSettings(const Renderer& renderer, const DebugSettings& settings,
                      const Camera& camera);
 
@@ -213,6 +220,22 @@ private:
 
     Accum accum_;
     Accum shown_;
+
+    // **The chunk cache's counters are cumulative, and a cumulative counter
+    // cannot answer "is it happening now".**
+    //
+    // The one that matters most is main-thread time inside a storage call,
+    // which is supposed to be zero. Reported as a session total it never reads
+    // zero -- opening a world stats a few hundred chunks before the directory
+    // listings land, and that number then sits on the screen for the rest of
+    // the session looking like a fault. Read on hardware as "4000 ms", which is
+    // four seconds accumulated over a smooth session rather than four seconds
+    // in a frame.
+    //
+    // So the page shows the delta over one sample block as well as the total.
+    // The delta is the diagnosis; the total is the history.
+    world::ChunkCache::Stats ioPrevious_;
+    world::ChunkCache::Stats ioDelta_;
     int samples_ = 0;
 };
 

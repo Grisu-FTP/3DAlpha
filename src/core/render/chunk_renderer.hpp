@@ -88,6 +88,15 @@ public:
     // Hands back everything the column holds and forgets it.
     void dropColumn(i32 chunkX, i32 chunkZ);
 
+    // **Is this exact column in the field right now?**
+    //
+    // Not the same question as "was it published": the field wraps modulo the
+    // render distance, so publishing a column can displace one an entire
+    // distance away without that column being told. A caller that remembers
+    // having published something has to be able to check whether the answer
+    // still holds.
+    bool hasColumn(i32 chunkX, i32 chunkZ) const { return field_.isLoaded(chunkX, chunkZ); }
+
     // Puts a section back in the mesh queue, releasing whatever it held. This
     // is what a block edit, a lighting update or a neighbour arriving calls.
     void invalidateSection(i32 chunkX, int sectionY, i32 chunkZ);

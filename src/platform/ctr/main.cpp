@@ -38,6 +38,8 @@
 #include "platform/ctr/probe.hpp"
 #include "platform/ctr/renderer.hpp"
 #include "core/render/world_streamer.hpp"
+#include "core/util/worker.hpp"
+#include "core/world/chunk_cache.hpp"
 #include "core/world/daylight.hpp"
 
 #include "version_config.hpp"
@@ -222,13 +224,37 @@ bool gWorkerIsNew3DS = false;
 // not worth being clever about.
 constexpr size_t kWorkerStackBytes = 64 * 1024;
 
-void* spawnWorker(void (*entry)(void*), void* arg)
+// 16 KB for the I/O thread. It inflates and deflates into heap buffers and
+// recurses nowhere, so it needs a fraction of what worldgen does -- and there
+// are two of these threads now rather than one.
+constexpr size_t kIoStackBytes = 16 * 1024;
+
+void* spawnWorker(void (*entry)(void*), void* arg, mc::WorkerRole role)
 {
     // Read on the main thread, which is where this runs. The kernel refuses a
     // thread priority numerically below the process's own, so the main
     // thread's value is the highest this may ask for.
     s32 mainPriority = 0x30;
     svcGetThreadPriority(&mainPriority, CUR_THREAD_HANDLE);
+
+    if (role == mc::WorkerRole::Io) {
+        // **Core 0, one step below the main thread, and that is the right
+        // answer on both consoles.**
+        //
+        // This thread spends nearly all its life blocked in an IPC round trip
+        // to the FS sysmodule, so giving it a core of its own would waste one
+        // -- and on a New 3DS core 2 is already the generation worker's, which
+        // genuinely needs all of it. At a numerically larger priority than the
+        // main thread it is preempted the instant the main thread is ready, so
+        // it cannot cost a frame; and because the main thread blocks on VBlank
+        // every frame, it runs in exactly that slack. SD reads therefore
+        // overlap with the GPU, which is where they belong.
+        //
+        // One step rather than 0x3F so it is not sitting behind every other
+        // low-priority thread in the process for the slack it is meant to use.
+        const s32 priority = mainPriority + 1 > 0x3F ? 0x3F : mainPriority + 1;
+        return threadCreate(entry, arg, kIoStackBytes, priority, 0, false);
+    }
 
     if (gWorkerIsNew3DS) {
         // Core 2 has nothing else on it, so there is no one to be polite to:
@@ -326,7 +352,27 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // bottom priority, living on the main thread's idle time.
     gWorkerIsNew3DS = isNew3DS;
     gWorkerOnCore2 = false;
-    render::WorldStreamer::setWorkerThreadOps(&spawnWorker, &joinWorker);
+    mc::setWorkerThreadOps(&spawnWorker, &joinWorker);
+
+    // **The chunk cache, which is what keeps the card off the render thread.**
+    //
+    // Reads, writes and existence checks all go through it and all of them
+    // happen on its own thread; the retained ring and the read-ahead band are
+    // the same table, so a column that leaves the grid is still there when the
+    // player turns round. See core/world/chunk_cache.hpp.
+    //
+    // The cap is a fraction of the newlib heap rather than a fixed number: on a
+    // New 3DS heap.cpp lands on 40 MB and block data at distance 12 is ~15 MB,
+    // so 8 MB of retained columns is comfortable; on an Old 3DS the same split
+    // gives ~21 MB and 2 MB is what is left over. A column is 18,013 bytes on
+    // the real world, so 8 MB is ~465 of them -- more than the 264 that sit
+    // between the load radius and the classification ring at distance 8.
+    world::ChunkCache::Config cache;
+    cache.cleanCapBytes = usize(choice.chunkCacheMB) << 20;
+    cache.threaded = true;
+    world.setCacheConfig(cache);
+    world.setPrefetchRings(2);
+    world.setAutosaveSeconds(choice.autosaveSeconds);
 
     if (!world.open(choice.worldPath.c_str(), config.meshDistance, ctr::nowMillis())) {
         // A world that will not open is not a reason to end the process: the
@@ -345,8 +391,18 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
         camera.pitch = world.level().player.rotation[1] * kPi / 180.0f;
     }
 
-    // The world's own clock, in days. 24000 ticks per day; noon is 6000.
-    float timeOfDay = float(world.level().time % 24000) / 24000.0f;
+    // **The world's own clock, absolute rather than a time of day.**
+    //
+    // level.dat's `Time` is a running tick count and the day is `Time % 24000`,
+    // so this used to normalise it to 0..1 on the way in and had nothing left
+    // to write back -- which was fine while nothing wrote it back. Now that the
+    // autosave does, the remainder is the wrong thing to keep: saving it would
+    // reset the world to day zero every time.
+    //
+    // Double rather than i64 because a frame is a fraction of a tick and the
+    // sky needs the fraction; a world would have to run for millions of days
+    // before the mantissa stopped naming individual ticks.
+    double worldTicks = double(world.level().time);
 
     ctr::Overlay overlay;
     // The name, not the path: the header is 40 columns wide and the player knows
@@ -448,6 +504,15 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
         const u32 down = hidKeysDown();
         const u32 held = hidKeysHeld();
         if (down & KEY_START) {
+            // **Save now**, and everything the autosave timer would write:
+            // dirty columns, level.dat with the position and the world clock,
+            // and the session.lock refresh. The world stops dead while the menu
+            // is up, so the I/O thread has the whole of it to itself and is
+            // finished long before the player resumes -- nothing here waits for
+            // it. It is also more than the original does: a1.1.2 only writes
+            // everything out on Save and quit to title.
+            world.saveNow(ctr::nowMillis());
+
             // No room for the pause menu's target or its vertex buffer. That is
             // a console with nothing left to give, and trapping the player in a
             // world they cannot leave is the worst of the answers available --
@@ -508,6 +573,8 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
                 world.setMeshDistance(settings.renderDistance, renderer.chunks());
             }
 
+            world.setAutosaveSeconds(paused.autosaveSeconds);
+
             continue;
         }
 
@@ -554,15 +621,24 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
 
         // Day and night advance at the original's rate and touch nothing but
         // the lightmap: 20 ticks per second out of 24000 in a day.
-        timeOfDay += dt * 20.0f / 24000.0f;
-        timeOfDay -= std::floor(timeOfDay);
+        worldTicks += double(dt) * 20.0;
 
         // Alpha's own curve, from the jar. It holds full brightness for the
         // first half of the day rather than peaking at noon, which is the
         // difference between a world that looks like Alpha and one that looks
         // permanently overcast.
-        const float ticks = timeOfDay * 24000.0f;
-        renderer.setSkyDarken(world::skyLightSubtracted(i64(ticks), ticks - std::floor(ticks)));
+        const double dayTicks = worldTicks - std::floor(worldTicks / 24000.0) * 24000.0;
+        const float timeOfDay = float(dayTicks / 24000.0);
+        renderer.setSkyDarken(
+            world::skyLightSubtracted(i64(dayTicks), float(dayTicks - std::floor(dayTicks))));
+
+        // **Where the player is and what time it is, for whatever saves next.**
+        // Four stores a frame; the autosave timer below, the flush when the
+        // pause menu opens, and close() on the way out all read it. Before this
+        // a world always reopened where it was first entered and at the time it
+        // was created.
+        world.setPlayerState(camera.x, camera.y, camera.z, camera.yaw * 180.0f / kPi,
+                             camera.pitch * 180.0f / kPi, i64(worldTicks));
 
         // Each phase timed on its own. The frame period alone cannot tell a
         // console that is at its refresh rate from one that is struggling --
@@ -577,6 +653,11 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
 
         const u64 beforeStream = svcGetSystemTick();
         world.update(renderer.chunks(), camera.chunkX(), camera.chunkZ(), budget);
+        // The autosave timer. It writes level.dat and refreshes session.lock,
+        // neither of which had any trigger but close() before, and hands
+        // anything still dirty to the I/O thread. Generated columns do not wait
+        // for it -- see WorldStreamer::setAutosaveSeconds.
+        world.tickSaves(ctr::nowMillis());
         const u64 afterStream = svcGetSystemTick();
 
         timing.walkMs = ctr::millisFromTicks(beforeStream - beforeWalk);

@@ -96,6 +96,13 @@ public:
     // before a save; never on the block-placement path.
     void compact();
 
+    // A deep copy, explicit for the same reason Section's and NibbleArray's
+    // are: a column is 18 KB on a real world and an implicit copy of one is
+    // never what the writer meant. The chunk cache is what wants it -- a
+    // generator asking for a column it already holds gets a copy rather than a
+    // pointer into a table another thread may be evicting from.
+    ChunkColumn clone() const;
+
     usize memoryUsage() const;
 
 private:

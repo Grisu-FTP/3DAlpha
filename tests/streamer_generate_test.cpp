@@ -4,6 +4,7 @@
 #include "core/render/world_streamer.hpp"
 #include "core/util/frustum.hpp"
 #include "core/world/chunk.hpp"
+#include "core/world/chunk_cache.hpp"
 #include "version_slots.hpp"
 
 #include <chrono>
@@ -370,7 +371,15 @@ WorldSnapshot snapshot(const std::string& dir)
 
 // Fills a world by walking the same fixed path, with generation either on the
 // worker or on the calling thread.
-void fillWorld(const std::string& dir, i64 seed, bool threaded)
+// How the world under test is filled. The three differ only in *when* work
+// happens -- never in what it produces, which is the whole point.
+enum class FillMode {
+    Inline,        // generation on the calling thread, cache unthreaded
+    Worker,        // generation on its own thread, cache unthreaded
+    WorkerCached,  // the console's configuration: both threaded, reading ahead
+};
+
+void fillWorld(const std::string& dir, i64 seed, FillMode mode)
 {
     {
         io::PosixFileSystem fs;
@@ -391,7 +400,20 @@ void fillWorld(const std::string& dir, i64 seed, bool threaded)
 
     WorldStreamer streamer;
     streamer.setGenerateMissing(true);
-    streamer.setGenerationThreaded(threaded);
+    streamer.setGenerationThreaded(mode != FillMode::Inline);
+
+    // **The cache is the third axis, and it is the one that could quietly move
+    // the world.** It answers `hasChunk` from an index rather than a stat, it
+    // serves reads from a table instead of the card, and it defers writes to
+    // another thread -- and classification is what feeds the generation queue,
+    // which *is* the population order. If any of those answered differently,
+    // this arm's tree would diverge from the other two.
+    world::ChunkCache::Config cache;
+    cache.threaded = mode == FillMode::WorkerCached;
+    cache.cleanCapBytes = 1u << 20;  // small on purpose: eviction has to happen
+    streamer.setCacheConfig(cache);
+    streamer.setPrefetchRings(mode == FillMode::WorkerCached ? 2 : 0);
+
     if (!streamer.open(dir.c_str(), 1, kNow)) {
         return;
     }
@@ -401,72 +423,51 @@ void fillWorld(const std::string& dir, i64 seed, bool threaded)
     budget.generatedPerFrame = 1;
     budget.meshesPerFrame = 8;
 
-    // **The path is the input.** Both runs walk it identically; only how long
-    // each column takes to appear differs between them.
+    // **The path is the input, and the generator is never behind on it.**
     //
-    // The camera moves *while generation is outstanding*, which is the case
-    // worth testing rather than the easy one: waiting for each waypoint to
-    // settle before moving on would hide any dependence on how long a column
-    // took, and that dependence is precisely what must not exist.
+    // This used to move on after a fixed number of frames whether or not the
+    // generator had caught up, on the grounds that dependence on how long a
+    // column took was "precisely what must not exist". That is no longer the
+    // claim, and the reason is worth having here rather than only in the docs.
+    //
+    // The queue takes the column nearest the camera, not the oldest -- see
+    // WorldStreamer::pumpGeneration. So once a backlog exists, *which* column
+    // is nearest depends on how far behind the generator got, and a slower
+    // machine makes a different world. That is not a regression against
+    // a1.1.2: a1.1.2 keeps no queue at all, and would have the same property
+    // the moment its generation stopped being synchronous. What it has instead
+    // is synchrony -- it cannot fall behind, so the question never arises.
+    //
+    // What still holds, and is what this test now pins down: **while the
+    // generator keeps up, the order is a function of the path alone**, so all
+    // three arms produce the same world byte for byte. That is the regime the
+    // game is in whenever the player is moving at a speed a person moves at,
+    // and it is still enough to catch the ordering bugs this test was written
+    // for -- a column handed out twice, a sweep that reaches ground the
+    // synchronous path never would.
     const i32 path[][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}};
-    u32 n = 0;
     for (const auto& at : path) {
-        for (int i = 0; i < 40; ++i) {
-            frame(streamer, renderer, n++, at[0], at[1], budget);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+        runUntilSettled(streamer, renderer, at[0], at[1], budget, 40000);
     }
-    // Then stand still until the world catches up, so both runs finish the same
-    // work rather than one being cut off mid-column.
+    // And once more where it started, so all three finish the same work rather
+    // than one being cut off mid-column.
     runUntilSettled(streamer, renderer, 0, 0, budget, 40000);
     streamer.close(kNow);
     renderer.shutdown();
 }
 
-}  // namespace
-
-// **The worker must not change the world**, and that is not a property that can
-// be reasoned about -- population order *is* the world in a1.1.2, so a sweep
-// that happens in a different order produces different blocks wherever two
-// chunks' passes reach the same ground.
-//
-// So: the same seed and the same path, filled once with generation on a worker
-// thread and once on the calling thread, compared chunk file for chunk file.
-// The threaded run finishes a column over some number of frames and the
-// synchronous one inside a single frame, which is exactly the difference that
-// must not matter.
-//
-// The hazard this is really guarding is subtle and was real: a column can be
-// queued as missing and then written by a neighbour's sweep before the worker
-// reaches it. Sweeping for it anyway reaches three rings further out and
-// populates ground the synchronous path never touches -- and how often that
-// happens depends on how many frames a generation took. Making such a job a
-// no-op is what this test holds in place.
-TEST(a_worker_thread_produces_the_same_world_as_generating_inline)
+// Compares two filled worlds column for column, and says *where* they part
+// rather than only that they did -- a coordinate is the difference between a
+// failure you can chase and one you can only rerun.
+void compareWorlds(const WorldSnapshot& a, const WorldSnapshot& b)
 {
-    TempDir temp;
-    CHECK(temp.path[0] != '\0');
-
-    const std::string threadedDir = temp.world("Threaded");
-    const std::string inlineDir = temp.world("Inline");
-
-    fillWorld(threadedDir, 20260822LL, true);
-    fillWorld(inlineDir, 20260822LL, false);
-
-    const WorldSnapshot threaded = snapshot(threadedDir);
-    const WorldSnapshot inl = snapshot(inlineDir);
-
-    // Both actually made a world, or the comparison below is vacuous.
-    CHECK(threaded.columns.size() >= 25);
-    CHECK_EQ(int(threaded.columns.size()), int(inl.columns.size()));
-
     int missing = 0;
     int differing = 0;
     int firstBadX = 0;
     int firstBadZ = 0;
-    for (const auto& entry : threaded.columns) {
-        auto other = inl.columns.find(entry.first);
-        if (other == inl.columns.end()) {
+    for (const auto& entry : a.columns) {
+        auto other = b.columns.find(entry.first);
+        if (other == b.columns.end()) {
             ++missing;
             continue;
         }
@@ -484,4 +485,68 @@ TEST(a_worker_thread_produces_the_same_world_as_generating_inline)
         CHECK_EQ(firstBadZ, -99999);
     }
     CHECK_EQ(differing, 0);
+}
+
+}  // namespace
+
+// **The worker must not change the world**, and that is not a property that can
+// be reasoned about -- population order *is* the world in a1.1.2, so a sweep
+// that happens in a different order produces different blocks wherever two
+// chunks' passes reach the same ground.
+//
+// So: the same seed and the same path, filled three ways and compared chunk
+// file for chunk file -- generation on the calling thread, generation on a
+// worker, and the console's own configuration with the chunk cache threaded and
+// reading ahead. The threaded runs finish a column over some number of frames
+// and the synchronous one inside a single frame, which is exactly the
+// difference that must not matter **while the generator is keeping up**.
+//
+// That qualifier is new and it is not a weakening of the code, it is a
+// correction of what was being claimed. The generation queue takes the column
+// nearest the camera rather than the oldest, so once a player outruns the
+// generator the choice depends on how far behind it got. a1.1.2 has no queue
+// to be faithful to here -- it generates inline and therefore never falls
+// behind -- so the unconditional form of this test was pinning down a property
+// of our own asynchrony, and the price of it was a border of chunks that never
+// filled. See docs/status.md 0g.
+//
+// **The third arm is what holds the chunk cache honest.** It answers `hasChunk`
+// from a directory index instead of a stat, serves reads from a table instead
+// of the card, and writes on another thread some time later -- and
+// classification is what feeds the generation queue, so an existence answer
+// that arrived a moment early or late would reorder the sweeps and produce a
+// different world. Its cache cap is set small enough that eviction happens
+// during the run, because an entry evicted and re-read is the case where a
+// stale or missing answer would show up.
+//
+// The hazard this is really guarding is subtle and was real: a column can be
+// queued as missing and then written by a neighbour's sweep before the worker
+// reaches it. Sweeping for it anyway reaches three rings further out and
+// populates ground the synchronous path never touches -- and how often that
+// happens depends on how many frames a generation took. Making such a job a
+// no-op is what this test holds in place.
+TEST(a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+
+    const std::string threadedDir = temp.world("Threaded");
+    const std::string inlineDir = temp.world("Inline");
+    const std::string cachedDir = temp.world("Cached");
+
+    fillWorld(threadedDir, 20260822LL, FillMode::Worker);
+    fillWorld(inlineDir, 20260822LL, FillMode::Inline);
+    fillWorld(cachedDir, 20260822LL, FillMode::WorkerCached);
+
+    const WorldSnapshot threaded = snapshot(threadedDir);
+    const WorldSnapshot inl = snapshot(inlineDir);
+    const WorldSnapshot cached = snapshot(cachedDir);
+
+    // All three actually made a world, or the comparisons below are vacuous.
+    CHECK(threaded.columns.size() >= 25);
+    CHECK_EQ(int(threaded.columns.size()), int(inl.columns.size()));
+    CHECK_EQ(int(threaded.columns.size()), int(cached.columns.size()));
+
+    compareWorlds(threaded, inl);
+    compareWorlds(threaded, cached);
 }

@@ -138,8 +138,11 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     // stereo tuner, and both of those read the same buttons.
     if (held & KEY_SELECT) {
         if (down & (KEY_Y | KEY_X)) {
-            const int step = (down & KEY_Y) != 0 ? 1 : 2;  // +1 forward, -1 back mod 3
-            page_ = Page(((int(page_) + step) % 3));
+            // +1 forward, -1 back, modulo however many pages there are. The
+            // "back" step is kPageCount - 1 rather than -1 so the arithmetic
+            // stays unsigned-safe when a page is added.
+            const int step = (down & KEY_Y) != 0 ? 1 : kPageCount - 1;
+            page_ = Page(((int(page_) + step) % kPageCount));
             cursor_ = 0;
             dirty_ = true;
         }
@@ -290,6 +293,20 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
                   accum_.submit / n, accum_.walk / n, accum_.stream / n};
         accum_ = Accum{};
         samples_ = 0;
+
+        // What the cache did over the block that just ended, against what it
+        // had done at the start of it. See the note on ioPrevious_.
+        const world::ChunkCache::Stats& io = world.stats().io;
+        ioDelta_.mainThreadMicros = io.mainThreadMicros - ioPrevious_.mainThreadMicros;
+        ioDelta_.stats = io.stats - ioPrevious_.stats;
+        ioDelta_.reads = io.reads - ioPrevious_.reads;
+        ioDelta_.writes = io.writes - ioPrevious_.writes;
+        ioDelta_.listings = io.listings - ioPrevious_.listings;
+        ioDelta_.hits = io.hits - ioPrevious_.hits;
+        ioDelta_.misses = io.misses - ioPrevious_.misses;
+        ioDelta_.prefetchHits = io.prefetchHits - ioPrevious_.prefetchHits;
+        ioDelta_.evicted = io.evicted - ioPrevious_.evicted;
+        ioPrevious_ = io;
     }
 
     // Printing is the expensive part -- libctru's console renders every glyph
@@ -322,6 +339,9 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
         break;
     case Page::Info:
         next = drawInfo(renderer, world, camera, timeOfDay);
+        break;
+    case Page::Storage:
+        next = drawStorage(world);
         break;
     case Page::Settings:
         next = drawSettings(renderer, settings, camera);
@@ -466,6 +486,91 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     row(r++, "xyz %8d %4d %8d", int(camera.x), int(camera.y), int(camera.z));
     row(r++, "chunk %6d %6d   time %2d:%02d", int(camera.chunkX()), int(camera.chunkZ()),
         int(timeOfDay * 24.0f) % 24, int(timeOfDay * 1440.0f) % 60);
+    return r;
+}
+
+// What the card is doing, and who is waiting for it.
+//
+// The page exists because the fix it reports on is invisible from every other
+// one: a chunk read costs the same microseconds wherever it happens, and the
+// only thing that changed is which thread pays them. So the first row is the
+// answer -- `main` is main-thread time inside a storage call, and it is
+// expected to be 0.0. It can be non-zero for exactly one reason: hasChunk fell
+// back to a `stat` because a directory group was asked about before its listing
+// arrived, which is what sprinting into unwalked ground does. A steady non-zero
+// number means something else is reaching the card from the frame.
+//
+// `hit` is the second thing to read. It counts columns served without an SD
+// operation at all -- retained after leaving the grid, or read ahead of the
+// player -- and `pre` is how many of those the read-ahead band earned rather
+// than retention. A low `pre` with plenty of `hit` means the band is memory
+// spent for nothing and can go to zero; both low means the cap is too small for
+// the render distance.
+int Overlay::drawStorage(const render::WorldStreamer& world)
+{
+    const render::WorldStreamer::Stats& streaming = world.stats();
+    const world::ChunkCache::Stats& io = streaming.io;
+
+    constexpr int kKb = 1024;
+    constexpr int kMb = 1024 * 1024;
+
+    int r = kBodyRow;
+    // **The first rows are `now`, not `ever`.** `d` is the delta over the last
+    // sample block -- two thirds of a second at 30 fps -- and it is the one
+    // that answers whether the card is on the render thread *at the moment*.
+    // The totals beside them are history: opening a world stats a few hundred
+    // chunks before its directory listings land, and that cost then sits in the
+    // total for the rest of the session whether or not anything is still wrong.
+    // Read as a total this line said 4000 ms on a session that felt perfectly
+    // smooth, which is exactly the misreading the split fixes.
+    const world::ChunkCache::Stats& d = ioDelta_;
+
+    row(r++, "main %2d.%d ms now          %s",
+        int(d.mainThreadMicros / 1000), int((d.mainThreadMicros % 1000) / 100),
+        io.workerRunning ? "io thread" : "[31mNO THREAD[0m");
+    row(r++, "  %4lu stats now", static_cast<unsigned long>(d.stats));
+    row(r++, "  %6lu ms, %6lu stats all session",
+        static_cast<unsigned long>(io.mainThreadMicros / 1000),
+        static_cast<unsigned long>(io.stats));
+
+    blank(r++);
+    row(r++, "ops  %4lu rd %4lu wr %4lu ls  now",
+        static_cast<unsigned long>(d.reads), static_cast<unsigned long>(d.writes),
+        static_cast<unsigned long>(d.listings));
+    row(r++, "     %5lu read %5lu write all", static_cast<unsigned long>(io.reads),
+        static_cast<unsigned long>(io.writes));
+    row(r++, "queue %4lu rd %4lu wr %4lu ls",
+        static_cast<unsigned long>(io.readsQueued), static_cast<unsigned long>(io.writesQueued),
+        static_cast<unsigned long>(io.groupsQueued));
+    row(r++, "  %4d columns still being read", streaming.pendingReads);
+
+    blank(r++);
+    const unsigned long asked = static_cast<unsigned long>(io.hits) + io.misses;
+    const unsigned long askedNow = static_cast<unsigned long>(d.hits) + d.misses;
+    row(r++, "hit  %4lu miss %4lu  %3lu%%  now", static_cast<unsigned long>(d.hits),
+        static_cast<unsigned long>(d.misses),
+        askedNow != 0 ? static_cast<unsigned long>(d.hits) * 100 / askedNow : 0);
+    row(r++, "     %5lu     %5lu  %3lu%%  all", static_cast<unsigned long>(io.hits),
+        static_cast<unsigned long>(io.misses),
+        asked != 0 ? static_cast<unsigned long>(io.hits) * 100 / asked : 0);
+    row(r++, "  %5lu read ahead and used",
+        static_cast<unsigned long>(io.prefetchHits));
+
+    blank(r++);
+    row(r++, "cache %3lu.%lu MB  %4lu cols  %5lu evict",
+        static_cast<unsigned long>(io.cleanBytes / kMb),
+        static_cast<unsigned long>((io.cleanBytes % kMb) * 10 / kMb),
+        static_cast<unsigned long>(io.cleanColumns), static_cast<unsigned long>(io.evicted));
+    // Owed to the card. It is bounded by the cache's own dirty cap rather than
+    // by the autosave timer, so a number that sits near the cap means the I/O
+    // thread is being outrun and the generation worker is paying for writes
+    // itself -- which is the back-pressure working, not a fault.
+    row(r++, "dirty %4lu KB  %4lu cols",
+        static_cast<unsigned long>(io.dirtyBytes / kKb),
+        static_cast<unsigned long>(io.dirtyColumns));
+
+    blank(r++);
+    row(r++, "autosave %s", world.autosaveSeconds() > 0 ? "on" : "off");
     return r;
 }
 

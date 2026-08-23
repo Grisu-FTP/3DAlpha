@@ -391,6 +391,28 @@ bool AlphaChunkFileStorage::removeChunk(i32 x, i32 z)
     return open_ && pathFor(x, z, &path) && fs_.removeFile(path.text);
 }
 
+bool AlphaChunkFileStorage::listChunkGroup(i32 x, i32 z, void* context,
+                                           world::ChunkVisitor visit)
+{
+    ChunkPath dir;
+    if (!open_ || !chunkDirPath(worldDir_, x, z, &dir)) {
+        return false;
+    }
+
+    // `visitChunkFile` is the same visitor the full tree walk uses -- it parses
+    // the name, ignores anything that is not a chunk file, and stops early when
+    // the caller says so. Only the directory it is pointed at differs.
+    ScanContext scan{&fs_, worldDir_, context, visit, false};
+    if (!fs_.listDirectory(dir.text, &scan, visitChunkFile)) {
+        // Not there. That is the ordinary state of a corner of the world nobody
+        // has walked into, and the answer is "no chunks", not "ask again".
+        // Returning false here would put the caller back on a stat per chunk
+        // for every unexplored directory, which is most of them in a new world.
+        return true;
+    }
+    return true;
+}
+
 bool AlphaChunkFileStorage::forEachChunk(void* context, world::ChunkVisitor visit)
 {
     if (!open_) {

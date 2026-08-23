@@ -86,6 +86,25 @@ public:
     // of this and is not built yet.
     bool forEachChunk(void* context, world::ChunkVisitor visit);
 
+    // The leaf directory a chunk lives in, as an opaque key: `<x & 63>` and
+    // `<z & 63>` packed into twelve bits. Two chunks with the same key share a
+    // directory and are therefore answered by the same listing.
+    u32 chunkGroupKey(i32 x, i32 z) const
+    {
+        return u32(x & 63) | (u32(z & 63) << 6);
+    }
+
+    // Lists the one leaf directory containing (x, z) and reports every chunk
+    // file in it. **A directory that is not there yet is success with nothing
+    // reported** -- an unexplored corner of the world is an answer, and failing
+    // would make a caller fall back to a `stat` per chunk for ever.
+    //
+    // This is the cached-index primitive docs/world-format.md asks for, in its
+    // incremental form: one listing settles up to a thousand chunks that are
+    // spaced 64 apart, it costs nothing for a region the player never visits,
+    // and there is no file to invalidate. See core/world/chunk_cache.hpp.
+    bool listChunkGroup(i32 x, i32 z, void* context, world::ChunkVisitor visit);
+
 private:
     bool readAndInflate(const char* path, usize maxFile, usize maxNbt,
                         std::vector<u8>* out);

@@ -26,7 +26,9 @@
 #include "core/mesh/scratch.hpp"
 #include "core/mesh/visibility.hpp"
 #include "core/render/chunk_renderer.hpp"
+#include "core/util/worker.hpp"
 #include "core/world/chunk.hpp"
+#include "core/world/chunk_cache.hpp"
 #include "core/world/level_data.hpp"
 #include "version_slots.hpp"
 
@@ -87,6 +89,14 @@ public:
         u32 generatorPeakLive = 0;    // the generator's own high-water mark
         u32 generatorEvictedLive = 0; // must stay zero; see ChunkGenerator
         bool workerRunning = false;   // false means generation is on this thread
+
+        // What the card is doing, copied out of the cache once a frame. The
+        // one to watch is `io.mainThreadMicros`: it is the number this whole
+        // arrangement exists to hold at zero.
+        world::ChunkCache::Stats io;
+
+        int pendingReads = 0;   // columns in range being read right now
+        int prefetched = 0;     // columns read ahead this frame
     };
 
     // `meshDistance` is the render distance in chunks. Columns are held one
@@ -122,39 +132,88 @@ public:
     // generating inline, which is slow but not broken.
     void setGenerationThreaded(bool threaded) { generationThreaded_ = threaded; }
 
-    // **Who creates the worker, because on a New 3DS the answer decides whether
-    // generation gets a whole core or the leftovers of one.**
+    // The chunk cache's budget and whether it gets a thread. Call before
+    // open(); resizing a table the I/O thread is walking is not something this
+    // needs to support.
+    void setCacheConfig(const world::ChunkCache::Config& config) { cacheConfig_ = config; }
+    const world::ChunkCache::Config& cacheConfig() const { return cacheConfig_; }
+
+    // **How wide the read-ahead band is, in chunks beyond the load radius.**
     //
-    // `std::thread` cannot name a core, and on the 3DS it does not merely fail
-    // to: devkitARM's pthread shim hardcodes `threadCreate(..., 0x3F, 0, ...)`,
-    // so every `std::thread` lands on **core 0 at the bottom priority**, beside
-    // the render thread. The scheduler is strictly priority-ordered, so the
-    // worker then runs only in whatever is left of the frame after the main
-    // thread blocks -- which on a console holding 30 fps is a sliver, and it is
-    // why a walking player outruns generation and never sees it catch up.
+    // The grid is already classified three rings wider than what is loaded --
+    // that is a generation sweep's reach -- so those cells cost nothing extra
+    // to know about, and reading them into the cache before the player reaches
+    // them is what turns a chunk-boundary crossing from an SD read into a
+    // memcpy. 0 turns it off, which is what a console short of heap wants.
     //
-    // A New 3DS has core 2 sitting idle and Luma's 3DSX exheader already grants
-    // it (`0xFF002109`, "Access core2"), so a worker created with
-    // `threadCreate(..., 2, ...)` gets 804 MHz to itself and competes with
-    // nothing. Expressing that needs a seam, because it is exactly the thing
-    // the portable API cannot say.
+    // It is capped at the classification band, because a cell further out than
+    // that has no cell to be asked about in.
+    void setPrefetchRings(int rings) { prefetchRings_ = rings < 0 ? 0 : rings; }
+    int prefetchRings() const { return prefetchRings_; }
+
+    // **The autosave interval, in seconds; 0 turns the timer off.**
     //
-    // `spawn` returns an opaque handle, or null if the thread could not be
-    // started -- in which case the streamer falls back to generating inline,
-    // the same as if `std::thread` had thrown. `join` is handed that handle
-    // back, once, and must not return until the thread has finished. Set both
-    // or neither, before open().
+    // It is ours rather than the original's: a1.1.2 has no timed autosave at
+    // all. Disassembling the client jar, `ft.saveChunks(saveAll, progress)`
+    // writes at most two dirty chunks per call when `saveAll` is false, and its
+    // only periodic caller is the "Saving level.." screen reached from Save and
+    // quit to title; otherwise a chunk is written when it falls out of the
+    // provider's 1024-slot cache, synchronously, on the main thread.
     //
-    // This replaced a hook that ran *on* the worker and changed its priority
-    // from the inside. That could never have reached the real problem: by then
-    // the thread already exists on core 0, and a 3DS thread cannot move.
-    using WorkerSpawn = void* (*)(void (*entry)(void*), void* arg);
-    using WorkerJoin = void (*)(void* handle);
-    static void setWorkerThreadOps(WorkerSpawn spawn, WorkerJoin join)
-    {
-        workerSpawn_ = spawn;
-        workerJoin_ = join;
-    }
+    // What the timer governs here is level.dat and session.lock, which have no
+    // other trigger during a session, and -- once M3 has block placement --
+    // player edits, where coalescing many edits to one column into one deflate
+    // is exactly what a timer buys. **Generated columns do not wait for it**:
+    // they are queued for writing as soon as they are made, because holding
+    // them would open a window in which a power-off loses world that
+    // regenerating cannot reproduce -- population order is the world.
+    void setAutosaveSeconds(int seconds) { autosaveSeconds_ = seconds < 0 ? 0 : seconds; }
+    int autosaveSeconds() const { return autosaveSeconds_; }
+
+    // **Where the player is and what time the world thinks it is.**
+    //
+    // Held here and written into level.dat by whatever saves next -- the
+    // autosave timer, the pause menu, or close(). Before this, level.dat was
+    // only ever rewritten with its LastPlayed changed, so a world always
+    // reopened at the position it was first entered at and at the time it was
+    // created; the fields were read at open and never written back.
+    //
+    // Call it every frame; it costs four stores. A caller that never calls it
+    // leaves the stored player exactly as it was, which is what the harnesses
+    // want and what a world nobody has stood in must keep getting.
+    //
+    // `timeTicks` is absolute rather than a time of day: level.dat's `Time` is
+    // a running tick count and the day is `Time % 24000`, so storing the
+    // remainder would throw away which day it is every time the world was
+    // saved.
+    void setPlayerState(double x, double y, double z, float yaw, float pitch, i64 timeTicks);
+
+    // Once a frame, with the wall clock. Separate from update() so the existing
+    // signature and its harness callers stay put, and so core keeps having no
+    // clock seam -- the value is passed in, exactly as open() and close() do.
+    void tickSaves(i64 nowMillis);
+
+    // Hands every dirty column to the I/O thread. **Blocking is for the way
+    // out**; the pause menu wants the other one, because the world is stopped
+    // while the menu is up and an async flush is finished before the player
+    // resumes without anything having waited.
+    void flushSaves(bool blocking);
+
+    // **Save now**: everything the autosave timer would have done, at a moment
+    // of the caller's choosing, and without blocking. What the pause menu
+    // calls. It also restarts the interval, so resuming does not immediately
+    // trip an autosave over work that has just been written.
+    void saveNow(i64 nowMillis);
+
+    // True when nothing is queued for the card either. What close() and the
+    // tests wait on.
+    bool storageIdle() const { return cache_.idle(); }
+
+    // Who creates the generation worker, and on which core, is
+    // `mc::setWorkerThreadOps` in core/util/worker.hpp. It used to live here as
+    // a pair of statics on this class; it moved out when the chunk cache gained
+    // a thread of its own, because the two want opposite cores and the platform
+    // has to be able to tell them apart. See WorkerRole.
 
     // True when nothing is queued, nothing is being generated and nothing is
     // waiting to be taken into the grid. What a test or a harness waits on;
@@ -249,9 +308,12 @@ private:
     //     the reach of every target that existed then -- so it, too, is asked
     //     about before anything can have written it.
     //
-    // What is left is a queue built from the camera's path and nothing else,
-    // consumed strictly in order, one column at a time. Job N therefore starts
-    // against the world left by jobs 1..N-1 on any machine, at any frame rate.
+    // What is left is a queue whose *contents* are built from the camera's path
+    // and nothing else, consumed one column at a time. Which entry is taken
+    // next is the nearest to the camera rather than the oldest -- see
+    // pumpGeneration -- so the order, unlike the membership, does depend on how
+    // far behind the generator got. That is a deliberate trade and the reason
+    // for it is in that note.
     // ---------------------------------------------------------------------
 
     struct Cell {
@@ -261,6 +323,21 @@ private:
         i32 chunkZ = 0;
         CellState state = CellState::Empty;
         bool published = false;  // handed to the renderer, i.e. its neighbours arrived
+
+        // **This column arrived since the renderer last heard about it**, so
+        // whatever the renderer still holds under these coordinates is from a
+        // previous visit and must not be kept.
+        //
+        // The renderer keeps a column's meshes when the same column is
+        // published again -- that is what a neighbour arriving should do -- and
+        // it decides "same" by comparing coordinates, which is the only thing
+        // it can see. A column that left the render distance, was dropped from
+        // this grid while it was out there, and has now been read back in has
+        // the same coordinates and none of the same meshes: their pool slots
+        // were handed out again long ago. Without this flag it is republished
+        // as "the same column", keeps slots that now belong to other sections,
+        // and draws whatever is in them.
+        bool freshlyAdopted = false;
     };
 
     // Sizes cells_ and spiral_ to loadRadius_. Shared by open() and
@@ -280,8 +357,14 @@ private:
     // the load radius. See the note on CellState for why this is its own step.
     void classifyCell(Cell& cell, i32 chunkX, i32 chunkZ);
 
-    // Reads a column the world does have. False if it could not be read.
-    bool loadColumn(i32 chunkX, i32 chunkZ);
+    // What one attempt at a column found. `Pending` is the cache having posted
+    // a read: nothing is wrong, the column is on its way, and the cell is asked
+    // about again next frame. It must not spend the per-frame budget, or one
+    // column still being read would hold up every other one behind it.
+    enum class LoadResult { Loaded, Pending, Failed };
+
+    // Takes a column the world does have, from the cache. Never touches a card.
+    LoadResult loadColumn(i32 chunkX, i32 chunkZ);
 
     // Makes the chunk the world does not have, and everything the sweep
     // finishes on the way. **Runs on the worker thread** when there is one, and
@@ -294,6 +377,19 @@ private:
 
     // Appends a column to the generation queue, once.
     void enqueueGeneration(i32 chunkX, i32 chunkZ);
+
+    // Removes and returns the queued column nearest the camera. **queueLock_
+    // held**; the worker calls it as well as the main thread. See the note on
+    // pumpGeneration for why it is nearest rather than oldest.
+    std::pair<i32, i32> takeNearestQueuedLocked();
+
+    // Lets the worker take jobs again after waitForWorkerIdle() stopped it.
+    void resumeGeneration();
+
+    // Once per chunk-boundary crossing, not once per frame: the set of cells
+    // worth warming or reading ahead only changes when the centre does, and
+    // both are a lock and a lookup per cell.
+    void warmAndPrefetch();
 
     bool startWorker();
     void stopWorker();
@@ -324,7 +420,13 @@ private:
     bool meshSection(const VisibleSection& section, ChunkRenderer& renderer);
 
     io::PosixFileSystem fs_;
-    mcver::Storage storage_{fs_};
+
+    // **The only thing here that reaches a card.** Reads, writes, existence and
+    // the retention ring all go through it, and the render thread's half of its
+    // API never blocks on storage. See core/world/chunk_cache.hpp -- in
+    // particular the note on why deferring a write changes no answer the
+    // generator or the classification can observe.
+    world::ChunkCache cache_{fs_};
 
     // Null unless generation is on. Roughly 900 KB of generator plus a cache
     // sized to the load radius -- see ChunkGenerator::cacheColumnsFor -- so it
@@ -338,16 +440,13 @@ private:
     std::unique_ptr<world::ChunkColumn> generated_;
 
     // ---------------------------------------------------------------------
-    // The worker, and what each lock covers.
+    // The worker, and what the lock covers.
     //
     // `queueLock_` guards the job slot and the finished-column queue, and is
-    // held for a pointer swap at a time. `storageLock_` guards the storage slot
-    // itself, which both threads reach: the main thread reads the columns the
-    // player is walking into, and the worker reads its own neighbourhood and
-    // writes everything it finishes. Held for one chunk file at a time.
-    //
-    // They are never nested, in either direction. That is the whole deadlock
-    // argument and it is worth keeping true.
+    // held for a pointer swap at a time. The storage slot used to have a second
+    // lock here, taken by the main thread and the generation worker alike; it
+    // moved inside ChunkCache along with everything that touches a card, which
+    // is what took the render thread off the storage path entirely.
     // ---------------------------------------------------------------------
     bool generationThreaded_ = true;
     // One of these holds the worker, never both: `platformWorker_` when a
@@ -357,28 +456,29 @@ private:
     mutable std::mutex queueLock_;
     std::condition_variable wake_;
     std::condition_variable idle_;
-    std::mutex storageLock_;
 
     bool workerRunning_ = false;
     bool workerStop_ = false;
-    // **The order columns are generated in, and it is deliberately not "whatever
-    // is nearest now".**
+    // **What is owed. The scan appends in spiral order; the pump takes the
+    // entry nearest the camera.**
     //
-    // Population order is the world in a1.1.2 -- two chunks whose passes reach
-    // the same ground come out differently depending on which ran first -- so
-    // the sequence of sweeps has to be a property of the game rather than of how
-    // fast the generator happens to be. Choosing the target afresh each time the
-    // worker went idle made it the latter: a slower generator is further behind
-    // when the camera moves on, so it picks a different column, and the world
-    // that comes out is not the one a faster machine would have made. Measured,
-    // before this queue existed: the same path produced 36 columns of world
-    // threaded against 48 inline.
+    // This was strictly FIFO, and the reasoning was that population order is
+    // the world in a1.1.2 -- two chunks whose passes reach the same ground come
+    // out differently depending on which ran first -- so the sequence of sweeps
+    // had to be a property of the game rather than of how fast the generator
+    // ran. What that bought was a *reproducible* order. It was not the
+    // original's, and it stranded a player who outran the generator behind
+    // every column they had already passed; see pumpGeneration for the numbers
+    // and for the jar evidence that a1.1.2 generates nearest-to-the-player.
     //
-    // So the scan appends to this in spiral order as it discovers missing
-    // columns, and the worker consumes it in order. The queue is a function of
-    // the camera path and the per-frame load budget; nothing about it depends
-    // on how long a column takes to make. A coordinate that has since gone out
-    // of range is generated anyway rather than skipped, for the same reason.
+    // Two properties survive the change and are worth keeping true:
+    //
+    //   * **Nothing is dropped.** A coordinate that has gone out of range is
+    //     generated anyway rather than skipped -- it is simply taken after the
+    //     ones the player can see. The set of columns the world ends up with is
+    //     still a function of the camera path alone.
+    //   * **One at a time.** Job N still starts against the world left by every
+    //     job before it; only which column is job N has changed.
     std::vector<std::pair<i32, i32>> generationQueue_;
 
     // What is on the queue, for a membership test the queue itself cannot give
@@ -389,21 +489,28 @@ private:
     // world.
     std::set<std::pair<i32, i32>> queued_;
 
-    // The column the worker has in hand, and the flag that says it has finished
-    // with it. The coordinate is kept on the main thread's side so that the
-    // membership set can be cleared exactly once, when the job is drained.
-    std::pair<i32, i32> inFlight_{0, 0};
-    bool jobDone_ = false;
+    // Coordinates the worker has finished, handed back so the main thread can
+    // take them out of `queued_` exactly once. A list rather than a single
+    // slot: the worker takes its own next job, so more than one column can
+    // finish between two frames.
+    std::vector<std::pair<i32, i32>> completed_;
+
+    // The camera position the worker picks against, republished once a frame.
+    // A copy under the lock rather than `centreX_`, which is the main thread's.
+    i32 queueCentreX_ = 0;
+    i32 queueCentreZ_ = 0;
+
+    // Stops the worker taking a new job. Held while something on the main
+    // thread reaches into the generator itself -- growing its cache moves a
+    // table the worker walks.
+    bool queuePaused_ = false;
 
     // A player who runs across ungenerated ground can queue faster than the
     // worker drains. The cap is what stops that being unbounded; it is a
     // function of the grid size, so it is the same on every machine.
     usize generationQueueCap_ = 0;
 
-    bool jobPending_ = false;
     bool jobActive_ = false;
-    i32 jobX_ = 0;
-    i32 jobZ_ = 0;
     std::vector<std::unique_ptr<world::ChunkColumn>> finished_;
 
     // The generator's counters, copied out by the worker under queueLock_. The
@@ -411,11 +518,15 @@ private:
     u32 workerPeakLive_ = 0;
     u32 workerEvictedLive_ = 0;
 
-    static WorkerSpawn workerSpawn_;
-    static WorkerJoin workerJoin_;
     world::LevelData level_;
     std::string path_;
     bool open_ = false;
+
+    world::ChunkCache::Config cacheConfig_;
+    world::ChunkCache::PlayerState player_;
+    int prefetchRings_ = 0;
+    int autosaveSeconds_ = 0;
+    i64 lastSaveMillis_ = 0;
 
     int meshDistance_ = 0;
     int loadRadius_ = 0;

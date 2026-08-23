@@ -239,17 +239,39 @@ bool Section::assignBlocks(ConstByteSpan flat)
 
 void Section::writeBlocks(u8* dst) const
 {
+    // Mirrors readBlocks: the encoding switch and the palette/indices pointer
+    // loads happen once here rather than once per cell inside block(i). That
+    // dispatch measured at 46 % of section-mesh time before readBlocks was
+    // rewritten this way (see its comment above) -- this is the same fix for
+    // the save path, which walks the same kVolume cells on every dirty
+    // section a save writes.
     switch (encoding_) {
     case SectionEncoding::Uniform:
         std::memset(dst, u8(uniform_), kVolume);
-        break;
-    case SectionEncoding::Palette4:
-    case SectionEncoding::Palette8:
-    case SectionEncoding::Direct16:
+        return;
+    case SectionEncoding::Palette4: {
+        const u8* packed = indices_.get();
+        const BlockId* palette = palette_.data();
         for (int i = 0; i < kVolume; ++i) {
-            dst[i] = u8(block(i));
+            dst[i] = u8(palette[nibbleGet(packed, i)]);
         }
-        break;
+        return;
+    }
+    case SectionEncoding::Palette8: {
+        const u8* indices = indices_.get();
+        const BlockId* palette = palette_.data();
+        for (int i = 0; i < kVolume; ++i) {
+            dst[i] = u8(palette[indices[i]]);
+        }
+        return;
+    }
+    case SectionEncoding::Direct16: {
+        const BlockId* direct = direct_.get();
+        for (int i = 0; i < kVolume; ++i) {
+            dst[i] = u8(direct[i]);
+        }
+        return;
+    }
     }
 }
 

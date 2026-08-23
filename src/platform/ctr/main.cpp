@@ -7,10 +7,18 @@
 // at a real frame rate. M3 is where the camera gets a body.
 //
 // **The shell around it is the main menu.** `main` brings up the GPU once and
-// then alternates: the menu chooses or makes a world, `runGame` plays it, START
-// comes back out to the menu, and Quit on the title screen is the only way the
-// process ends. So `runGame` is now "given a world path, play it" and knows
-// nothing about which world that is or how it was picked -- see menu.hpp.
+// then alternates: the menu chooses or makes a world, `runGame` plays it, Exit
+// World on the pause menu comes back out to the menu, and Quit on the title
+// screen is the only way the process ends. So `runGame` is now "given a world
+// path, play it" and knows nothing about which world that is or how it was
+// picked -- see menu.hpp.
+//
+// **START pauses rather than exits.** It used to break the loop outright, which
+// meant the only way out of a world was also the only thing the button could
+// ever do. It now hands the frame loop to `Menu::runPause` -- the same Menu
+// object the shell already owns, so the Options and Texture Pack screens are
+// literally the ones the main menu uses, and a change made in a world is a
+// change the main menu is holding when the player gets back to it.
 //
 // The frame is the one docs/architecture.md lays out, minus the worker thread:
 //
@@ -254,7 +262,11 @@ void joinWorker(void* handle)
 
 // Plays one world, and returns when the player presses START. The GPU is
 // already up and stays up: the menu the player comes back to needs it.
-int runGame(const ctr::MenuChoice& choice, bool isNew3DS, bool haveCstick)
+// `menu` is the shell's own, borrowed for the pause screen. It is not the
+// thing that chose this world -- that was `choice`, which is a copy -- but it
+// is where the render distance, the pack list and the live atlas live, and the
+// pause menu edits all three.
+int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool haveCstick)
 {
     ctr::Renderer::Config config;
     // What the options screen last settled on, which starts at the two
@@ -262,6 +274,11 @@ int runGame(const ctr::MenuChoice& choice, bool isNew3DS, bool haveCstick)
     // 3DS and 10 on a New one, both of which hold a full turn on the spot
     // without evicting anything.
     config.meshDistance = choice.renderDistance;
+    // The menu already assembled and validated this, so a pack that will not
+    // decode was refused on the screen that chose it. `choice` outlives the
+    // game loop, which is what lets the renderer borrow the image rather than
+    // copy 256 KB of it.
+    config.atlas = &choice.atlas;
 
     ctr::Renderer renderer;
     if (!renderer.init(config, isNew3DS)) {
@@ -431,7 +448,67 @@ int runGame(const ctr::MenuChoice& choice, bool isNew3DS, bool haveCstick)
         const u32 down = hidKeysDown();
         const u32 held = hidKeysHeld();
         if (down & KEY_START) {
-            break;
+            // No room for the pause menu's target or its vertex buffer. That is
+            // a console with nothing left to give, and trapping the player in a
+            // world they cannot leave is the worst of the answers available --
+            // so START does what it did before there was a pause menu.
+            if (!menu.init(isNew3DS)) {
+                std::printf("\x1b[31mno memory for the pause menu\x1b[0m\n");
+                break;
+            }
+
+            const ctr::PauseChoice paused =
+                menu.runPause(choice.worldName.c_str(), settings.renderDistance);
+            menu.shutdown();
+
+            // Three things the menu took away and this has to give back before
+            // the next frame:
+            //
+            //   * The top screen. The menu's own render target evicted the
+            //     left eye from citro3d's one-per-output table and deleting it
+            //     left the slot empty, so without this the world is drawn and
+            //     never displayed -- see Renderer::reclaimScreen, which also
+            //     undoes the menu's gfxSet3D(false).
+            //   * The bottom-screen console, which the menu cleared and wrote
+            //     its own help onto.
+            //   * The clock. `dt` is measured from the last frame, and the last
+            //     frame was however long ago the player pressed START.
+            renderer.reclaimScreen();
+            overlay.invalidate();
+            lastTick = svcGetSystemTick();
+
+            // Nothing below is worth doing for a world that is closing: the
+            // pack and the distance are already saved in 3ds.ini and held by
+            // the Menu, and applying either here would upload an atlas and
+            // rebuild the whole VBO pool a few frames before both are thrown
+            // away.
+            if (paused.action == ctr::PauseChoice::Action::ExitWorld) {
+                break;
+            }
+
+            if (paused.atlasChanged) {
+                if (!renderer.setAtlas(menu.atlas())) {
+                    std::printf("\x1b[31mcould not upload that pack\x1b[0m\n");
+                    overlay.invalidate();
+                }
+                // The outline atlas went with the old one and may not have come
+                // back, so the debug page is told what is actually on rather
+                // than what was asked for -- the same read-back the page does
+                // when it sets this itself.
+                settings.wireframe = renderer.wireframe();
+            }
+
+            // The same order and the same reason as the debug page below: the
+            // pool goes first, and the streamer republishes into whatever field
+            // it finds. Routed through `settings` so the debug page and the
+            // pause menu cannot end up disagreeing about what the distance is.
+            if (paused.renderDistance != settings.renderDistance) {
+                settings.renderDistance = paused.renderDistance;
+                renderer.setMeshDistance(settings.renderDistance);
+                world.setMeshDistance(settings.renderDistance, renderer.chunks());
+            }
+
+            continue;
         }
 
         // The bottom screen owns SELECT, so nothing below fires while it is
@@ -510,6 +587,10 @@ int runGame(const ctr::MenuChoice& choice, bool isNew3DS, bool haveCstick)
         overlay.draw(renderer, world, camera, timing, dt * 1000.0f, timeOfDay, settings);
     }
 
+    // The original says the same thing on its way out of a world, and it is
+    // worth saying: close() rewrites level.dat and flushes every dirty column,
+    // which on a card is long enough for a still screen to look like a hang.
+    std::printf("\x1b[2J\x1b[1;1H\x1b[32mSaving level..\x1b[0m\n");
     world.close(ctr::nowMillis());
     renderer.shutdown();
     return 0;
@@ -548,7 +629,7 @@ int runShell(bool isNew3DS, bool haveCstick)
             break;
         }
 
-        result = runGame(choice, isNew3DS, haveCstick);
+        result = runGame(choice, menu, isNew3DS, haveCstick);
         if (result != 0) {
             break;
         }

@@ -23,8 +23,12 @@ void MeshBuilder::addQuad(int x, int y, int z, int face, u16 texture, u8 light)
     // wrong, but a world can name a block we do not know and the unknown entry
     // has to land somewhere real rather than sample past the atlas.
     const int tile = texture < kAtlasTileCount ? texture : 0;
-    const int tileU = (tile % kAtlasTilesPerEdge) * kUvUnitsPerTile;
-    const int tileV = (tile / kAtlasTilesPerEdge) * kUvUnitsPerTile;
+    // Inset by kUvInset at each edge rather than sitting on the tile boundary;
+    // see vertex.hpp for the one texel row of every face that cost.
+    const i16 uLo = tileUvMin(tile % kAtlasTilesPerEdge);
+    const i16 uHi = tileUvMax(tile % kAtlasTilesPerEdge);
+    const i16 vLo = tileUvMin(tile / kAtlasTilesPerEdge);
+    const i16 vHi = tileUvMax(tile / kAtlasTilesPerEdge);
 
     // One quad, and everything else -- the four corners, their UVs, the face
     // shade -- is rebuilt on the GPU from kFaceBasis, which is asserted against
@@ -49,8 +53,8 @@ void MeshBuilder::addQuad(int x, int y, int z, int face, u16 texture, u8 light)
         const Corner& corner = kFaceCorner[face][c];
 
         WorldVertex v;
-        v.u = static_cast<i16>(tileU + kFaceCornerUV[face][c][0] * kUvUnitsPerTile);
-        v.v = static_cast<i16>(tileV + kFaceCornerUV[face][c][1] * kUvUnitsPerTile);
+        v.u = kFaceCornerUV[face][c][0] != 0 ? uHi : uLo;
+        v.v = kFaceCornerUV[face][c][1] != 0 ? vHi : vLo;
         v.x = static_cast<u8>(x + corner.x);
         v.y = static_cast<u8>(y + corner.y);
         v.z = static_cast<u8>(z + corner.z);
@@ -149,14 +153,23 @@ void addCross(const MeshScratch& scratch, int x, int y, int z, u16 texture, Mesh
     const i16 y1 = i16((y + 1) * kDetailUnitsPerBlock);
 
     const int tile = texture < kAtlasTileCount ? texture : 0;
-    const i16 u0 = i16((tile % kAtlasTilesPerEdge) * kUvUnitsPerTile);
-    const i16 v0 = i16((tile / kAtlasTilesPerEdge) * kUvUnitsPerTile);
-    const i16 u1 = i16(u0 + kUvUnitsPerTile);
-    const i16 v1 = i16(v0 + kUvUnitsPerTile);
+    const i16 u0 = tileUvMin(tile % kAtlasTilesPerEdge);
+    const i16 v0 = tileUvMin(tile / kAtlasTilesPerEdge);
+    const i16 u1 = tileUvMax(tile % kAtlasTilesPerEdge);
+    const i16 v1 = tileUvMax(tile / kAtlasTilesPerEdge);
 
     // v runs downward, as everywhere else: terrain.png's first row is its top.
-    const i16 uv[4][2] = {{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}};
-    const i16 uvFlipped[4][2] = {{u1, v0}, {u0, v0}, {u0, v1}, {u1, v1}};
+    //
+    // **The order here has to track `planes` below corner for corner, and it is
+    // the one thing about a cross that no other test was checking.** A plane
+    // runs top, bottom, bottom, top as it crosses the block, so the UVs must
+    // run top-left, bottom-left, bottom-right, top-right. Writing the tile's
+    // corners in rectangle order instead -- (u0,v0), (u1,v0), (u1,v1), (u0,v1)
+    // -- swaps corners 1 and 3 against the geometry and mirrors the tile across
+    // its own diagonal, which stands every flower on its side. torch.cpp's
+    // `sideUv` is the same four corners in the correct order.
+    const i16 uv[4][2] = {{u0, v0}, {u0, v1}, {u1, v1}, {u1, v0}};
+    const i16 uvFlipped[4][2] = {{u1, v0}, {u1, v1}, {u0, v1}, {u0, v0}};
 
     // Light comes from the block's own cell. A cross is not an opaque cube, so
     // its cell carries real light rather than the darkness inside a solid block.

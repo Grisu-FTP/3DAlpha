@@ -1,10 +1,10 @@
-Start testing: Aug 22 16:59 CEST
+Start testing: Aug 23 14:19 CEST
 ----------------------------------------------------------
 1/1 Testing: unit
 1/1 Test: unit
 Command: "/home/grisu/Documents/GitHub/3DAlpha/build-host/3dalpha_tests"
 Directory: /home/grisu/Documents/GitHub/3DAlpha/build-host
-"unit" start time: Aug 22 16:59 CEST
+"unit" start time: Aug 23 14:19 CEST
 Output:
 ----------------------------------------------------------
   big_trees_match_the_jar
@@ -124,6 +124,13 @@ Output:
   an_uninitialised_frustum_draws_everything_rather_than_nothing
   planes_come_back_normalised
   the_chunk_generator_matches_a_real_world
+  imports_only_the_textures
+  entries_are_copied_without_being_recompressed
+  a_successful_import_is_a_pack_that_loads
+  a_jar_with_a_broken_terrain_is_not_a_success
+  a_jar_with_no_textures_is_refused
+  what_is_not_a_jar_is_refused_without_writing_anything
+  the_pack_name_comes_from_the_jar_name
   java_narrowing_matches_the_jvm
   the_floor_wraps_at_the_bottom_the_way_java_does
   the_float_overload_saturates_on_representable_bounds
@@ -179,6 +186,7 @@ Output:
   has_emitter_agrees_with_what_the_dispatch_actually_reaches
   a_cross_is_two_planes_drawn_from_both_sides
   a_cross_is_inset_the_way_the_original_insets_it
+  a_cross_maps_the_tile_the_same_way_up_as_the_block
   a_cross_is_unshaded_and_lit_from_its_own_cell
   the_three_vertex_streams_concatenate_in_draw_order
   an_unknown_block_is_meshed_as_a_visible_cube
@@ -206,10 +214,33 @@ Output:
   ore_veins_match_the_jar
   clay_refuses_on_dry_land_without_touching_the_stream
   veins_at_the_world_edges_are_clipped_not_wrapped
+  dev_art_fills_the_whole_atlas_and_is_deterministic
+  dev_art_gives_a_fluid_group_one_surface
+  dev_art_carves_the_torch_tiles
+  a_16x_pack_is_copied_unchanged
+  an_hd_pack_is_box_filtered_down
+  downscaling_does_not_darken_a_cutout_edge
+  downscaling_a_fully_transparent_region_does_not_divide_by_zero
+  a_small_pack_is_replicated_not_interpolated
+  refuses_a_terrain_png_that_is_not_a_tile_grid
+  a_directory_is_a_pack_too
+  dev_art_is_pinned_first_and_always_there
+  lists_packs_by_name_and_skips_what_is_not_one
+  lists_jars_across_both_folders_with_their_sizes
+  the_a112_file_table_matches_what_the_jar_holds
   reeds_and_cactus_match_the_jar
   the_plant_fixture_covers_both_outcomes
   reed_placement_needs_water_beside_the_block_below
   cactus_refuses_a_solid_neighbour_and_the_wrong_ground
+  decodes_rgba
+  row_zero_is_the_top_row
+  decodes_every_scanline_filter
+  decodes_palette_with_transparency
+  decodes_greyscale_with_colour_key
+  concatenates_split_idat
+  refuses_what_it_does_not_decode
+  refuses_an_image_beyond_the_ceiling
+  refuses_corrupt_pixel_data
   the_whole_population_pass_matches_the_jar
   the_populate_fixture_changes_the_centre_and_its_neighbours
   the_snow_sweep_is_exercised
@@ -247,6 +278,19 @@ Output:
   chunk_column_maps_y_to_the_right_section
   chunk_column_nibble_planes_are_addressed_independently
   an_empty_column_costs_almost_nothing
+  a_blank_seed_means_roll_one
+  a_number_is_that_number
+  anything_that_is_not_a_number_is_hashed_the_way_java_hashes_it
+  a_number_too_big_for_a_long_falls_through_to_the_hash
+  the_hash_is_sign_extended_like_java_widening_an_int
+  a_seed_above_the_basic_plane_hashes_as_a_surrogate_pair
+  malformed_utf8_hashes_as_replacement_characters_rather_than_running_off
+  settings_round_trip
+  the_built_in_pack_round_trips_as_empty
+  a_missing_file_is_the_first_boot_state
+  a_hand_edited_file_still_loads
+  a_pack_name_with_a_separator_is_ignored
+  saving_drops_keys_this_build_does_not_know
   the_sine_table_matches_the_jvm_bit_for_bit
   sine_table_samples_match
   math_helper_sin_is_quantised_not_exact
@@ -280,6 +324,13 @@ Output:
   chunk_seeding_is_reproducible_and_seed_dependent
   a_reused_provider_generates_the_same_column_as_a_fresh_one
   snow_covered_puts_ice_only_at_the_waterline
+  morton_matches_the_written_out_tile
+  morton_ignores_everything_above_the_tile
+  tiles_run_across_then_down
+  flip_sends_row_zero_to_the_last_row_of_memory
+  the_atlas_map_covers_every_word_exactly_once
+  the_lightmap_map_covers_every_word_exactly_once
+  tiling_an_image_round_trips
   torch_mount_puts_the_stick_base_on_the_wall
   torch_mount_stands_upright_for_every_other_metadata
   torch_is_five_quads_in_the_opaque_detail_stream
@@ -345,14 +396,32 @@ Output:
   every_section_is_visited_at_most_once
   a_camera_outside_the_world_height_is_clamped_not_rejected
   a_field_that_was_never_sized_produces_nothing_rather_than_reading_memory
+  listing_an_absent_saves_folder_is_empty_rather_than_an_error
+  a_listing_reports_every_world_newest_first
+  worlds_played_at_the_same_moment_are_ordered_by_name
+  a_directory_without_a_level_dat_is_not_a_world
+  listing_a_world_does_not_touch_it
+  a_new_world_gets_the_first_free_slot_name
+  a_typed_world_name_is_made_safe_for_a_card
+  deleting_a_world_removes_its_whole_tree
+  delete_refuses_anything_that_is_not_a_world
+  reads_stored_and_deflated_entries
+  reads_an_entry_whose_local_header_lies
+  raw_bytes_are_the_stored_form
+  a_directory_entry_is_not_a_file
+  refuses_what_is_not_a_zip
+  refuses_names_that_escape
+  builder_round_trips_verbatim_entries
+  builder_refuses_an_unsafe_name
+  builder_stores_an_empty_entry
 
-338/338 passed
+407/407 passed
 <end of output>
-Test time = 152.93 sec
+Test time = 119.19 sec
 ----------------------------------------------------------
 Test Passed.
-"unit" end time: Aug 22 17:01 CEST
-"unit" time elapsed: 00:02:32
+"unit" end time: Aug 23 14:21 CEST
+"unit" time elapsed: 00:01:59
 ----------------------------------------------------------
 
-End testing: Aug 22 17:01 CEST
+End testing: Aug 23 14:21 CEST

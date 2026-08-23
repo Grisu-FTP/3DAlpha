@@ -87,6 +87,16 @@ public:
     struct Config {
         int meshDistance = 8;
         float fovDegrees = 70.0f;
+
+        // The block atlas, already assembled by core/texture/ -- the menu
+        // builds it when the player picks a pack, so a broken pack is reported
+        // on the screen that chose it rather than silently in here. Null falls
+        // back to the generated Dev Art, which is what the harnesses and any
+        // caller that has no menu in front of it get.
+        //
+        // Borrowed, not owned. It has to outlive init(), which is all it has to
+        // outlive: the image is uploaded to a C3D_Tex and never read again.
+        const texture::AtlasImage* atlas = nullptr;
     };
 
     struct FrameStats {
@@ -128,6 +138,49 @@ public:
     // in which case the setting stays off rather than silently doing nothing.
     bool setWireframe(bool on);
     bool wireframe() const { return wireframe_; }
+
+    // Swap the block atlas without tearing the renderer down, which is what
+    // lets the pause menu's Texture Pack row apply to the world the player is
+    // standing in.
+    //
+    // Nothing else has to be rebuilt: a pack changes what the tiles look like
+    // and not where they are, so every UV already in the VBO pool still points
+    // at the right tile. The image is only read here -- it is uploaded to a
+    // C3D_Tex and never looked at again -- so the caller may let it go the
+    // moment this returns, unlike Config::atlas.
+    //
+    // False means the upload failed and Dev Art was put up in its place; the
+    // world stays textured either way, which is the whole reason this does not
+    // simply leave the atlas deleted.
+    bool setAtlas(const texture::AtlasImage& image);
+
+    // **Call this after anything else has drawn to the top screen**, which for
+    // now means after every visit to the pause menu. It is the whole of what a
+    // Renderer needs to pick the screen back up; nothing else it owns was
+    // touched.
+    //
+    // Two things are taken and neither is given back:
+    //
+    //   * **The screen output itself, which is the one that would go unnoticed
+    //     in review and be obvious on hardware.** citro3d holds exactly *one*
+    //     target per output -- `linkedTarget[3]`, indexed top-left, top-right,
+    //     bottom -- so `C3D_CreateScreenTarget(GFX_TOP, GFX_LEFT)` does not
+    //     join a list, it evicts whatever was there and clears that target's
+    //     `linked` flag. Deleting it then leaves the slot **null** rather than
+    //     restoring what it displaced (disassembled out of
+    //     `renderqueue.o`: `C3D_RenderTargetDelete` stores 0 into
+    //     `linkedTarget[id]`). So after a menu has come and gone, the left eye
+    //     is still drawn, still complete, and never transferred -- the top
+    //     screen simply holds the last frame from before the pause, forever.
+    //     This never bit the main menu because the Renderer is built and torn
+    //     down around it and `init` re-links both eyes.
+    //   * **gfxSet3D.** drawFrame only calls it when the slider crosses zero,
+    //     because the call is not free and the answer changes a few times a
+    //     session. That cache is a lie the moment someone else sets it, and the
+    //     menu does on its way in, since nothing it draws has any depth.
+    //     Without this, resuming with the slider up leaves the second eye off
+    //     until the player happens to move the slider.
+    void reclaimScreen();
 
     // The cube encoding: four 12-byte vertices per quad, or one 8-byte vertex
     // expanded by a geometry shader. **Also a measurement instrument** -- this

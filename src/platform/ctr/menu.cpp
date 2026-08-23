@@ -3,6 +3,7 @@
 #include "platform/ctr/overlay.hpp"
 #include "platform/ctr/renderer.hpp"
 
+#include "core/texture/jar_import.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/seed_text.hpp"
 
@@ -141,10 +142,29 @@ bool Menu::init(bool isNew3DS)
 {
     isNew3DS_ = isNew3DS;
     maxDistance_ = isNew3DS ? kPlayMaxDistanceNew3DS : kPlayMaxDistanceOld3DS;
+
+    // **Only on the first visit.** init() runs around every trip to the menu so
+    // the render target is not sitting in VRAM during a game, but the player's
+    // choices are not re-read from the card each lap -- that would undo an
+    // unsaved change and cost a pack decode per world exit.
+    if (!settingsLoaded_) {
+        settingsLoaded_ = true;
+        loadSettings();
+    }
+
     if (renderDistance_ == 0) {
         // The two configurations the VBO pool was measured against, which is
         // what makes them the defaults rather than the maxima above.
         renderDistance_ = isNew3DS ? 10 : 6;
+    }
+    if (renderDistance_ > maxDistance_) {
+        // A card carried between an Old and a New 3DS: the saved value is the
+        // other console's, and clamping beats offering a distance this model
+        // was never measured at.
+        renderDistance_ = maxDistance_;
+    }
+    if (renderDistance_ < 2) {
+        renderDistance_ = 2;
     }
 
     // **1024 objects, and the number is arithmetic rather than taste.** citro2d
@@ -179,6 +199,7 @@ bool Menu::init(bool isNew3DS)
     gfxSet3D(false);
 
     refreshWorlds();
+    refreshPacks();
     consoleDirty_ = true;
     return true;
 }
@@ -219,6 +240,180 @@ void Menu::refreshWorlds()
     }
 }
 
+
+void Menu::refreshPacks()
+{
+    texture::listPacks(fs_, texture::kPacksDir, &packs_);
+
+    // Row 0 is "+ Extract from a jar...", pinned above the list the way
+    // "+ Create New World" is on the world screen.
+    const int rows = int(packs_.size()) + 1;
+    if (packCursor_ >= rows) {
+        packCursor_ = rows - 1;
+    }
+    if (packCursor_ < 0) {
+        packCursor_ = 0;
+    }
+    if (packScroll_ > packCursor_) {
+        packScroll_ = packCursor_;
+    }
+
+    // **A pack that is no longer on the card falls back to Dev Art rather than
+    // to nothing.** A player who deleted a zip from a PC would otherwise come
+    // back to a saved setting naming a file that is gone.
+    if (!packName_.empty()) {
+        bool present = false;
+        for (const texture::PackEntry& pack : packs_) {
+            if (pack.name == packName_) {
+                present = true;
+                break;
+            }
+        }
+        if (!present) {
+            packName_.clear();
+            atlas_.rgba.clear();
+        }
+    }
+
+    if (atlas_.empty()) {
+        // Whatever the saved name was, there is no image yet on the first pass
+        // through here. Building it now means the pack screen can show what is
+        // live and `run` always has something to hand `runGame`.
+        const std::string path =
+            packName_.empty() ? std::string() : texture::packPath(texture::kPacksDir, packName_);
+        const texture::PackError error = texture::buildAtlas(fs_, path, &atlas_);
+        if (error != texture::PackError::Ok) {
+            // The saved pack is on the card and will not decode -- a truncated
+            // download, or a zip somebody edited. Falling back silently would
+            // leave the player looking at Dev Art with no idea why, so the
+            // reason goes on the console and 3ds.ini is left alone: the pack
+            // may be fixable, and forgetting the choice for them is not ours
+            // to do.
+            message_ = texture::packErrorText(error);
+            packName_.clear();
+            texture::buildAtlas(fs_, std::string(), &atlas_);
+        }
+    }
+}
+
+void Menu::refreshJars()
+{
+    // The packs folder and the folder above it. A player who dropped a download
+    // onto the card has not necessarily put it in the right place, and a bare
+    // "no jar found" for a file sitting one directory up is a bad answer.
+    const std::string dirs[2] = {std::string(texture::kPacksDir), std::string(kRootDir)};
+    texture::listJars(fs_, dirs, 2, &jars_);
+
+    if (jarCursor_ >= int(jars_.size())) {
+        jarCursor_ = int(jars_.size()) - 1;
+    }
+    if (jarCursor_ < 0) {
+        jarCursor_ = 0;
+    }
+    if (jarScroll_ > jarCursor_) {
+        jarScroll_ = jarCursor_;
+    }
+}
+
+bool Menu::selectPack(int index)
+{
+    if (index < 0 || usize(index) >= packs_.size()) {
+        return false;
+    }
+    const texture::PackEntry& pack = packs_[usize(index)];
+
+    // Into a scratch image, not over the live one. A pack that fails halfway
+    // through decoding must leave the player looking at the world they had,
+    // not at an atlas that is half of one pack and half of another.
+    texture::AtlasImage loaded;
+    const texture::PackError error = texture::buildAtlas(fs_, pack.path, &loaded);
+    if (error != texture::PackError::Ok) {
+        message_ = texture::packErrorText(error);
+        consoleDirty_ = true;
+        return false;
+    }
+
+    atlas_ = std::move(loaded);
+    packName_ = pack.builtIn ? std::string() : pack.name;
+    ++packRevision_;
+    message_ = nullptr;
+    consoleDirty_ = true;
+    saveSettings();
+    return true;
+}
+
+void Menu::extractJar(int index)
+{
+    if (index < 0 || usize(index) >= jars_.size()) {
+        return;
+    }
+    const texture::JarEntry jar = jars_[usize(index)];
+
+    // One frame saying what is happening before the card is read. The import is
+    // a second or two of blocking work on a console, and a screen that simply
+    // stops looks like a crash.
+    std::printf("\x1b[2J\x1b[1;1H");
+    std::printf("Extracting textures from\n  \x1b[33m%s\x1b[0m\n\n", jar.name.c_str());
+    std::printf("This reads the jar once and copies\n");
+    std::printf("its PNGs across without decoding\n");
+    std::printf("them. Nothing is written back to\n");
+    std::printf("the jar.\n");
+    drawFrame();
+
+    const texture::ImportResult result = texture::importJar(fs_, jar.path, texture::kPacksDir);
+    consoleDirty_ = true;
+
+    if (!result.ok()) {
+        message_ = texture::packErrorText(result.error);
+        return;
+    }
+
+    importedJar_ = jar.path;
+    importedPack_ = result.outPath;
+    importedCount_ = result.copied;
+    message_ = nullptr;
+
+    // The new pack becomes the live one straight away. Importing a pack and
+    // then having to find it in a list is a step with no decision in it.
+    refreshPacks();
+    for (int i = 0; i < int(packs_.size()); ++i) {
+        if (!packs_[usize(i)].builtIn && packs_[usize(i)].path == result.outPath) {
+            selectPack(i);
+            packCursor_ = i + 1;  // + the pinned extract row
+            break;
+        }
+    }
+
+    // Only now, with a pack that has been re-read off the card and decoded, is
+    // it honest to ask about deleting the jar it came from.
+    setScreen(Screen::ConfirmDeleteJar);
+}
+
+void Menu::loadSettings()
+{
+    settings::GameSettings saved;
+    if (!settings::loadSettings(fs_, settings::kSettingsPath, &saved)) {
+        return;  // first boot; the defaults stand
+    }
+    renderDistance_ = saved.renderDistance;
+    packName_ = saved.texturePack;
+}
+
+void Menu::saveSettings()
+{
+    settings::GameSettings current;
+    current.renderDistance = renderDistance_;
+    current.texturePack = packName_;
+
+    if (!fs_.makeDirectories(kRootDir)) {
+        return;
+    }
+    // Failing to save is not worth interrupting the player over: the choice
+    // still applies to this session, and the card being full or locked will
+    // announce itself the moment they try to make a world.
+    settings::saveSettings(fs_, settings::kSettingsPath, current);
+}
+
 void Menu::setScreen(Screen screen)
 {
     screen_ = screen;
@@ -243,6 +438,16 @@ void Menu::printConsoleHelp()
         std::printf("START    exit to the home menu\n\n");
         std::printf("Multiplayer arrives at M5.\n");
         break;
+    case Screen::Pause:
+        std::printf("Up/Down  choose\n");
+        std::printf("A        select\n");
+        std::printf("B/START  back to the world\n\n");
+        std::printf("The world is stopped: nothing is\n");
+        std::printf("streamed or generated and the sun\n");
+        std::printf("does not move while this is up.\n\n");
+        std::printf("Exit World saves first, the way\n");
+        std::printf("closing it any other way does.\n");
+        break;
     case Screen::Worlds:
         std::printf("Up/Down  choose a world\n");
         std::printf("A        play it\n");
@@ -260,10 +465,57 @@ void Menu::printConsoleHelp()
     case Screen::Options:
         std::printf("Left/Right  change the value\n");
         std::printf("Up/Down     choose a row\n");
+        std::printf("A           open Texture Pack\n");
         std::printf("B           back\n\n");
         std::printf("Render distance is what a player is\n");
         std::printf("offered; the debug page (SELECT+Y in\n");
         std::printf("game) goes further for measuring.\n");
+        if (inGame_) {
+            std::printf("\nBoth rows apply to the world you\n");
+            std::printf("are standing in, as soon as you\n");
+            std::printf("go back to it.\n");
+        }
+        break;
+    case Screen::TexturePacks:
+        std::printf("Up/Down  choose\n");
+        std::printf("A        use it, or extract a jar\n");
+        std::printf("B        back\n\n");
+        std::printf("Packs live on the card at:\n");
+        std::printf("  \x1b[33m%s/\x1b[0m\n\n", texture::kPacksDir);
+        std::printf("A pack is a zip in the pre-1.5 jar\n");
+        std::printf("layout -- terrain.png at the root --\n");
+        std::printf("or that same tree in a folder.\n\n");
+        // Said plainly rather than implied. Everything else a pack carries is
+        // kept and counted, and nothing samples it yet.
+        std::printf("\x1b[33mOnly terrain.png is drawn so far.\x1b[0m\n");
+        std::printf("A pack's gui, font and mob textures\n");
+        std::printf("are kept but nothing reads them yet.\n");
+        break;
+    case Screen::PickJar:
+        std::printf("Up/Down  choose a jar\n");
+        std::printf("A        extract it\n");
+        std::printf("B        back\n\n");
+        if (jars_.empty()) {
+            std::printf("There are no .jar files in\n");
+            std::printf("  \x1b[33m%s/\x1b[0m\n", texture::kPacksDir);
+            std::printf("or\n");
+            std::printf("  \x1b[33m%s/\x1b[0m\n\n", kRootDir);
+            std::printf("Copy your own Minecraft jar to one\n");
+            std::printf("of them. Nothing is downloaded and\n");
+            std::printf("nothing is sent anywhere.\n");
+        } else {
+            std::printf("The PNGs are copied out of the jar\n");
+            std::printf("into a pack zip beside it. The jar\n");
+            std::printf("itself is only read.\n");
+        }
+        break;
+    case Screen::ConfirmDeleteJar:
+        std::printf("The pack has been written and read\n");
+        std::printf("back, and it works. The jar is not\n");
+        std::printf("needed any more.\n\n");
+        std::printf("\x1b[31mDeleting it cannot be undone.\x1b[0m\n\n");
+        std::printf("A  delete the jar\n");
+        std::printf("B  keep it\n");
         break;
     case Screen::ConfirmDelete:
         std::printf("\x1b[31mDeleting a world cannot be undone.\x1b[0m\n\n");
@@ -299,21 +551,113 @@ MenuChoice Menu::run()
         case Screen::ConfirmDelete:
             handleConfirmDelete(down);
             break;
+        case Screen::TexturePacks:
+            handleTexturePacks(down);
+            break;
+        case Screen::PickJar:
+            handlePickJar(down);
+            break;
+        case Screen::ConfirmDeleteJar:
+            handleConfirmDeleteJar(down);
+            break;
+        case Screen::Pause:
+            // Unreachable: runPause puts the screen back on its way out. Named
+            // rather than defaulted so the compiler keeps saying so if a
+            // screen is ever added and forgotten here.
+            setScreen(Screen::Title);
+            break;
         }
         if (done) {
             choice.renderDistance = renderDistance_;
+            choice.atlas = atlas_;
             return choice;
         }
 
-        printConsoleHelp();
-        drawFrame();
+        present();
     }
 
     // aptMainLoop said no: the system is taking the application away, and the
     // only honest answer is to stop rather than to open a world.
     choice.action = MenuChoice::Action::Quit;
     choice.renderDistance = renderDistance_;
+    choice.atlas = atlas_;
     return choice;
+}
+
+PauseChoice Menu::runPause(const char* worldName, int renderDistance)
+{
+    // **The live distance, not the saved one.** The debug settings page can put
+    // a world at distance 20, well past what this screen will offer; clamping
+    // to maxDistance_ here would mean that merely opening the pause menu undid
+    // it. What the Options row refuses is a step *up* past the maximum, so a
+    // value that arrives above it can be read and lowered and nothing else.
+    renderDistance_ = renderDistance;
+
+    inGame_ = true;
+    pauseWorldName_ = worldName != nullptr ? worldName : "";
+    pauseCursor_ = 0;
+    resumeScreen_ = screen_;
+    setScreen(Screen::Pause);
+
+    const u32 revisionAtEntry = packRevision_;
+
+    // Exit, not Resume, if the loop never runs: the only way past aptMainLoop
+    // below is the system taking the application away, and the caller's answer
+    // to that has to be to close the world rather than to carry on playing a
+    // frame at a time into a shutdown.
+    PauseChoice choice;
+    choice.action = PauseChoice::Action::ExitWorld;
+
+    while (aptMainLoop()) {
+        hidScanInput();
+        const u32 down = hidKeysDown();
+
+        bool done = false;
+        switch (screen_) {
+        case Screen::Pause:
+            done = handlePause(down, &choice);
+            break;
+        case Screen::Options:
+            handleOptions(down);
+            break;
+        case Screen::TexturePacks:
+            handleTexturePacks(down);
+            break;
+        case Screen::PickJar:
+            handlePickJar(down);
+            break;
+        case Screen::ConfirmDeleteJar:
+            handleConfirmDeleteJar(down);
+            break;
+        default:
+            // Title, Worlds and ConfirmDelete are not reachable from here --
+            // nothing in the pause subtree navigates to them -- and landing on
+            // one would mean offering to delete the world being played.
+            setScreen(Screen::Pause);
+            break;
+        }
+        if (done) {
+            break;
+        }
+
+        present();
+    }
+
+    inGame_ = false;
+    pauseWorldName_ = "";
+    // Back to where the main menu was standing when this world was opened, so
+    // Exit World returns to the world list rather than to the pause menu.
+    setScreen(resumeScreen_);
+
+    choice.renderDistance = renderDistance_;
+    choice.atlasChanged = packRevision_ != revisionAtEntry;
+    return choice;
+}
+
+void Menu::present()
+{
+    printConsoleHelp();
+    drawFrame();
 }
 
 namespace {
@@ -372,6 +716,52 @@ bool Menu::handleTitle(u32 down, MenuChoice* choice)
     return false;
 }
 
+// a1.1.2's own version of this screen is `ie.class` -- title "Game menu",
+// three buttons, laid out top to bottom as **Back to game**, **Save and quit to
+// title**, **Options...**. The title is kept; the order and two of the labels
+// are not, and both deviations are deliberate.
+//
+// The order here is Resume, Options, Exit World, which puts the destructive
+// row at the far end of the list from the cursor's resting place. On a console
+// the cursor is moved with a d-pad rather than pointed at, so "one row down
+// from where it starts" is a place a thumb lands by accident; on the original's
+// order that row is the one that closes the world.
+//
+// "Exit World" rather than "Save and quit to title" because the saving is not
+// optional and never has been: `WorldStreamer::close` writes level.dat on the
+// way out of a world however the player left it, so a label offering it as
+// though it were a choice would be describing a decision nobody is being given.
+// The console line under the screen says it happens.
+bool Menu::handlePause(u32 down, PauseChoice* choice)
+{
+    constexpr int kRows = 3;  // resume, options, exit world
+    pauseCursor_ = step(down, pauseCursor_, kRows);
+
+    // START opened this and START closes it again, which is the gesture a
+    // player already has in their hand. B is the same answer, for the same
+    // reason it is on every other screen here.
+    if ((down & (KEY_START | KEY_B)) != 0) {
+        choice->action = PauseChoice::Action::Resume;
+        return true;
+    }
+    if ((down & KEY_A) == 0) {
+        return false;
+    }
+
+    switch (pauseCursor_) {
+    case 0:
+        choice->action = PauseChoice::Action::Resume;
+        return true;
+    case 1:
+        message_ = nullptr;
+        setScreen(Screen::Options);
+        return false;
+    default:
+        choice->action = PauseChoice::Action::ExitWorld;
+        return true;
+    }
+}
+
 bool Menu::handleWorlds(u32 down, MenuChoice* choice)
 {
     const int rows = rowCount(worlds_.size());
@@ -421,20 +811,31 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
 
 void Menu::handleOptions(u32 down)
 {
-    constexpr int kRows = 2;  // render distance, back
+    constexpr int kRows = 3;  // render distance, texture pack, back
     optionsCursor_ = step(down, optionsCursor_, kRows);
 
     if (optionsCursor_ == 0) {
+        const int before = renderDistance_;
         if ((down & kLeft) != 0 && renderDistance_ > 2) {
             --renderDistance_;
         }
         if ((down & kRight) != 0 && renderDistance_ < maxDistance_) {
             ++renderDistance_;
         }
+        if (renderDistance_ != before) {
+            saveSettings();
+        }
     }
 
-    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 1)) {
-        setScreen(Screen::Title);
+    if ((down & KEY_A) != 0 && optionsCursor_ == 1) {
+        message_ = nullptr;
+        refreshPacks();
+        setScreen(Screen::TexturePacks);
+        return;
+    }
+
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 2)) {
+        setScreen(inGame_ ? Screen::Pause : Screen::Title);
     }
 }
 
@@ -457,6 +858,91 @@ void Menu::handleConfirmDelete(u32 down)
     }
     refreshWorlds();
     setScreen(Screen::Worlds);
+}
+
+
+void Menu::handleTexturePacks(u32 down)
+{
+    // Row 0 is "+ Extract from a jar...", then one row per pack with Dev Art
+    // first among them.
+    const int rows = int(packs_.size()) + 1;
+    packCursor_ = step(down, packCursor_, rows);
+
+    if (packCursor_ < packScroll_) {
+        packScroll_ = packCursor_;
+    }
+    if (packCursor_ >= packScroll_ + kVisibleRows) {
+        packScroll_ = packCursor_ - kVisibleRows + 1;
+    }
+
+    if (down & KEY_B) {
+        message_ = nullptr;
+        setScreen(Screen::Options);
+        return;
+    }
+    if ((down & KEY_A) == 0) {
+        return;
+    }
+
+    if (packCursor_ == 0) {
+        message_ = nullptr;
+        refreshJars();
+        setScreen(Screen::PickJar);
+        return;
+    }
+
+    // A failed load leaves the previous pack live and puts the reason on the
+    // console; there is nothing else to do here, and staying on this screen is
+    // what lets the player read it and pick another.
+    selectPack(packCursor_ - 1);
+}
+
+void Menu::handlePickJar(u32 down)
+{
+    if (!jars_.empty()) {
+        jarCursor_ = step(down, jarCursor_, int(jars_.size()));
+        if (jarCursor_ < jarScroll_) {
+            jarScroll_ = jarCursor_;
+        }
+        if (jarCursor_ >= jarScroll_ + kVisibleRows) {
+            jarScroll_ = jarCursor_ - kVisibleRows + 1;
+        }
+    }
+
+    if (down & KEY_B) {
+        message_ = nullptr;
+        setScreen(Screen::TexturePacks);
+        return;
+    }
+    if ((down & KEY_A) == 0 || jars_.empty()) {
+        return;
+    }
+    extractJar(jarCursor_);
+}
+
+void Menu::handleConfirmDeleteJar(u32 down)
+{
+    if (down & KEY_B) {
+        // Keeping the jar is the ordinary answer and the one B falls to, which
+        // is why this screen has no cursor: the destructive choice needs the
+        // button that is never pressed by accident on the way out of a menu.
+        importedJar_.clear();
+        setScreen(Screen::TexturePacks);
+        return;
+    }
+    if ((down & KEY_A) == 0) {
+        return;
+    }
+
+    if (!importedJar_.empty()) {
+        // The one file this project deletes that the player did not make here.
+        // It is reached only from a verified import -- importJar re-opened the
+        // pack it wrote and decoded its terrain.png before this screen existed.
+        message_ = fs_.removeFile(importedJar_.c_str()) ? nullptr : "could not delete the jar";
+        importedJar_.clear();
+    }
+    refreshJars();
+    setScreen(Screen::TexturePacks);
 }
 
 bool Menu::askWorldName(std::string* out)
@@ -591,6 +1077,9 @@ void Menu::drawFrame()
     case Screen::Title:
         drawTitle();
         break;
+    case Screen::Pause:
+        drawPause();
+        break;
     case Screen::Worlds:
         drawWorlds();
         break;
@@ -599,6 +1088,15 @@ void Menu::drawFrame()
         break;
     case Screen::ConfirmDelete:
         drawConfirmDelete();
+        break;
+    case Screen::TexturePacks:
+        drawTexturePacks();
+        break;
+    case Screen::PickJar:
+        drawPickJar();
+        break;
+    case Screen::ConfirmDeleteJar:
+        drawConfirmDeleteJar();
         break;
     }
 
@@ -624,6 +1122,25 @@ void Menu::drawBackground()
             C2D_DrawRectSolid(float(x) * kTile, float(y) * kTile, 0.0f, kTile, kTile, colour);
         }
     }
+
+    // Darker over a world than over the title screen.
+    //
+    // The original draws its pause menu straight over the frame the game was
+    // on, dimmed. We cannot: the world is in the renderer's own colour buffers
+    // and this is a separate 2D target with its own -- and putting the two in
+    // one frame means citro2d and citro3d taking turns inside it, which is the
+    // seam `crashlogs/004-loading-a-world-from-the-menu` came out of. So the
+    // backdrop is the same tiles, and the scrim is what says the world is
+    // still there behind them rather than gone.
+    if (inGame_) {
+        // 0.05 rather than the tiles' 0.0. citro2d draws with the depth test on
+        // and set to GEQUAL, so a tie would in fact pass -- but every other
+        // layer here already states its order in this number (outline 0.1, fill
+        // 0.2, bevel 0.3, text 0.4) and a scrim that leant on the comparison
+        // being the inclusive one would be the odd one out.
+        C2D_DrawRectSolid(0.0f, 0.0f, 0.05f, kScreenWidth, kScreenHeight,
+                          C2D_Color32(0x00, 0x00, 0x00, 0x9C));
+    }
 }
 
 void Menu::drawTitle()
@@ -638,6 +1155,27 @@ void Menu::drawTitle()
                         kButtonHeight};
         drawButton(rect, labels[i], titleCursor_ == i, i != 1);
     }
+}
+
+void Menu::drawPause()
+{
+    // "Game menu" is the original's own title for this screen, from ie.class.
+    drawLabelCentered("Game menu", kScreenWidth * 0.5f, 30.0f, 1.0f, kInk, true);
+    // A card can hold hundreds of worlds and their names come off it unchecked,
+    // so this is clipped like every other name here rather than centred and
+    // allowed to run off both edges.
+    drawLabelClipped(pauseWorldName_, 40.0f, 62.0f, 0.5f, kInkDim, kScreenWidth - 80.0f);
+
+    const float x = (kScreenWidth - kButtonWidth) * 0.5f;
+    const char* labels[] = {"Resume", "Options", "Exit World"};
+    for (int i = 0; i < 3; ++i) {
+        const Rect rect{x, 92.0f + float(i) * (kButtonHeight + 8.0f), kButtonWidth,
+                        kButtonHeight};
+        drawButton(rect, labels[i], pauseCursor_ == i, true);
+    }
+
+    drawLabelCentered("Exiting saves the world.", kScreenWidth * 0.5f, 206.0f, 0.45f, kInkDim,
+                      true);
 }
 
 void Menu::drawWorlds()
@@ -681,15 +1219,22 @@ void Menu::drawWorlds()
                   true);
     }
 
+    drawListChrome(rows, worldScroll_);
+}
+
+int Menu::drawListChrome(int rows, int scroll)
+{
     // Which way there is more list. Cheaper than a scrollbar and it answers the
     // only question a player has here.
-    if (worldScroll_ > 0) {
+    if (scroll > 0) {
         drawLabelCentered("^", kScreenWidth * 0.5f, kRowsTop - 10.0f, 0.5f, kInkDim, true);
     }
-    if (worldScroll_ + kVisibleRows < rows) {
+    if (scroll + kVisibleRows < rows) {
         drawLabelCentered("v", kScreenWidth * 0.5f, kScreenHeight - 10.0f, 0.5f, kInkDim,
                           true);
     }
+    const int left = rows - scroll;
+    return left < kVisibleRows ? (left < 0 ? 0 : left) : kVisibleRows;
 }
 
 void Menu::drawOptions()
@@ -700,14 +1245,145 @@ void Menu::drawOptions()
     std::snprintf(distance, sizeof(distance), "Render distance: %d  (max %d)", renderDistance_,
                   maxDistance_);
 
+    // A pack name comes off a card and can be as long as FAT allows, so the row
+    // is a button with a clipped label on it rather than a centred one that
+    // would draw off both edges of the screen.
     const float x = (kScreenWidth - kButtonWidth) * 0.5f;
-    drawButton(Rect{x, 80.0f, kButtonWidth, kButtonHeight}, distance, optionsCursor_ == 0,
-               true);
-    drawButton(Rect{x, 120.0f, kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 1,
+    drawButton(Rect{x, 70.0f, kButtonWidth, kButtonHeight}, distance, optionsCursor_ == 0,
                true);
 
-    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 170.0f, 0.45f,
+    const Rect packRow{x, 106.0f, kButtonWidth, kButtonHeight};
+    drawButton(packRow, "", optionsCursor_ == 1, true);
+    drawLabel("Texture Pack:", packRow.x + 8.0f, packRow.y + 6.0f, 0.5f, kInkDim,
+              C2D_AlignLeft, true);
+    drawLabelClipped(packLabel(), packRow.x + 96.0f, packRow.y + 5.0f, 0.5f, kInk,
+                     packRow.w - 104.0f);
+
+    drawButton(Rect{x, 142.0f, kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 2,
+               true);
+
+    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 186.0f, 0.45f,
                       kInkDim, true);
+}
+
+const char* Menu::packLabel() const
+{
+    return packName_.empty() ? "Dev Art" : packName_.c_str();
+}
+
+void Menu::drawTexturePacks()
+{
+    drawLabelCentered("Texture Pack", kScreenWidth * 0.5f, 16.0f, 0.7f, kInk, true);
+
+    const int rows = int(packs_.size()) + 1;
+    const float rowX = 20.0f;
+    const float rowWidth = kScreenWidth - 2.0f * rowX;
+
+    const int visible = drawListChrome(rows, packScroll_);
+    for (int i = 0; i < visible; ++i) {
+        const int index = packScroll_ + i;
+        const Rect rect{rowX, kRowsTop + float(i) * (kRowHeight + kRowGap), rowWidth,
+                        kRowHeight};
+        const bool selected = index == packCursor_;
+
+        if (index == 0) {
+            drawButton(rect, "+ Extract from a jar...", selected, true);
+            continue;
+        }
+
+        const texture::PackEntry& pack = packs_[usize(index - 1)];
+        drawButton(rect, "", selected, true);
+
+        // Which pack is live, as a mark on the row rather than a separate line:
+        // "selected" here means the cursor, and the player needs to see both at
+        // once.
+        const bool active = pack.builtIn ? packName_.empty() : pack.name == packName_;
+        if (active) {
+            drawLabel("*", rect.x + 8.0f, rect.y + 5.0f, 0.55f, kInkWarn, C2D_AlignLeft, true);
+        }
+
+        char detail[32];
+        if (pack.builtIn) {
+            std::snprintf(detail, sizeof(detail), "built in");
+        } else {
+            // How much of the a1.1.2 layout the pack carries, out of the 58
+            // names a real client jar holds. A partial pack still works -- only
+            // terrain.png is drawn -- and this is what says so at a glance.
+            std::snprintf(detail, sizeof(detail), "%d/%d files", pack.textureCount,
+                          texture::kA112FileCount);
+        }
+
+        constexpr float kDetailWidth = 84.0f;
+        drawLabelClipped(pack.builtIn ? "Dev Art" : pack.name.c_str(), rect.x + 22.0f,
+                         rect.y + 3.0f, 0.55f, kInk, rect.w - 32.0f - kDetailWidth);
+        drawLabel(detail, rect.x + rect.w - 10.0f, rect.y + 6.0f, 0.4f, kInkDim,
+                  C2D_AlignRight, true);
+    }
+}
+
+void Menu::drawPickJar()
+{
+    drawLabelCentered("Extract from a jar", kScreenWidth * 0.5f, 16.0f, 0.7f, kInk, true);
+
+    if (jars_.empty()) {
+        drawLabelCentered("No .jar on the card", kScreenWidth * 0.5f, 100.0f, 0.6f, kInkDim,
+                          true);
+        drawLabelCentered("Copy your own Minecraft jar into", kScreenWidth * 0.5f, 130.0f,
+                          0.45f, kInkDim, true);
+        drawLabelCentered("3dalpha/packs and come back.", kScreenWidth * 0.5f, 150.0f, 0.45f,
+                          kInkDim, true);
+        return;
+    }
+
+    const float rowX = 20.0f;
+    const float rowWidth = kScreenWidth - 2.0f * rowX;
+
+    const int visible = drawListChrome(int(jars_.size()), jarScroll_);
+    for (int i = 0; i < visible; ++i) {
+        const int index = jarScroll_ + i;
+        const Rect rect{rowX, kRowsTop + float(i) * (kRowHeight + kRowGap), rowWidth,
+                        kRowHeight};
+        drawButton(rect, "", index == jarCursor_, true);
+
+        const texture::JarEntry& jar = jars_[usize(index)];
+
+        // The size is what tells a 900 KB alpha jar apart from a modern one at
+        // a glance, which is the one thing a player can judge from this screen.
+        char size[24];
+        std::snprintf(size, sizeof(size), "%.1f MB", double(jar.bytes) / (1024.0 * 1024.0));
+
+        constexpr float kSizeWidth = 70.0f;
+        drawLabelClipped(jar.name.c_str(), rect.x + 10.0f, rect.y + 3.0f, 0.55f, kInk,
+                         rect.w - 20.0f - kSizeWidth);
+        drawLabel(size, rect.x + rect.w - 10.0f, rect.y + 6.0f, 0.4f, kInkDim, C2D_AlignRight,
+                  true);
+    }
+}
+
+void Menu::drawConfirmDeleteJar()
+{
+    drawLabelCentered("Delete the jar?", kScreenWidth * 0.5f, 44.0f, 0.8f, kInk, true);
+
+    char summary[80];
+    std::snprintf(summary, sizeof(summary), "%d textures extracted and checked", importedCount_);
+    drawLabelCentered(summary, kScreenWidth * 0.5f, 80.0f, 0.45f, kInkDim, true);
+
+    const usize slash = importedPack_.find_last_of('/');
+    drawLabelClipped(slash == std::string::npos ? importedPack_.c_str()
+                                                : importedPack_.c_str() + slash + 1,
+                     30.0f, 100.0f, 0.55f, kInkWarn, kScreenWidth - 60.0f);
+
+    drawLabelCentered("The pack works without it.", kScreenWidth * 0.5f, 134.0f, 0.45f, kInkDim,
+                      true);
+
+    // "Keep" is drawn as the highlighted answer even though neither is under a
+    // cursor: this deletes a file the player brought to the card themselves,
+    // and the layout should not suggest that deleting is the expected reply.
+    const float half = kButtonWidth * 0.5f;
+    drawButton(Rect{kScreenWidth * 0.5f - half - 8.0f, 170.0f, half, kButtonHeight},
+               "A Delete", false, true);
+    drawButton(Rect{kScreenWidth * 0.5f + 8.0f, 170.0f, half, kButtonHeight}, "B Keep", true,
+               true);
 }
 
 void Menu::drawConfirmDelete()

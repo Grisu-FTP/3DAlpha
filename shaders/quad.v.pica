@@ -32,6 +32,15 @@
 .alias three consts.zzzz
 .alias div16 consts.wwww   ; one atlas tile, and one light level
 
+; kUvInset from core/mesh/vertex.hpp, in the shader's normalised units: 8 of
+; the 16384 that span the atlas. The 12-byte path pulls a quad's UVs off the
+; tile boundary in the mesher; this path builds them here, so it has to do the
+; same or the two formats would texture differently -- which is the one thing
+; the static_asserts around kFaceBasis exist to prevent.
+.constf uvinset(0.00048828125, -0.00048828125, 0.0, 0.0)
+.alias insetP uvinset.xxxx
+.alias insetN uvinset.yyyy
+
 .constf lightconst(16.0, 0.03125, 0.5, 0.0)
 .alias mul16   lightconst.xxxx
 .alias halftex lightconst.yyyy   ; 0.5/16: the centre of a lightmap texel
@@ -133,6 +142,8 @@
 	; the whole reason five faces differ from one.
 	mul r4.x, div16, in_tex.x     ; u0 = tileX / 16
 	add r4.z, div16, r4.x         ; u1 = u0 + one tile
+	add r4.x, insetP, r4.x        ; and in off both ends of the tile
+	add r4.z, insetN, r4.z
 
 	mov r6.x, faceBasis[a0.x + 1].wwww  ; uvSign, +1 or -1
 	add r6.y, ones, -r6.x
@@ -141,6 +152,13 @@
 	mul r4.y, div16, r6.z         ; v0
 	mul r6.w, div16, r6.x
 	add r4.w, r4.y, r6.w          ; v1 = v0 + uvSign tiles
+
+	; v runs the other way for the bottom face, so the inset has to follow
+	; uvSign: v0 moves by +uvSign*inset and v1 by -uvSign*inset, which brings
+	; them together whichever way round they are.
+	mul r7.x, insetP, r6.x
+	add r4.y, r7.x, r4.y
+	add r4.w, r4.w, -r7.x
 	mov o_uv, r4
 
 	; Face shade, from the table rather than from the vertex: this format has no

@@ -269,15 +269,18 @@ TEST(uvs_land_on_the_blocks_atlas_tile)
 
     const MeshBuilder m = meshOf(column, 0);
     const int tile = block::def(kStone).texture;
-    const int u0 = (tile % 16) * mesh::kUvUnitsPerTile;
-    const int v0 = (tile / 16) * mesh::kUvUnitsPerTile;
+    // The tile's range, inset off the boundary at both ends -- see kUvInset.
+    const int u0 = mesh::tileUvMin(tile % 16);
+    const int u1 = mesh::tileUvMax(tile % 16);
+    const int v0 = mesh::tileUvMin(tile / 16);
+    const int v1 = mesh::tileUvMax(tile / 16);
 
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
         std::set<int> us, vs;
         for (int c = 0; c < 4; ++c) {
-            CHECK(v[c].u == u0 || v[c].u == u0 + mesh::kUvUnitsPerTile);
-            CHECK(v[c].v == v0 || v[c].v == v0 + mesh::kUvUnitsPerTile);
+            CHECK(v[c].u == u0 || v[c].u == u1);
+            CHECK(v[c].v == v0 || v[c].v == v1);
             us.insert(v[c].u);
             vs.insert(v[c].v);
         }
@@ -309,11 +312,9 @@ TEST(each_face_gets_its_own_tile_not_the_blocks_default)
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
         const int tile = def.faces[quadFace(m, q)];
-        const int u0 = (tile % 16) * mesh::kUvUnitsPerTile;
-        const int v0 = (tile / 16) * mesh::kUvUnitsPerTile;
         for (int c = 0; c < 4; ++c) {
-            CHECK(v[c].u == u0 || v[c].u == u0 + mesh::kUvUnitsPerTile);
-            CHECK(v[c].v == v0 || v[c].v == v0 + mesh::kUvUnitsPerTile);
+            CHECK(v[c].u == mesh::tileUvMin(tile % 16) || v[c].u == mesh::tileUvMax(tile % 16));
+            CHECK(v[c].v == mesh::tileUvMin(tile / 16) || v[c].v == mesh::tileUvMax(tile / 16));
         }
     }
 
@@ -531,6 +532,61 @@ TEST(a_cross_is_inset_the_way_the_original_insets_it)
     // 0.05 and 0.95 of a block, to the nearest 1/1024.
     CHECK_EQ(minX, 51);
     CHECK_EQ(maxX, 973);
+}
+
+// The UVs have to track the corners, and nothing checked that until a real
+// terrain.png made it visible: every flower, sapling and mushroom stood on its
+// side. The three cases above pass either way -- they check where the corners
+// are, how far they are inset and how bright they are, and a mirrored texture
+// moves none of those.
+//
+// The invariant is the one a cross cannot violate: the tile's v runs downward,
+// so a vertex at the top of the block must carry the tile's top v and a vertex
+// at the bottom must carry its bottom v. Swapping a pair puts the tile's top
+// edge on a corner at the block's floor, which is exactly what a transposed UV
+// table does.
+TEST(a_cross_maps_the_tile_the_same_way_up_as_the_block)
+{
+    ChunkColumn column;
+    column.setBlock(2, 3, 4, u16(mcver::Block::Dandelion));
+
+    const MeshBuilder mesh = meshOf(column, 0);
+    const mesh::DetailVertex* v = mesh.detailVertices();
+    CHECK_EQ(mesh.detailQuadCount(), usize(4));
+
+    // Dandelion is tile 13: row 0, so the tile's top v is 0 and its bottom v is
+    // one tile down. Named rather than derived, so a wrong tile fails here too.
+    const int tile = 13;
+    const i16 tileU0 = mesh::tileUvMin(tile % mesh::kAtlasTilesPerEdge);
+    const i16 tileV0 = mesh::tileUvMin(tile / mesh::kAtlasTilesPerEdge);
+    const i16 tileU1 = mesh::tileUvMax(tile % mesh::kAtlasTilesPerEdge);
+    const i16 tileV1 = mesh::tileUvMax(tile / mesh::kAtlasTilesPerEdge);
+
+    const int yBottom = 3 * mesh::kDetailUnitsPerBlock;
+    const int yTop = 4 * mesh::kDetailUnitsPerBlock;
+
+    for (usize i = 0; i < mesh.detailVertexCount(); ++i) {
+        // Only the tile's own four corners are ever emitted.
+        CHECK(v[i].u == tileU0 || v[i].u == tileU1);
+        CHECK(v[i].v == tileV0 || v[i].v == tileV1);
+
+        // And the one that matters: top of the block, top of the tile.
+        if (v[i].y == yTop) {
+            CHECK_EQ(v[i].v, tileV0);
+        } else {
+            CHECK_EQ(int(v[i].y), yBottom);
+            CHECK_EQ(v[i].v, tileV1);
+        }
+    }
+
+    // The two vertices of a vertical edge share a u, or the tile is sheared
+    // rather than merely flipped. Each quad is top, bottom, bottom, top.
+    for (usize q = 0; q < mesh.detailQuadCount(); ++q) {
+        const mesh::DetailVertex* c = v + q * 4;
+        CHECK_EQ(c[0].u, c[1].u);
+        CHECK_EQ(c[2].u, c[3].u);
+        CHECK(c[0].u != c[2].u);
+    }
 }
 
 TEST(a_cross_is_unshaded_and_lit_from_its_own_cell)

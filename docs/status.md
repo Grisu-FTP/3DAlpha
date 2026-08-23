@@ -23,12 +23,12 @@ hard oracle to check itself against.
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
 | **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world |
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, and needs a seventh launch to say whether it closes the gap |
-| M3 Singleplayer gameplay | not started, **except the main menu, which is built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b |
+| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, Options, Exit World, over a world that stays open and stops dead while the menu is up. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
-| M6 Audio, mobs, texture-pack browser, packaging | not started |
+| M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Only `terrain.png` has a consumer** -- a pack's gui, font and mob textures are carried and counted and nothing reads them yet. See §0c and [assets.md](assets.md) |
 
-**354 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**407 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -69,6 +69,8 @@ tools/lumadump.py <dump.dmp> [--elf <elf>]          # read a Luma exception dump
 ./build-host/3dalpha --generate [seed] [radius] [snow] [cache-columns] [raster]
                                                     # make a fresh world, print every M4 number
 ./build-host/3dalpha --fly <world-dir> [dist] [frames] [switch-to] [quads|flip|gen]
+./build-host/3dalpha --pack <zip|dir|devart>        # assemble a pack's atlas, write atlas.pam
+./build-host/3dalpha --extract-jar <jar> <packs-dir> # the console's jar importer, sanitised
 ```
 
 A trailing **`quads`** on either harness puts the cube range in the geometry-shader format — one
@@ -97,6 +99,9 @@ core/world/       Section (palette), NibbleArray, ChunkColumn, LevelData, storag
 core/block/       BlockDef, RenderType, registry; the table is generated
 core/item/        ItemStack
 core/io/          FileSystem seam + the POSIX implementation both targets use
+core/texture/     PNG decoder, zip reader/writer, pack listing, atlas assembly, Dev Art, jar import,
+                  the PICA tiling map the CPU writes textures through
+core/settings/    3ds.ini -- render distance and the chosen texture pack
 core/mesh/        three vertex formats, MeshScratch, mesher, fluid, torch, visibility masks
 core/render/      SectionField + buildVisibleSet (the visibility walk); VboPool;
                   ChunkRenderer (one frame, no GPU); WorldStreamer (columns in and out,
@@ -502,7 +507,7 @@ still tile is sampled by a square centred on the tile's middle, which covers it 
 and rotated by the flow angle, so it straddles a 2×2. a1.1.2's terrain.png is built for it: 206, 207,
 222 and 223 are all water, and 238, 239, 254 and 255 are all lava, each a solid block of one fluid
 around the flowing tile. Checked against the jar's image rather than assumed. The consequence for us
-is that the placeholder atlas has to agree — `platform/ctr/textures.cpp` derives each fluid's group
+is that the generated atlas has to agree — `core/texture/dev_art.cpp` derives each fluid's group
 of five tiles from the block table and gives them one colour, or a river would be four colours.
 
 **A torch is not the cuboid it looks like.** `bc.a(ly,DDDDD)` emits **five quads**: four that span
@@ -535,7 +540,7 @@ samples texels **7..9 across and 6..8 down** of the tile, which is where the fla
 
 Those texel numbers are not free parameters: the side quads map the whole tile across the whole
 block, so texel column t is at t/16 of a block and texel row t is at 1 − t/16 of its height. The
-stick's top at 0.625 **is** row 6. That is why `platform/ctr/textures.cpp` can carve a correct
+stick's top at 0.625 **is** row 6. That is why `core/texture/dev_art.cpp` can carve a correct
 placeholder torch from the geometry alone — and why it must. A solid placeholder tile draws a torch
 as a block-sized slab, which reads as a broken emitter and is not one. The three torch tiles (80,
 99, 115) are used by no other block in a1.1.2, checked, so carving them is safe.
@@ -693,8 +698,8 @@ walking pace because its worker is so much slower.
 Before this, `runGame` opened `worlds[0]` — whatever `readdir` handed back first — and a console with
 no world on the card got a paragraph of `printf` explaining that worldgen was not written yet. Both
 are gone. `main` brings the GPU up once and then alternates: the menu picks or makes a world,
-`runGame` plays it, START comes back out to the menu, and Quit on the title screen is the only thing
-that ends the process.
+`runGame` plays it, Exit World on the pause menu comes back out to the menu (§0d), and Quit on the
+title screen is the only thing that ends the process.
 
 **`C3D_Init` moved out of `runGame` and into the shell**, which is the change that made a menu
 possible at all: it used to run *after* the no-world check, so everything before a world was chosen
@@ -769,7 +774,186 @@ followed by `C3D_Fini` -- the M0 probe -- which throws the context and its point
 The dump is `crashlogs/004-loading-a-world-from-the-menu/`, **the first in this project with its ELF
 archived before the fix was built**, so the call chain came out of `addr2line` in a minute instead of
 being reconstructed. The fix itself is unrun: it builds, links and passes `check3dsx.py`, and the
-3DSX is 528,536 bytes against 474,292 before citro2d came in.
+3DSX is 528,536 bytes against 474,292 before citro2d came in. (588,548 as of §0c, which added the
+PNG decoder, the zip reader and writer, the pack listing and the jar importer.)
+
+### 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
+
+**Options → Texture Pack** lists Dev Art pinned first and then every pack on the card, applies one,
+and remembers it. **Extract from a jar** turns a player's own `minecraft.jar` into a real pack file
+and then offers to delete the jar. The generated placeholder atlas is now one selectable pack among
+the others rather than the only thing there is.
+
+The whole of it added **no third-party dependency**. `docs/assets.md` had named miniz and lodepng
+since before anything was built; neither is needed, because a PNG's `IDAT` stream is zlib-wrapped and
+a zip's entries are raw deflate, and `core/util/compress.hpp` has offered both framings since M1 for
+chunk files and Map Chunk payloads.
+
+**Every number here was read out of a real client jar before anything was written**, and three of
+them contradicted what `assets.md` said:
+
+| Fact | Value |
+|---|---|
+| PNG entries | **58**, and they are the whole texture tree |
+| Every PNG | bit depth **8**, **non-interlaced**; 54 are RGBA, 4 are palette |
+| `terrain.png` | 256×256, 8-bit RGBA |
+| Compression | mixed — **41 stored, 497 deflated** |
+| General-purpose flag | **bit 3 on 497 of 538 entries** — zeroed CRC and sizes in the local header, a trailing data descriptor, and the truth only in the central directory |
+| `misc/` | three files, not the loose-ends drawer the doc described |
+| Root, not `misc/` | water, waterterrain, dirt, grass, rock, snow, rain, particles, fluff, shadow |
+| Absent | `grasscolor.png`, `foliagecolor.png` — a **fourth** independent confirmation of the no-tinting finding |
+
+The flag-bit-3 row is the load-bearing one and it shaped both halves. `ZipArchive` treats the central
+directory as the only source of truth and opens a local header for exactly one purpose: to learn how
+many bytes of name and extra field to skip before the data. `ZipBuilder` writes local headers with
+bit 3 **cleared** and the real sizes filled in — copying the flag across without also copying the
+descriptor produces an archive lenient readers accept and strict ones reject.
+
+**The import is a filter, not a conversion.** A jar already *is* the pre-1.5 pack layout, so entries
+are copied verbatim: compressed bytes, method, CRC and sizes straight out of the source's directory.
+A 900 KB jar becomes a pack with **no inflate and no deflate call at all**. The rule is "every `.png`
+not under `META-INF/`" rather than an allow-list — simpler, exactly the 58 files above, and it keeps
+working on a jar from a version nobody has measured.
+
+**Deleting the jar is gated on verification, and that is the point of the design.** `importJar`
+re-opens the pack it just wrote off the card, decodes its `terrain.png` and builds the atlas from it;
+only a pack that survives that round trip is reported as a success, and the confirm screen is reached
+on no other basis. It is the only file this project deletes that the player did not create in it, and
+the screen leads with **Keep**.
+
+**A pack is loaded on the screen that chose it**, not in the renderer. `MenuChoice` carries the
+assembled 256 KB atlas and `Renderer::Config` borrows it, so a pack that will not decode is refused
+in front of the player with a reason and the pack they had stays live. The alternative was an
+untextured world and no explanation.
+
+**The atlas stays 256×256** whatever the pack's tile size, and anything larger is box-filtered down
+on load. Making the edge a runtime value would put every VRAM number in
+[3ds-performance.md](3ds-performance.md) back in question for a `texture_quality` option that would
+have had one useful setting per model. The box filter averages **premultiplied by alpha** — a cutout
+edge sits beside texels whose alpha is 0 and whose RGB is black, and a plain mean gives every HD pack
+dark halos. Smaller packs are replicated, not interpolated.
+
+**Moving Dev Art into core found a real defect that had been shipping.** The generator lived in
+`platform/ctr/textures.cpp`, where nothing is sanitised; in `core/texture/dev_art.cpp` it is, and
+UBSan reported a signed integer overflow on the first tile it reached — the per-texel jitter
+multiplies three `int`s that overflow for almost every input. The multiply is unsigned now, which
+wraps by definition and produces the same 32 bits, so **the generated art is byte-identical** to what
+the console has been drawing. It is the second time the sanitizers have found something by having
+code moved under them rather than by anyone looking for it.
+
+**Two host harnesses run all of it without a console**, which is how the importer was exercised
+against the real jar under ASan/UBSan before it touched a card:
+
+```sh
+./build-host/3dalpha --extract-jar <jar> <packs-dir>   # 58 png copied, 58 of 58 known names
+./build-host/3dalpha --pack <zip|dir|devart>           # assemble an atlas, write atlas.pam
+```
+
+Both were run. The produced zip is accepted by `unzip -t` and by Python's `zipfile.testzip()`, all 58
+entries hash identical to the jar's, and the decoded `terrain.png` is **byte-identical to a reference
+decode by Pillow**. The jar's mtime was unchanged afterwards.
+
+**45 new tests**, none of them against a checked-in fixture: PNGs and zips are built in memory by
+`tests/texture_support.hpp`, so a decoder test states the exact bytes it is about to decode. All five
+scanline filters are exercised deliberately rather than left to an encoder's choice, and there is a
+test for an entry whose local header lies.
+
+`io::FileSystem` grew **`fileSize`** for the jar picker: listing the jars on a card must not mean
+loading them all into memory to find out how big they are. The read ceilings are set by the console's
+heap rather than by what a zip could hold — the 3DS build has no exceptions, so a failed allocation
+is an abort and anything that might not fit has to be refused before it is asked for.
+
+**Run on hardware, and it found one thing.** A pack extracted from a real client jar loads, applies
+and draws. The defect it exposed was not in any of this — it was in the atlas *upload*, which had
+been wrong since before texture packs existed and which flat placeholder art cannot show. See the
+ninth launch in §1.
+
+### 0d. The pause menu — START stops the world instead of leaving it
+
+START used to break the game loop outright, which meant the only way out of a world was also the
+only thing the button could ever do. It now hands the frame loop to `Menu::runPause`: **Resume,
+Options, Exit World**, over a world that is still open behind it.
+
+**It is the same `Menu` object the shell already owns, and that is the whole design.** A pause menu
+wants the Options screen and the Texture Pack list that already exist, and it wants them to be the
+*same* ones — the alternative is a second copy of both plus a rule for reconciling what a player
+changed mid-world with what the title screen is still holding. Sharing the object makes that
+reconciliation nothing at all: there is one render distance, one pack list and one atlas, and both
+entry points read and write them. `Screen::Options` and `Screen::TexturePacks` differ under a pause
+in exactly two places, both driven by one `inGame_` flag: where B goes back to, and what the console
+says. `runPause` remembers which screen the main menu was standing on and puts it back on the way
+out, so Exit World returns to the world list rather than to the pause menu.
+
+**Both rows apply to the world the player is standing in.** Render distance goes through the same
+pool-then-streamer rebuild the debug page uses. Texture pack goes through a new
+`Renderer::setAtlas`, which is a `C3D_Tex` swap and nothing else — a pack changes what a tile looks
+like, not where it is, so every UV already in the VBO pool still points at the right tile and
+nothing has to be re-meshed. The old texture is released *before* the new one is asked for, because
+`Atlas::init` prefers VRAM and holding 256 KB of the old one would silently demote the new one to
+linear on a console that is nearly full.
+
+**The world genuinely stops.** `runPause` owns the frame loop, so nothing is streamed, nothing is
+meshed, no column is generated and the sun does not move. The generation worker finishes at most the
+one column it had in flight and then blocks on its condition variable, which is what it does when
+idle anyway.
+
+**The live render distance is passed in rather than read back.** The debug page can put a world at
+distance 20, past anything this screen will offer; clamping on entry would mean that merely *opening*
+the pause menu undid it. What the Options row refuses is a step **up** past the play maximum, so a
+value that arrives above it can be read and lowered and nothing else.
+
+#### The finding: citro3d holds one target per screen output, and a menu takes it
+
+**`C3D_RenderTargetSetOutput` does not append to a list — it evicts.** `linkedTarget` is a
+three-entry array (top-left, top-right, bottom), and pointing a new target at an output clears the
+old one's `linked` flag and overwrites the slot. Deleting that new target then stores **NULL** into
+the slot rather than restoring what it displaced. Read out of `libcitro3d.a`'s `renderqueue.o`, not
+inferred:
+
+```
+C3D_RenderTargetSetOutput:  ldr r2, [r7, r8, lsl #2]   @ linkedTarget[id]
+                            strb r3, [r2, #27]         @ old->linked = false
+                            str  r4, [r7, r8, lsl #2]  @ linkedTarget[id] = target
+C3D_RenderTargetDelete:     str  r3, [r7, r6, lsl #2]  @ linkedTarget[id] = 0
+```
+
+So `C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT)` unlinks the renderer's left eye, and `Menu::shutdown`
+leaves the top screen with no target attached at all. `C3D_FrameEnd` walks the same three slots and
+transfers the ones marked `used`, so the world would go on being drawn, correctly and completely,
+and never reach the screen again — the top screen would hold the last frame from before the pause,
+forever.
+
+**This never bit the main menu**, which is why it was there to be found: the Renderer is constructed
+and destroyed around every visit to the title screen, and `Renderer::init` re-links both eyes. A
+pause menu is the first thing in the project that outlives a Renderer. `Renderer::reclaimScreen()`
+re-links both eyes and resets the cached `gfxSet3D` state — the second thing the menu takes, since
+`drawFrame` only calls `gfxSet3D` when the slider crosses zero and the menu sets it to false on the
+way in. Resuming with the slider up would otherwise leave the second eye switched off until the
+player happened to move the slider.
+
+One more thing the menu leaves behind: **citro2d turns alpha blending on and `drawFrame` never turned
+it off.** `drawEye` sets it around the translucent pass and restores `ONE, ZERO` afterwards, so
+within a run of frames it was already right — but the *first* frame after anything else has drawn
+inherited src-alpha blending for its opaque pass. Benign, because opaque texels have alpha 255 and
+cutouts are alpha-tested away, and it used to happen once per session. With a pause menu it happens
+every resume, so `drawFrame` now states it with the rest of its per-frame state.
+
+**Unrun.** It builds, links, and `check3dsx.py` accepts the image; nothing here has been on hardware.
+
+#### Deviations from `ie.class`
+
+a1.1.2's own version of this screen is `GuiIngameMenu` — `ie.class`, title **"Game menu"**, three
+buttons laid out top to bottom as **Back to game** (`h/4+24`), **Save and quit to title** (`h/4+48`),
+**Options...** (`h/4+96`). The title is kept. Two things are not:
+
+- **The order is Resume, Options, Exit World.** The destructive row goes at the far end of the list
+  from where the cursor rests. A d-pad makes "one row down from the start" a place a thumb lands by
+  accident, and on the original's order that row closes the world.
+- **"Exit World" rather than "Save and quit to title."** The saving is not optional and never has
+  been — `WorldStreamer::close` rewrites level.dat however the player left the world — so a label
+  offering it as a choice would describe a decision nobody is being given. The console line under the
+  screen says it happens, and the world's teardown prints the original's own `Saving level..` while
+  it does.
 
 ### 1. Run it on a console
 
@@ -871,9 +1055,10 @@ reads row `15 - sky`.
 **`v = 0` samples the last row in memory, not the first.** Three independent confirmations, which is
 worth recording because the rule is invisible until something is upside down:
 
-- `Atlas::init` puts tile 0 at source row 0 and transfers with `GX_TRANSFER_FLIP_VERT(1)`, so tile
-  0 lands in the *last* rows — and `mesher.cpp` gives tile 0 a `v` of ~0. The atlas is right on
-  hardware, so v=0 must read the last row.
+- `Atlas::init` puts tile 0 at source row 0 and flipped it on upload (with
+  `GX_TRANSFER_FLIP_VERT(1)` at the time; on the CPU since the ninth launch), so tile 0 lands in the
+  *last* rows — and `mesher.cpp` gives tile 0 a `v` of ~0. The atlas is right on hardware, so v=0
+  must read the last row.
 - `probe.cpp`'s `buildAtlas` does the flip by hand and says why: "texture origin is bottom-left".
   That code is M0, validated on hardware.
 - The console, twice: the atlas is right way up and the lightmap was not.
@@ -881,8 +1066,9 @@ worth recording because the rule is invisible until something is upside down:
 The bug started in the M0 probe, whose *lightmap* omits the flip its own *atlas* two functions above
 performs — M0 was measuring fill rate and never asked which way up the light was. The renderer
 inherited it. Both are fixed; no M0 number moves, because fill rate does not care what the texels
-say. `tiledOffsetFlipped` in `textures.cpp` now carries the derivation so the next CPU-written
-texture does not rediscover it.
+say. `tiledOffsetFlipped` carries the derivation so the next CPU-written texture does not
+rediscover it — in `core/texture/tiled.hpp` since the ninth launch, and it is the atlas's path too
+now, not just the lightmap's.
 
 Still unverified: the **block-light axis**. It is `u`, and a horizontal flip would be a different
 bug. **The strongest check in this world is lava in the dark**, not a torch: every one of the 24
@@ -1130,13 +1316,72 @@ SD card, not at `build/`**; the two being different is the entire finding. The i
 
 The 256 KB sine table was still worth moving to the heap. It just was not this.
 
+**The ninth launch had a real texture pack in it, and found a one-row bug that four launches of
+placeholder art had hidden.** Grass, dirt, stone and the flowers drew with a line of gray across the
+top of every face. It sat *on* the texture rather than shifting it, it repeated per block, and it
+did not move with the camera, so it was texture content and not geometry.
+
+Three observations pinned it to one row before any code was read:
+
+- **Only tile-row-0 blocks showed it.** Grass top (0), stone (1), dirt (2), grass side (3), rose
+  (12), dandelion (13), sapling (15) — every affected tile is in atlas tile row 0. Sand, gravel,
+  log, leaves and cobblestone were clean, which rules out a per-tile edge and leaves the atlas's own
+  outer edge.
+- **It did not change with time of day**, which rules out the lightmap's texels being read — the
+  first suspicion, and the wrong one.
+- **It was on the build that already had `kUvInset`.** The inset had done its job: rows 1–15 no
+  longer bleed into the tile above. Only the outer edge was left.
+
+`Atlas::init` uploaded with `GX_TRANSFER_FLIP_VERT(1)`, so **sampled `v = 0` is the last row in
+memory** — the very end of the 256 KB buffer — and that row carries `terrain.png`'s row 0, which is
+the top texel row of every tile in atlas row 0 and of nothing else. With the inset in place the
+fragment samples texel row 0 squarely. The sample was right; **the row was wrong**.
+
+**Which half of that upload lost the row was never isolated, and the fix did not depend on knowing.**
+The transfer was doing a tiling, a vertical flip and a format conversion in one step, and the
+destination was VRAM; the change below removes all four variables rather than choosing between them,
+and it worked. So the question is *closed but unanswered*, which is worth saying plainly rather than
+letting the fix read as an explanation. If anything like it returns, the untested variable that is
+left is the VRAM destination, and the one-line probe is to skip `C3D_TexInitVRAM` and let the atlas
+fall back to linear — the M0 probe's exact configuration.
+
+Nothing upstream could be blamed. `scaleToAtlas` is a straight `memcpy` for a 256×256 pack, and
+`--pack` on the jar-extracted pack writes an `atlas.pam` whose row 0 is grass green,
+`(116,180,74,255)` at x=0. The corruption entered at upload, in the one step of the whole pipeline
+that had never been checked against its input: a display transfer doing a flip *and* a tiling *and*
+a format conversion, into VRAM, on hardware, with no read-back.
+
+**So the flip and the tiling moved to the CPU**, through the same `tiledOffsetFlipped` the lightmap
+has always used and the M0 probe's own atlas used before it. **Confirmed fixed on the console**: the
+line is gone. `Atlas::init` was already walking all
+65,536 texels once to swap R,G,B,A into the A,B,G,R word `GPU_RGBA8` wants, so the tiling is folded
+into that pass and costs a scattered write instead of a sequential one, once per pack selection.
+What is left of the upload is `C3D_TexUpload` moving bytes that are already final — read out of
+`libcitro3d.a`, it range-checks the destination against `[0x1F000000, +0x600000)` and routes VRAM
+through `C3D_SyncTextureCopy`, falling back to `memcpy` otherwise, which is exactly the VRAM rule
+`gpu_memory.cpp` already records. It does not flush the source, so `Atlas::init` still does.
+
+Two things to keep from it:
+
+- **A placeholder that is flat colour cannot show a texture bug.** Dev Art's tiles are one colour
+  plus jitter, and one wrong row in a flat tile is invisible. The generated art earns its keep by
+  making a wrong texture *index* obvious; it says nothing at all about whether the texels arrived.
+  Every future upload path needs a real pack in front of it before it is called run.
+- **The tiling map is testable and now is tested.** `tiledOffset` and `tiledOffsetFlipped` moved out
+  of `platform/ctr/textures.cpp` — where no host test can reach them and nothing is sanitised — into
+  `core/texture/tiled.hpp`, with `tests/tiled_test.cpp` on them. The check that would have caught
+  this without a console is the covering one: 65,536 source texels must produce 65,536 **distinct**
+  offsets, all inside the buffer. A map that drops a row, doubles one, or walks off the end fails it.
+  This is the third time moving code into `core/` has found or would have found something.
+
 What has to be checked next, roughly in the order it will break:
 
-- **The atlas swizzle.** `Atlas::init` uses `C3D_SyncDisplayTransfer` with `FLIP_VERT(1)` to convert
-  a linear image into a tiled texture. That is the standard idiom and it is unverified here. A wrong
-  flip or a wrong flag reads as a scrambled or upside-down atlas — obvious at a glance, which is why
-  the placeholder pack gives each tile a distinct colour. The CPU Morton path in `textures.cpp` is
-  the fallback and *is* hardware-validated (M0 used it), so a mismatch has a known-good comparison.
+- ~~**The atlas swizzle.**~~ **It was wrong, and this entry called it.** `Atlas::init` used
+  `C3D_SyncDisplayTransfer` with `FLIP_VERT(1)` to tile a linear image, and the texture came out
+  with one row wrong. It is the CPU Morton path now — the fallback this entry named, the one M0
+  validated on hardware. See the ninth launch above. The prediction was right about everything except the size of the failure:
+  a scrambled atlas would have been obvious at a glance, and **one row was not**, which is why it
+  survived every launch until a real texture pack was loaded.
 - ~~**The fog LUT.**~~ Gone — see the fourth launch above. What replaced it needs checking instead:
   no fog at all up to a quarter of the render distance, and terrain reaching the sky colour exactly
   at the render distance rather than being visibly clipped by the far plane one ring further out.
@@ -1306,16 +1551,19 @@ fragment-bound.
 
 ### Deferred but not forgotten
 
-- **The real texture pack.** The atlas is a placeholder generated in `platform/ctr/textures.cpp`:
-  our own colours, a natural one for each of the six tiles that carry 94 % of a real world's
-  geometry, one per fluid across its five-tile group, and a stable hash for the rest, so a wrong
-  texture index is visible rather than plausible. The bundled CC BY-SA pack in RomFS and the
-  jar/zip importer are the asset pipeline described in [assets.md](assets.md), and none of it is
-  built. **A real pack must keep the fluid groups intact** — the flowing top face samples across
-  the tile boundary, so a pack that puts something else at 207 or 254 will show it in the water.
-  The placeholder also **carves the three torch tiles** down to a 2/16 stick over transparency,
-  derived from the same geometry the emitter uses, because a solid tile there draws a torch as a
-  slab. A real pack supplies that shape itself; a *generated* one has to keep deriving it.
+- **A bundled art pack.** The generated Dev Art is the fallback and it is not going anywhere — it
+  needs nothing off the card, and a wrong texture index is *visible* in it rather than plausible.
+  What is not built is a CC-licensed pack in RomFS to sit beside it, and there is no RomFS in the
+  tree. Low value now that a real pack is two button presses away.
+- **The rest of a pack's files.** `gui/`, `mob/`, `default.png`, `char.png`, the sun and the moon are
+  all carried into a pack, counted on the pack screen, and read by nothing. Each needs a consumer
+  rather than any more pack machinery: a glyph atlas and a text drawer for the font, a widget sheet
+  for the menu, mobs for the mob skins.
+- **`cache/<pack>.3dtex`.** Deliberately not built — see [assets.md](assets.md). It was designed
+  against a pipeline with per-image GPU format selection in it; what is left is one PNG decode and
+  one CPU pass over 65,536 texels at the moment the player picks a pack. Build it when hardware says
+  that pass is slow enough to notice — and the swizzle being back on the CPU (ninth launch) makes
+  that measurement worth taking rather than assuming.
 - **Meshing on a worker thread.** Everything is on the main thread behind a 4-sections-per-frame
   budget. `WorldStreamer` is the seam. Doing it now would be building on a guess: the budget that
   makes the main thread survivable is measurable, and there is no frame time to measure yet.
@@ -1396,8 +1644,8 @@ Consequence: **there is nothing to fold into the atlas and no `tint` byte to def
 r,g,b carry face shade today and will carry face shade x AO when smooth lighting lands.
 
 Note for whoever builds the asset pipeline: those tile averages are stated here as evidence about
-a1.1.2's rendering, not as a palette to copy. The placeholder atlas colours in
-`platform/ctr/textures.cpp` were chosen independently and must stay that way — see the licensing
+a1.1.2's rendering, not as a palette to copy. The Dev Art colours in
+`core/texture/dev_art.cpp` were chosen independently and must stay that way — see the licensing
 rules in [assets.md](assets.md).
 
 **PICA clip range** — settled by disassembling citro3d rather than by testing on hardware.

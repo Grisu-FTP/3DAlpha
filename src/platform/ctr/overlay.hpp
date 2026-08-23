@@ -157,6 +157,14 @@ public:
 
     Page page() const { return page_; }
 
+    // **Anything that takes the bottom screen away has to call this.** The
+    // console is redrawn in place with cursor moves rather than cleared, so a
+    // page that is still on screen is never reprinted -- and after the swkbd
+    // applet or the pause menu has written over it, "still on screen" is no
+    // longer true and the player is left looking at a menu's help text with the
+    // world running behind it.
+    void invalidate() { dirty_ = true; }
+
     void draw(const Renderer& renderer, const render::WorldStreamer& world, const Camera& camera,
               const FrameTiming& timing, float frameMs, float timeOfDay,
               const DebugSettings& settings);

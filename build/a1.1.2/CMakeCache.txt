@@ -490,8 +490,6 @@ _Python3_EXECUTABLE:INTERNAL=/usr/bin/python3.14
 //Python3 Properties
 _Python3_INTERPRETER_PROPERTIES:INTERNAL=Python;3;14;7;64;<none>;cpython-314-x86_64-linux-gnu.so;abi3;/usr/lib/python3.14;/usr/lib/python3.14;/usr/lib/python3.14/site-packages;/usr/lib/python3.14/site-packages
 _Python3_INTERPRETER_SIGNATURE:INTERNAL=5da1bc9426cdb93bc62bc48997978eb2
-//Interpreter reason failure
-_Python3_Interpreter_REASON_FAILURE:INTERNAL=
 //NumPy reason failure
 _Python3_NumPy_REASON_FAILURE:INTERNAL=
 

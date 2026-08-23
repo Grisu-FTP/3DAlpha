@@ -337,7 +337,7 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
     }
 
     row(kFooterRow, "SELECT+Y / SELECT+X  change page");
-    row(kFooterRow + 1, "START exit");
+    row(kFooterRow + 1, "START pause");
 }
 
 int Overlay::drawNormal()

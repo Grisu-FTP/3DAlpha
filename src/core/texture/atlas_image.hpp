@@ -1,0 +1,105 @@
+#pragma once
+
+// Turning a texture pack into the one image the renderer samples.
+//
+// Only `terrain.png` has a consumer today. A pack's `gui/`, `mob/`,
+// `default.png` and the other 57 files are carried, counted and left alone:
+// the menu draws with the 3DS system font, there is no GUI sheet and there are
+// no mobs, so there is nothing to point them at yet. That gap is stated on the
+// texture-pack screen rather than papered over.
+//
+// **The atlas is always 256x256**, whatever the pack's tiles are. That is a
+// decision with a measurement behind it: VRAM is 6 MB, render targets already
+// take 0.8-1.5 MB, and a 64x pack's 1024x1024 atlas is 4 MB at RGBA8. Rather
+// than make the atlas edge a runtime value that every VRAM number in
+// docs/3ds-performance.md would have to be re-measured against, an HD pack is
+// box-filtered down to 256 on load. The mesher's UVs are in 1/16384 of the
+// whole atlas (core/mesh/vertex.hpp), so nothing downstream can tell.
+//
+// Row order is fixed by the pipeline and is **not** a free choice. Linear row 0
+// must be terrain.png's *top* row: platform/ctr/textures.cpp tiles the upload
+// through `tiledOffsetFlipped`, which sends source row 0 to the texture's last
+// row, and the mesher gives tile 0 a v of ~0, which samples that last row. So
+// no flip belongs here.
+
+#include "core/io/file_system.hpp"
+#include "core/mesh/vertex.hpp"
+#include "core/texture/png.hpp"
+#include "core/util/types.hpp"
+
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace mc::texture {
+
+// 16 tiles of 16 px. The tile count is the mesher's, not ours to pick.
+inline constexpr int kAtlasTilesPerEdge = mesh::kAtlasTilesPerEdge;
+inline constexpr int kAtlasTilePixels = 16;
+inline constexpr int kAtlasEdge = kAtlasTilesPerEdge * kAtlasTilePixels;
+inline constexpr usize kAtlasBytes = usize(kAtlasEdge) * kAtlasEdge * 4;
+
+// **The ceilings are set by the console's heap, not by what a zip could hold.**
+// The 3DS build has -fno-exceptions, so a failed allocation is an abort rather
+// than a caught bad_alloc: anything that might not fit has to be refused before
+// it is asked for. The newlib heap is 16-40 MB depending on the model and the
+// launch method (platform/ctr/heap.cpp), so the smallest console has around
+// 20 MB and the peak here is the decoded image plus the filtered scanlines it
+// came from, which is twice the decoded size.
+//
+//   * A 64x terrain.png is 1024x1024 -- the largest tile size any pack in the
+//     wild uses -- and costs 4 MB decoded plus 4 MB filtered. That is the
+//     ceiling, and anything above it is refused with TooLarge rather than
+//     attempted.
+//   * A pack zip at that resolution is a few megabytes; 16 MB is generous.
+//   * An a1.1.2 client jar is under one megabyte, and every alpha- and
+//     beta-era jar is under five. 8 MB refuses a modern 25 MB client jar --
+//     which is not an a1.1.2 pack source anyway -- instead of aborting on it.
+inline constexpr usize kMaxTerrainPixels = 1024u * 1024u;
+inline constexpr usize kMaxPackBytes = 16u << 20;
+inline constexpr usize kMaxJarBytes = 8u << 20;
+
+enum class PackError {
+    Ok,
+    NotFound,     // nothing at that path
+    NotAPack,     // a zip that will not open, or a directory with no terrain.png
+    NoTerrain,    // the archive opened and has no terrain.png in it
+    ReadFailed,   // the card would not give the bytes up
+    BadPng,       // terrain.png will not decode; png.hpp says why
+    NotSquare,    // terrain.png is not square
+    NotTileGrid,  // its edge is not a multiple of 16, so it is not a tile grid
+    TooLarge,     // beyond what will be decoded at all
+    WriteFailed,
+};
+
+const char* packErrorText(PackError error);
+
+struct AtlasImage {
+    // kAtlasEdge^2 * 4 bytes, R,G,B,A in memory order, top row first. Empty
+    // until something fills it.
+    std::vector<u8> rgba;
+    // The edge of the terrain.png this came from, before any scaling. 0 for
+    // Dev Art. Reported on the pack screen so "my 64x pack looks soft" has an
+    // answer on the same line as the pack's name.
+    int sourceEdge = 0;
+
+    bool empty() const { return rgba.size() != kAtlasBytes; }
+};
+
+// Rescales a square source into a kAtlasEdge^2 RGBA buffer.
+//
+// Larger sources are area-averaged over the covering source rectangle.
+// **The average is premultiplied by alpha**, or every cutout tile -- a torch,
+// a sapling, the rim of a leaf -- picks up a dark halo from the transparent
+// texels beside it, whose RGB is usually black. Sources smaller than the atlas
+// are replicated nearest-neighbour, so a 8x pack stays crisp rather than blurry.
+void scaleToAtlas(const Image& source, std::vector<u8>* out);
+
+// Builds the atlas for a pack. An empty `packPath` means Dev Art.
+//
+// `packPath` may be a `.zip` or a directory holding the pack's tree loose. Both
+// are accepted because a card is mounted on a PC as often as on a console, and
+// a player who unzipped a pack in place has not done anything wrong.
+PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* out);
+
+}  // namespace mc::texture

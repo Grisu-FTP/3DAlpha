@@ -14,6 +14,10 @@
 #include "core/render/vbo_pool.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/render/visible_set.hpp"
+#include "core/texture/atlas_image.hpp"
+#include "core/texture/jar_import.hpp"
+#include "core/texture/pack_list.hpp"
+#include "core/texture/zip_archive.hpp"
 #include "core/world/chunk.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_generator.hpp"
 #include "version_config.hpp"
@@ -1216,6 +1220,126 @@ int generateWorld(i64 seed, int radius, bool snow, int cacheColumns, bool rowMaj
     return 0;
 }
 
+
+// ---------------------------------------------------------------------------
+// Texture packs
+// ---------------------------------------------------------------------------
+//
+// The console cannot be debugged and cannot be sanitised, and the importer is
+// the one part of this feature that touches a file the player did not make.
+// Both halves therefore run here first, over the real jar on the dev machine,
+// under ASan/UBSan -- which is the whole reason core/texture/ has no libctru in
+// it.
+
+// A netpbm P7 so the atlas can be looked at without a decoder. RGBA rather than
+// PPM's RGB, because the alpha is exactly what a cutout tile has to be judged
+// on and a PPM would drop it.
+bool writeAtlasPam(const char* path, const std::vector<u8>& rgba)
+{
+    std::FILE* file = std::fopen(path, "wb");
+    if (file == nullptr) {
+        return false;
+    }
+    std::fprintf(file,
+                 "P7\nWIDTH %d\nHEIGHT %d\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
+                 texture::kAtlasEdge, texture::kAtlasEdge);
+    const usize written = std::fwrite(rgba.data(), 1, rgba.size(), file);
+    std::fclose(file);
+    return written == rgba.size();
+}
+
+int inspectPack(const char* path)
+{
+    io::PosixFileSystem fs;
+
+    const bool devArt = std::strcmp(path, "devart") == 0;
+    const char* label = devArt ? "Dev Art" : path;
+
+    // What the pack holds, before anything is decoded. Straight off the central
+    // directory, which is the same thing the pack screen shows.
+    if (!devArt && !fs.isDirectory(path)) {
+        std::vector<u8> bytes;
+        if (fs.readFile(path, &bytes, 64u << 20)) {
+            texture::ZipArchive archive;
+            const texture::ZipError error = archive.open(bytes);
+            if (error != texture::ZipError::Ok) {
+                std::printf("%s: %s\n", label, texture::zipErrorText(error));
+                return 1;
+            }
+            int pngs = 0;
+            int stored = 0;
+            for (const texture::ZipEntry& entry : archive.entries()) {
+                const usize dot = entry.name.rfind(".png");
+                if (dot != std::string::npos && dot + 4 == entry.name.size()) {
+                    ++pngs;
+                }
+                if (entry.method == 0) {
+                    ++stored;
+                }
+            }
+            std::printf("%s\n  %zu entries, %d png, %d stored / %zu deflated\n", label,
+                        archive.entries().size(), pngs, stored,
+                        archive.entries().size() - usize(stored));
+        }
+    }
+
+    texture::AtlasImage atlas;
+    const texture::PackError error =
+        texture::buildAtlas(fs, devArt ? "" : path, &atlas);
+    if (error != texture::PackError::Ok) {
+        std::printf("%s: %s\n", label, texture::packErrorText(error));
+        return 1;
+    }
+
+    if (atlas.sourceEdge == 0) {
+        std::printf("  generated -> atlas %dx%d\n", texture::kAtlasEdge, texture::kAtlasEdge);
+    } else {
+        const char* scaling = atlas.sourceEdge > texture::kAtlasEdge ? "box-filtered down"
+                              : atlas.sourceEdge < texture::kAtlasEdge ? "replicated up"
+                                                                       : "as-is";
+        std::printf("  terrain.png %dx%d -> atlas %dx%d (%s)\n", atlas.sourceEdge,
+                    atlas.sourceEdge, texture::kAtlasEdge, texture::kAtlasEdge, scaling);
+    }
+
+    // How much of the atlas is not fully opaque, which is the one number that
+    // says at a glance whether cutout tiles survived the scaling.
+    usize transparent = 0;
+    for (usize i = 3; i < atlas.rgba.size(); i += 4) {
+        if (atlas.rgba[i] != 255) {
+            ++transparent;
+        }
+    }
+    std::printf("  %zu of %d texels are not fully opaque\n", transparent,
+                texture::kAtlasEdge * texture::kAtlasEdge);
+
+    const char* out = devArt ? "atlas-devart.pam" : "atlas.pam";
+    if (!writeAtlasPam(out, atlas.rgba)) {
+        std::printf("  could not write %s\n", out);
+        return 1;
+    }
+    std::printf("  wrote %s\n", out);
+    return 0;
+}
+
+int extractJar(const char* jarPath, const char* outDir)
+{
+    io::PosixFileSystem fs;
+
+    const texture::ImportResult result = texture::importJar(fs, jarPath, outDir);
+    std::printf("%s\n", jarPath);
+    std::printf("  %d png copied, %d entries skipped, %d of %d known a1.1.2 names\n",
+                result.copied, result.skipped, result.known, texture::kA112FileCount);
+    if (!result.ok()) {
+        std::printf("  \x1b[31m%s\x1b[0m\n", texture::packErrorText(result.error));
+        return 1;
+    }
+    // importJar has already re-opened this file and built the atlas from it;
+    // saying so is the difference between "written" and "verified", and only
+    // the second one justifies offering to delete the source.
+    std::printf("  wrote and verified %s\n", result.outPath.c_str());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -1259,6 +1383,16 @@ int main(int argc, char** argv)
         return meshWorld(argv[2], cubeFormat);
     }
 
+    // The two halves of the texture-pack feature that do not need a console.
+    // `devart` in place of a path assembles the built-in pack instead.
+    if (argc > 2 && std::strcmp(argv[1], "--pack") == 0) {
+        return inspectPack(argv[2]);
+    }
+
+    if (argc > 3 && std::strcmp(argv[1], "--extract-jar") == 0) {
+        return extractJar(argv[2], argv[3]);
+    }
+
     // The console's own loop, without the console. Everything between reading
     // the SD card and issuing a draw call runs here, so a streaming bug is a
     // sanitizer report rather than a puzzle on a 240-line screen.
@@ -1278,6 +1412,10 @@ int main(int argc, char** argv)
     std::printf("        generate a fresh world outward from one chunk and report what it\n");
     std::printf("        cost, per column and in cache high-water\n");
     std::printf("  --mesh <world-dir> [quads]           mesh a whole world, report the numbers\n");
+    std::printf("  --pack <zip|dir|devart>              assemble a texture pack's atlas and\n");
+    std::printf("        report what scaling it needed; writes atlas.pam to look at\n");
+    std::printf("  --extract-jar <jar> <packs-dir>      turn a client jar into a texture pack,\n");
+    std::printf("        the same code the console's Extract-from-a-jar button runs\n");
     std::printf("  --fly <world-dir> [distance] [frames] [switch-to] [quads|flip]\n");
     std::printf("        run the console's render loop; switch-to changes the render\n");
     std::printf("        distance halfway, the way the debug settings page does\n");

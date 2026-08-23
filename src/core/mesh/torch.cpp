@@ -12,7 +12,6 @@ namespace {
 // arithmetic is denominated in texels of a 256-pixel atlas and ours in
 // kUvUnitsPerTile per tile.
 static_assert(kUvUnitsPerTile % 16 == 0, "a tile must be a whole number of texels");
-constexpr int kUvUnitsPerTexel = kUvUnitsPerTile / 16;
 
 // The torch is drawn with one colour for all five quads -- `bc.b` calls
 // setColorOpaque_F once and never consults the per-face shade table, exactly
@@ -111,11 +110,14 @@ void addTorch(const MeshScratch& scratch, int x, int y, int z, const BlockDef& d
     // on their top face and the torch renderer must not pick it up.
     const TileOrigin tile = tileOrigin(def.faces[0]);
 
-    // The full tile, for the side quads.
-    const i16 u0 = uvAt(tile.u, 0);
-    const i16 u1 = uvAt(tile.u, 16);
-    const i16 v0 = uvAt(tile.v, 0);
-    const i16 v1 = uvAt(tile.v, 16);
+    // The full tile, for the side quads -- inset off the tile boundary, which
+    // is a hardware fix and not a change of shape; see vertex.hpp's kUvInset.
+    // The cap below is not inset because texels 7..9 and 6..8 are interior and
+    // never touch a boundary.
+    const i16 u0 = i16(uvAt(tile.u, 0) + kUvInset);
+    const i16 u1 = i16(uvAt(tile.u, 16) - kUvInset);
+    const i16 v0 = i16(uvAt(tile.v, 0) + kUvInset);
+    const i16 v1 = i16(uvAt(tile.v, 16) - kUvInset);
 
     // The cap samples texels 7..9 across and 6..8 down -- the two-texel square
     // the flame sits on. The original writes these as 0.02734375 and friends,

@@ -268,10 +268,24 @@ CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/generate_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.s
 
+CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
+CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/jar_import_test.cpp
+CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/jar_import_test.cpp
+
+CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/grisu/Documents/GitHub/3DAlpha/tests/jar_import_test.cpp > CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.i
+
+CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/jar_import_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.s
+
 CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/java_cast_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/java_cast_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.i: cmake_force
@@ -285,7 +299,7 @@ CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/java_random_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/java_random_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.i: cmake_force
@@ -299,7 +313,7 @@ CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/level_dat_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/level_dat_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.i: cmake_force
@@ -313,7 +327,7 @@ CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/light_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/light_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.i: cmake_force
@@ -327,7 +341,7 @@ CMakeFiles/3dalpha_tests.dir/tests/light_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/liquid_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/liquid_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.i: cmake_force
@@ -341,7 +355,7 @@ CMakeFiles/3dalpha_tests.dir/tests/liquid_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/mesher_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/mesher_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.i: cmake_force
@@ -355,7 +369,7 @@ CMakeFiles/3dalpha_tests.dir/tests/mesher_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/nbt_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/nbt_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.i: cmake_force
@@ -369,7 +383,7 @@ CMakeFiles/3dalpha_tests.dir/tests/nbt_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/noise_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/noise_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.i: cmake_force
@@ -383,7 +397,7 @@ CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/opaque_cube_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/opaque_cube_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.i: cmake_force
@@ -397,7 +411,7 @@ CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/ore_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/ore_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.i: cmake_force
@@ -408,10 +422,24 @@ CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/ore_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.s
 
+CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
+CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/pack_test.cpp
+CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/pack_test.cpp
+
+CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/grisu/Documents/GitHub/3DAlpha/tests/pack_test.cpp > CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.i
+
+CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/pack_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.s
+
 CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/plant_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/plant_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.i: cmake_force
@@ -422,10 +450,24 @@ CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/plant_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.s
 
+CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
+CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/png_test.cpp
+CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/png_test.cpp
+
+CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/grisu/Documents/GitHub/3DAlpha/tests/png_test.cpp > CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.i
+
+CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/png_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.s
+
 CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/populate_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/populate_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.i: cmake_force
@@ -439,7 +481,7 @@ CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/posix_file_system_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/posix_file_system_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.i: cmake_force
@@ -453,7 +495,7 @@ CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/quad_format_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/quad_format_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.i: cmake_force
@@ -467,7 +509,7 @@ CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/scratch_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/scratch_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.i: cmake_force
@@ -481,7 +523,7 @@ CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/section_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/section_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.i: cmake_force
@@ -495,7 +537,7 @@ CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/seed_text_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/seed_text_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.i: cmake_force
@@ -506,10 +548,24 @@ CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/seed_text_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.s
 
+CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
+CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/settings_file_test.cpp
+CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/settings_file_test.cpp
+
+CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/grisu/Documents/GitHub/3DAlpha/tests/settings_file_test.cpp > CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.i
+
+CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/settings_file_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.s
+
 CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/sin_table_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/sin_table_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.i: cmake_force
@@ -523,7 +579,7 @@ CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/storage_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/storage_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.i: cmake_force
@@ -537,7 +593,7 @@ CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/streamer_generate_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/streamer_generate_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.i: cmake_force
@@ -551,7 +607,7 @@ CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/strict_math_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/strict_math_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.i: cmake_force
@@ -565,7 +621,7 @@ CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/terrain_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/terrain_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.i: cmake_force
@@ -576,10 +632,24 @@ CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/terrain_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.s
 
+CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
+CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/tiled_test.cpp
+CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/tiled_test.cpp
+
+CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/grisu/Documents/GitHub/3DAlpha/tests/tiled_test.cpp > CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.i
+
+CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/tiled_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.s
+
 CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/torch_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/torch_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.i: cmake_force
@@ -593,7 +663,7 @@ CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/tree_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/tree_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.i: cmake_force
@@ -607,7 +677,7 @@ CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/vbo_pool_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_44) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/vbo_pool_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.i: cmake_force
@@ -621,7 +691,7 @@ CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/visibility_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_45) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/visibility_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.i: cmake_force
@@ -635,7 +705,7 @@ CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/visible_set_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_46) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/visible_set_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.i: cmake_force
@@ -649,7 +719,7 @@ CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.s: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
 CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/world_list_test.cpp
 CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_47) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/world_list_test.cpp
 
 CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.i: cmake_force
@@ -659,6 +729,20 @@ CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.i: cmake_force
 CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/world_list_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.s
+
+CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o: CMakeFiles/3dalpha_tests.dir/flags.make
+CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o: /home/grisu/Documents/GitHub/3DAlpha/tests/zip_test.cpp
+CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_48) "Building CXX object CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o -MF CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o.d -o CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o -c /home/grisu/Documents/GitHub/3DAlpha/tests/zip_test.cpp
+
+CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/grisu/Documents/GitHub/3DAlpha/tests/zip_test.cpp > CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.i
+
+CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/grisu/Documents/GitHub/3DAlpha/tests/zip_test.cpp -o CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.s
 
 # Object files for target 3dalpha_tests
 3dalpha_tests_OBJECTS = \
@@ -676,6 +760,7 @@ CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.s: cmake_force
 "CMakeFiles/3dalpha_tests.dir/tests/framework.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/frustum_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.o" \
+"CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o" \
@@ -686,24 +771,29 @@ CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.s: cmake_force
 "CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o" \
+"CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o" \
+"CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o" \
+"CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o" \
+"CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o" \
 "CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o" \
-"CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o"
+"CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o" \
+"CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o"
 
 # External object files for target 3dalpha_tests
 3dalpha_tests_EXTERNAL_OBJECTS =
@@ -722,6 +812,7 @@ CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.s: cmake_force
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/framework.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/frustum_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/generate_test.cpp.o
+3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/jar_import_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/java_cast_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/java_random_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/level_dat_test.cpp.o
@@ -732,30 +823,35 @@ CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.s: cmake_force
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/noise_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/opaque_cube_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/ore_test.cpp.o
+3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/pack_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/plant_test.cpp.o
+3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/png_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/populate_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/posix_file_system_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/quad_format_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/scratch_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/section_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/seed_text_test.cpp.o
+3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/settings_file_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/sin_table_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/storage_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/streamer_generate_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/strict_math_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/terrain_test.cpp.o
+3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/tiled_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/torch_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/tree_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/vbo_pool_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/visibility_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/visible_set_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/world_list_test.cpp.o
+3dalpha_tests: CMakeFiles/3dalpha_tests.dir/tests/zip_test.cpp.o
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/build.make
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/compiler_depend.ts
 3dalpha_tests: lib3dalpha_core.a
 3dalpha_tests: /usr/lib/libz.so
 3dalpha_tests: CMakeFiles/3dalpha_tests.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Linking CXX executable 3dalpha_tests"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/grisu/Documents/GitHub/3DAlpha/build-host/CMakeFiles --progress-num=$(CMAKE_PROGRESS_49) "Linking CXX executable 3dalpha_tests"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/3dalpha_tests.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.

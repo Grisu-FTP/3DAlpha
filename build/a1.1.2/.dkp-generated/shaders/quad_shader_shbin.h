@@ -6,7 +6,7 @@
 extern const uint8_t quad_shader_shbin[];
 extern const uint8_t quad_shader_shbin_end[];
 #if __cplusplus >= 201103L
-static constexpr size_t quad_shader_shbin_size=892;
+static constexpr size_t quad_shader_shbin_size=948;
 #else
-static const size_t quad_shader_shbin_size=892;
+static const size_t quad_shader_shbin_size=948;
 #endif

@@ -63,7 +63,7 @@ nibble planes and 37 % of sections come out uniform and cost nothing.
 M2 is written end to end. The section mesher, the visibility graph, the visibility walk, the VBO
 pool, the column streamer and one frame's worth of orchestration all live in `src/core/` and are
 host-tested; the citro3d layer on top of them is atlas, lightmap, fog LUT, stereo and the debug
-overlay. 354 tests pass.
+overlay. 399 tests pass.
 
 The split earns its keep: `./build-host/3dalpha --fly <world>` runs everything the console does
 between reading the SD card and issuing a draw call — streaming, walking, meshing, uploading,
@@ -86,13 +86,26 @@ per-frame draw list. Both measurements, and the wrong turn, are in
 
 **The game starts at a main menu.** Title screen, the world list — every world on the card, with
 `+ Create New World` above them and delete behind a confirmation — a create screen that asks for a
-name and a seed through the system keyboard, and an options screen for render distance. Blank seed
-rolls one; a typed seed follows the rule Minecraft itself adopted later, so a seed swapped with
-someone on a PC makes the same world, which is the player-facing proof that generation is
-seed-exact. It is drawn with citro2d and the 3DS system font, and nothing in it is textured: we ship
-no Mojang assets, so the backdrop is shaded quads and the buttons are rectangles until the texture
-pack pipeline lands. a1.1.2's own screen is five fixed slots and never asks for a seed — both
-deviations are deliberate and are written down in [docs/status.md](docs/status.md).
+name and a seed through the system keyboard, and an options screen for render distance and texture
+packs. Blank seed rolls one; a typed seed follows the rule Minecraft itself adopted later, so a seed
+swapped with someone on a PC makes the same world, which is the player-facing proof that generation
+is seed-exact. It is drawn with citro2d and the 3DS system font, and nothing in the menu itself is
+textured — we ship no Mojang assets, so the backdrop is shaded quads and the buttons are rectangles.
+a1.1.2's own screen is five fixed slots and never asks for a seed — both deviations are deliberate
+and are written down in [docs/status.md](docs/status.md).
+
+**START pauses.** Resume, Options, Exit World, over a world that stops dead while the menu is up —
+nothing streamed, nothing generated, and the sun stands still. Options there is literally the title
+screen's own, so render distance and texture pack can be changed in a world and apply the moment you
+go back to it. Exiting saves, the way closing a world any other way does.
+
+**Options → Texture Pack** lists every pack on the card, with the generated "Dev Art" pinned first,
+and applies the one you pick. **Extract from a jar** turns your own `minecraft.jar` into a pack —
+the PNGs are copied out verbatim, without being decompressed, into a zip in the pre-1.5 layout that
+also works on a PC — and then offers to delete the jar, but only after re-reading the pack it wrote
+and decoding it. HD packs load and are box-filtered down to the 256×256 atlas. The choice survives a
+reboot in `sdmc:/3dalpha/3ds.ini`. Only `terrain.png` is drawn so far: a pack's GUI, font and mob
+textures are kept and counted, and nothing reads them yet.
 
 ```sh
 make                 # -> build/a1.1.2/3DAlpha-a1.1.2.3dsx
@@ -108,10 +121,10 @@ make host && ./build-host/3dalpha --mesh <world>   # mesh a real world, print th
 | M0 | Toolchain, version-driven build, 3DSX packaging | **done** — validated on hardware; CIA needs `makerom` |
 | M1 | NBT, Alpha level format r/w, palette world storage, block registry | **done** — verified against a real 660-chunk world |
 | M2 | Renderer: mesher, visibility, fog, stereo 3D, debug overlay | **in progress** — the whole pipeline is written and runs end to end on the host against a real world; it has not yet drawn a pixel on hardware |
-| M3 | Singleplayer gameplay | not started — **except the main menu**: title, world list, create-with-seed, delete, options. The game starts from it |
+| M3 | Singleplayer gameplay | not started — **except the main menu and the pause menu**: title, world list, create-with-seed, delete, options; START pauses to Resume / Options / Exit World. The game starts from it |
 | M4 | a1.1.2 world generation, seed-exact | **done** — terrain, caves, the Far Lands, the whole population pass and lighting match a real a1.1.2 world byte for byte under a real JVM's own output, and generation runs on a worker thread (core 2 on a New 3DS) |
 | M5 | Multiplayer (protocol 2) | not started |
-| M6 | Audio, mobs, texture-pack browser, packaging | not started |
+| M6 | Audio, mobs, texture-pack browser, packaging | **texture-pack browser done**, ahead of the rest of M6 — pack selection, jar import, HD downscaling, settings persistence. Audio, mobs and packaging not started |
 
 ## Documentation
 
@@ -133,13 +146,17 @@ make host && ./build-host/3dalpha --mesh <world>   # mesh a real world, print th
 
 ## Assets and legality
 
-3DAlpha ships **no Mojang content**. It bundles a free CC BY-SA fallback texture pack so it is
-playable out of the box with nothing to dump, copy or configure.
+3DAlpha ships **no Mojang content**. It generates its own placeholder art so it is playable out of
+the box with nothing to dump, copy or configure.
 
 **Textures and sounds are the only things a player may supply, and both are optional.** Drop a
-`minecraft.jar` or a texture-pack zip on the SD card for authentic visuals; drop an original
-`resources/` folder in for sound, which a1.1.2 downloaded at runtime and never shipped. Without
-either, the game is complete and playable — replacement textures, no audio.
+`minecraft.jar` or a texture-pack zip in `sdmc:/3dalpha/packs` for authentic visuals and pick it
+from Options → Texture Pack; drop an original `resources/` folder in for sound, which a1.1.2
+downloaded at runtime and never shipped. Without either, the game is complete and playable —
+placeholder textures, no audio.
+
+The jar importer moves files you already own from one file on your own card to another. Nothing is
+downloaded, nothing is sent anywhere, and no extracted asset enters this repository or its build.
 
 Everything else — blocks, items, recipes, physics, world generation — is part of the program and
 is simply there. See [docs/assets.md](docs/assets.md).

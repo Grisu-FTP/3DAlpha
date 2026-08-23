@@ -325,6 +325,10 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/main.o: /home/grisu/Documents/GitHub/3DA
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/vbo_pool.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/visible_set.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/world_streamer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/settings/settings_file.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/pack_list.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/frustum.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp \
@@ -680,6 +684,11 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/menu.o: /home/grisu/Documents/GitHub/3DA
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/vbo_pool.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/visible_set.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/world_streamer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/settings/settings_file.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/jar_import.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/pack_list.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/frustum.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_cast.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/java_random.hpp \
@@ -1034,6 +1043,8 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/overlay.o: /home/grisu/Documents/GitHub/
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/vbo_pool.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/visible_set.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/world_streamer.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/console_text.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/coord_text.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/frustum.hpp \
@@ -1681,6 +1692,7 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/renderer.o: /home/grisu/Documents/GitHub
   .dkp-generated/shaders/world_shader_shbin.h \
   gen/version_config.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/block/block_def.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/vertex.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/visibility.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/nbt.hpp \
@@ -1689,6 +1701,9 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/renderer.o: /home/grisu/Documents/GitHub
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/chunk_renderer.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/vbo_pool.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/render/visible_set.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/dev_art.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/frustum.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/math.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/nibble.hpp \
@@ -1978,50 +1993,97 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/renderer.o: /home/grisu/Documents/GitHub
   /opt/devkitpro/libctru/include/sys/socket.h
 
 CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub/3DAlpha/src/platform/ctr/textures.cpp \
-  gen/blocks.hpp \
-  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/block_def.hpp \
-  /home/grisu/Documents/GitHub/3DAlpha/src/core/block/registry.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/io/file_system.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/mesh/vertex.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/texture/tiled.hpp \
+  /home/grisu/Documents/GitHub/3DAlpha/src/core/util/span.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/util/types.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/core/world/daylight.hpp \
   /home/grisu/Documents/GitHub/3DAlpha/src/platform/ctr/textures.hpp \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/_ansi.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/_newlib_version.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/c++allocator.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/c++config.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/c++locale.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/cpu_defines.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/arm-none-eabi/armv6k/fpu/bits/os_defines.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/backward/binders.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bit \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/alloc_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/allocator.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/basic_string.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/basic_string.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/char_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/charconv.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/concept_check.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/cpp_type_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/cxxabi_forced.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/erase_if.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception_defines.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/functional_hash.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/hash_bytes.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/invoke.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/localefwd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/memory_resource.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/memoryfwd.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/move.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/new_allocator.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/new_except.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/new_throw.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/ostream_insert.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/postypes.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/predefined_ops.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/ptr_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/range_access.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/requires_hosted.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/specfun.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_abs.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stdexcept_throw.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stdexcept_throwfwd.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_algobase.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_bvector.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_construct.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_function.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_funcs.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_types.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_pair.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_uninitialized.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_vector.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/string_view.tcc \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stringfwd.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/uses_allocator.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/uses_allocator_args.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/utility.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/vector.tcc \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/version.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cctype \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cerrno \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/clocale \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cmath \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/concepts \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstddef \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdint \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdio \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdlib \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cwchar \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/debug/assertions.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/debug/debug.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/alloc_traits.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/numeric_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/string_conversions.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/type_traits.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/initializer_list \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/iosfwd \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/limits \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/math.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/new \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/pstl/pstl_config.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/string \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/string_view \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/bessel_function.tcc \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/beta_function.tcc \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/ell_integral.tcc \
@@ -2034,7 +2096,12 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/poly_laguerre.tcc \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/riemann_zeta.tcc \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tr1/special_function_util.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/tuple \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/type_traits \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/vector \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/ctype.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/errno.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/locale.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/_default_types.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/_time.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/_types.h \
@@ -2046,6 +2113,7 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
   /opt/devkitpro/devkitARM/arm-none-eabi/include/newlib.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/signal.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/stdint.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/stdio.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/stdlib.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/string.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_intsup.h \
@@ -2057,16 +2125,20 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_types.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/cdefs.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/config.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/errno.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/features.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/lock.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/reent.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/sched.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/signal.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/stdio.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/string.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/time.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/timespec.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/types.h \
   /opt/devkitpro/devkitARM/arm-none-eabi/include/time.h \
+  /opt/devkitpro/devkitARM/arm-none-eabi/include/wchar.h \
+  /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stdarg.h \
   /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stdbool.h \
   /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stddef.h \
   /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/16.1.0/include/stdint.h \
@@ -2186,6 +2258,8 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/util/seed_text.hpp:
 
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/jar_import.hpp:
+
 /opt/devkitpro/libctru/include/c3d/uniforms.h:
 
 /opt/devkitpro/libctru/include/c3d/types.h:
@@ -2239,6 +2313,8 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/thread:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/string_view:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/dev_art.hpp:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ratio:
 
@@ -2306,6 +2382,14 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/shared_ptr_atomic.h:
 
+/opt/devkitpro/devkitARM/arm-none-eabi/include/sched.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/shared_ptr.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/refwrap.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/parse_numbers.h:
+
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/set:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/shared_ptr_base.h:
@@ -2329,8 +2413,6 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
 /opt/devkitpro/libctru/include/3ds/gpu/enums.h:
 
 /opt/devkitpro/libctru/include/3ds/gfx.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_types.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/ostream_insert.h:
 
@@ -2480,6 +2562,8 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/concept_check.h:
 
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/tiled.hpp:
+
 /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/errno.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstddef:
@@ -2491,10 +2575,6 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/cstdarg:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/sys/_intsup.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_abs.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception_defines.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/debug/assertions.h:
 
@@ -2730,13 +2810,17 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
 
 /opt/devkitpro/libctru/include/3ds/services/fs.h:
 
-/opt/devkitpro/devkitARM/arm-none-eabi/include/sched.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/shared_ptr.h:
-
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/new:
 
 /opt/devkitpro/libctru/include/3ds/services/hid.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/stl_iterator_base_types.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/settings/settings_file.hpp:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/postypes.h:
+
+/opt/devkitpro/libctru/include/3ds/services/httpc.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/platform/ctr/heap.cpp:
 
@@ -2745,8 +2829,6 @@ CMakeFiles/3dalpha.dir/src/platform/ctr/textures.o: /home/grisu/Documents/GitHub
 /opt/devkitpro/libctru/include/3ds/services/irrst.h:
 
 /opt/devkitpro/libctru/include/3ds/services/loader.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/parse_numbers.h:
 
 /opt/devkitpro/libctru/include/3ds/services/mcuhwc.h:
 
@@ -2826,6 +2908,16 @@ gen/version_slots.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/nbt/preserved.hpp:
 
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/atlas_image.hpp:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/pack_list.hpp:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/std_abs.h:
+
+/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/exception_defines.h:
+
+/home/grisu/Documents/GitHub/3DAlpha/src/core/texture/png.hpp:
+
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/ext/alloc_traits.h:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/core/util/frustum.hpp:
@@ -2863,10 +2955,6 @@ gen/version_slots.hpp:
 gen/blocks.hpp:
 
 /home/grisu/Documents/GitHub/3DAlpha/src/impl/storage/alpha_chunkfiles/storage.hpp:
-
-/opt/devkitpro/libctru/include/3ds/services/httpc.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/postypes.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/machine/stdlib.h:
 
@@ -2913,5 +3001,3 @@ gen/blocks.hpp:
 /opt/devkitpro/libctru/include/tex3ds.h:
 
 /opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/localefwd.h:
-
-/opt/devkitpro/devkitARM/arm-none-eabi/include/c++/16.1.0/bits/refwrap.h:

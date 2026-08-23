@@ -48,6 +48,12 @@ public:
     virtual bool exists(const char* path) = 0;
     virtual bool isDirectory(const char* path) = 0;
 
+    // The size of a file without reading it. One stat, where readFile is one
+    // open, one or more reads and a close -- which is the difference between
+    // listing the jars on a card and loading them all into memory to find out
+    // how big they are. False if the path is missing or is a directory.
+    virtual bool fileSize(const char* path, usize* out) = 0;
+
     // Creates every missing component, like mkdir -p. Succeeds if it is
     // already there.
     virtual bool makeDirectories(const char* path) = 0;

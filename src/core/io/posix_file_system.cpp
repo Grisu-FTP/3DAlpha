@@ -140,6 +140,16 @@ bool PosixFileSystem::isDirectory(const char* path)
     return ::stat(path, &info) == 0 && S_ISDIR(info.st_mode);
 }
 
+bool PosixFileSystem::fileSize(const char* path, usize* out)
+{
+    struct stat info;
+    if (::stat(path, &info) != 0 || S_ISDIR(info.st_mode)) {
+        return false;
+    }
+    *out = usize(info.st_size);
+    return true;
+}
+
 bool PosixFileSystem::makeDirectories(const char* path)
 {
     char buffer[1024];

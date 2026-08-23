@@ -1,8 +1,8 @@
 # Assets and texture packs
 
-3DAlpha ships **no Mojang content**. It bundles a free CC BY-SA fallback pack so the game is
-playable with no setup, and imports textures from a user-supplied `minecraft.jar` or texture-pack
-zip for authenticity.
+3DAlpha ships **no Mojang content**. It generates its own placeholder art so the game is playable
+with no setup, and imports textures from a user-supplied `minecraft.jar` or texture-pack zip for
+authenticity.
 
 ## What the player has to supply: nothing
 
@@ -13,7 +13,8 @@ extract or convert game data, and no feature is gated behind having a jar.
 
 | Asset | Bundled? | If the player supplies nothing |
 |---|---|---|
-| Block textures, GUI, font | CC BY-SA fallback pack in RomFS | Everything renders, in the fallback pack's style |
+| Block textures | **Generated** — "Dev Art", `core/texture/dev_art.cpp` | Everything renders, in the placeholder's style |
+| GUI, font | Neither is bundled and neither is read yet | The menu draws with the 3DS system font |
 | Sounds | No — a1.1.2 never shipped them | Game runs silently |
 | DSP firmware (`dspfirm.cdc`) | Cannot be — Nintendo copyright | Audio disabled, one line in the options screen |
 | Block/item/recipe data, worldgen | **Compiled into the binary** | Not applicable — always present |
@@ -26,24 +27,152 @@ player's way. See [Provenance of the generated tables](#provenance-of-the-genera
 
 a1.1.2 predates the in-game texture-pack selector — that arrived in a1.2.2 (2010-11-10). Before it,
 changing textures meant overwriting files inside `minecraft.jar`. So "a1.1.2 texture pack" in
-practice means **the pre-1.5 jar layout**, which is what every alpha- and beta-era pack uses:
+practice means **the pre-1.5 jar layout**, which is what every alpha- and beta-era pack uses.
 
-```
-terrain.png            256x256 : 16x16 grid of 16px block tiles (also breaking animation)
-gui/items.png          256x256 : item icons
-gui/gui.png                     : hotbar, inventory, widgets
-gui/icons.png                   : crosshair, hearts, bubbles
-char.png                        : player skin
-clouds.png                      : cloud layer
-default.png                     : bitmap font (ASCII grid)
-misc/*.png                      : water, shadow, dial, particles, grass/foliage colour maps
-mob/*.png                       : mob skins
-terrain/sun.png, terrain/moon.png
-item/*.png                      : arrows, boat, cart, sign
-```
+**This table was read out of a real client jar, not written from memory**, and the earlier version of
+it here was wrong in three places. `core/texture/pack_list.cpp` holds the same 58 names as
+`kA112Files[]`, which is what the pack screen's "n/58" counts against, and `tests/pack_test.cpp`
+asserts the three corrections still hold so the table cannot drift back.
 
-Packs are plain zips containing that tree at the root. HD packs use the same layout with larger
-power-of-two images (32×, 64× per tile).
+| Where | n | Files |
+|---|---|---|
+| root | 15 | `terrain.png` `char.png` `2char.png` `default.png` `clouds.png` `particles.png` `shadow.png` `rain.png` `snow.png` `fluff.png` `water.png` `waterterrain.png` `dirt.png` `grass.png` `rock.png` |
+| `armor/` | 10 | `chain_1/2` `cloth_1/2` `diamond_1/2` `gold_1/2` `iron_1/2` |
+| `art/` | 1 | `kz.png` — the painting sheet |
+| `gui/` | 8 | `gui` `icons` `items` `logo` `container` `crafting` `furnace` `inventory` |
+| `item/` | 5 | `arrows` `boat` `cart` `door` `sign` |
+| `misc/` | 3 | `gear` `gearmiddle` `vignette` |
+| `mob/` | 12 | `chicken` `cow` `creeper` `pig` `saddle` `sheep` `sheep_fur` `skeleton` `slime` `spider` `spider_eyes` `zombie` |
+| `terrain/` | 2 | `sun` `moon` |
+| `title/` | 2 | `black` `mojang` |
+
+Three corrections, each of which had been asserted here without being checked:
+
+* **`misc/` holds three files, not the loose-ends drawer this document described.** Water, shadow,
+  particles, rain, snow, dirt, grass and rock are all at the **root**.
+* **There is no `misc/grasscolor.png` or `misc/foliagecolor.png`.** That is a fourth independent
+  confirmation of [the no-tinting finding](#tinting), arrived at from a different direction than the
+  three in status.md.
+* **`terrain.png` is 256×256, 8-bit RGBA, non-interlaced** — as is every other PNG in the jar. Four
+  of the 58 are colour type 3 (palette); the other 54 are colour type 6. **None** is 16-bit and
+  **none** is interlaced, which is what sets the scope of `core/texture/png.cpp`.
+
+Packs are plain zips containing that tree at the root, and 3DAlpha also accepts the same tree lying
+loose in a directory — a card is mounted on a PC as often as on a console, and a player who unzipped
+a pack in place has not done anything wrong. HD packs use the same layout with larger power-of-two
+images (32×, 64× per tile).
+
+### What a jar's zip actually looks like
+
+Both of these are load-bearing for the importer and neither is obvious:
+
+* **The jar mixes compression methods** — 41 stored entries and 497 deflated ones. Both paths are
+  exercised by the first real file the reader ever sees.
+* **497 of the 538 entries set general-purpose flag bit 3**, which means their local headers carry
+  **zeroed CRC and size fields** and the real values trail the compressed data in a descriptor. A
+  reader that trusts local headers reads garbage lengths for 92 % of this jar. `ZipArchive` therefore
+  treats the central directory as the only source of truth and opens a local header for exactly one
+  purpose: to learn how many bytes of name and extra field to skip.
+
+There is no Zip64 record, and `ZipArchive` refuses one rather than parsing it.
+
+## Choosing and importing a pack, from the console
+
+**Options → Texture Pack.** The list is Dev Art pinned first, then every `.zip` and every directory
+under `sdmc:/3dalpha/packs` that holds a `terrain.png`, sorted by name. Each row shows how many of
+the 58 names above the pack carries; a partial pack is fine, because only `terrain.png` is drawn.
+The live pack is marked, and the choice is written to `3ds.ini` the moment it is made.
+
+**The pack is loaded and decoded on the screen that chose it**, not in the renderer. A pack that will
+not decode is refused in front of the player with a reason, and the pack they had stays live — the
+alternative is an untextured world and no explanation.
+
+**Options → Texture Pack → Extract from a jar** lists every `*.jar` in `sdmc:/3dalpha/packs` and in
+`sdmc:/3dalpha` above it, with sizes, and turns the one the player picks into
+`packs/<jar name>.zip`. Entries are copied **verbatim** — compressed bytes, method, CRC and sizes
+straight out of the source's central directory — so a 900 KB jar becomes a pack without one inflate
+or deflate call. Local headers are rewritten with flag bit 3 cleared and the real sizes filled in,
+since the directory already gave us them; copying the flag without also copying the trailing
+descriptor would produce an archive that lenient readers accept and strict ones reject.
+
+The filter is **every `.png` that is not under `META-INF/`**, rather than an allow-list. It is
+simpler, it is exactly the 58 files above, and it keeps working on a jar from a version whose layout
+nobody has measured.
+
+**Then it verifies what it wrote**, by re-opening the pack off the card, decoding its `terrain.png`
+and building the atlas from it. Only a pack that survives that round trip is reported as a success —
+and that is what makes the next screen, which offers to **delete the source jar**, a safe thing to
+show. The jar is the only file this project deletes that the player did not create in it, so the
+offer appears on no other basis, and `Keep` is the button the screen leads with.
+
+**Nothing is redistributed and nothing enters the repository or the build.** The player's own file is
+filtered into another file on the player's own card.
+
+## What a pack actually changes today
+
+**Only `terrain.png`.** A pack's `gui/`, `mob/`, `default.png`, `char.png` and the rest are copied,
+counted and left alone: the menu draws with the 3DS system font, there is no GUI sheet, and there are
+no mobs, so there is nothing to point them at yet. The texture-pack screen says so rather than
+implying more happened than did.
+
+The atlas is **always 256×256**, whatever the pack's tile size, and that is a decision with a
+measurement behind it. VRAM is 6 MB, render targets already take 0.8–1.5 MB, and a 64× pack's
+1024×1024 atlas is 4 MB at RGBA8. Rather than make the atlas edge a runtime value that every VRAM
+number in [3ds-performance.md](3ds-performance.md) would have to be re-measured against, a larger
+`terrain.png` is box-filtered down on load. The mesher's UVs are in 1/16384 of the whole atlas
+(`core/mesh/vertex.hpp`), so nothing downstream can tell.
+
+Two details of that scaling are not free choices:
+
+* **The box filter averages premultiplied by alpha.** A cutout edge — a torch, a sapling, the rim of
+  a leaf — sits beside texels whose alpha is 0 and whose RGB is usually black, and a plain mean drags
+  the visible half toward black. Every HD pack would grow dark halos.
+* **A pack smaller than 256 is replicated, not interpolated.** The whole look depends on nearest
+  filtering.
+
+A `terrain.png` that is not square, or whose edge is not a multiple of 16, is refused: it is not a
+tile grid, and scaling it would shift every tile boundary by a fraction of a texel.
+
+### Dev Art
+
+The generated placeholder is now **one selectable pack among the others** rather than the only thing
+there is, and it lives in `core/texture/dev_art.cpp` rather than in the platform layer. It needs
+nothing off the card, which is what makes the screen a selector rather than something that can leave
+the game untextured.
+
+Moving it into core put two derivations under the host suite for the first time — the fluid tile
+groups and the torch carve, both read out of the block table and the mesher's own geometry rather
+than written down — and immediately found a defect that had been there all along: the per-texel
+jitter multiplied three `int`s that overflow for almost every input, which is undefined behaviour.
+Nothing in `platform/ctr/` is sanitised, so it had never been reported. The multiply is unsigned now,
+which wraps by definition and produces the same 32 bits, so the generated art is byte-identical to
+what the console has been drawing.
+
+## Where the code is
+
+| Piece | File |
+|---|---|
+| PNG decoder | `core/texture/png.cpp` — 8-bit, non-interlaced, colour types 0/2/3/4/6 |
+| Zip reader | `core/texture/zip_archive.cpp` — central directory only |
+| Zip writer | `core/texture/zip_builder.cpp` — verbatim entries, no deflate |
+| Pack listing | `core/texture/pack_list.cpp` — and `kA112Files[]` |
+| Atlas assembly and scaling | `core/texture/atlas_image.cpp` |
+| Dev Art | `core/texture/dev_art.cpp` |
+| Jar import | `core/texture/jar_import.cpp` |
+| `3ds.ini` | `core/settings/settings_file.cpp` |
+| Screens | `platform/ctr/menu.cpp` |
+| Upload | `platform/ctr/textures.cpp` |
+
+There is no new third-party dependency. A PNG's `IDAT` stream is zlib-wrapped and a zip's entries are
+raw deflate, and `core/util/compress.hpp` already offered both framings for chunk files and Map Chunk
+payloads — so miniz and lodepng, which this document used to name, are not needed.
+
+Two host harnesses run the whole thing away from a console, under ASan/UBSan:
+
+```sh
+./build-host/3dalpha --extract-jar <jar> <packs-dir>   # the importer, over a real jar
+./build-host/3dalpha --pack <zip|dir|devart>           # assemble an atlas, write atlas.pam
+```
 
 ## Sounds
 
@@ -64,40 +193,67 @@ dumped DSP firmware — see below.)
 
 ```
 sdmc:/3dalpha/
-  options.txt              alpha-compatible options file
-  3ds.ini                  3DS-specific options
-  packs/*.zip              user texture packs
-  packs/minecraft.jar      optional: import source for authentic a1.1.2 textures
-  resources/               optional: user-supplied sounds, original layout
-  cache/<pack>.3dtex       converted, GPU-ready texture blobs
-  cache/<world>.idx        chunk index per world
+  3ds.ini                  3DS-specific options -- built, and the only file here the game writes
+  packs/<name>.zip         texture packs, pre-1.5 jar layout
+  packs/<name>/            the same tree lying loose, also accepted
+  packs/*.jar              optional: import sources for Extract from a jar
   saves/<world>/           worlds, in the real Alpha level format
+
+  options.txt              not built -- a1.1.2's own options file, for when there
+                           are gameplay options worth writing to it
+  resources/               not built -- user-supplied sounds, original layout
+  cache/<pack>.3dtex       not built -- see below
+  cache/<world>.idx        not built -- chunk index per world
 ```
 
-## Import and conversion pipeline
+`3ds.ini` holds `render_distance` and `texture_pack`, is `key=value` with `#` comments, and is
+**rewritten from the keys the running build knows** — so a key a later version adds is dropped by an
+older one. An absent file is the ordinary first-boot state, and it is written through
+`writeFileAtomic`, so a console switched off mid-save keeps the settings it had.
 
-Conversion is expensive on a 268 MHz ARM11, so it happens **once per pack**, not once per boot.
+It is deliberately separate from `options.txt`. That file is a1.1.2's own, with its own format, and
+keeping them apart means a 3DS setting never ends up somewhere a PC copy of the game would read it.
 
-1. Open the zip with **miniz**; decode PNGs with **lodepng**.
-2. Assemble the block atlas. Missing tiles fall back to the bundled pack, so partial packs work.
-3. Choose a GPU format per image — see the table in
-   [3ds-performance.md §9](3ds-performance.md). ETC1A4 by default; RGBA5551 or RGBA4444 when a
-   pack's gradients suffer under ETC1.
-4. Morton-swizzle (via `C3D_SyncDisplayTransfer` where possible, CPU fallback under 64×64).
-5. Write `cache/<pack>.3dtex` — a small header plus already-tiled texture data that can be
-   `memcpy`'d straight into a `C3D_Tex`.
-6. Invalidate the cache on pack mtime/size change, or on a version bump of the converter.
+## What the import pipeline turned out to be
 
-The bundled fallback pack ships in RomFS **already converted** — no conversion work at first boot.
+**This section used to describe a design; it now describes what was built, and three of the six
+steps went away.**
+
+1. ~~Open the zip with **miniz**; decode PNGs with **lodepng**.~~ Neither is needed. A PNG's `IDAT`
+   stream is zlib-wrapped and a zip's entries are raw deflate, and `core/util/compress.hpp` had
+   already offered both framings since M1 for chunk files and Map Chunk payloads. `zip_archive.cpp`
+   and `png.cpp` are built on it, so the whole feature added no third-party dependency.
+2. **Assemble the block atlas** — `atlas_image.cpp`. Missing tiles do not fall back per-tile: a pack
+   supplies a whole `terrain.png` or it is not a pack, and the fallback is per-*pack* to Dev Art.
+   Partial packs work because a pack that carries only `terrain.png` is exactly as usable as one
+   that carries all 58 files, nothing else being read yet.
+3. ~~Choose a GPU format per image; ETC1A4 by default.~~ Not done. The atlas is RGBA8 at 256 KB,
+   which is what it has always been, and the VRAM pressure ETC1 was for does not exist while the
+   atlas is capped at 256×256. Worth revisiting if the cap is ever lifted.
+4. **Morton-swizzle** — ~~via `C3D_SyncDisplayTransfer`~~, **on the CPU**. The transfer engine was
+   doing the tiling, the vertical flip and a format conversion in one step, into VRAM, and it lost
+   the destination's last row: a gray line across the top of every tile in atlas row 0, and nothing
+   else in the world touched. It is `core/texture/tiled.hpp` now, folded into the byte-order pass
+   `Atlas::init` already made over every texel, and the upload is reduced to moving bytes that are
+   already final. See docs/status.md §1, ninth launch.
+5. ~~Write `cache/<pack>.3dtex`.~~ Not built. It was sized against a pipeline with per-image format
+   selection in it; what is left is one PNG decode and one pass over 65,536 texels, which happens
+   when the player picks a pack rather than at boot. **Worth building when there is a measurement
+   from hardware saying that pass is slow enough to notice** — not before, and note the swizzle is
+   now on the CPU, so the measurement is more interesting than it was.
+6. ~~Invalidate the cache on mtime change.~~ Follows 5.
 
 ## HD packs and the VRAM budget
 
-A 64× pack means a 1024×1024 atlas: 4 MB at RGBA8, 1 MB at ETC1A4. VRAM is 6 MB total and render
-targets already take 0.8–1.5 MB.
+A 64× pack means a 1024×1024 source: 4 MB at RGBA8, against 6 MB of VRAM that render targets already
+take 0.8–1.5 MB of.
 
-The `texture_quality` option clamps the atlas to a maximum edge length. Packs above the cap are
-downscaled during conversion (box filter, once, cached) rather than rejected. If a pack cannot be
-made to fit at all, refuse it with a message that names the limit — never fail silently or crash.
+**The atlas is capped at 256×256 rather than clamped by a `texture_quality` option**, and anything
+larger is box-filtered down at load. That is the same downscale this section always described, with
+the option removed: making the atlas edge a runtime value would put every VRAM number in
+[3ds-performance.md](3ds-performance.md) back in question, and the option would have had exactly one
+useful setting on each model. A pack that cannot be made to fit is refused with a message that names
+the limit — the rule this section set, and it is kept.
 
 Downscaling also *helps* frame rate: a smaller atlas has a much better texture-cache hit rate on a
 fill-bound GPU.
@@ -120,12 +276,12 @@ then means filling a field that already exists rather than changing the vertex f
 
 ## Fonts
 
-**The main menu draws with the 3DS system font today**, through citro2d's `C2D_TextParse`. That is
-not a preference, it is what is available: we ship no Mojang assets, the CC BY-SA fallback pack is
-not built, and there is no PNG decoder or RomFS in the tree, so there is no `default.png` for the
-menu to use. `C2D_FontLoad` takes a converted BCFNT, so a pack's font replaces the system one
-without touching the menu's logic. Nothing else in the menu is textured either -- see
-[status.md](status.md) §0b.
+**The main menu draws with the 3DS system font today**, through citro2d's `C2D_TextParse`. The
+reason has narrowed since this was written: there **is** a PNG decoder now, and a pack that carries
+`default.png` has it sitting in the packs folder unread. What is still missing is the consumer — a
+glyph atlas, per-glyph widths and a text drawer that uses them instead of citro2d's. `C2D_FontLoad`
+takes a converted BCFNT, so that path is for a bundled font rather than for a pack's bitmap one.
+Nothing else in the menu is textured either -- see [status.md](status.md) §0b.
 
 `default.png` is a 16×16 grid of glyphs with per-glyph widths derived by scanning columns, exactly
 as the original does. Derive the widths at conversion time and store them in the `.3dtex` cache
@@ -145,11 +301,12 @@ options screen. Audio is never a startup dependency.
 | Content | Rule |
 |---|---|
 | Mojang textures, sounds, fonts | **Never bundled.** User-supplied only, via jar/pack import. |
-| Bundled fallback pack | Must be CC-licensed and attributed in `romfs/licenses.txt`. |
+| Bundled fallback pack | There is none. The built-in pack is **generated** by our own code from our own colours, so there is nothing to license or attribute. A CC-licensed art pack in RomFS remains an option and would need attribution in `romfs/licenses.txt`. |
+| A pack imported from a jar | Written to the player's own card from the player's own file, never redistributed and never checked in. See [Choosing and importing a pack](#choosing-and-importing-a-pack-from-the-console). |
 | craftus_reloaded code | MIT — reusable with attribution in `romfs/licenses.txt`. |
 | ViaLegacy | GPLv3 — **documentation only**. Protocol IDs and wire sizes are facts; its code is not copied. |
 | Data recovered from a client jar | Facts only — ids, hardness, light levels. Recovered by a maintainer, checked in, shipped compiled. Never code, never assets, never redistributed. See below. |
-| Third-party libs (miniz, lodepng, libdeflate) | Licences reproduced in `romfs/licenses.txt`. |
+| Third-party libs | zlib is the only one linked. **miniz and lodepng were not needed** — see [What the import pipeline turned out to be](#what-the-import-pipeline-turned-out-to-be). Any that are added later get their licences reproduced in `romfs/licenses.txt`. |
 
 `romfs/licenses.txt` is shipped in the build and viewable from the in-game about screen.
 

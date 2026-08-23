@@ -479,6 +479,126 @@ src/core/render/world_streamer.s:
 .PHONY : src/core/render/world_streamer.s
 
 # target to build an object file
+src/core/settings/settings_file.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/settings/settings_file.o
+.PHONY : src/core/settings/settings_file.o
+
+# target to preprocess a source file
+src/core/settings/settings_file.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/settings/settings_file.i
+.PHONY : src/core/settings/settings_file.i
+
+# target to generate assembly for a file
+src/core/settings/settings_file.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/settings/settings_file.s
+.PHONY : src/core/settings/settings_file.s
+
+# target to build an object file
+src/core/texture/atlas_image.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/atlas_image.o
+.PHONY : src/core/texture/atlas_image.o
+
+# target to preprocess a source file
+src/core/texture/atlas_image.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/atlas_image.i
+.PHONY : src/core/texture/atlas_image.i
+
+# target to generate assembly for a file
+src/core/texture/atlas_image.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/atlas_image.s
+.PHONY : src/core/texture/atlas_image.s
+
+# target to build an object file
+src/core/texture/dev_art.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/dev_art.o
+.PHONY : src/core/texture/dev_art.o
+
+# target to preprocess a source file
+src/core/texture/dev_art.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/dev_art.i
+.PHONY : src/core/texture/dev_art.i
+
+# target to generate assembly for a file
+src/core/texture/dev_art.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/dev_art.s
+.PHONY : src/core/texture/dev_art.s
+
+# target to build an object file
+src/core/texture/jar_import.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/jar_import.o
+.PHONY : src/core/texture/jar_import.o
+
+# target to preprocess a source file
+src/core/texture/jar_import.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/jar_import.i
+.PHONY : src/core/texture/jar_import.i
+
+# target to generate assembly for a file
+src/core/texture/jar_import.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/jar_import.s
+.PHONY : src/core/texture/jar_import.s
+
+# target to build an object file
+src/core/texture/pack_list.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/pack_list.o
+.PHONY : src/core/texture/pack_list.o
+
+# target to preprocess a source file
+src/core/texture/pack_list.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/pack_list.i
+.PHONY : src/core/texture/pack_list.i
+
+# target to generate assembly for a file
+src/core/texture/pack_list.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/pack_list.s
+.PHONY : src/core/texture/pack_list.s
+
+# target to build an object file
+src/core/texture/png.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/png.o
+.PHONY : src/core/texture/png.o
+
+# target to preprocess a source file
+src/core/texture/png.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/png.i
+.PHONY : src/core/texture/png.i
+
+# target to generate assembly for a file
+src/core/texture/png.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/png.s
+.PHONY : src/core/texture/png.s
+
+# target to build an object file
+src/core/texture/zip_archive.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_archive.o
+.PHONY : src/core/texture/zip_archive.o
+
+# target to preprocess a source file
+src/core/texture/zip_archive.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_archive.i
+.PHONY : src/core/texture/zip_archive.i
+
+# target to generate assembly for a file
+src/core/texture/zip_archive.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_archive.s
+.PHONY : src/core/texture/zip_archive.s
+
+# target to build an object file
+src/core/texture/zip_builder.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_builder.o
+.PHONY : src/core/texture/zip_builder.o
+
+# target to preprocess a source file
+src/core/texture/zip_builder.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_builder.i
+.PHONY : src/core/texture/zip_builder.i
+
+# target to generate assembly for a file
+src/core/texture/zip_builder.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/texture/zip_builder.s
+.PHONY : src/core/texture/zip_builder.s
+
+# target to build an object file
 src/core/util/compress.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/compress.o
 .PHONY : src/core/util/compress.o
@@ -522,6 +642,21 @@ src/core/util/coord_text.i:
 src/core/util/coord_text.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/coord_text.s
 .PHONY : src/core/util/coord_text.s
+
+# target to build an object file
+src/core/util/fat_name.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/fat_name.o
+.PHONY : src/core/util/fat_name.o
+
+# target to preprocess a source file
+src/core/util/fat_name.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/fat_name.i
+.PHONY : src/core/util/fat_name.i
+
+# target to generate assembly for a file
+src/core/util/fat_name.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/3dalpha_core.dir/build.make CMakeFiles/3dalpha_core.dir/src/core/util/fat_name.s
+.PHONY : src/core/util/fat_name.s
 
 # target to build an object file
 src/core/util/frustum.o:
@@ -1117,6 +1252,30 @@ help:
 	@echo "... src/core/render/world_streamer.o"
 	@echo "... src/core/render/world_streamer.i"
 	@echo "... src/core/render/world_streamer.s"
+	@echo "... src/core/settings/settings_file.o"
+	@echo "... src/core/settings/settings_file.i"
+	@echo "... src/core/settings/settings_file.s"
+	@echo "... src/core/texture/atlas_image.o"
+	@echo "... src/core/texture/atlas_image.i"
+	@echo "... src/core/texture/atlas_image.s"
+	@echo "... src/core/texture/dev_art.o"
+	@echo "... src/core/texture/dev_art.i"
+	@echo "... src/core/texture/dev_art.s"
+	@echo "... src/core/texture/jar_import.o"
+	@echo "... src/core/texture/jar_import.i"
+	@echo "... src/core/texture/jar_import.s"
+	@echo "... src/core/texture/pack_list.o"
+	@echo "... src/core/texture/pack_list.i"
+	@echo "... src/core/texture/pack_list.s"
+	@echo "... src/core/texture/png.o"
+	@echo "... src/core/texture/png.i"
+	@echo "... src/core/texture/png.s"
+	@echo "... src/core/texture/zip_archive.o"
+	@echo "... src/core/texture/zip_archive.i"
+	@echo "... src/core/texture/zip_archive.s"
+	@echo "... src/core/texture/zip_builder.o"
+	@echo "... src/core/texture/zip_builder.i"
+	@echo "... src/core/texture/zip_builder.s"
 	@echo "... src/core/util/compress.o"
 	@echo "... src/core/util/compress.i"
 	@echo "... src/core/util/compress.s"
@@ -1126,6 +1285,9 @@ help:
 	@echo "... src/core/util/coord_text.o"
 	@echo "... src/core/util/coord_text.i"
 	@echo "... src/core/util/coord_text.s"
+	@echo "... src/core/util/fat_name.o"
+	@echo "... src/core/util/fat_name.i"
+	@echo "... src/core/util/fat_name.s"
 	@echo "... src/core/util/frustum.o"
 	@echo "... src/core/util/frustum.i"
 	@echo "... src/core/util/frustum.s"

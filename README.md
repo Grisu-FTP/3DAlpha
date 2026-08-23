@@ -142,7 +142,7 @@ make host && ./build-host/3dalpha --mesh <world>   # mesh a real world, print th
 
 | Milestone | Contents | State |
 |---|---|---|
-| M0 | Toolchain, version-driven build, 3DSX packaging | **done** — validated on hardware; CIA needs `makerom` |
+| M0 | Toolchain, version-driven build, 3DSX and CIA packaging | **done** — validated on hardware; CI builds both per version on every push |
 | M1 | NBT, Alpha level format r/w, palette world storage, block registry | **done** — verified against a real 660-chunk world |
 | M2 | Renderer: mesher, visibility, fog, stereo 3D, debug overlay | **in progress** — the whole pipeline is written and runs end to end on the host against a real world; it has not yet drawn a pixel on hardware |
 | M3 | Singleplayer gameplay | not started — **except the main menu and the pause menu**: title, world list, create-with-seed, delete, options; START pauses to Resume / Options / Exit World. The game starts from it |

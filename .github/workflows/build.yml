@@ -1,0 +1,123 @@
+# Builds a .3dsx and a .cia for every version manifest in versions/.
+#
+# Artifacts are named 3DAlphaR<n><version>, e.g. 3DAlphaR1a1.1.2.3dsx -- <n> is
+# this workflow's run number, which increments on every push. Nothing else in
+# the build carries it: the SMDH title, the product code and the UniqueId all
+# stay per-version, so an R42 CIA installs over an R41 CIA rather than beside
+# it, which is what you want from a build number.
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first build's binaries stale
+# before they finish, so drop them.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The version list is versions/*.json and nothing else, so adding a manifest
+  # adds a build with no edit here. A matrix has to exist before the job it
+  # feeds starts, which is why this is its own job rather than a step.
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          matrix=$(basename -s .json -a versions/*.json | jq -R . | jq -sc .)
+          echo "versions: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: versions
+    runs-on: ubuntu-latest
+    # devkitARM, libctru, citro3d, citro2d, picasso, 3dsxtool and 3ds-zlib all
+    # come with the image; Debian 12 underneath supplies python3 and cmake.
+    container: devkitpro/devkitarm:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.versions.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # actions/checkout leaves the workspace owned by a different uid than the
+      # container's root, which git refuses to operate on without this.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # devkitPro does not ship makerom (see docs/toolchain-setup.md), and the
+      # prebuilt release binary is linked against glibc 2.38 while this image is
+      # Debian 12 (2.36) -- so it is built from source at a pinned tag. It takes
+      # about two seconds.
+      - name: Build makerom
+        run: |
+          git clone --depth 1 --branch makerom-v0.19.0 \
+            https://github.com/3DSGuy/Project_CTR.git /tmp/project_ctr
+          make -C /tmp/project_ctr/makerom deps -j"$(nproc)"
+          make -C /tmp/project_ctr/makerom -j"$(nproc)"
+          install -m755 /tmp/project_ctr/makerom/bin/makerom /usr/local/bin/makerom
+          makerom 2>&1 | head -2 || true
+
+      # Not `make VERSION=...`: the Makefile builds into build/<version>/, and
+      # that directory is committed to the repo with a CMakeCache.txt full of
+      # absolute paths from a developer's machine. CMake would refuse it.
+      - name: Configure
+        run: |
+          "$DEVKITPRO/portlibs/3ds/bin/arm-none-eabi-cmake" \
+            -S . -B "build-ci/${{ matrix.version }}" \
+            -DMCVER="${{ matrix.version }}" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build 3DSX
+        run: cmake --build "build-ci/${{ matrix.version }}" -j"$(nproc)"
+
+      # Separate target, and it does not imply the 3dsx -- both are built.
+      - name: Build CIA
+        run: cmake --build "build-ci/${{ matrix.version }}" --target cia
+
+      # A 3DSX Luma's loader would reject is indistinguishable on hardware from
+      # a crash, so the file is checked here rather than on the console.
+      - name: Check the 3DSX would load
+        run: python3 tools/check3dsx.py "build-ci/${{ matrix.version }}/3DAlpha-${{ matrix.version }}.3dsx"
+
+      # docs/build-versions.md asks for this: cross-version code growth should
+      # be a number in the build log, not a surprise on a console with 64 MB.
+      - name: Report code size
+        run: |
+          {
+            echo "### ${{ matrix.version }} sections"
+            echo '```'
+            "$DEVKITARM/bin/arm-none-eabi-size" -A -d \
+              "build-ci/${{ matrix.version }}/3DAlpha-${{ matrix.version }}.elf" \
+              | grep -E "^(section|\.text|\.rodata|\.data|\.bss|Total)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Name the build
+        id: name
+        run: |
+          name="3DAlphaR${{ github.run_number }}${{ matrix.version }}"
+          mkdir -p dist
+          cp "build-ci/${{ matrix.version }}/3DAlpha-${{ matrix.version }}.3dsx" "dist/$name.3dsx"
+          cp "build-ci/${{ matrix.version }}/3DAlpha-${{ matrix.version }}.cia"  "dist/$name.cia"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "### $name"
+            echo '```'
+            (cd dist && sha256sum "$name.3dsx" "$name.cia")
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.name }}
+          path: |
+            dist/${{ steps.name.outputs.name }}.3dsx
+            dist/${{ steps.name.outputs.name }}.cia
+          if-no-files-found: error

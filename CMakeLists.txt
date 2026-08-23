@@ -25,6 +25,7 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 	"${CMAKE_SOURCE_DIR}/versions/${MCVER}.json"
 	"${CMAKE_SOURCE_DIR}/tools/configure.py"
+	"${CMAKE_SOURCE_DIR}/packaging/3dalpha.rsf.in"
 )
 
 include("${GEN_DIR}/version.cmake")

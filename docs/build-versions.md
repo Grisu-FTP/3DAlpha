@@ -282,14 +282,30 @@ sharing `packs/` don't fight over a stale `.3dtex`.
 ## CI
 
 Build **every** version on every change. The whole point of Tier 2 and Tier 3 over `#ifdef` is that
-shared code stays type-checked across versions, and that only holds if CI actually compiles them:
+shared code stays type-checked across versions, and that only holds if CI actually compiles them.
 
-```
-matrix: [a1.1.2, a1.2.6, b1.7.3] x [3dsx, cia] x [release, debug]
-```
+`.github/workflows/build.yml` does that on every push. The matrix is not written down: it is
+`versions/*.json`, read at the start of the run, so a new manifest is a new build with no workflow
+edit. Each version produces a `.3dsx` and a `.cia`, both uploaded as one artifact named
+**`3DAlphaR<n><version>`** — `3DAlphaR1a1.1.2` — where `<n>` is the run number and therefore goes up
+with every push. The number is in the filename and nowhere else: title, ProductCode and UniqueId
+stay per-version, so a newer CIA installs *over* an older one instead of beside it.
 
-Also report `.code` section size per version per build, so cross-version bloat shows up as a number
-in the diff rather than as a surprise on hardware.
+Per run it also prints the section sizes from `arm-none-eabi-size`, so cross-version bloat shows up
+as a number in the build log rather than as a surprise on hardware, and runs
+[`tools/check3dsx.py`](../tools/check3dsx.py) over the 3DSX — a file Luma's loader would reject is
+indistinguishable from a crash once it is on a console, so the check belongs before it gets there.
+
+Two things the workflow has to work around, both of them permanent:
+
+- **`makerom` is built from source, at a pinned tag.** devkitPro does not ship it, and the prebuilt
+  release binary from Project_CTR is linked against glibc 2.38 while the `devkitpro/devkitarm` image
+  is Debian 12 (2.36). Building it takes about two seconds, so this is not a cost worth caching.
+- **CI does not use `make`.** The Makefile builds into `build/<version>/`, which is committed to
+  this repo with a `CMakeCache.txt` full of one developer's absolute paths; CMake refuses to reuse
+  it from anywhere else. CI configures into `build-ci/<version>` instead.
+
+Still to add: a debug configuration alongside Release, and host `ctest` on the same push.
 
 ## Rules
 

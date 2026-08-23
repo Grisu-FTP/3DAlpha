@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--gc-sections -Wl,--dependency-file=CMakeFiles/3dalpha.dir/link.d CMakeFiles/3dalpha.dir/src/platform/host/main.cpp.o -o 3dalpha  lib3dalpha_core.a /usr/lib/libz.so

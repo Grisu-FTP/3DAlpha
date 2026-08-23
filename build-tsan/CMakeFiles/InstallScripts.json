@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/grisu/Documents/GitHub/3DAlpha/build-tsan/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

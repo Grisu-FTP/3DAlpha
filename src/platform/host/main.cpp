@@ -591,9 +591,15 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
     cacheConfig.threaded = cacheThreaded;
     streamer.setCacheConfig(cacheConfig);
     streamer.setPrefetchRings(prefetchRings);
-    // Seconds, and deliberately short: a --fly run is a handful of wall-clock
-    // seconds, and an interval the console would use would never fire once.
-    streamer.setAutosaveSeconds(1);
+    // Seconds, and deliberately short by default: a --fly run is a handful of
+    // wall-clock seconds, and the console's interval would never fire once.
+    //
+    // `MC_FLY_AUTOSAVE` overrides it, and the case it is there for is the
+    // opposite one: setting it past the length of the run measures what a
+    // console holds *between* autosaves, which is where the memory backstop on
+    // dirty columns either works or does not.
+    const char* autosave = std::getenv("MC_FLY_AUTOSAVE");
+    streamer.setAutosaveSeconds(autosave != nullptr ? std::atoi(autosave) : 1);
 
     if (generate) {
         streamer.setGenerateMissing(true);
@@ -664,9 +670,28 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
     usize totalMeshed = 0;
     int worstRefused = 0;
 
+    // **The card on the render thread, per frame rather than per session.**
+    //
+    // `ChunkCache::Stats::stats` counts the one main-thread storage call left in
+    // the design -- the existence check a cell falls back to when its group has
+    // not been listed yet -- and the session total hides the shape that matters.
+    // A hardware report of the game stopping for a second or two while moving is
+    // a *frame* that took dozens of them, so the worst frame is what this
+    // measures. See classifyCell.
+    u32 lastStats = 0;
+    u32 worstStatsFrame = 0;
+    int worstStatsAt = 0;
+
+    // **How much finished world is waiting for the card**, at its worst over
+    // the run. A dirty column cannot be evicted -- it is the only copy of that
+    // part of the world -- so this is the number that answers "what would be
+    // full" when a console runs out of heap between autosaves.
+    usize peakDirty = 0;
+    u32 peakDirtyColumns = 0;
+
     if (generate) {
         std::printf("frame  loaded  pending  drawn  queued  meshed  quads     pool MB  evict"
-                    "  gen-owed  gen-queue  stale\n");
+                    "  gen-owed  unclassified\n");
     } else {
         std::printf("frame  loaded  pending  drawn  queued  meshed  quads     pool MB  evict\n");
     }
@@ -777,6 +802,18 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
         totalMeshed += usize(streaming.meshedThisFrame);
         worstRefused = stats.refused > worstRefused ? stats.refused : worstRefused;
 
+        if (streaming.io.dirtyBytes > peakDirty) {
+            peakDirty = streaming.io.dirtyBytes;
+            peakDirtyColumns = streaming.io.dirtyColumns;
+        }
+
+        const u32 statsThisFrame = streaming.io.stats - lastStats;
+        lastStats = streaming.io.stats;
+        if (statsThisFrame > worstStatsFrame) {
+            worstStatsFrame = statsThisFrame;
+            worstStatsAt = frame;
+        }
+
         // The world has settled when nothing is left to load and nothing is
         // left to mesh. How long that takes is the loading screen's length.
         if (settledFrame < 0 && streaming.pendingColumns == 0 && stats.queued == 0
@@ -791,8 +828,8 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
                         double(renderer.pool().stats().resident) / (1024.0 * 1024.0),
                         renderer.pool().stats().evictions);
             if (generate) {
-                std::printf("  %8d  %9d  %5d%s", streaming.pendingGeneration,
-                            streaming.generationQueued, streaming.generationStale,
+                std::printf("  %8d  %12d%s", streaming.pendingGeneration,
+                            streaming.unclassified,
                             streaming.generationGated ? "  GATED" : "");
             }
             std::printf("\n");
@@ -815,13 +852,29 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
                     streamer.stats().workerRunning ? "on a worker thread"
                                                    : "on the main thread (no worker)",
                     streamer.stats().pendingGeneration);
-        std::printf("gen queue       %d waiting, %d of them out of range, %d refused (cap), "
-                    "%s\n",
-                    streamer.stats().generationQueued, streamer.stats().generationStale,
-                    streamer.stats().generationRefused,
-                    streamer.stats().generationGated ? "GATED: grid not fully classified"
-                                                     : "not gated");
+        if (streamer.stats().generationFailures != 0) {
+            // Loud, because it is the one way generation stops for good: the
+            // nearest owed column is retried every frame and fails every frame.
+            std::printf("sweeps failed   %u -- the generator's cache could not hold one\n",
+                        streamer.stats().generationFailures);
+        }
+        std::printf("classification  %d cells still to ask about, %s\n",
+                    streamer.stats().unclassified,
+                    streamer.stats().generationGated
+                        ? "GATED: the nearest owed columns are waiting on a listing"
+                        : "not gated");
     }
+    // Microseconds here are the host's, and a host `stat` hits the page cache;
+    // the console pays an IPC round trip to the FS sysmodule for each one and
+    // may queue behind the I/O thread's current file. So the count is the
+    // number to read, and the worst frame is the one that shows up as a stall.
+    std::printf("owed to the card %.2f MB at its peak (%u columns), cap %.2f MB\n",
+                double(peakDirty) / (1024.0 * 1024.0), peakDirtyColumns,
+                double(streamer.stats().io.dirtyCapBytes) / (1024.0 * 1024.0));
+    std::printf("main-thread SD  %u checks, %lld us total, worst frame %u at frame %d\n",
+                streamer.stats().io.stats,
+                static_cast<long long>(streamer.stats().io.mainThreadMicros), worstStatsFrame,
+                worstStatsAt);
     std::printf("columns         %d resident, %d absent, %.2f MB of block data\n",
                 streamer.stats().columnsResident, streamer.stats().columnsMissing,
                 double(streamer.stats().blockBytes) / (1024.0 * 1024.0));

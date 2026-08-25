@@ -111,6 +111,22 @@ public:
         // column too.
         usize dirtyCapBytes = 4u << 20;
 
+        // **How far the cap above may grow while the heap has room to spare**,
+        // and 0 -- the default -- means it may not.
+        //
+        // The floor has to be a number that fits the worst case, which is a
+        // full render distance with the generator's cache at full size; but
+        // most of the time the heap is nowhere near that, and paying for a
+        // write on the generation worker while several megabytes sit unused is
+        // the worker stalling for no reason. So the effective cap is derived
+        // from what `heapFreeBytes()` reports, once per dirtied column, and
+        // clamped between the two numbers here. See dirtyCapLocked.
+        //
+        // A platform that cannot say how much heap is left leaves this at 0 and
+        // gets the fixed cap, which is what the tests and the host harnesses
+        // run on.
+        usize dirtyCapMaxBytes = 0;
+
         // Off means every operation happens on the calling thread, which is
         // what the tests and the `--mesh` harness want: no thread, no timing,
         // and a miss is a read rather than a request. The game turns it on.
@@ -130,6 +146,12 @@ public:
         u32 groupsQueued = 0;
         usize cleanBytes = 0;
         usize dirtyBytes = 0;
+        // What the dirty cap actually is at the moment, which is not
+        // `config.dirtyCapBytes` once it is allowed to follow the free heap.
+        // On the debug page it is the denominator the dirty figure is read
+        // against; without it a number that looks alarming and one that is
+        // about to cost a stall look the same.
+        usize dirtyCapBytes = 0;
         u32 cleanColumns = 0;
         u32 dirtyColumns = 0;
         u32 evicted = 0;
@@ -198,16 +220,42 @@ public:
     // ---------------------------------------------------------------- main --
 
     // Does the world have this chunk? Answered from the index, from a group
-    // listing if one has arrived, and only failing both from a `stat` -- which
-    // is the one call on this class that can touch a card from the main thread.
+    // listing if one has arrived, and only failing both from a `stat`.
     //
-    // It cannot be deferred and it cannot be budgeted. WorldStreamer's
-    // correctness argument is that a newly exposed cell is classified *before*
-    // any sweep in flight could have written it, and a sweep reaches exactly the
-    // three rings the classification band is wide. Answering "ask me later"
-    // would break that, so instead `warmGroup` is called far enough ahead that
-    // the fallback almost never fires.
+    // **Blocking, and therefore not for the render thread.** It is what the
+    // unthreaded configuration and the tests use; the game asks
+    // `chunkPresence` instead, which never touches a card.
     bool hasChunk(i32 x, i32 z);
+
+    // What the index knows about a chunk without touching storage.
+    //
+    // `Unknown` is the answer that matters: the group has not been listed yet,
+    // a listing has been asked for, and the question can be put again in a
+    // frame or two. It is only ever returned while the I/O thread is running,
+    // because unthreaded there is nothing that would ever change the answer --
+    // there, the `stat` happens on the caller's thread exactly as it always
+    // did.
+    enum class Presence {
+        Present,
+        Absent,
+        Unknown,
+    };
+
+    // **The render thread's form of hasChunk, and it never blocks.**
+    //
+    // A cell whose group has not been listed used to fall back to a `stat`
+    // here, on the argument that classification could not be deferred. That
+    // argument was about ordering -- a cell must be asked about before a sweep
+    // could have written it -- and it is answered better by gating the sweep
+    // than by blocking the frame: see WorldStreamer::classifiedAround. What the
+    // `stat` cost in practice was the whole of the reported symptom, because it
+    // takes the storage lock and the I/O thread holds that for the length of a
+    // chunk write. A row of newly exposed cells behind a flush is a frame that
+    // stops for a second.
+    //
+    // Asking marks the group urgent, so its listing jumps every write and every
+    // read-ahead already queued.
+    Presence chunkPresence(i32 x, i32 z);
 
     // What a take found. **Pending and Missing are not interchangeable**, for
     // the same reason WorldStreamer's Absent and Ungenerated are not: a caller
@@ -241,10 +289,16 @@ public:
     // three queues, and dropped if the cache already has the chunk.
     void prefetch(i32 x, i32 z);
 
-    // List the group containing (x, z), so a later hasChunk about any chunk in
-    // it is free. Cheap to call repeatedly: a group that is listed or already
-    // queued is ignored.
-    void warmGroup(i32 x, i32 z);
+    // List the group containing (x, z), so a later existence check about any
+    // chunk in it is free. Cheap to call repeatedly: a group that is listed or
+    // already queued is ignored.
+    //
+    // `urgent` puts it at the head of the listing queue rather than the tail.
+    // That is for a group something is waiting on *now* -- a cell the camera
+    // has just exposed -- against the ring warmed ahead of the player, which is
+    // speculative by construction. A group already queued is promoted rather
+    // than queued twice.
+    void warmGroup(i32 x, i32 z, bool urgent = false);
 
     // Once a frame. Publishes counters and, unthreaded, does one unit of queued
     // work so a harness still makes progress.
@@ -336,6 +390,7 @@ private:
         std::vector<i64> chunks;  // sorted; binary searched
         bool listed = false;
         bool queued = false;
+        bool urgent = false;  // on urgentGroups_ rather than groupQueue_
     };
 
     enum class JobKind : u8 { Read, Write, List, Housekeeping };
@@ -358,9 +413,25 @@ private:
                        bool prefetched);
     void noteExists(i64 k);
     bool groupSays(i64 k, bool* exists) const;
+    void warmGroupLocked(i32 x, i32 z, bool urgent);
+
+    // What may be owed to the card right now: `config_.dirtyCapBytes` unless a
+    // ceiling was configured and the platform can say how much heap is free.
+    // Recomputes and caches `dirtyCap_`; call it from the thread that dirtied
+    // the column, not from the frame.
+    usize dirtyCapLocked();
     void evictLocked();
     void recountLocked();
     bool takeJobLocked(Job* out);
+
+    // The single exit for a finished job: counters down, and the flush waiter
+    // told. **mutex_ held.**
+    void finishJobLocked(JobKind kind);
+
+    // Puts the oldest dirty columns on the write queue until what is not yet
+    // taken falls under `downTo`. The memory backstop, not a save; see save().
+    // **mutex_ held.**
+    void queueDirtyWritesLocked(usize downTo);
     bool takeWriteLocked(Job* out);
     bool takeHousekeepingLocked(Job* out);
 
@@ -405,6 +476,15 @@ private:
     std::vector<i64> prefetchQueue_;
     std::vector<u32> groupQueue_;
 
+    // **Groups something is waiting on right now**, ahead of the speculative
+    // ring in groupQueue_ and ahead of the writes. Both are FIFO and the order
+    // is load bearing: the streamer asks about cells nearest-first, so this
+    // comes out nearest-first, and the ground under the player is classified
+    // before the horizon. Promoting into the *front* of one shared queue is
+    // what this replaces -- it inverted that order, because the last cell asked
+    // about ended up first.
+    std::vector<u32> urgentGroups_;
+
     // level.dat and the session.lock refresh, as a pending timestamp. One at a
     // time: a second request before the first has run replaces it, because
     // writing an older LastPlayed after a newer one would be worse than
@@ -438,11 +518,22 @@ private:
     usize cleanBytes_ = 0;
     usize dirtyBytes_ = 0;
 
+    // The last answer dirtyCapLocked computed, which is what the stats publish.
+    // A member rather than a call on the stats path because the call reaches
+    // into the allocator; see the note there.
+    usize dirtyCap_ = 0;
+
     std::thread worker_;
     void* platformWorker_ = nullptr;
     bool workerRunning_ = false;
     bool workerStop_ = false;
     int jobsActive_ = 0;
+
+    // Of those, the ones a flush is actually waiting for: chunk writes and the
+    // level.dat/session.lock job. A listing or a read-ahead still in flight
+    // does not stop a world being saved and must not hold the player on the
+    // "Saving level.." screen. See flush().
+    int writesActive_ = 0;
 
     Stats stats_;
 };

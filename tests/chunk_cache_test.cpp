@@ -1,11 +1,14 @@
 #include "framework.hpp"
 
 #include "core/io/posix_file_system.hpp"
+#include "core/util/memory.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
 #include "version_slots.hpp"
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -91,6 +94,17 @@ public:
 private:
     io::PosixFileSystem inner_;
 };
+
+// A stand-in for the console's `heapFreeBytes`, so the policy can be driven
+// over numbers a host will never produce. A file-scope pair rather than a
+// capturing lambda, because the seam takes a plain function pointer -- see
+// core/util/memory.hpp.
+usize gFakeFreeHeap = 0;
+
+usize fakeFreeHeap()
+{
+    return gFakeFreeHeap;
+}
 
 ChunkColumn makeChunk(i32 x, i32 z, BlockId fill)
 {
@@ -614,6 +628,325 @@ TEST(a_prefetched_column_is_taken_without_touching_the_card)
     CHECK(cache.tryTake(9, 9, &column) == ChunkCache::Take::Took);
     CHECK_EQ(fs.total(), 0);
     CHECK_EQ(int(cache.stats().prefetchHits), 1);
+
+    cache.close(kNow);
+}
+
+// **The render thread's existence check must never reach the card**, which is
+// the whole of what `chunkPresence` is for.
+//
+// It replaces a `stat` that WorldStreamer took on the frame, and the reason
+// that `stat` had to go is not its own cost: it takes the storage lock, and the
+// I/O thread holds that for the length of a chunk write. A row of newly exposed
+// cells behind a flush was the second or two of frozen game this comes from.
+//
+// So the promise is in two halves and both are here: while the group is
+// unlisted the answer is Unknown and nothing is opened, and once the listing
+// the question queued has landed the answer is the true one.
+TEST(asking_whether_a_chunk_exists_never_opens_a_file_while_a_worker_is_running)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    {
+        mcver::Storage storage(fs);
+        CHECK(storage.open(dir.c_str(), kNow) == OpenResult::Ok);
+        CHECK(storage.saveChunk(makeChunk(5, 6, 2)));
+        CHECK(storage.close(kNow));
+    }
+
+    ChunkCache cache(fs);
+    ChunkCache::Config config;
+    config.threaded = true;
+    cache.configure(config);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    // Nobody has listed anything yet, so this is the case that used to stat.
+    fs.resetCounts();
+    CHECK(cache.chunkPresence(5, 6) == ChunkCache::Presence::Unknown);
+    CHECK(cache.chunkPresence(5, 7) == ChunkCache::Presence::Unknown);
+    CHECK_EQ(fs.stats, 0);
+    CHECK_EQ(int(cache.stats().stats), 0);
+    CHECK_EQ(cache.stats().mainThreadMicros, 0);
+
+    for (int i = 0; i < 2000 && !cache.idle(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(cache.idle());
+
+    // The asking is what queued the listings, so both answers are settled now
+    // -- and they are the answers the card would have given.
+    fs.resetCounts();
+    CHECK(cache.chunkPresence(5, 6) == ChunkCache::Presence::Present);
+    CHECK(cache.chunkPresence(5, 7) == ChunkCache::Presence::Absent);
+    CHECK_EQ(fs.stats, 0);
+    CHECK_EQ(int(cache.stats().stats), 0);
+
+    cache.close(kNow);
+}
+
+// Unthreaded there is nobody to run a listing, so "ask me later" would be a
+// question that never gets answered. The blocking `stat` stays on that path and
+// this is what pins it -- the tests and the `--mesh` harness are that path.
+TEST(without_a_worker_an_existence_check_answers_on_the_calling_thread)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    CHECK(cache.chunkPresence(2, 2) == ChunkCache::Presence::Absent);
+    CHECK(cache.save(makeChunk(2, 2, 5)));
+    CHECK(cache.chunkPresence(2, 2) == ChunkCache::Presence::Present);
+
+    cache.close(kNow);
+}
+
+// **The dirty cap follows the free heap**, between the floor it is configured
+// with and the ceiling it is allowed to reach.
+//
+// The floor has to fit the worst case -- longest render distance, generator
+// cache at full size -- and a number chosen for the worst case is wrong for
+// every other one, which costs the generation worker a write it stops to do
+// itself. The three rows below are the whole policy: no answer from the
+// platform, plenty of heap, and almost none.
+TEST(the_dirty_cap_follows_the_free_heap_between_its_floor_and_its_ceiling)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    io::PosixFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache cache(fs);
+    ChunkCache::Config config;
+    config.dirtyCapBytes = 4u << 20;
+    config.dirtyCapMaxBytes = 16u << 20;
+    cache.configure(config);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    // Through save(), because that is where the cap is asked for -- on the
+    // thread that dirtied the column, never on the frame. `pump` only publishes
+    // what save last worked out.
+    //
+    // Four rows, and the numbers are the whole policy: no answer from the
+    // platform is the fixed cap; 24 MB free is half of what is spare less a
+    // 2 MB reserve; 200 MB free stops at the ceiling; and 1 MB free holds at
+    // the floor, because below that the cache cannot do its job at all and the
+    // answer is back-pressure rather than a smaller cap.
+    struct Case {
+        usize freeBytes;
+        int capMB;
+    };
+    const Case cases[] = {{0, 4}, {24u << 20, 11}, {200u << 20, 16}, {1u << 20, 4}};
+
+    i32 at = 0;
+    for (const Case& c : cases) {
+        gFakeFreeHeap = c.freeBytes;
+        setHeapFreeQuery(c.freeBytes == 0 ? nullptr : &fakeFreeHeap);
+        CHECK(cache.save(makeChunk(at, at, 1)));
+        ++at;
+        cache.pump();
+        CHECK_EQ(int(cache.stats().dirtyCapBytes >> 20), c.capMB);
+    }
+
+    setHeapFreeQuery(nullptr);
+    cache.close(kNow);
+}
+
+// **A blocking flush must end, and it must not wait for work nobody needs.**
+//
+// Reported from hardware: the game froze on the "Saving level.." screen, and it
+// happened once the world had been played across a lot of new ground. Two
+// faults, both in the wait this exercises:
+//
+//   * `flush(true)` waits on `drained_`, and the Read and List completion paths
+//     decremented the job counter **without notifying it**. A listing or a
+//     read-ahead finishing after the last write had left nothing to do meant
+//     the predicate became true with nobody to say so, and the waiter slept for
+//     ever. Listings run ahead of writes now, so at world exit there are
+//     usually hundreds of them queued and one is very likely to be last.
+//   * it waited for *every* job, so even without the hang the player watched
+//     every speculative listing and read-ahead finish before the screen went
+//     away.
+//
+// So: plenty of both kinds of speculation queued, one column genuinely owed to
+// the card, and a flush that has to come back promptly. On a watchdog, because
+// the failure is a hang and a test that merely runs for ever tells nobody
+// anything.
+TEST(a_blocking_flush_returns_without_waiting_for_listings_or_read_ahead)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    io::PosixFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    {
+        mcver::Storage storage(fs);
+        CHECK(storage.open(dir.c_str(), kNow) == OpenResult::Ok);
+        for (i32 i = 0; i < 24; ++i) {
+            CHECK(storage.saveChunk(makeChunk(i, i, 3)));
+        }
+        CHECK(storage.close(kNow));
+    }
+
+    // Heap-allocated so a hung flusher can be left holding it. A cache
+    // destroyed under a thread that is still inside it turns a legible test
+    // failure into a wedged process, which is what this measured the first time
+    // it was run against the bug.
+    auto cache = std::make_unique<ChunkCache>(fs);
+    ChunkCache::Config config;
+    config.threaded = true;
+    cache->configure(config);
+    CHECK(cache->open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    // More speculation than the I/O thread can have finished by the time the
+    // flush is asked for, of both kinds.
+    for (i32 i = 0; i < 400; ++i) {
+        cache->warmGroup(i, -i);
+    }
+    for (i32 i = 0; i < 24; ++i) {
+        cache->prefetch(i, i);
+    }
+    // ...and one thing that is genuinely owed, so the flush has real work and
+    // the test is not passing because there was nothing to wait for.
+    CHECK(cache->save(makeChunk(100, 100, 9)));
+
+    std::mutex done;
+    std::condition_variable finished;
+    bool flushed = false;
+    ChunkCache* raw = cache.get();
+    std::thread flusher([&, raw] {
+        raw->flush(true);
+        std::lock_guard<std::mutex> guard(done);
+        flushed = true;
+        finished.notify_all();
+    });
+
+    {
+        std::unique_lock<std::mutex> guard(done);
+        finished.wait_for(guard, std::chrono::seconds(20), [&] { return flushed; });
+    }
+
+    if (!flushed) {
+        flusher.detach();
+        (void)cache.release();  // the hung thread still owns it
+        CHECK(flushed);
+        return;
+    }
+    flusher.join();
+
+    // What it was for: the column reached the card. The listings and the
+    // read-ahead may still be running, and that is the point.
+    CHECK_EQ(int(cache->stats().dirtyColumns), 0);
+
+    cache->close(kNow);
+}
+
+// The other half: **closing must end too**, with the same speculation in the
+// air. close() throws it away rather than finishing it, then flushes.
+TEST(closing_a_world_with_listings_and_read_ahead_in_flight_finishes)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    io::PosixFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    auto cache = std::make_unique<ChunkCache>(fs);
+    ChunkCache::Config config;
+    config.threaded = true;
+    cache->configure(config);
+    CHECK(cache->open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    for (i32 i = 0; i < 400; ++i) {
+        cache->warmGroup(i, -i);
+    }
+    CHECK(cache->save(makeChunk(100, 100, 9)));
+
+    std::mutex done;
+    std::condition_variable finished;
+    bool closed = false;
+    ChunkCache* raw = cache.get();
+    std::thread closer([&, raw] {
+        raw->close(kNow);
+        std::lock_guard<std::mutex> guard(done);
+        closed = true;
+        finished.notify_all();
+    });
+
+    {
+        std::unique_lock<std::mutex> guard(done);
+        finished.wait_for(guard, std::chrono::seconds(20), [&] { return closed; });
+    }
+
+    if (!closed) {
+        closer.detach();
+        (void)cache.release();  // the hung thread still owns it
+        CHECK(closed);
+        return;
+    }
+    closer.join();
+    CHECK(closed);
+}
+
+// **What is owed to the card has to stay under its cap**, and until this was
+// measured it did not.
+//
+// A dirty column cannot be evicted -- it is the only copy of that part of the
+// world -- so the cap is the only thing bounding what generation can pile up
+// between autosaves. The loop that enforced it took work from `writeQueue_`,
+// which nothing but `flush()` ever filled, so past the cap it found an empty
+// queue and gave up. `--fly <world> 8 6000 gen` with the console's 45-second
+// interval peaked at 11.28 MB across 741 columns against a 4 MB cap; on an Old
+// 3DS that is more heap than the whole world has to spend, and what the player
+// sees is generation stopping with nothing on the debug page looking full.
+//
+// Unthreaded on purpose: the writes then happen on this thread, so the
+// assertion is about the rule rather than about how fast a helper drained.
+TEST(what_is_owed_to_the_card_stays_under_its_cap)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache cache(fs);
+    ChunkCache::Config config;
+    // Small enough that a handful of columns crosses it: a column is ~18 KB on
+    // a real world and these are cheaper, so this is a few dozen either way.
+    config.dirtyCapBytes = 128u << 10;
+    cache.configure(config);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    usize peak = 0;
+    for (i32 i = 0; i < 200; ++i) {
+        CHECK(cache.save(makeChunk(i, i / 8, BlockId(1 + (i % 5)))));
+        cache.pump();
+        if (cache.stats().dirtyBytes > peak) {
+            peak = cache.stats().dirtyBytes;
+        }
+    }
+
+    // One column of slack: the column being saved is installed before the cap
+    // is looked at, which is what makes the check meaningful at all.
+    CHECK(peak > 0);
+    CHECK(peak <= config.dirtyCapBytes * 2);
+
+    // And it was bounded by writing, not by refusing: the world still has every
+    // column that was saved.
+    CHECK(cache.hasChunk(0, 0));
+    CHECK(cache.hasChunk(199, 24));
+    CHECK(fs.writes > 0);
 
     cache.close(kNow);
 }

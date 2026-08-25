@@ -34,7 +34,6 @@
 
 #include <condition_variable>
 #include <memory>
-#include <set>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -74,17 +73,25 @@ public:
         int adoptedThisFrame = 0;     // ...of which this many landed in the grid
         int pendingGeneration = 0;    // in range, not on the card, not made yet
 
-        // **What the queue is doing, which `pendingGeneration` alone cannot
-        // say.** A column that is owed can be owed for three different reasons
-        // and they need different fixes: it is waiting its turn
-        // (`generationQueued` high), it cannot be asked for at all because the
-        // grid is not fully classified (`generationGated`), or it was refused
-        // because the queue is full (`generationRefused`). Without these, a
-        // stalled world and a slow one look the same from the debug page.
-        int generationQueued = 0;     // columns on the queue, waiting their turn
-        int generationStale = 0;      // ...of which this many are out of range now
-        bool generationGated = false; // unclassified cells: nothing may be queued
-        int generationRefused = 0;    // enqueues dropped because the queue is full
+        // **Why a column that is owed is not being made**, which
+        // `pendingGeneration` alone cannot say. Either the worker is simply
+        // behind -- owed high, nothing gated -- or the nearest columns cannot
+        // be started at all because the cells a sweep would reach have not been
+        // classified yet, which is `generationGated` and is measured in
+        // `unclassified`. Without the split, a stalled world and a slow one
+        // look the same from the debug page.
+        //
+        // There is no queue depth here any more because there is no queue: what
+        // is owed is read off the grid every frame. See refreshSlate.
+        bool generationGated = false;  // the nearest owed columns are waiting on a listing
+        int unclassified = 0;          // cells in the grid still waiting to be asked about
+
+        // **Sweeps that could not be finished at all**, which is the one way
+        // generation can stop without anything else looking wrong: the nearest
+        // owed column is retried every frame and fails every frame, so the
+        // frontier never advances. Must read zero; a non-zero one means the
+        // generator's cache could not hold a sweep.
+        u32 generationFailures = 0;
         i64 generateMicros = 0;       // main-thread cost only: 0 while the worker runs
         u32 generatorPeakLive = 0;    // the generator's own high-water mark
         u32 generatorEvictedLive = 0; // must stay zero; see ChunkGenerator
@@ -301,19 +308,25 @@ private:
     //
     //   * the cell grid is **three rings wider than the load radius**, which is
     //     exactly the reach of a sweep, so every column the generator can write
-    //     has a cell of its own to be classified in;
-    //   * nothing is queued for generation until the whole grid is classified,
-    //     so the first sweep cannot outrun the questions; and
-    //   * a cell newly exposed by the camera moving was, one chunk ago, outside
-    //     the reach of every target that existed then -- so it, too, is asked
-    //     about before anything can have written it.
+    //     has a cell of its own to be classified in; and
+    //   * **no column is generated until every cell a sweep for it could reach
+    //     has been classified** -- the 7x7 around it, which is those same three
+    //     rings. See classifiedAround.
     //
-    // What is left is a queue whose *contents* are built from the camera's path
-    // and nothing else, consumed one column at a time. Which entry is taken
-    // next is the nearest to the camera rather than the oldest -- see
-    // pumpGeneration -- so the order, unlike the membership, does depend on how
-    // far behind the generator got. That is a deliberate trade and the reason
-    // for it is in that note.
+    // That second rule used to be "until the whole grid is classified", which
+    // needed the answer for every cell to be available in the frame the cell
+    // was exposed, which needed a `stat` on the render thread. The `stat` takes
+    // the storage lock, the I/O thread holds it for the length of a chunk
+    // write, and a row of newly exposed cells behind a flush is the second the
+    // game stops for. The narrower rule is the same guarantee -- a sweep cannot
+    // reach past three rings, so a cell further out than that cannot be one the
+    // sweep silently fills -- and it lets an unclassified cell simply wait for
+    // its group listing without stopping anything else.
+    //
+    // What is left is a set of owed columns read off the grid itself, asked for
+    // nearest-first. It is not a queue and there is nothing in it that the grid
+    // does not already say; see the note on slate_ for why the queue that used to
+    // be here was doing harm.
     // ---------------------------------------------------------------------
 
     struct Cell {
@@ -355,7 +368,23 @@ private:
     // Asks the world whether it has this chunk, and records the answer. One
     // cheap existence check; the column itself is read later and only inside
     // the load radius. See the note on CellState for why this is its own step.
+    //
+    // **It can decline to answer**, and that is not a failure: the cache says
+    // Unknown while the group listing it needs is still on its way, the cell
+    // stays Empty, and the next frame asks again. Nothing here ever waits on a
+    // card.
     void classifyCell(Cell& cell, i32 chunkX, i32 chunkZ);
+
+    // Is everything a sweep for this column could touch classified?
+    //
+    // The 7x7 around it, because ChunkGenerator::provide sweeps terrain over
+    // (cx-3..cx+2) and delivers finished columns from inside that. A cell in
+    // there still Empty is one the sweep could fill before anybody asked
+    // whether the world already had it -- and that answer decides whether the
+    // column is generated, which decides the population order, which is the
+    // world. So the sweep waits instead, which costs a frame or two of the
+    // frontier and costs the player nothing.
+    bool classifiedAround(i32 chunkX, i32 chunkZ) const;
 
     // What one attempt at a column found. `Pending` is the cache having posted
     // a read: nothing is wrong, the column is on its way, and the cell is asked
@@ -371,17 +400,16 @@ private:
     // on the caller's when there is not.
     bool generateColumn(i32 chunkX, i32 chunkZ);
 
-    // Hands the head of the generation queue to the worker, or makes it inline
-    // when there is none.
+    // Makes the columns on the slate, if there is no worker to make them.
     void pumpGeneration(const Budget& budget);
 
-    // Appends a column to the generation queue, once.
-    void enqueueGeneration(i32 chunkX, i32 chunkZ);
+    // Rewrites the slate from the grid: the nearest owed columns, in spiral
+    // order, as of this frame. Main thread, once a frame, under queueLock_.
+    void refreshSlate();
 
-    // Removes and returns the queued column nearest the camera. **queueLock_
-    // held**; the worker calls it as well as the main thread. See the note on
-    // pumpGeneration for why it is nearest rather than oldest.
-    std::pair<i32, i32> takeNearestQueuedLocked();
+    // Takes the next column off the slate. **queueLock_ held**; the worker
+    // calls it as well as the main thread.
+    bool takeSlateLocked(std::pair<i32, i32>* out);
 
     // Lets the worker take jobs again after waitForWorkerIdle() stopped it.
     void resumeGeneration();
@@ -459,59 +487,73 @@ private:
 
     bool workerRunning_ = false;
     bool workerStop_ = false;
-    // **What is owed. The scan appends in spiral order; the pump takes the
-    // entry nearest the camera.**
+    // ---------------------------------------------------------------------
+    // **The slate: the nearest few columns that are owed, rewritten from the
+    // grid every frame. There is no queue.**
     //
-    // This was strictly FIFO, and the reasoning was that population order is
-    // the world in a1.1.2 -- two chunks whose passes reach the same ground come
-    // out differently depending on which ran first -- so the sequence of sweeps
-    // had to be a property of the game rather than of how fast the generator
-    // ran. What that bought was a *reproducible* order. It was not the
-    // original's, and it stranded a player who outran the generator behind
-    // every column they had already passed; see pumpGeneration for the numbers
-    // and for the jar evidence that a1.1.2 generates nearest-to-the-player.
+    // There was one, and it was doing two jobs badly. The first was ordering,
+    // and it lost that argument already: strictly FIFO stranded a player who
+    // outran the generator behind every column they had passed, so it became
+    // nearest-first (the order a1.1.2 actually generates in -- `e` at bytecode
+    // 686 sorts the renderers by distance before rebuilding them). The second
+    // was membership, and that is what this replaces. **A queue of coordinates
+    // is a second copy of something the grid already knows**, and every
+    // property it needed was a defence of that copy: a cap so a sprinting
+    // player could not grow it without bound, a refused counter for when the
+    // cap bit, a membership set so nothing was queued twice, a stale count for
+    // the entries that were no longer in range. A measured sprint at distance 8
+    // ended with 702 columns on it, 341 of them ground the camera had left.
     //
-    // Two properties survive the change and are worth keeping true:
+    // The grid answers all of it for free. A cell inside the load radius in
+    // state `Ungenerated` *is* a column that is owed; the spiral is already
+    // sorted nearest-first, so the first few of them are the next few jobs;
+    // walking out of range makes a cell somebody else's and takes its coordinate
+    // out of the reckoning with it. Nothing to cap, nothing to dedupe, nothing
+    // to go stale.
     //
-    //   * **Nothing is dropped.** A coordinate that has gone out of range is
-    //     generated anyway rather than skipped -- it is simply taken after the
-    //     ones the player can see. The set of columns the world ends up with is
-    //     still a function of the camera path alone.
-    //   * **One at a time.** Job N still starts against the world left by every
-    //     job before it; only which column is job N has changed.
-    std::vector<std::pair<i32, i32>> generationQueue_;
+    // What the slate is for is the gap between frames. The worker takes its own
+    // next job the moment it finishes one -- see workerMain -- so it needs
+    // somewhere to look that is not the grid, which is the main thread's. A
+    // handful of entries is enough to keep it fed for a frame at any speed it
+    // can actually generate.
+    //
+    // **What this gives up.** A column the camera passed too fast to reach is
+    // no longer generated later; it is simply not generated until the player
+    // comes back. That was the queue's one real property -- "the set of columns
+    // the world ends up with is a function of the camera path alone" -- and it
+    // is worth being plain that a1.1.2 does not have it either: `ft.b`
+    // generates inline, for the chunk being asked for, and a chunk that never
+    // comes into range is never asked for. So the set follows the camera on a
+    // slower console too, and this is the more faithful of the two.
+    // ---------------------------------------------------------------------
+    static constexpr usize kSlateDepth = 8;
+    std::vector<std::pair<i32, i32>> slate_;
 
-    // What is on the queue, for a membership test the queue itself cannot give
-    // cheaply. **Not a flag on the cell**: the grid wraps, so a cell is recycled
-    // by whatever column lands on it next and a flag on it is lost the moment
-    // the camera moves far enough. A column that came back and was queued a
-    // second time put a second sweep into the sequence, and the sequence is the
-    // world.
-    std::set<std::pair<i32, i32>> queued_;
+    // The column the worker has in hand, and whether it has one. The main
+    // thread reads it while rewriting the slate so a job in flight is not put
+    // back on it -- which would be a second sweep for the same column, and the
+    // sequence of sweeps is the world.
+    std::pair<i32, i32> inFlight_{0, 0};
 
     // Coordinates the worker has finished, handed back so the main thread can
-    // take them out of `queued_` exactly once. A list rather than a single
-    // slot: the worker takes its own next job, so more than one column can
-    // finish between two frames.
+    // keep them off the slate until drainGenerated has put them in the grid --
+    // between those two moments the cell still says `Ungenerated` and the
+    // coordinate would otherwise look owed. A list rather than a single slot:
+    // the worker takes its own next job, so more than one column can finish
+    // between two frames.
     std::vector<std::pair<i32, i32>> completed_;
-
-    // The camera position the worker picks against, republished once a frame.
-    // A copy under the lock rather than `centreX_`, which is the main thread's.
-    i32 queueCentreX_ = 0;
-    i32 queueCentreZ_ = 0;
 
     // Stops the worker taking a new job. Held while something on the main
     // thread reaches into the generator itself -- growing its cache moves a
     // table the worker walks.
     bool queuePaused_ = false;
 
-    // A player who runs across ungenerated ground can queue faster than the
-    // worker drains. The cap is what stops that being unbounded; it is a
-    // function of the grid size, so it is the same on every machine.
-    usize generationQueueCap_ = 0;
-
     bool jobActive_ = false;
     std::vector<std::unique_ptr<world::ChunkColumn>> finished_;
+
+    // Sweeps that returned nothing, counted on whichever thread ran them and
+    // read out under the same lock as the generator's own counters.
+    u32 generationFailures_ = 0;
 
     // The generator's counters, copied out by the worker under queueLock_. The
     // generator itself knows nothing about threads and should not have to.
@@ -537,9 +579,6 @@ private:
     // read in, never published.
     int gridRadius_ = 0;
 
-    // Cells still to be asked about. Nothing is queued for generation until
-    // this reaches zero; see the note on CellState.
-    int unclassified_ = 0;
     int edge_ = 0;
     i32 centreX_ = 0;
     i32 centreZ_ = 0;
@@ -553,6 +592,12 @@ private:
         i16 dx, dz;
     };
     std::vector<Offset> spiral_;
+
+    // The same, one ring wider, for the group listings warmAndPrefetch asks
+    // for. Nearest-first for the reason given where it is built: a deferred
+    // classification is only cheap if the answers arrive in the order the cells
+    // are needed.
+    std::vector<Offset> warmSpiral_;
 
     // Reused across sections; 17.5 KB and 12 KB respectively, which is why they
     // belong to the object rather than to a stack frame.

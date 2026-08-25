@@ -1,5 +1,6 @@
 #include "core/world/chunk_cache.hpp"
 
+#include "core/util/memory.hpp"
 #include "core/util/worker.hpp"
 
 #include <algorithm>
@@ -47,11 +48,13 @@ OpenResult ChunkCache::open(const char* worldDir, i64 nowMillis)
     writeQueue_.clear();
     prefetchQueue_.clear();
     groupQueue_.clear();
+    urgentGroups_.clear();
     inFlight_.clear();
     unreadable_.clear();
     housekeepingPending_ = false;
     cleanBytes_ = 0;
     dirtyBytes_ = 0;
+    dirtyCap_ = config_.dirtyCapBytes;
     stats_ = Stats{};
 
     if (config_.threaded && !startWorker()) {
@@ -72,6 +75,30 @@ void ChunkCache::close(i64 nowMillis, const PlayerState& player)
     if (!open_) {
         return;
     }
+
+    // **Speculation is abandoned, not finished.** Reading a column ahead of a
+    // player who is leaving, or listing a directory to answer a question
+    // nobody will ask again, is work whose only effect would be to keep the
+    // "Saving level.." screen up. What is owed to the card is a different
+    // matter and is what flush waits for. A read already in flight finishes on
+    // its own; nothing here interrupts a job, it only stops more being taken.
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        for (const i64 k : prefetchQueue_) {
+            inFlight_.erase(k);
+        }
+        prefetchQueue_.clear();
+        for (const u32 g : groupQueue_) {
+            groups_[g].queued = false;
+        }
+        groupQueue_.clear();
+        for (const u32 g : urgentGroups_) {
+            groups_[g].queued = false;
+            groups_[g].urgent = false;
+        }
+        urgentGroups_.clear();
+    }
+
     flush(true);
     stopWorker();
     // After the thread is joined, so this is single-threaded again and the
@@ -123,6 +150,30 @@ void ChunkCache::noteExists(i64 k)
     if (at == group.chunks.end() || *at != k) {
         group.chunks.insert(at, k);
     }
+}
+
+ChunkCache::Presence ChunkCache::chunkPresence(i32 x, i32 z)
+{
+    const i64 k = key(x, z);
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (find(k) != nullptr) {
+            return Presence::Present;  // in hand, therefore in the world
+        }
+        bool exists = false;
+        if (groupSays(k, &exists)) {
+            return exists ? Presence::Present : Presence::Absent;
+        }
+        if (workerRunning_) {
+            // Somebody is waiting on this one, so it goes to the head of the
+            // listing queue. Unthreaded there would be nobody to run it and
+            // "ask me later" would be a cell that never gets classified, which
+            // is why the fall-through below still exists.
+            warmGroupLocked(x, z, true);
+            return Presence::Unknown;
+        }
+    }
+    return hasChunk(x, z) ? Presence::Present : Presence::Absent;
 }
 
 bool ChunkCache::hasChunk(i32 x, i32 z)
@@ -247,16 +298,38 @@ void ChunkCache::prefetch(i32 x, i32 z)
     wake_.notify_one();
 }
 
-void ChunkCache::warmGroup(i32 x, i32 z)
+void ChunkCache::warmGroup(i32 x, i32 z, bool urgent)
+{
+    std::lock_guard<std::mutex> guard(mutex_);
+    warmGroupLocked(x, z, urgent);
+}
+
+void ChunkCache::warmGroupLocked(i32 x, i32 z, bool urgent)
 {
     const u32 g = storage_.chunkGroupKey(x, z);
-    std::lock_guard<std::mutex> guard(mutex_);
     Group& group = groups_[g];
-    if (group.listed || group.queued) {
+    if (group.listed) {
+        return;
+    }
+    if (group.queued) {
+        if (!urgent || group.urgent) {
+            return;
+        }
+        // Promotion, not a second entry: it is already going to be listed, and
+        // what has changed is that a cell is now waiting on it. A group already
+        // taken off the queue is being listed as we speak and there is nothing
+        // to promote.
+        auto at = std::find(groupQueue_.begin(), groupQueue_.end(), g);
+        if (at != groupQueue_.end()) {
+            groupQueue_.erase(at);
+            urgentGroups_.push_back(g);
+            group.urgent = true;
+        }
         return;
     }
     group.queued = true;
-    groupQueue_.push_back(g);
+    group.urgent = urgent;
+    (urgent ? urgentGroups_ : groupQueue_).push_back(g);
     groupRep_[g] = key(x, z);
     if (workerRunning_) {
         wake_.notify_one();
@@ -292,7 +365,7 @@ bool ChunkCache::save(const ChunkColumn& column)
         installColumn(k, std::move(copy), true, false);
         noteExists(k);
         unreadable_.erase(k);
-        overCap = dirtyBytes_ > config_.dirtyCapBytes;
+        overCap = dirtyBytes_ > dirtyCapLocked();
     }
 
     // **The one thing that writes outside a save: running out of memory for
@@ -303,19 +376,79 @@ bool ChunkCache::save(const ChunkColumn& column)
     // which is the thread that outran the card; it is never the main thread
     // today and must not become it -- an edit path reaching here would want to
     // give up frame budget instead.
+    //
+    // **This could not fire until it was measured.** `takeWriteLocked` takes
+    // from `writeQueue_`, and nothing but `flush()` ever put anything on it --
+    // so past the cap this loop found an empty queue, broke on the first
+    // iteration, and the dirty set grew without any bound at all. Measured on
+    // the host with the console's 45-second interval, `--fly <world> 8 6000
+    // gen` peaked at **11.28 MB owed across 741 columns against a 4 MB cap**;
+    // on an Old 3DS that is more heap than the whole world has to spend, and
+    // what a player sees is generation stopping with nothing on the debug page
+    // looking full. Queueing the oldest of them here is what closes it.
     while (overCap) {
         Job job;
         {
             std::lock_guard<std::mutex> guard(mutex_);
-            if (dirtyBytes_ <= config_.dirtyCapBytes || !takeWriteLocked(&job)) {
+            const usize cap = dirtyCapLocked();
+            if (dirtyBytes_ <= cap) {
                 break;
+            }
+            // Half the cap rather than the cap itself, so a run of columns does
+            // not re-trigger this on every single one. The I/O thread takes
+            // these too -- whichever thread gets there first -- so this is a
+            // share of the work rather than all of it.
+            queueDirtyWritesLocked(cap / 2);
+            if (!takeWriteLocked(&job)) {
+                break;  // everything owed is already in somebody else's hands
             }
         }
         runJob(job);
         std::lock_guard<std::mutex> guard(mutex_);
-        overCap = dirtyBytes_ > config_.dirtyCapBytes;
+        overCap = dirtyBytes_ > dirtyCapLocked();
     }
     return true;
+}
+
+// **The oldest dirty columns, queued for writing until what nobody has taken
+// yet is back under `downTo`.** mutex_ held.
+//
+// Oldest first for the same reason eviction is: the column the player is
+// standing on is the one most likely to be dirtied again, and writing it twice
+// costs two files. What this does *not* do is decide when a world is saved --
+// that is the autosave timer, the pause menu and world exit. It is the memory
+// backstop, and it runs only when the dirty set is over its cap.
+void ChunkCache::queueDirtyWritesLocked(usize downTo)
+{
+    usize loose = 0;
+    std::vector<std::pair<u64, i64>> candidates;
+    for (const auto& [k, entry] : entries_) {
+        if (!entry.dirty || entry.column == nullptr || entry.queuedWrite || entry.writing) {
+            continue;
+        }
+        loose += entry.bytes;
+        candidates.push_back({entry.used, k});
+    }
+    if (loose <= downTo) {
+        return;  // what is over the cap is already on its way
+    }
+
+    std::sort(candidates.begin(), candidates.end());
+    for (const auto& [used, k] : candidates) {
+        if (loose <= downTo) {
+            break;
+        }
+        Entry* entry = find(k);
+        if (entry == nullptr) {
+            continue;
+        }
+        entry->queuedWrite = true;
+        writeQueue_.push_back(k);
+        loose -= entry->bytes;
+    }
+    if (workerRunning_) {
+        wake_.notify_all();
+    }
 }
 
 void ChunkCache::flush(bool blocking)
@@ -351,9 +484,16 @@ void ChunkCache::flush(bool blocking)
         return;
     }
 
+    // **Writes, not every job.** This used to wait for `jobsActive_ == 0`,
+    // which meant world exit also waited out every queued directory listing and
+    // every read-ahead -- hundreds of SD operations that nobody will ever need
+    // the answers to, in front of a player looking at "Saving level..". What a
+    // flush owes is the dirty columns and level.dat, and that is what it waits
+    // for now. close() throws the speculative work away first, so the I/O
+    // thread is not doing any of it while this waits.
     std::unique_lock<std::mutex> guard(mutex_);
     drained_.wait(guard, [this] {
-        return writeQueue_.empty() && !housekeepingPending_ && jobsActive_ == 0;
+        return writeQueue_.empty() && !housekeepingPending_ && writesActive_ == 0;
     });
 }
 
@@ -361,7 +501,8 @@ bool ChunkCache::idle() const
 {
     std::lock_guard<std::mutex> guard(mutex_);
     return readQueue_.empty() && writeQueue_.empty() && prefetchQueue_.empty()
-           && groupQueue_.empty() && !housekeepingPending_ && jobsActive_ == 0;
+           && groupQueue_.empty() && urgentGroups_.empty() && !housekeepingPending_
+           && jobsActive_ == 0;
 }
 
 void ChunkCache::applyPlayerState(const PlayerState& player)
@@ -429,6 +570,7 @@ bool ChunkCache::takeHousekeepingLocked(Job* out)
     *out = Job{JobKind::Housekeeping, 0, 0, false, housekeepingMillis_};
     pendingPlayer_ = housekeepingPlayer_;
     ++jobsActive_;
+    ++writesActive_;
     return true;
 }
 
@@ -539,13 +681,66 @@ void ChunkCache::evictLocked()
     }
 }
 
+// **What may be owed to the card, from what the heap has left.**
+//
+// The fixed cap has to be chosen for the worst case -- the longest render
+// distance, the generator's cache at full size, block data at its peak -- and a
+// number chosen for the worst case is wrong for every other one. Past it the
+// generation worker stops and writes a chunk file itself, which is the right
+// back-pressure when memory is genuinely short and a stall for nothing when
+// twelve megabytes are sitting free.
+//
+// So the cap follows the free heap, between the configured floor and ceiling:
+//
+//   * **half of what is spare, not all of it.** The other half is the grid
+//     still growing as the player moves and the mesher's staging buffers; a cap
+//     that claimed everything free would push the heap to its limit and the
+//     thing that fails there is an allocation, not a write.
+//   * **less a reserve**, because "free" is measured now and the columns the
+//     dirty set is about to hold are 18 KB each.
+//
+// **Asked on whichever thread dirtied the column, and never on the render
+// thread.** `mallinfo` walks the allocator's free lists and takes the malloc
+// lock; once per generated column -- tens of milliseconds apart -- is nothing,
+// once per frame on the thread that has 33 ms to spend would be the same
+// species of mistake as the `stat` this class exists to remove. So the answer
+// is cached in `dirtyCap_` and the debug page reads that.
+//
+// It is only ever a hint -- see core/util/memory.hpp. Being wrong costs a write
+// that was not needed or one that was needed a little later, and neither is a
+// correctness problem: the autosave timer still governs, and close() still
+// writes everything.
+usize ChunkCache::dirtyCapLocked()
+{
+    dirtyCap_ = config_.dirtyCapBytes;
+    if (config_.dirtyCapMaxBytes <= config_.dirtyCapBytes) {
+        return dirtyCap_;
+    }
+    const usize free = heapFreeBytes();
+    if (free == 0) {
+        return dirtyCap_;  // no answer from the platform
+    }
+
+    constexpr usize kReserve = 2u << 20;
+    const usize spare = free > kReserve ? free - kReserve : 0;
+    usize cap = spare / 2;
+    if (cap > config_.dirtyCapMaxBytes) {
+        cap = config_.dirtyCapMaxBytes;
+    }
+    if (cap > dirtyCap_) {
+        dirtyCap_ = cap;
+    }
+    return dirtyCap_;
+}
+
 void ChunkCache::recountLocked()
 {
     stats_.cleanBytes = cleanBytes_;
     stats_.dirtyBytes = dirtyBytes_;
+    stats_.dirtyCapBytes = dirtyCap_;
     stats_.readsQueued = u32(readQueue_.size());
     stats_.writesQueued = u32(writeQueue_.size());
-    stats_.groupsQueued = u32(groupQueue_.size());
+    stats_.groupsQueued = u32(groupQueue_.size() + urgentGroups_.size());
     stats_.workerRunning = workerRunning_;
 
     u32 clean = 0;
@@ -573,20 +768,42 @@ bool ChunkCache::takeWriteLocked(Job* out)
         entry->writing = true;
         *out = Job{JobKind::Write, k, 0, false};
         ++jobsActive_;
+        ++writesActive_;
         return true;
     }
     return false;
 }
 
-// Reads first, then writes, then reading ahead. The order is the whole reason
-// there are three queues: a hundred prefetches must never sit in front of the
-// column the player is standing on, and a write must never sit behind them.
+// Reads, then the listings something is waiting on, then writes, then the
+// listings nobody is waiting on yet, then reading ahead. The order is the whole
+// reason there are five queues: a hundred prefetches must never sit in front of
+// the column the player is standing on, and a write must never sit behind them.
+//
+// **An urgent listing goes ahead of the writes**, and that is the half of the
+// frame-stall fix that lives on this thread. A cell whose group is not listed
+// is a cell the streamer cannot classify, so it is neither loaded nor generated
+// until the listing lands -- and behind a flush it was landing after two
+// hundred chunk writes, each one an encode, a deflate and an fsync. A listing
+// is one directory read. Writes are deferred work with a memory cap behind
+// them and they can wait for it; if the wait ever costs anything, it costs the
+// generation worker a write it pays for itself, which is what the cap is for.
+//
+// The speculative ring stays behind the writes, because nothing is waiting on
+// it by definition: a group warmed ahead of the player that turns out to be
+// needed is asked for again, urgently, by the cell that needs it.
 bool ChunkCache::takeJobLocked(Job* out)
 {
     if (!readQueue_.empty()) {
         const i64 k = readQueue_.front();
         readQueue_.erase(readQueue_.begin());
         *out = Job{JobKind::Read, k, 0, false};
+        ++jobsActive_;
+        return true;
+    }
+    if (!urgentGroups_.empty()) {
+        const u32 g = urgentGroups_.front();
+        urgentGroups_.erase(urgentGroups_.begin());
+        *out = Job{JobKind::List, groupRep_[g], g, false};
         ++jobsActive_;
         return true;
     }
@@ -628,6 +845,27 @@ bool ChunkCache::readThrough(i64 k, ChunkColumn* out)
     return ok;
 }
 
+// **One exit for every job, because the one that did not have it hung the
+// game.**
+//
+// `flush(true)` waits for what is owed to reach the card, and it waits on
+// `drained_`. Read and List completions used to decrement the counter without
+// notifying: any listing or read-ahead that finished *after* the last write had
+// left nothing to do meant the predicate became true with nobody left to say
+// so, and the waiter slept for ever. That is the "Saving level.." screen never
+// going away -- reported from hardware, and made far likelier by listings being
+// prioritised, because at world exit there are usually hundreds of them queued.
+//
+// **mutex_ held.**
+void ChunkCache::finishJobLocked(JobKind kind)
+{
+    --jobsActive_;
+    if (kind == JobKind::Write || kind == JobKind::Housekeeping) {
+        --writesActive_;
+    }
+    drained_.notify_all();
+}
+
 void ChunkCache::runJob(const Job& job)
 {
     switch (job.kind) {
@@ -648,7 +886,7 @@ void ChunkCache::runJob(const Job& job)
                           false, job.prefetch);
             evictLocked();
         }
-        --jobsActive_;
+        finishJobLocked(job.kind);
         break;
     }
 
@@ -662,8 +900,7 @@ void ChunkCache::runJob(const Job& job)
                 if (entry != nullptr) {
                     entry->writing = false;
                 }
-                --jobsActive_;
-                drained_.notify_all();
+                finishJobLocked(job.kind);
                 break;
             }
             column = entry->column;
@@ -699,8 +936,7 @@ void ChunkCache::runJob(const Job& job)
                 writeQueue_.push_back(job.chunk);
             }
         }
-        --jobsActive_;
-        drained_.notify_all();
+        finishJobLocked(job.kind);
         break;
     }
 
@@ -723,8 +959,7 @@ void ChunkCache::runJob(const Job& job)
         }
         std::lock_guard<std::mutex> guard(mutex_);
         ++stats_.writes;
-        --jobsActive_;
-        drained_.notify_all();
+        finishJobLocked(job.kind);
         break;
     }
 
@@ -751,7 +986,8 @@ void ChunkCache::runJob(const Job& job)
         }
         group.listed = true;
         group.queued = false;
-        --jobsActive_;
+        group.urgent = false;
+        finishJobLocked(job.kind);
         break;
     }
     }
@@ -814,7 +1050,8 @@ void ChunkCache::workerMain()
             std::unique_lock<std::mutex> guard(mutex_);
             wake_.wait(guard, [this] {
                 return workerStop_ || !readQueue_.empty() || !writeQueue_.empty()
-                       || !groupQueue_.empty() || !prefetchQueue_.empty()
+                       || !groupQueue_.empty() || !urgentGroups_.empty()
+                       || !prefetchQueue_.empty()
                        || housekeepingPending_;
             });
             if (workerStop_) {

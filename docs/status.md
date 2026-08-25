@@ -116,6 +116,7 @@ core/render/      SectionField + buildVisibleSet (the visibility walk); VboPool;
                   and the chunk generator when the world has none)
 core/util/        types, span, nibble, compress, math (Vec3/Mat4/Plane), frustum, the
                   worker-thread seam (which core a background thread gets, per role),
+                  the free-heap seam (how much room is left, for the caches that can use it),
                   coord and seed text parsing (what a player types, parsed where it can be tested)
 core/world/       ...and the light engine: sky and block light as one fixed point;
                   world_list -- the saves folder as a list, without opening anything
@@ -666,20 +667,26 @@ was later revised on new evidence from the jar; see §0g.**
 - **A queue, not a fresh choice.** Picking "the nearest column still missing" each time the worker
   went idle made the choice depend on how far behind the generator was. The scan appends to a queue
   in spiral order and the worker consumes it one at a time.
-  **Superseded in part — read §0g.** Consuming it *strictly oldest-first* turned out to strand a
-  player who outran the generator behind ground they had already left, and the jar shows a1.1.2
-  generates nearest-to-the-player: it has no queue at all, and the renderer that asks for chunks
-  sorts by distance. The queue's *membership* is still a function of the camera path alone and
-  nothing is ever dropped; which entry comes off it next is now the nearest. What that gives up is
-  threaded-equals-inline once a backlog exists — see §0g for why that hole was already there.
+  **Superseded twice — read §0g, then §0h.** Consuming it *strictly oldest-first* stranded a player
+  who outran the generator behind ground they had already left, and the jar shows a1.1.2 generates
+  nearest-to-the-player: it has no queue at all, and the renderer that asks for chunks sorts by
+  distance (§0g). Once the order was "nearest to the camera", the queue was a second copy of what
+  the grid already said, and it is gone (§0h): what is owed is read off the grid every frame and the
+  worker is fed from an eight-entry slate rewritten from it. "Nothing is ever dropped" went with it,
+  deliberately — see §0h.
 - **Classification separated from loading.** Asking "does the world have this chunk" has a different
   answer before and after a sweep writes it, and the answer decides whether a column is generated.
   Every cell is now asked about once, and the grid is **three rings wider than the load radius** —
   exactly a sweep's reach — so every column the generator can write has a cell of its own to be
-  asked about first. Nothing is queued until the whole grid is classified.
+  asked about first. Nothing is generated until the whole grid is classified.
+  **Narrowed in §0h**, on the same reach argument: nothing is generated until the *7×7 around that
+  column* is classified, which is what lets a cell wait for its directory listing instead of the
+  render thread waiting for a `stat`.
 - **Queue membership, not a flag on the cell.** The grid wraps, so a cell is recycled by whatever
   column lands on it next; a flag on it is lost when the camera moves far enough, and a column that
-  came back was queued a second time.
+  came back was queued a second time. **Moot as of §0h**: the grid *is* the membership now, and a
+  recycled cell taking its coordinate out of the reckoning is the wanted behaviour rather than the
+  bug it was.
 - **`jobDone_` in the post condition.** The worker could finish between the drain and the post in
   the same frame, leaving the job neither pending nor active — the head was then handed out twice,
   two completions arrived, two entries came off the queue, and the second was a column that was
@@ -749,10 +756,12 @@ whole 804 MHz core instead of a fraction of a shared one, and the debug page now
 number that matters is columns per second on a console and no one has read it yet.
 
 **What the debug page says now**, because "owed" alone could not tell slow from stalled: `owed` is
-columns in range that do not exist yet, `queue` is how many of those have been asked for, `refused`
-counts enqueues dropped at the cap, and `GATED` means the grid is not fully classified so nothing
-may be queued at all. Owed high with queue at zero is a stall; owed high with queue tracking it is a
-worker that cannot keep up. `--fly … gen` prints the same four.
+columns in range that do not exist yet, `ask` is cells whose directory listing has not arrived so
+the streamer does not yet know whether the world already has them, and `GATE` means the nearest owed
+column is one of the ones waiting. Owed high with `ask` at zero is a worker that cannot keep up;
+`ask` high with `GATE` is the streamer waiting on the card, which is ordinary for a moment after a
+crossing and a fault if it stays. `--fly … gen` prints the same. (Before §0h these were `queue` and
+`refused`, which counted a queue that no longer exists.)
 
 **Measured on the host, at distance 4 and 24 blocks a second** (`--fly <empty> 4 3000 gen`): the
 world settles at frame 773 while the camera is standing still, and once it starts moving the streamer
@@ -1134,10 +1143,12 @@ the whole grid in one pass before any directory listing has landed, so it stats 
 at once, and that cost then sits in the total for the rest of the session looking like a live fault.
 The page now shows the delta over one sample block beside each total: the delta is the diagnosis,
 the total is the history. A cumulative counter cannot answer "is it happening *now*", which is the
-only question this page exists to answer. It can be non-zero
-for exactly one reason — `hasChunk` fell back to a `stat` because a group was asked about before its
-listing arrived, which is what sprinting into unwalked ground does. A steady non-zero number means
-something else is reaching the card from inside the frame. After that, `hit` counts columns served
+only question this page exists to answer.
+
+**As of §0h that row reads 0.0 always, not merely usually.** The one reason it could be non-zero was
+the `stat` a cell fell back to when its group had not been listed yet — the thing "sprinting into
+unwalked ground" used to do — and that fallback is gone from the render thread. Any number above
+zero on this row is now a fault to chase rather than a busy moment. After that, `hit` counts columns served
 with no SD operation and `pre` how many of those the read-ahead band earned rather than retention: a
 low `pre` with plenty of `hit` means the band is memory spent for nothing and can go to zero.
 
@@ -1234,6 +1245,12 @@ it comes right once the backlog drains.
 that has gone out of range is still generated, just after the ones the player can see — so the set
 of columns the world ends up with is still a function of the camera path alone.
 
+> **Superseded by §0h.** The queue is gone: what is owed is read off the grid every frame, so a
+> column the camera has left is not merely served last, it is not owed at all until the player comes
+> back. "Nothing is dropped" no longer holds and was ours rather than a1.1.2's — the game generates
+> inline for the chunk being asked for, and a chunk that never comes into range is never asked for.
+> The rest of this section — why nearest-first, and the jar evidence for it — stands unchanged.
+
 #### Why that is a correction rather than a deviation
 
 The FIFO rule was a settled decision, so it needed evidence rather than an argument. Two things,
@@ -1328,6 +1345,285 @@ Measured on the same 6,000-frame sprint at distance 8: **619 columns generated a
 before, 43 resident columns against 16, and the settle point moved from frame 1632 to 1487. The host
 worker was never the bottleneck, so that is the floor of what this buys; the console, where a frame
 is 33 ms and a column is tens of milliseconds, is where the cap actually bit.
+
+### 0h. The freeze while moving — classification off the render thread, and the queue that went with it
+
+Reported from hardware, and the report named its own cause: **moving a lot makes the game stop for a
+second or two, and the Storage page's `main` figure climbs every time it happens.** That row counts
+one thing only — microseconds the main thread spent inside a storage call — so the question was not
+*what* but *why so many, and why so slow*.
+
+#### The mechanism
+
+Three things compose into the stall, and none of them is a bug on its own.
+
+1. **A chunk-boundary crossing exposes a whole row of cells at once.** The grid is
+   `loadRadius + 3` rings, so at render distance 8 a row is 25 cells and a diagonal crossing exposes
+   49. Each has to be classified before anything can be loaded into it or generated for it.
+2. **A cell whose directory group has not been listed yet fell back to a `stat`** — one IPC round
+   trip to the FS sysmodule, taken on the render thread. That was the documented and accepted cost,
+   on the argument that classification cannot be deferred (see below) and that `warmGroup` keeps the
+   listings far enough ahead that it almost never fires.
+3. **That `stat` takes the storage lock, and the I/O thread holds it for the length of a chunk
+   write.** An autosave flush is two hundred encode-plus-deflate-plus-fsync operations, and group
+   listings sat *behind* every one of them in the job order. So during a flush the listings stop
+   arriving, every newly exposed cell falls back, and every fallback queues behind a file write.
+
+A row of cells × a whole chunk write each is the second or two. It is worst exactly when the player
+is moving fastest over new ground, which is when the flush has the most to write — the three
+compound rather than merely add.
+
+#### Why deferring was said to be impossible, and why it is not
+
+`chunk_cache.hpp` said the check "cannot be deferred and it cannot be budgeted", because
+WorldStreamer's correctness argument is that a cell is classified *before* any sweep in flight could
+have written it — the answer decides whether a column is generated, generation decides population
+order, and population order **is** the world in a1.1.2.
+
+That argument is right about the ordering and wrong about what enforces it. The enforcement used to
+be "nothing is generated until the whole grid is classified", which needs every answer in the frame
+the cell is exposed, which needs the `stat`. But a sweep reaches exactly three rings —
+`ChunkGenerator::provide` sweeps terrain over `(cx-3 .. cx+2)` — so the property only ever needed to
+hold *locally*: **no column is generated until the 7×7 around it is classified**
+(`WorldStreamer::classifiedAround`). A cell further out than three rings cannot be one the sweep
+silently fills, so it is free to wait for its listing.
+
+So `ChunkCache::chunkPresence` answers `Present`, `Absent` or **`Unknown`**, never touches storage,
+and marks the group it could not answer for as urgent. The cell stays `Empty` and is asked again
+next frame. `hasChunk` — blocking — stays for the unthreaded configuration, where there is no I/O
+thread to ever change the answer and "ask me later" would be a question nobody answers.
+
+Two supporting changes, both of which turned out to be load bearing:
+
+* **Urgent listings jump the writes.** The I/O thread's order is now reads → listings something is
+  waiting on → writes → housekeeping → the speculative ring → read-ahead. A listing is one directory
+  read; a write is an encode, a deflate and an fsync. Nothing is waiting on the speculative ring by
+  definition, so that half stays behind the writes.
+* **Listings are asked for nearest-first.** `warmAndPrefetch` walked its ring row-major, so the far
+  north-west corner was listed first and the ground under the player last — which does not matter
+  when the answer is only an optimisation and matters entirely when it is what the cell waits for.
+  It now walks a distance-sorted spiral, `warmSpiral_`, one ring wider than the grid.
+
+#### The ordering traps, all three found by the test that exists for them
+
+`a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` fills the same world three
+ways — generation inline, generation on a worker, and the console's configuration with the chunk
+cache threaded — and compares the trees file for file. It caught every mistake in this change, and
+each one is the same mistake wearing a different hat: **something was allowed to depend on which
+directory listing happened to arrive first.**
+
+1. **Skipping a blocked column.** The first version passed over a column whose neighbourhood was not
+   classified and staged the next one out. The threaded-cache arm produced 36 columns against the
+   other two arms' 48, missing exactly the west and north edge — the asymmetric extra ring a sweep
+   populates. A blocked column now stops the walk instead: nearest-first means nearest-first whatever
+   the card is doing, and it is waiting on one listing that has already been asked for urgently.
+2. **Skipping a cell that has not been classified at all.** The gate only fired for cells already
+   known to be `Ungenerated`; a cell still `Empty` — nobody has been told whether the world has it —
+   was silently passed over, and a column further out got staged in front of it. Same fix: it stops
+   the walk.
+3. **"Settled" not counting the questions.** This one was worth the whole exercise. On the first
+   frame of a world nothing is classified, so nothing is owed, so the streamer looked *idle* — and
+   every caller that waits for the world to settle believed it. In the failing runs the test's first
+   waypoint generated **nothing at all** and the harness walked on. `generationIdle()` now reports
+   false while any cell is still waiting to be asked about, which is the honest reading of it and
+   fixes the tests, the `--fly` settle point and the console's loading screen in one place.
+
+Traps 2 and 3 only appeared in the `-O3` build; the sanitizer builds are slow enough that every
+listing lands before the next frame and the window never opens. **Run the suite under `-O3` as well
+as under the sanitizers when touching this** — three consecutive green `-O3` runs is what this
+change was signed off against, not one.
+
+#### And the queue is gone
+
+Removing the queue was the reported ask — *"it feels unnecessary without FIFO"* — and it is right,
+for a reason worth writing down: **the queue was a second copy of something the grid already
+knows.** A cell inside the load radius in state `Ungenerated` *is* a column that is owed, and the
+spiral is already sorted nearest-first, so the head of the spiral *is* the next job. Every property
+the queue needed was a defence of the copy: a cap so a sprinting player could not grow it without
+bound, a refused counter for when the cap bit, a membership set so nothing was queued twice, a stale
+count for entries no longer in range.
+
+What replaces it is a **slate**: at most eight coordinates, rewritten from the grid every frame,
+which exists only because the worker takes its own next job between frames and cannot read the grid
+(it is the main thread's). Nothing to cap, nothing to dedupe, nothing to go stale.
+
+**What it gives up, stated plainly.** The queue never dropped anything: a column the camera had left
+was still generated, just later, so the set of columns the world ended up with was a function of the
+camera path alone. The slate does drop it — that ground is simply not made until the player comes
+back. That is the more faithful of the two, and this is the one place it is worth being explicit
+about why: **a1.1.2 has no queue at all.** `ft.b` loads the chunk or calls the generator inline for
+the chunk being asked for, and a chunk that never comes into range is never asked for. The property
+being given up was ours, not the game's.
+
+#### Measured
+
+Dev host, `--fly <world> 8 <frames> gen`, same seed and same path both sides.
+
+| 1,200 frames | before | after |
+|---|---|---|
+| main-thread storage calls | 237 | **0** |
+| ...costing | 4,429 µs | **0** |
+| worst single frame | 237 calls (frame 1, world open) | **0** |
+
+The host is the wrong machine to measure the *cost* on — a host `stat` hits the page cache, where
+the console pays an IPC round trip and may queue behind an open file — so the count is the number to
+read. All 237 fell in frame 1, which is the world-open classification pass; the console's version of
+that same pass is the "opening a world stats a few hundred chunks" note in §0e.
+
+| 6,000-frame sprint, three runs each | before | after |
+|---|---|---|
+| columns on the queue at the end | 643–698, of which 348–400 out of range | **no queue** |
+| columns still owed | 290–304 | 291–292 |
+| resident columns | 57–71 | 69–70 |
+| settled at frame | 1,278–1,284 | 1,296–1,468 |
+
+**Ranges, because a single run of this is noise** — the host's worker and I/O threads are not paced
+by anything. Read it as: how much of the frontier gets filled did not measurably change, and the
+several hundred queued coordinates, half of them ground the camera had left, are simply gone.
+
+The settle column is not a like-for-like comparison and is here so that nobody reads the shift as a
+regression: `generationIdle()` deliberately got stricter in this change — a world is not settled
+while cells are still waiting to be asked about — so "after" is measuring a later moment than
+"before" measured. Doing that was the third trap above.
+
+#### The dirty cap follows the free heap
+
+Also asked for, and it belongs with the above because it is the other half of what the I/O thread
+does. A dirty column cannot be evicted — it is the only copy of that part of the world — so past the
+cap the generation worker stops and writes a chunk file itself. That back-pressure is right when
+memory is short and is a stall bought for nothing when megabytes are sitting free, and the fixed
+4 MB had to be chosen for the worst case: longest render distance, generator cache at full size,
+block data at its peak.
+
+`ChunkCache::dirtyCapLocked` now derives it from `heapFreeBytes()` — half of what is spare, less a
+2 MB reserve, clamped between the configured floor (4 MB) and ceiling (16 MB on the console). Half
+rather than all, because the other half is the grid still growing and the mesher's staging buffers;
+what fails when the heap runs out is an allocation, not a write. The platform seam is
+`core/util/memory.hpp` and the console's answer is `__ctru_heap_size - mallinfo().uordblks`; a
+platform that cannot say leaves the ceiling at 0 and gets the fixed cap, which is what the tests and
+the host harnesses run on. The Storage page prints the cap beside the dirty figure, because a number
+that moves is unreadable without its denominator.
+
+#### What holds it
+
+* `flying_over_new_ground_never_takes_the_render_thread_to_the_card` — 24 chunk-boundary crossings
+  over unwalked ground with the console's threaded cache, asserting **zero** storage calls and zero
+  microseconds on the calling thread. A count rather than a time: a time measures the host.
+* `asking_whether_a_chunk_exists_never_opens_a_file_while_a_worker_is_running` — the `Unknown` half,
+  and that the answer is the true one once the listing the question queued has landed.
+* `without_a_worker_an_existence_check_answers_on_the_calling_thread` — the unthreaded path keeps the
+  blocking form, or the tests and `--mesh` would wait for a listing nobody runs.
+* `the_dirty_cap_follows_the_free_heap_between_its_floor_and_its_ceiling` — the four rows of the
+  policy: no answer from the platform, plenty of heap, more than the ceiling, almost none.
+* `a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` — unchanged, and it is what
+  caught the ordering trap above.
+
+422 tests were passing before, 426 now; ASan and TSan both clean over the streaming and cache tests.
+
+### 0i. Generation stopping, and "Saving level.." never going away
+
+Reported from hardware after §0h: **generation stops after a while, nothing on the debug page looks
+full, and once that happens leaving the world hangs on the "Saving level.." screen.** Three separate
+faults, and the reason they arrived together is that two of them are the same fault seen from either
+end of a session.
+
+**On "generation stops", be honest about which fix was the one.** There are two candidates and no
+way to tell them apart from here, because neither can be reproduced without the console:
+
+* the FIFO backlog §0h removed. A queue of several hundred columns, half of them ground the camera
+  had already left, is served entirely before the frontier under the player's feet — which looks
+  exactly like generation having stopped, for minutes at a time, with nothing full and nothing
+  refused. The measured sprint had 695 queued and 388 of them out of range.
+* the unbounded dirty set below, which ends in the allocator failing rather than in anything
+  reporting a fault.
+
+Both are real, both are fixed, and the console is what settles which one the player was looking at.
+The number to read now is the Storage page's `dirty X KB of Y`: at its cap means the backstop is
+working, far under it means it was the backlog.
+
+#### 1. Nothing bounded what was owed to the card
+
+A dirty column cannot be evicted — it is the only copy of that part of the world — so
+`Config::dirtyCapBytes` is the only thing standing between a generation worker and the heap. The
+enforcement was this, in `save()`:
+
+```
+while (overCap) {
+    if (dirtyBytes_ <= cap || !takeWriteLocked(&job)) break;
+    runJob(job);
+}
+```
+
+`takeWriteLocked` takes from `writeQueue_`, and **nothing but `flush()` ever put anything on
+`writeQueue_`**. So past the cap the loop found an empty queue, broke on its first iteration, and
+the dirty set grew without any bound at all until the next autosave collected it. The documented
+back-pressure — "over the cap, whoever dirtied the column writes one itself" — had never once run.
+
+Measured, `MC_FLY_AUTOSAVE=600 --fly <world> 8 6000 gen`, which is the console's situation *between*
+autosaves:
+
+| | before | after |
+|---|---|---|
+| peak owed to the card | **11.28 MB, 741 columns** | **4.01 MB, 252 columns** |
+| against a cap of | 4.00 MB | 4.00 MB |
+| columns still owed at the end | 284 | 307 |
+
+11 MB of unevictable columns is more heap than an Old 3DS has to spare — 21 MB of newlib heap
+against ~4 MB of block data, a ~6.5 MB generator cache and the chunk cache's own 2 MB. What a player
+sees when the allocator runs dry is generation stopping. And **nothing on screen said so**, because
+the dirty figure was printed without the cap it was being measured against; §0h had already started
+printing the cap beside it, which is the other half of the answer to "I don't see what would be
+full".
+
+`save()` now queues the oldest dirty columns down to half the cap and takes one of them itself, so
+the thread that outran the card is the one that pays — which is what the comment above it always
+claimed. The 23 extra columns still owed at the end of the run is that cost, and it is the right
+trade against exhausting the heap. Note it interacts well with §0h's dynamic cap: on a console with
+room to spare the ceiling rises to 16 MB and this rarely bites at all.
+
+#### 2. A blocking flush could wait for ever
+
+`flush(true)` waits on `drained_` for `writeQueue_.empty() && !housekeepingPending_ && no jobs
+active`. The Read and List completion paths decremented the job counter **without notifying
+`drained_`**. So whenever a listing or a read-ahead was the last job to finish — which is the normal
+case at world exit, where hundreds of listings are queued — the predicate became true with nobody
+left to say so and the waiter slept for ever. That is the "Saving level.." screen never going away.
+
+It was always possible; §0h made it likely, because listings now run ahead of writes and are
+therefore what finishes last. Every job now leaves through one function, `finishJobLocked`, which
+notifies whatever the kind.
+
+#### 3. …and it was waiting for the wrong thing anyway
+
+Even without the hang, waiting for *every* job meant world exit waited out every queued directory
+listing and every read-ahead — hundreds of SD operations whose answers nobody will ever read — in
+front of a player looking at a "Saving level.." screen. A flush owes the dirty columns and
+level.dat, so that is what it waits for now (`writesActive_`), and `close()` throws the speculative
+queues away before flushing rather than finishing them.
+
+#### 4. A sweep that cannot finish is now visible
+
+Not part of the report, but found while looking for other ways generation can stop: if
+`ChunkGenerator::provide` returns false — its cache could not hold the sweep — the column is simply
+not made, the cell stays `Ungenerated`, and the nearest-first rule asks for the same column again
+next frame, for ever. That is a frontier that never advances again, and it had no counter. It has
+one now: `Stats::generationFailures`, `fail` on the Info page's generation row (it displaces `GATE`,
+which clears itself as soon as a listing lands, where this does not) and a line of its own in
+`--fly … gen`. **It must read zero.**
+
+#### What holds it
+
+* `what_is_owed_to_the_card_stays_under_its_cap` — 200 columns saved into a 128 KB cap, asserting
+  the dirty set never passes twice the cap and that it was bounded by *writing* rather than by
+  refusing: every column is still in the world afterwards. Fails on the unbounded version at the
+  first over-cap column.
+* `a_blocking_flush_returns_without_waiting_for_listings_or_read_ahead` — 400 listings and 24
+  read-aheads queued, one column owed, and a watchdog on the flush. Fails on the old wait, which is
+  a hang: the test is heap-allocated and leaked on failure so the suite reports it rather than
+  wedging.
+* `closing_a_world_with_listings_and_read_ahead_in_flight_finishes` — the same for `close()`.
+
+429 tests pass, three consecutive `-O3` runs; ASan and TSan clean.
 
 ### 1. Run it on a console
 
@@ -1621,7 +1917,7 @@ at an absolute row and clips it to the console's width, so the cursor cannot adv
 and `newRow()` cannot be reached from the drawing path. A line that outgrows the screen now loses its
 tail where you can see it, and a page that asks for a row outside its body does not get one. Every
 line was re-measured at its *widest* values rather than its typical ones — a Far Lands coordinate is
-eight digits, the generation queue cap is four — and `xyz` became two rows so that the one place
+eight digits, a count of cells in the grid is four — and `xyz` became two rows so that the one place
 those numbers matter is not the one place they get clipped. Info is 23 rows of the 24 available and
 Settings still spends all 24.
 

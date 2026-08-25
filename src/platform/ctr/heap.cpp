@@ -15,7 +15,10 @@
 // This runs before services are up, so the model cannot be queried -- the policy
 // derives from the available memory itself. See docs/3ds-performance.md.
 
+#include "platform/ctr/heap.hpp"
+
 #include <3ds.h>
+#include <malloc.h>
 
 extern "C" {
 extern char* fake_heap_start;
@@ -112,3 +115,26 @@ extern "C" void __system_allocateHeaps(void)
     fake_heap_start = reinterpret_cast<char*>(__ctru_heap);
     fake_heap_end = fake_heap_start + heap;
 }
+
+namespace mc::ctr {
+
+// **What malloc has not handed out**, which is not the same as what a single
+// allocation could get -- fragmentation is invisible from here. Everything that
+// reads it treats it as a hint and halves it before spending it; see
+// ChunkCache::dirtyCapLocked.
+//
+// `uordblks` rather than `fordblks`: the free figure only counts what has been
+// sbrk'd and released, so a heap that has never been filled reports almost
+// nothing free when in fact all of it is. Subtracting what is in use from the
+// arena the split fixed at startup is the number that means what it says.
+//
+// Safe from any thread: newlib takes the malloc lock inside mallinfo, and the
+// chunk cache asks on its generation worker.
+usize heapFreeBytes()
+{
+    const struct mallinfo info = mallinfo();
+    const u32 used = static_cast<u32>(info.uordblks);
+    return __ctru_heap_size > used ? usize(__ctru_heap_size - used) : 0;
+}
+
+}  // namespace mc::ctr

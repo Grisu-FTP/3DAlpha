@@ -141,17 +141,21 @@ MeshShot shoot(const ChunkRenderer& renderer, i32 cx, i32 cz, int distance)
 //
 // Reported from hardware: flying around leaves a border of chunks that never
 // fill, a few appear if you wait a long time, and it comes right much later.
-// That is a queue served in the wrong order. The generation queue used to be
-// strictly FIFO, so a player who outran the generator was behind every column
-// they had already passed: a measured sprint at distance 8 ended with 702
-// columns queued, 341 of them out of range, and all 361 columns in range behind
-// them.
+// That was a queue served in the wrong order -- strictly FIFO, so a player who
+// outran the generator was behind every column they had already passed. A
+// measured sprint at distance 8 ended with 702 columns queued, 341 of them out
+// of range, and all 361 columns in range behind them.
+//
+// The queue is gone now and what is owed is read off the grid, so a column the
+// camera has left is not merely served last: it is not owed at all until the
+// player comes back. That makes this test the pin on the property rather than
+// on the mechanism -- it would have failed on the FIFO queue, it passes on the
+// nearest-first one, and it still passes with no queue.
 //
 // The assertion is deliberately **not** a time or a frame count -- both measure
 // the host rather than the ordering. It counts *columns generated* between the
-// camera stopping and the area around it being complete. Nearest-first spends
-// that budget on the columns in range; oldest-first spends it on the backlog
-// first and needs several times as many.
+// camera stopping and the area around it being complete: the columns in range,
+// plus whatever a sweep finishes on the way, and nothing else.
 TEST(the_ground_under_a_stopped_camera_is_made_before_the_ground_it_left)
 {
     TempDir temp;
@@ -198,12 +202,10 @@ TEST(the_ground_under_a_stopped_camera_is_made_before_the_ground_it_left)
     }
 
     const int owedAtStop = streamer.stats().pendingGeneration;
-    const int queuedAtStop = streamer.stats().generationQueued;
-    // The premise of the test: the camera really did outrun generation, and
-    // there really is a backlog of ground it has left. Without this the
-    // assertion below could pass vacuously.
+    // The premise of the test: the camera really did outrun generation, so
+    // there is ground both in front of it and behind it left to make. Without
+    // this the assertion below could pass vacuously.
     CHECK(owedAtStop > 0);
-    CHECK(queuedAtStop > owedAtStop);
 
     // Now stand still and count what gets made until the area is complete.
     int generated = 0;
@@ -224,8 +226,7 @@ TEST(the_ground_under_a_stopped_camera_is_made_before_the_ground_it_left)
     // backlog, which is several times larger -- that is the difference the
     // border was made of.
     if (generated > owedAtStop * 3) {
-        std::printf("  owed at stop %d, queued %d, generated before filling %d\n", owedAtStop,
-                    queuedAtStop, generated);
+        std::printf("  owed at stop %d, generated before filling %d\n", owedAtStop, generated);
     }
     CHECK(generated <= owedAtStop * 3);
 
@@ -344,4 +345,86 @@ TEST(revisiting_a_column_meshes_it_to_exactly_what_it_was)
 
     streamer.close(kNow);
     renderer.shutdown();
+}
+
+// **Moving must not put the render thread on the SD card**, which is the whole
+// of the reported symptom: flying around made the game freeze for a second or
+// two at a time, with the storage page's main-thread figure climbing every time
+// it happened.
+//
+// The mechanism was cell classification. A newly exposed cell asked whether the
+// world had that chunk, the answer came from a directory listing that had not
+// arrived yet, and the fallback was a `stat` -- on the frame, and behind the
+// storage lock, which the I/O thread holds for the length of a chunk write. A
+// whole row of cells is exposed per chunk-boundary crossing, and a flush is two
+// hundred writes.
+//
+// So the assertion is a count, not a time: **zero storage operations on the
+// calling thread, for the entire flight**. A time would measure this host; the
+// count is the property. The camera crosses twenty-four chunk boundaries over
+// ground that has never been walked, which is the case that used to stat for
+// every cell of every crossing.
+TEST(flying_over_new_ground_never_takes_the_render_thread_to_the_card)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("World");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 24680LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    constexpr int kDistance = 3;
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = kDistance;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    world::ChunkCache::Config cache;
+    // The console's configuration: the I/O thread is what makes a deferred
+    // answer possible at all, and it is the configuration the report came from.
+    cache.threaded = true;
+    streamer.setCacheConfig(cache);
+    streamer.setPrefetchRings(2);
+    CHECK(streamer.open(dir.c_str(), kDistance, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    u32 counter = 0;
+    for (i32 x = 1; x <= 24; ++x) {
+        for (int i = 0; i < 3; ++i) {
+            frame(streamer, renderer, counter++, x, 0, budget);
+        }
+    }
+
+    const world::ChunkCache::Stats io = streamer.stats().io;
+
+    // Closed before anything is asserted, because a CHECK returns from the test
+    // and a streamer that is never closed takes its worker thread down with the
+    // process. The counters are the last frame's and survive the close.
+    streamer.close(kNow);
+    renderer.shutdown();
+
+    // Both halves of the same fact, because either alone can mislead: a count
+    // of zero with a non-zero time would mean something else reached the card,
+    // and a time of zero with a non-zero count would mean a host too fast to
+    // measure. The console's own debug page reads these two numbers.
+    CHECK_EQ(int(io.stats), 0);
+    CHECK_EQ(io.mainThreadMicros, 0);
+
+    // The flight really did cross into unwalked ground, or the assertion above
+    // is about a world that was already in hand.
+    CHECK(io.listings > 0);
 }

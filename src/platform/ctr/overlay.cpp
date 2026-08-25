@@ -393,9 +393,9 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     // not its typical ones.** Six of them used to be 41 to 44 characters wide
     // with ordinary numbers in them, which cost a row each and scrolled the
     // page; see row(). The field widths below are the widest each number can
-    // actually get -- a Far Lands coordinate is eight digits, the queue cap is
-    // four -- so a busy console does not silently need more room than a quiet
-    // one.
+    // actually get -- a Far Lands coordinate is eight digits, a count of cells
+    // in the grid is four -- so a busy console does not silently need more room
+    // than a quiet one.
     int r = kBodyRow;
     row(r++, "frame %2d.%d ms   fps %2d      %s",
         shown_.frame < 0.0f ? 0 : int(shown_.frame), tenths(shown_.frame) % 10,
@@ -447,13 +447,14 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     // **Only while ground is being made**, and quiet the moment the player is
     // walking over chunks that already exist.
     //
-    // `owed` and `q` answer different questions and the gap between them is the
-    // diagnosis: `owed` is columns in range that do not exist yet, `q` is how
-    // many of those have actually been asked for. Owed high with q at zero is a
-    // stall rather than slowness -- either the grid is not fully classified,
-    // which is what `GATE` says, or the queue hit its cap, which `ref` counts.
-    // Owed high with q tracking it is a worker that cannot keep up, and the
-    // core named on the left is the first thing to look at.
+    // `owed` and `ask` answer different questions and the gap between them is
+    // the diagnosis: `owed` is columns in range that do not exist yet, `ask` is
+    // cells whose group listing has not arrived, so the streamer does not yet
+    // know whether the world already has them. Owed high with `ask` at zero is
+    // a worker that cannot keep up, and the core named on the left is the first
+    // thing to look at. `ask` high with `GATE` is the streamer waiting on the
+    // card rather than on the generator -- ordinary for a moment after a
+    // chunk-boundary crossing, a fault if it stays.
     //
     // `ms` should read 0: it is main-thread time, so anything above zero means
     // the worker did not start and generation is happening inside the frame,
@@ -462,14 +463,24 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     // back without their neighbours' population. See
     // ChunkGenerator::cacheColumnsFor.
     if (streaming.pendingGeneration > 0 || streaming.generatedThisFrame > 0) {
-        row(r++, "gen %-5s owed %4d  q %4d  done %2d",
+        row(r++, "gen %-5s owed %4d  ask %4d  done %2d",
             streaming.workerRunning ? workerCore_ : "MAIN", streaming.pendingGeneration,
-            streaming.generationQueued, streaming.generatedThisFrame);
-        row(r++, "    %2d.%d ms live %3lu lost %2lu ref %3d%s",
+            streaming.unclassified, streaming.generatedThisFrame);
+        // The tail of the row is whichever of the two things is wrong, and
+        // `fail` wins because it is the worse one: a sweep that cannot finish
+        // means the frontier never advances again, where a gate clears itself
+        // as soon as a directory listing lands.
+        char tail[16] = {};
+        if (streaming.generationFailures != 0) {
+            std::snprintf(tail, sizeof(tail), " fail %2lu",
+                          static_cast<unsigned long>(streaming.generationFailures));
+        } else if (streaming.generationGated) {
+            std::snprintf(tail, sizeof(tail), " GATE");
+        }
+        row(r++, "    %2d.%d ms live %3lu lost %2lu%s",
             int(streaming.generateMicros / 1000), int((streaming.generateMicros % 1000) / 100),
             static_cast<unsigned long>(streaming.generatorPeakLive),
-            static_cast<unsigned long>(streaming.generatorEvictedLive),
-            streaming.generationRefused, streaming.generationGated ? " GATE" : "");
+            static_cast<unsigned long>(streaming.generatorEvictedLive), tail);
     }
     row(r++, "  blocks %3lu.%lu MB in the heap",
         static_cast<unsigned long>(streaming.blockBytes / kMb),
@@ -494,11 +505,16 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
 // The page exists because the fix it reports on is invisible from every other
 // one: a chunk read costs the same microseconds wherever it happens, and the
 // only thing that changed is which thread pays them. So the first row is the
-// answer -- `main` is main-thread time inside a storage call, and it is
-// expected to be 0.0. It can be non-zero for exactly one reason: hasChunk fell
-// back to a `stat` because a directory group was asked about before its listing
-// arrived, which is what sprinting into unwalked ground does. A steady non-zero
-// number means something else is reaching the card from the frame.
+// answer -- `main` is main-thread time inside a storage call, and **on this
+// build it is expected to be 0.0 always**, not merely usually.
+//
+// It used to climb whenever the player moved, which is the report this row
+// earned its place on: a cell whose directory listing had not arrived fell back
+// to a `stat`, that `stat` waits for the storage lock, and the I/O thread holds
+// the lock for a whole chunk write. A row of freshly exposed cells behind a
+// flush is a second or two of frozen game. Nothing on the render thread asks
+// storage anything now -- an unlisted cell waits for its listing instead -- so
+// any number above zero here is a fault to chase, not a busy moment.
 //
 // `hit` is the second thing to read. It counts columns served without an SD
 // operation at all -- retained after leaving the grid, or read ahead of the
@@ -565,8 +581,14 @@ int Overlay::drawStorage(const render::WorldStreamer& world)
     // by the autosave timer, so a number that sits near the cap means the I/O
     // thread is being outrun and the generation worker is paying for writes
     // itself -- which is the back-pressure working, not a fault.
-    row(r++, "dirty %4lu KB  %4lu cols",
+    //
+    // **The cap is printed because it moves.** It follows the free heap between
+    // a floor and a ceiling, so the same dirty figure can be comfortable on one
+    // frame and about to cost the worker a write on another; without the
+    // denominator the two look identical. See ChunkCache::dirtyCapLocked.
+    row(r++, "dirty %4lu KB of %4lu  %4lu cols",
         static_cast<unsigned long>(io.dirtyBytes / kKb),
+        static_cast<unsigned long>(io.dirtyCapBytes / kKb),
         static_cast<unsigned long>(io.dirtyColumns));
 
     blank(r++);

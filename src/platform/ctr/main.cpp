@@ -33,11 +33,13 @@
 // that makes it survivable is measurable, and moving it to core1 without a
 // frame time to measure against would be building on a guess.
 
+#include "platform/ctr/heap.hpp"
 #include "platform/ctr/menu.hpp"
 #include "platform/ctr/overlay.hpp"
 #include "platform/ctr/probe.hpp"
 #include "platform/ctr/renderer.hpp"
 #include "core/render/world_streamer.hpp"
+#include "core/util/memory.hpp"
 #include "core/util/worker.hpp"
 #include "core/world/chunk_cache.hpp"
 #include "core/world/daylight.hpp"
@@ -354,6 +356,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     gWorkerOnCore2 = false;
     mc::setWorkerThreadOps(&spawnWorker, &joinWorker);
 
+    // How much newlib heap is left, for the one thing that can usefully spend
+    // it: the cache's cap on world owed to the card. See heap.hpp.
+    mc::setHeapFreeQuery(&ctr::heapFreeBytes);
+
     // **The chunk cache, which is what keeps the card off the render thread.**
     //
     // Reads, writes and existence checks all go through it and all of them
@@ -369,6 +375,15 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // between the load radius and the classification ring at distance 8.
     world::ChunkCache::Config cache;
     cache.cleanCapBytes = usize(choice.chunkCacheMB) << 20;
+
+    // **What is owed to the card may use the heap that is going spare.** The
+    // 4 MB floor is the number that has to hold at the longest render distance
+    // with the generator's cache at full size; most of a session is nowhere
+    // near that, and while it is not, a generation worker stopping to write a
+    // chunk file itself is a stall bought for nothing. 16 MB is ~890 columns at
+    // the measured 18,013-byte mean -- a ceiling rather than a target, and the
+    // autosave timer still empties it long before it is reached.
+    cache.dirtyCapMaxBytes = 16u << 20;
     cache.threaded = true;
     world.setCacheConfig(cache);
     world.setPrefetchRings(2);
@@ -477,16 +492,17 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
             }
 
             // Once a second, and the numbers are the streamer's own: `owed` is
-            // columns in range that do not exist yet, `queue` how many of those
-            // have been asked for. Owed falling is progress; owed high with an
-            // empty queue is the stall the debug page was built to name.
+            // columns in range that do not exist yet, `asking` how many cells
+            // are still waiting to be told whether the world already has them.
+            // Owed falling is progress; owed high with nothing being asked is
+            // the stall the debug page was built to name.
             if (waited % 60 == 0) {
                 const render::WorldStreamer::Stats& stats = world.stats();
                 std::printf("\x1b[2J\x1b[1;1H");
                 std::printf("\x1b[32mGenerating %s\x1b[0m\n\n", choice.worldName.c_str());
                 std::printf("seed  %lld\n", (long long)world.level().randomSeed);
                 std::printf("owed  %d\n", stats.pendingGeneration);
-                std::printf("queue %d\n", stats.generationQueued);
+                std::printf("asking %d cells\n", stats.unclassified);
                 std::printf("here  %d columns\n\n", stats.columnsResident);
                 std::printf("worker %s\n\n", stats.workerRunning ? "running" : "\x1b[31mnot running\x1b[0m");
                 std::printf("START to go in anyway.\n");

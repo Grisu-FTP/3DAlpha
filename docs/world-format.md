@@ -260,8 +260,17 @@ enumeration. Compatibility is a hard requirement, so we adapt around it rather t
   rest of the session, an unvisited region costs nothing at all, and there is no cache file and
   nothing to invalidate. `AlphaChunkFileStorage::listChunkGroup` is the primitive;
   `core/world/chunk_cache.hpp` holds the index and keeps it ahead of the player by listing the ring
-  one chunk beyond the streamer's grid whenever the centre moves. A group asked about before its
-  listing arrives falls back to one `stat`, which is what it always cost.
+  one chunk beyond the streamer's grid whenever the centre moves, **nearest-first** — the order
+  matters now that a cell waits for its listing rather than working around it.
+
+  **A group asked about before its listing arrives no longer falls back to a `stat`.** It did, and
+  that fallback was the whole of a reported one-to-two-second freeze while moving: the `stat` takes
+  the storage lock, and the I/O thread holds that for the length of a chunk write, so a row of newly
+  exposed cells behind an autosave flush stopped the game. `ChunkCache::chunkPresence` answers
+  `Unknown` instead, marks that group urgent — and urgent listings run ahead of the queued writes —
+  and the cell is asked again next frame. The blocking `hasChunk` stays for the unthreaded
+  configuration, where nothing else would ever run the listing. See docs/status.md §0h for the
+  ordering argument that makes deferring safe.
 
   This is what removed the per-boundary stat storm: crossing a chunk boundary used to re-classify a
   whole row of cells, one IPC round trip each, on the render thread.
@@ -271,13 +280,21 @@ enumeration. Compatibility is a hard requirement, so we adapt around it rather t
   timer, when the pause menu opens, and on world exit — **and at no other time**, which is the shape
   a1.1.2 has. The one exception is the dirty budget: a dirty column cannot be evicted because it is
   the only copy of that part of the world, so past the cap whoever dirtied it writes one itself,
-  which is back-pressure paid by the generation worker rather than by the frame.
+  which is back-pressure paid by the generation worker rather than by the frame. **The cap follows
+  the free heap** between a 4 MB floor and a 16 MB ceiling rather than sitting at the worst case
+  it has to survive, because a worker stopping to write a file while megabytes go unused is a stall
+  bought for nothing; `ChunkCache::dirtyCapLocked` and `core/util/memory.hpp`.
+
+  **That back-pressure did not work until it was measured** — it took jobs from a queue only
+  `flush()` ever filled, so past the cap it found nothing to do and the dirty set grew unbounded:
+  11.28 MB across 741 columns on a measured run against a 4 MB cap, which is more heap than an Old
+  3DS has to spare. `save()` now queues the oldest dirty columns itself. See docs/status.md §0i.
 
   **The invariant it holds:** every read returns byte-identical content to what the card would
-  return, and `hasChunk` answers true from the moment a save is accepted rather than from the moment
-  bytes land. Deferring a write therefore changes no answer that cell classification or a generator
-  sweep can observe — which matters because classification feeds the generation queue and population
-  order *is* the world. The third arm of
+  return, and an existence check answers true from the moment a save is accepted rather than from the
+  moment bytes land. Deferring a write therefore changes no answer that cell classification or a
+  generator sweep can observe — which matters because classification decides what is generated and
+  population order *is* the world. The third arm of
   `a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up` compares whole world trees to prove
   it.
 - **POSIX `open`/`read`/`write`, not `fopen`/`fread`.** An earlier version of this document said to

@@ -25,15 +25,15 @@ std::string join(std::string_view dir, std::string_view name)
 // Area-average, premultiplied. See the note in the header: averaging straight
 // RGB across texels whose alpha is zero drags every cutout edge toward whatever
 // the pack left in its transparent pixels, which is nearly always black.
-void downscale(const Image& source, u8* out)
+void downscale(const Image& source, int target, u8* out)
 {
     const usize edge = usize(source.width);
-    for (int y = 0; y < kAtlasEdge; ++y) {
-        const usize y0 = (usize(y) * edge) / kAtlasEdge;
-        const usize y1 = (usize(y + 1) * edge) / kAtlasEdge;
-        for (int x = 0; x < kAtlasEdge; ++x) {
-            const usize x0 = (usize(x) * edge) / kAtlasEdge;
-            const usize x1 = (usize(x + 1) * edge) / kAtlasEdge;
+    for (int y = 0; y < target; ++y) {
+        const usize y0 = (usize(y) * edge) / usize(target);
+        const usize y1 = (usize(y + 1) * edge) / usize(target);
+        for (int x = 0; x < target; ++x) {
+            const usize x0 = (usize(x) * edge) / usize(target);
+            const usize x1 = (usize(x + 1) * edge) / usize(target);
 
             u32 sumR = 0, sumG = 0, sumB = 0, sumA = 0;
             u32 plainR = 0, plainG = 0, plainB = 0;
@@ -55,9 +55,9 @@ void downscale(const Image& source, u8* out)
                 }
             }
 
-            u8* dst = out + (usize(y) * kAtlasEdge + usize(x)) * 4;
+            u8* dst = out + (usize(y) * usize(target) + usize(x)) * 4;
             if (count == 0) {
-                // Cannot happen for edge >= kAtlasEdge, which is the only way
+                // Cannot happen for edge >= target, which is the only way
                 // here, but a zero-area rectangle would otherwise divide by it.
                 std::memset(dst, 0, 4);
                 continue;
@@ -85,15 +85,15 @@ void downscale(const Image& source, u8* out)
 // Nearest neighbour, which for a source that divides the atlas edge is exact
 // pixel replication. A 8x pack should come out crisp, not interpolated: the
 // whole look depends on nearest filtering.
-void upscale(const Image& source, u8* out)
+void upscale(const Image& source, int target, u8* out)
 {
     const usize edge = usize(source.width);
-    for (int y = 0; y < kAtlasEdge; ++y) {
-        const usize sy = (usize(y) * edge) / kAtlasEdge;
+    for (int y = 0; y < target; ++y) {
+        const usize sy = (usize(y) * edge) / usize(target);
         const u8* row = source.rgba.data() + (sy * edge) * 4;
-        for (int x = 0; x < kAtlasEdge; ++x) {
-            const usize sx = (usize(x) * edge) / kAtlasEdge;
-            std::memcpy(out + (usize(y) * kAtlasEdge + usize(x)) * 4, row + sx * 4, 4);
+        for (int x = 0; x < target; ++x) {
+            const usize sx = (usize(x) * edge) / usize(target);
+            std::memcpy(out + (usize(y) * usize(target) + usize(x)) * 4, row + sx * 4, 4);
         }
     }
 }
@@ -147,44 +147,47 @@ const char* packErrorText(PackError error)
     return "unknown";
 }
 
-void scaleToAtlas(const Image& source, std::vector<u8>* out)
+void scaleSquare(const Image& source, int edge, std::vector<u8>* out)
 {
-    out->assign(kAtlasBytes, 0);
-    if (source.width <= 0 || source.height != source.width) {
+    const usize bytes = usize(edge) * usize(edge) * 4;
+    out->assign(bytes, 0);
+    if (edge <= 0 || source.width <= 0 || source.height != source.width) {
         return;
     }
-    if (source.width == kAtlasEdge) {
-        std::memcpy(out->data(), source.rgba.data(), kAtlasBytes);
+    if (source.width == edge) {
+        std::memcpy(out->data(), source.rgba.data(), bytes);
         return;
     }
-    if (source.width > kAtlasEdge) {
-        downscale(source, out->data());
+    if (source.width > edge) {
+        downscale(source, edge, out->data());
         return;
     }
-    upscale(source, out->data());
+    upscale(source, edge, out->data());
 }
 
-PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+void scaleToAtlas(const Image& source, std::vector<u8>* out)
 {
-    out->rgba.clear();
-    out->sourceEdge = 0;
+    scaleSquare(source, kAtlasEdge, out);
+}
 
-    if (packPath.empty()) {
-        buildDevArt(&out->rgba);
-        return PackError::Ok;
-    }
+PackError readPackFile(io::FileSystem& fs, std::string_view packPath, std::string_view name,
+                       std::vector<u8>* out)
+{
+    out->clear();
 
     const std::string path(packPath);
+    if (path.empty()) {
+        return PackError::NotFound;
+    }
 
     // A directory pack: the tree lying loose, which is what a card looks like
     // after somebody unzipped a pack on a PC.
     if (fs.isDirectory(path.c_str())) {
-        const std::string terrain = join(path, kTerrainName);
-        std::vector<u8> png;
-        if (!fs.readFile(terrain.c_str(), &png, kMaxPackBytes)) {
-            return fs.exists(terrain.c_str()) ? PackError::ReadFailed : PackError::NoTerrain;
+        const std::string file = join(path, name);
+        if (!fs.readFile(file.c_str(), out, kMaxPackBytes)) {
+            return fs.exists(file.c_str()) ? PackError::ReadFailed : PackError::NotFound;
         }
-        return terrainToAtlas(png, out);
+        return PackError::Ok;
     }
 
     if (!fs.exists(path.c_str())) {
@@ -200,14 +203,37 @@ PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* 
     if (zip.open(archive) != ZipError::Ok) {
         return PackError::NotAPack;
     }
-    const ZipEntry* entry = zip.find(kTerrainName);
+    const ZipEntry* entry = zip.find(name);
     if (entry == nullptr) {
-        return PackError::NoTerrain;
+        return PackError::NotFound;
+    }
+    if (zip.read(*entry, out) != ZipError::Ok) {
+        return PackError::ReadFailed;
+    }
+    return PackError::Ok;
+}
+
+PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+{
+    out->rgba.clear();
+    out->sourceEdge = 0;
+
+    if (packPath.empty()) {
+        buildDevArt(&out->rgba);
+        return PackError::Ok;
     }
 
     std::vector<u8> png;
-    if (zip.read(*entry, &png) != ZipError::Ok) {
-        return PackError::ReadFailed;
+    const PackError read = readPackFile(fs, packPath, kTerrainName, &png);
+    if (read == PackError::NotFound) {
+        // A pack that opened and has no terrain.png in it, as against a path
+        // with nothing at it -- which readPackFile reports the same way and
+        // which the pack list has already ruled out by the time it gets here.
+        return fs.exists(std::string(packPath).c_str()) ? PackError::NoTerrain
+                                                        : PackError::NotFound;
+    }
+    if (read != PackError::Ok) {
+        return read;
     }
     return terrainToAtlas(png, out);
 }

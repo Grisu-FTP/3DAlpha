@@ -111,7 +111,19 @@ public:
     // of its column's neighbours are present -- a face is culled against a
     // block that may live in the column next door.
     bool open(const char* worldDir, int meshDistance, i64 nowMillis);
-    void close(i64 nowMillis);
+
+    // Closing a world writes everything it owes the card, which on a folder
+    // world is a file per dirty column and long enough to look like a hang.
+    //
+    // `progress` is called while that drains, with how many columns are written
+    // and how many were owed, so a caller can put a number in front of the
+    // player. It is called at least once even when nothing is owed -- that is
+    // the "nothing to do" answer rather than the absence of one -- and the
+    // wait happens here rather than inside the cache's own blocking close so
+    // there is something to report during it.
+    using SaveProgressFn = void (*)(void* context, u32 written, u32 owed);
+    void close(i64 nowMillis, void* progressContext = nullptr,
+               SaveProgressFn progress = nullptr);
 
     // **Whether a chunk the world does not have gets made, and it is off by
     // default.**
@@ -208,13 +220,20 @@ public:
 
     // **Save now**: everything the autosave timer would have done, at a moment
     // of the caller's choosing, and without blocking. What the pause menu
-    // calls. It also restarts the interval, so resuming does not immediately
+    // calls -- and only when `dirtyColumns()` says there is something to write,
+    // so pausing twice in a row costs one save. It also restarts the interval, so resuming does not immediately
     // trip an autosave over work that has just been written.
     void saveNow(i64 nowMillis);
 
     // True when nothing is queued for the card either. What close() and the
     // tests wait on.
     bool storageIdle() const { return cache_.idle(); }
+
+    // How many columns are dirty *now*, taken from the cache rather than from
+    // the once-a-frame copy in stats(). Two callers want it outside the frame
+    // loop, where that copy is stale: the pause menu, which saves only what is
+    // owed, and the save screen, which counts down against it.
+    u32 dirtyColumns() const;
 
     // Who creates the generation worker, and on which core, is
     // `mc::setWorkerThreadOps` in core/util/worker.hpp. It used to live here as

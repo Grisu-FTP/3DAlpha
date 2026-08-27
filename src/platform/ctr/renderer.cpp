@@ -778,20 +778,8 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
 }
 
-void Renderer::drawFrame(const Camera& camera)
+void Renderer::applyWorldState()
 {
-    frameStats_ = FrameStats{};
-
-    // Skip the second eye entirely at slider zero rather than rendering it and
-    // throwing it away -- half the geometry cost, for free.
-    const float slider = osGet3DSliderState();
-    const bool wantStereo = slider > 0.0f;
-    if (wantStereo != stereo_) {
-        gfxSet3D(wantStereo);
-        stereo_ = wantStereo;
-    }
-    frameStats_.stereo = stereo_;
-
     C3D_CullFace(GPU_CULL_BACK_CCW);
     C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
 
@@ -879,6 +867,26 @@ void Renderer::drawFrame(const Camera& camera)
         C3D_TexEnvFunc(env2, C3D_Alpha, GPU_REPLACE);
     }
 
+}
+
+void Renderer::drawFrame(const Camera& camera, void* overlayContext, Overlay2D overlay)
+{
+    frameStats_ = FrameStats{};
+
+    // Skip the second eye entirely at slider zero rather than rendering it and
+    // throwing it away -- half the geometry cost, for free.
+    const float slider = osGet3DSliderState();
+    const bool wantStereo = slider > 0.0f;
+    if (wantStereo != stereo_) {
+        gfxSet3D(wantStereo);
+        stereo_ = wantStereo;
+    }
+    frameStats_.stereo = stereo_;
+
+    // Everything the eyes depend on, applied per eye rather than once for the
+    // frame -- see applyWorldState. Between two eyes there may now be a 2D
+    // pass, and citro2d leaves the depth test, the culling and two combiner
+    // stages set to its own taste.
     const float fovRadians = C3D_AngleFromDegrees(config_.fovDegrees);
     const float interocular =
         interocularForDisparity(disparityPixels_, focalBlocks_, fovRadians, 400.0f / 240.0f);
@@ -892,9 +900,17 @@ void Renderer::drawFrame(const Camera& camera)
     const u64 afterBegin = svcGetSystemTick();
 
     for (int i = 0; i < (stereo_ ? 2 : 1); ++i) {
+        applyWorldState();
         const float offset = slider * interocular * 0.5f;
         const float iod = stereo_ ? (i == 0 ? -offset : offset) : 0.0f;
         drawEye(i, camera, iod);
+
+        // The pause menu, drawn into this frame on top of the world it is
+        // pausing. Both eyes get it at the same screen position, so it sits at
+        // the screen plane whatever the slider is doing.
+        if (overlay != nullptr) {
+            overlay(overlayContext, eye_[i]);
+        }
     }
     C3D_FrameEnd(0);
 

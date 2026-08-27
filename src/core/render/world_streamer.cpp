@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <thread>
 
 namespace mc::render {
 
@@ -463,7 +464,12 @@ void WorldStreamer::setCubeFormat(mesh::CubeFormat format, ChunkRenderer& render
     }
 }
 
-void WorldStreamer::close(i64 nowMillis)
+u32 WorldStreamer::dirtyColumns() const
+{
+    return cache_.stats().dirtyColumns;
+}
+
+void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn progress)
 {
     if (!open_) {
         return;
@@ -482,9 +488,39 @@ void WorldStreamer::close(i64 nowMillis)
         generator_->flush();
     }
 
+    // The drain, watched rather than waited on, when the caller asked to be
+    // told about it.
+    //
+    // `cache_.close` would do all of this in one blocking call, and did -- but
+    // a call that returns when it is finished can say nothing while it runs,
+    // and on a folder world with a few hundred dirty columns that is a still
+    // screen for several seconds. So the writes are queued here, and the
+    // counters are read as the I/O thread works through them.
+    //
+    // **`pump()` is what makes the count move.** The cache recounts its
+    // columns there and nowhere else, so polling `stats()` without it would
+    // report the same number forever -- and unthreaded, where there is no I/O
+    // thread at all, pump() is also what runs the writes.
+    if (progress != nullptr) {
+        cache_.flush(false);
+        cache_.pump();
+        const u32 owed = cache_.stats().dirtyColumns;
+        for (;;) {
+            const u32 left = cache_.stats().dirtyColumns;
+            progress(progressContext, owed - (left < owed ? left : owed), owed);
+            if (left == 0) {
+                break;
+            }
+            cache_.pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+    }
+
     // close() blocks until the last column is on the card, which is what the
     // "Saving level.." message on the way out is for. Everything the generator
-    // just flushed went into the cache, so this is where it becomes files.
+    // just flushed went into the cache, so this is where it becomes files --
+    // level.dat, the lock and the format's own commit included, which is why it
+    // still runs when the drain above has already emptied the queue.
     cache_.close(nowMillis, player_);
     cells_.clear();
     finished_.clear();

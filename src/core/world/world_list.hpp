@@ -17,6 +17,8 @@
 #include "core/io/file_system.hpp"
 #include "core/util/types.hpp"
 
+#include "core/world/world_format.hpp"
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,6 +30,24 @@ struct WorldEntry {
     std::string path;  // savesDir + "/" + name
     i64 lastPlayed = 0;
     i64 seed = 0;
+    // Which shape the folder is in. Read off the disk with the rest of the
+    // listing, because it is free there -- the same `exists` calls that decide
+    // whether this is a world at all decide which kind it is.
+    WorldFormat format = WorldFormat::Unknown;
+};
+
+// What a world costs, which is two different numbers.
+//
+// `contentBytes` is what the files hold. `onDiskBytes` is what the card gives
+// up, every file rounded to a whole cluster. They are far apart in the folder
+// format -- a 2,917-byte chunk in a 16 KB cluster, plus a cluster for the leaf
+// directory it is alone in -- and that gap is the entire argument for packing,
+// so both are reported and the screen shows both.
+struct WorldSize {
+    u64 contentBytes = 0;
+    u64 onDiskBytes = 0;
+    u32 fileCount = 0;
+    u32 directoryCount = 0;
 };
 
 // Every directory under savesDir whose level.dat decodes, most recently played
@@ -64,5 +84,28 @@ bool sanitizeWorldName(std::string_view typed, std::string* out);
 // removes nothing. This is the only destructive operation in the project and
 // the guard is the point of it being here rather than inline in the menu.
 bool deleteWorld(io::FileSystem& fs, std::string_view worldDir);
+
+// Removes a directory and everything under it, with no check of what it is.
+//
+// `deleteWorld` is the one to call for a world; this is for the converter,
+// which has to clear a staging directory that is deliberately *not* a world.
+bool removeTree(io::FileSystem& fs, std::string_view path);
+
+// Adds up what a world occupies. **Walks the whole tree**, which for a folder
+// world means a stat per chunk file across up to 4,096 leaf directories -- so
+// it is called for one world when the player asks, never for every row of a
+// list.
+//
+// The cluster size comes from io::queryVolumeInfo; with no answer available
+// `onDiskBytes` equals `contentBytes` rather than being guessed at from an
+// assumed cluster that a measured card has already contradicted.
+bool worldSize(io::FileSystem& fs, std::string_view worldDir, WorldSize* out);
+
+// Copies a world directory to a new path, file for file.
+//
+// Preserves whichever format the source is in: a copy is a backup, not a
+// conversion. Refuses if the destination already exists, so it can never merge
+// into somebody else's world.
+bool copyWorld(io::FileSystem& fs, std::string_view sourceDir, std::string_view targetDir);
 
 }  // namespace mc::world

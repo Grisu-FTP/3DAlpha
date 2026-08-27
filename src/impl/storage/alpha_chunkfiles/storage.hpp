@@ -65,6 +65,12 @@ public:
     const world::LevelData& level() const { return level_; }
     bool saveLevel();
 
+    // Nothing to do: a chunk is a file, and writing it was already the whole
+    // of making it durable. The member exists because the contract has it, so
+    // a caller can batch a backend that needs batching without asking which
+    // backend it has.
+    bool commit() { return true; }
+
     bool hasChunk(i32 x, i32 z);
     bool loadChunk(i32 x, i32 z, world::ChunkColumn* out);
     bool saveChunk(const world::ChunkColumn& chunk);
@@ -89,9 +95,13 @@ public:
     // The leaf directory a chunk lives in, as an opaque key: `<x & 63>` and
     // `<z & 63>` packed into twelve bits. Two chunks with the same key share a
     // directory and are therefore answered by the same listing.
-    u32 chunkGroupKey(i32 x, i32 z) const
+    //
+    // The key is 64 bits wide because the *contract* is -- a packed region's
+    // key needs 34 of them, and a narrower one would collide inside a legal
+    // world. Twelve is all this format needs.
+    u64 chunkGroupKey(i32 x, i32 z) const
     {
-        return u32(x & 63) | (u32(z & 63) << 6);
+        return u64(u32(x & 63)) | (u64(u32(z & 63)) << 6);
     }
 
     // Lists the one leaf directory containing (x, z) and reports every chunk

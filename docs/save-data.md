@@ -199,7 +199,8 @@ The useful version of the idea — a buffer zone wider than what is drawn, fille
 - **Few open handles.** Open, read, close per chunk. Do not hold thousands of files open.
 - **Chunk index cache.** Enumerating 4,096 subdirectories per world is slow; build the index once
   and cache it (see [world-format.md](world-format.md)). It must always be rebuildable, because it
-  is a cache and the card may be edited on a PC.
+  is a cache and the card may be edited on a PC. **Not needed for a packed world** — the region
+  directory *is* the index, and one 16 KB read settles all 1,024 of its chunks.
 - **`session.lock`** on open, refreshed periodically, as the original does. The autosave timer is
   what runs the refresh; before it existed, `refreshLock()` was written and never called.
 - **Free-space guard.** Check `freeClusters` before a save flush; warn early rather than failing
@@ -207,14 +208,16 @@ The useful version of the idea — a buffer zone wider than what is drawn, fille
 
 ## Getting the slack back: packed worlds
 
-Storage mode is a **per-world setting**, toggled from the world list, and both modes are fully
-playable:
+Storage mode is a **per-world setting**, on the world options screen behind `X` in the world list,
+and both modes are fully playable:
 
-- **Folder** (default) — a real Alpha world. Copy it in from a PC, play it, copy it back out.
-  Pays the cluster slack above.
-- **Packed** — chunks live in sector-allocated region containers instead of one file each. Slack
-  drops roughly 10×, so the world lands at the 2–5× smaller end, and loading gets faster because
-  chunk reads become seeks in an open file instead of an open per chunk.
+- **Folder** — a real Alpha world. Copy it in from a PC, play it, copy it back out. Pays the
+  cluster slack above, **twice**: once per chunk file and once per leaf directory, since below a
+  64×64-chunk span every chunk sits alone in its own leaf.
+- **Packed** (what new worlds are created in) — chunks live in sector-allocated region containers
+  instead of one file each, in 1024-byte sectors. Measured on a real 1,119-chunk world at a 16 KB
+  cluster: **37.3 MB → 4.1 MB, 9× smaller**, and reading the whole world drops from 1,122 file
+  opens and 1,157 directory listings to 4 and 1.
 
 Converting either way is lossless and verified; unpacking restores the original folder
 byte-for-byte, so nothing about interchange is given up. The mode is read off the disk rather than

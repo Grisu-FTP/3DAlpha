@@ -2,8 +2,11 @@
 
 #include "core/io/posix_file_system.hpp"
 #include "core/util/memory.hpp"
+#include "core/world/any_storage.hpp"
+#include "core/world/format/region_file.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
+#include "core/world/world_format.hpp"
 #include "version_slots.hpp"
 
 #include <chrono>
@@ -60,10 +63,11 @@ public:
     int writes = 0;
     int stats = 0;
     int listings = 0;
+    int opens = 0;
 
-    void resetCounts() { reads = writes = stats = listings = 0; }
+    void resetCounts() { reads = writes = stats = listings = opens = 0; }
 
-    int total() const { return reads + writes + stats + listings; }
+    int total() const { return reads + writes + stats + listings + opens; }
 
     bool readFile(const char* path, std::vector<u8>* out, usize maxSize) override
     {
@@ -89,6 +93,19 @@ public:
     {
         ++listings;
         return inner_.listDirectory(path, context, visit);
+    }
+    std::unique_ptr<io::RandomAccessFile> openRandomAccess(const char* path,
+                                                           bool create) override
+    {
+        // Counted separately from `reads`: an open is what a packed world pays
+        // once per region and the Alpha layout pays once per chunk, so the two
+        // are exactly the numbers worth telling apart here.
+        ++opens;
+        return inner_.openRandomAccess(path, create);
+    }
+    bool rename(const char* from, const char* to) override
+    {
+        return inner_.rename(from, to);
     }
 
 private:
@@ -296,6 +313,125 @@ TEST(a_listed_group_answers_without_touching_the_card)
     CHECK_EQ(fs.total(), 0);
     CHECK_EQ(int(cache.stats().stats), 0);
 
+    cache.close(kNow);
+}
+
+// **A group key is 64 bits wide, and every queue that carries one has to be.**
+//
+// In the packed format a group is a region, and its key packs two 32-bit region
+// coordinates into one u64. Regions (0, 0) and (100, 0) differ only in the top
+// half of that key, so a queue element narrowed to u32 makes them the same
+// group: the second one is marked queued, never listed, and the cache reports
+// chunks that exist as absent -- which regenerates terrain over a world that
+// was already there.
+//
+// It is a test rather than a static_assert because the truncation was in the
+// element type of a loop and a map, not in the interface; nothing about the
+// signature was wrong.
+TEST(two_regions_that_share_the_low_half_of_their_key_are_two_groups)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+
+    {
+        world::AnyStorage storage(fs);
+        CHECK(storage.create(dir.c_str(), 1234LL, kNow, world::WorldFormat::Packed)
+              == OpenResult::Ok);
+        CHECK(storage.saveChunk(makeChunk(0, 0, 5)));
+        CHECK(storage.saveChunk(makeChunk(3200, 0, 6)));  // region (100, 0)
+        CHECK(storage.close(kNow));
+    }
+
+    // Distinct before anything is queued: if these collide, nothing below can
+    // pass and the reason would be harder to read off a failure further down.
+    {
+        world::AnyStorage probe(fs);
+        CHECK(probe.open(dir.c_str(), kNow) == OpenResult::Ok);
+        CHECK(probe.chunkGroupKey(0, 0) != probe.chunkGroupKey(3200, 0));
+        CHECK(probe.close(kNow));
+    }
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    cache.warmGroup(0, 0);
+    cache.warmGroup(3200, 0);
+    drain(cache);
+
+    fs.resetCounts();
+    CHECK(cache.hasChunk(0, 0));
+    CHECK(cache.hasChunk(3200, 0));
+    // Both answers came out of a listing rather than a stat, which is the
+    // proof that the *second* group was listed at all.
+    CHECK_EQ(fs.total(), 0);
+    CHECK_EQ(int(cache.stats().stats), 0);
+
+    cache.close(kNow);
+}
+
+// **An autosave commits what it wrote, not what was there before it.**
+//
+// Housekeeping ends in `storage_.commit()`, which on the packed backend is what
+// makes staged chunk writes findable. Run it while a write is still queued and
+// it commits the state *before* that write, leaving the write staged until the
+// next cycle -- so a power cut between two autosaves costs two intervals rather
+// than one, and the autosave does not do the thing it exists to do.
+//
+// Two orderings have to hold, and they are enforced in different places:
+//
+//   * **Threaded**, which is the console: `takeJobLocked` puts writes ahead of
+//     housekeeping, and `WorldStreamer::saveNow` queues the writes *before* it
+//     asks for housekeeping so there is something for that priority to bite on.
+//     Ask first and flush second and the I/O thread can wake in between, find
+//     an empty write queue and commit early.
+//   * **Unthreaded**, which is the harness and this test: `requestHousekeeping`
+//     runs the job on the calling thread, bypassing `takeJobLocked` entirely,
+//     so it drains the write queue itself first.
+//
+// This pins the unthreaded half, which is the deterministic one. The threaded
+// half rests on the same rule and on the call order in `saveNow`.
+TEST(a_housekeeping_commit_waits_for_the_writes_it_is_meant_to_commit)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+
+    {
+        world::AnyStorage storage(fs);
+        CHECK(storage.create(dir.c_str(), 99LL, kNow, world::WorldFormat::Packed)
+              == OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+    CHECK(cache.save(makeChunk(5, 7, 3)));
+
+    // saveNow's order, and only this order is safe.
+    cache.flush(false);
+    ChunkCache::PlayerState player;
+    cache.requestHousekeeping(kNow, player);
+
+    // Nothing is left to do: requestHousekeeping drained the write on the way
+    // in. `stats()` is refreshed by pump() and not by flush(), so one pump is
+    // what makes the counters readable at all.
+    cache.pump();
+    CHECK_EQ(int(cache.stats().writesQueued), 0);
+    CHECK(cache.idle());
+
+    // And the end of it: a reader that knows nothing of this cache finds the
+    // column, which is what "the autosave made it durable" means. The region is
+    // still open behind us with no further commit owed, so this reads the
+    // header the housekeeping job wrote.
+    {
+        world::format::RegionFile region;
+        CHECK(region.open(fs, world::format::regionPath(dir, 0, 0).c_str(), 0, 0, false));
+        CHECK(region.has(5, 7));
+        CHECK(region.close());
+    }
     cache.close(kNow);
 }
 

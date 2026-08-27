@@ -88,11 +88,11 @@ void ChunkCache::close(i64 nowMillis, const PlayerState& player)
             inFlight_.erase(k);
         }
         prefetchQueue_.clear();
-        for (const u32 g : groupQueue_) {
+        for (const u64 g : groupQueue_) {
             groups_[g].queued = false;
         }
         groupQueue_.clear();
-        for (const u32 g : urgentGroups_) {
+        for (const u64 g : urgentGroups_) {
             groups_[g].queued = false;
             groups_[g].urgent = false;
         }
@@ -105,6 +105,9 @@ void ChunkCache::close(i64 nowMillis, const PlayerState& player)
     // level can be edited in place. storage_.close() rewrites level.dat, which
     // is what carries the position out.
     applyPlayerState(player);
+    // close() commits in both backends, but saying so here keeps the ordering
+    // explicit: everything durable before the level is written out.
+    storage_.commit();
     storage_.close(nowMillis);
     entries_.clear();
     groups_.clear();
@@ -123,7 +126,7 @@ ChunkCache::Entry* ChunkCache::find(i64 k)
 
 bool ChunkCache::groupSays(i64 k, bool* exists) const
 {
-    const u32 g = storage_.chunkGroupKey(keyX(k), keyZ(k));
+    const u64 g = storage_.chunkGroupKey(keyX(k), keyZ(k));
     auto it = groups_.find(g);
     if (it == groups_.end()) {
         return false;
@@ -306,7 +309,7 @@ void ChunkCache::warmGroup(i32 x, i32 z, bool urgent)
 
 void ChunkCache::warmGroupLocked(i32 x, i32 z, bool urgent)
 {
-    const u32 g = storage_.chunkGroupKey(x, z);
+    const u64 g = storage_.chunkGroupKey(x, z);
     Group& group = groups_[g];
     if (group.listed) {
         return;
@@ -548,6 +551,30 @@ void ChunkCache::requestHousekeeping(i64 nowMillis, const PlayerState& player)
     }
     if (!runHere) {
         return;
+    }
+
+    // **Queued writes go first, and this loop is what makes that true when
+    // there is no worker to enforce it.** Housekeeping ends in
+    // `storage_.commit()`, which is what makes staged writes findable; running
+    // it while a write is still in the queue commits the state *before* that
+    // write and leaves it staged until the next cycle. Threaded, that ordering
+    // is `takeJobLocked`'s -- writes outrank housekeeping. Unthreaded the job
+    // runs here, so the same rule has to be spelled out.
+    //
+    // Writes only, not `takeJobLocked`: a read or a group listing pulled onto
+    // the caller's thread is exactly the main-thread SD work this class exists
+    // to remove, and neither has anything to do with what a commit covers.
+    for (;;) {
+        Job write;
+        bool haveWrite = false;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            haveWrite = takeWriteLocked(&write);
+        }
+        if (!haveWrite) {
+            break;
+        }
+        runJob(write);
     }
 
     Job job;
@@ -801,7 +828,7 @@ bool ChunkCache::takeJobLocked(Job* out)
         return true;
     }
     if (!urgentGroups_.empty()) {
-        const u32 g = urgentGroups_.front();
+        const u64 g = urgentGroups_.front();
         urgentGroups_.erase(urgentGroups_.begin());
         *out = Job{JobKind::List, groupRep_[g], g, false};
         ++jobsActive_;
@@ -814,7 +841,7 @@ bool ChunkCache::takeJobLocked(Job* out)
         return true;
     }
     if (!groupQueue_.empty()) {
-        const u32 g = groupQueue_.front();
+        const u64 g = groupQueue_.front();
         groupQueue_.erase(groupQueue_.begin());
         *out = Job{JobKind::List, groupRep_[g], g, false};
         ++jobsActive_;
@@ -950,6 +977,11 @@ void ChunkCache::runJob(const Job& job)
             std::lock_guard<std::mutex> guard(storageLock_);
             applyPlayerState(player);
             storage_.saveLevel();
+            // Makes every chunk written since the last one findable. Free for
+            // the folder backend, three ordered writes for a packed region --
+            // and doing it here rather than per chunk is what keeps packed
+            // mode's saves cheaper than the format it replaces.
+            storage_.commit();
             // The original re-reads the lock on every chunk save; we do not,
             // because a console cannot run two copies of the game at once and
             // it would double the operations on the hottest path there is.

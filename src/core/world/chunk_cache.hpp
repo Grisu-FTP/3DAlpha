@@ -72,10 +72,10 @@
 
 #include "core/io/file_system.hpp"
 #include "core/util/types.hpp"
+#include "core/world/any_storage.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/level_data.hpp"
 #include "core/world/storage.hpp"
-#include "version_slots.hpp"
 
 #include <condition_variable>
 #include <map>
@@ -402,7 +402,7 @@ private:
     struct Job {
         JobKind kind = JobKind::Read;
         i64 chunk = 0;
-        u32 group = 0;
+        u64 group = 0;
         bool prefetch = false;
         i64 nowMillis = 0;
     };
@@ -448,7 +448,9 @@ private:
     void workerMain();
     static void workerEntry(void* self);
 
-    mcver::Storage storage_;
+    // Either backend, decided by the world that was opened. The cache never
+    // learns which -- see core/world/any_storage.hpp.
+    AnyStorage storage_;
     Config config_;
     bool open_ = false;
 
@@ -466,7 +468,7 @@ private:
     std::condition_variable drained_;
 
     std::map<i64, Entry> entries_;
-    std::map<u32, Group> groups_;
+    std::map<u64, Group> groups_;
 
     // Three queues rather than one, because their priorities differ and a
     // single queue would let a hundred prefetches sit in front of the column the
@@ -474,7 +476,7 @@ private:
     std::vector<i64> readQueue_;
     std::vector<i64> writeQueue_;
     std::vector<i64> prefetchQueue_;
-    std::vector<u32> groupQueue_;
+    std::vector<u64> groupQueue_;
 
     // **Groups something is waiting on right now**, ahead of the speculative
     // ring in groupQueue_ and ahead of the writes. Both are FIFO and the order
@@ -483,7 +485,7 @@ private:
     // before the horizon. Promoting into the *front* of one shared queue is
     // what this replaces -- it inverted that order, because the last cell asked
     // about ended up first.
-    std::vector<u32> urgentGroups_;
+    std::vector<u64> urgentGroups_;
 
     // level.dat and the session.lock refresh, as a pending timestamp. One at a
     // time: a second request before the first has run replaces it, because
@@ -512,7 +514,7 @@ private:
     // One chunk coordinate per queued group, because a group key is
     // deliberately opaque -- the storage slot packs it however its layout
     // wants -- and the listing has to be asked for by chunk.
-    std::map<u32, i64> groupRep_;
+    std::map<u64, i64> groupRep_;
 
     u64 clock_ = 0;      // the LRU stamp source
     usize cleanBytes_ = 0;

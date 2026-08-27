@@ -738,6 +738,7 @@ the FS service's, `_reent` lookup, per-call locking. **Use the file-descriptor A
 What raw `FSFILE` still buys, none of it yet worth a second implementation:
 
 - Positional reads with no seek state (`FSFILE_Read` takes a `u64` offset), so no `lseek` call.
+  Measured since: the `lseek` it would save is free anyway — see the packed-worlds note below.
 - Explicit `FS_WRITE_FLUSH` per write rather than a separate `fsync`.
 - Holding one archive handle and pre-built `FS_Path` values, skipping the UTF-8 → UTF-16 conversion
   and cwd resolution that `open()` does per call. With one file per chunk, **opens dominate** — this
@@ -784,6 +785,37 @@ time inside a storage call and is expected to read 0.0. The one thing that can r
 sprinting into unwalked ground does.
 
 Plus: the chunk index instead of per-chunk `stat`, and all I/O on the I/O thread — both built.
+
+### Packed worlds: the operation count, measured
+
+The lever is the number of operations, and the packed format is the change that removes most of
+them. Measured with `./build-host/3dalpha --world-info` on both shapes of the same real world, 1,119
+chunks:
+
+| | file opens to read every chunk | directory listings | on disk at a 16 KB cluster |
+|---|---|---|---|
+| Folder | 1,122 | 1,157 | 37,339,136 B |
+| Packed | **4** | **1** | **4,145,152 B** |
+
+At four to six IPC round trips per file operation, that is roughly 9,100–13,700 round trips down to
+about 25 — and 9× less card. Both numbers come off the file and directory counts, so they hold
+whatever the card's speed is.
+
+**The wall-clock figure is still owed and can only be taken on hardware.** On a Linux host with a
+warm page cache, meshing the whole world takes 0.559 s from the folder and 0.517 s from the packed
+copy — an 8% difference, which measures the host's cheap `open`, not the console's expensive one.
+Record the real number here after the next launch: create a world (it is packed), fly until it
+generates, then convert it to Folder from the world options screen and fly the same path again.
+
+The sector size was re-derived rather than borrowed. McRegion's 4,096-byte sector wastes 53% on
+a1.1.2's chunk-size distribution (min 1,194 / median 2,917 / mean 2,945 / max 5,872) because the
+distribution straddles it; 1,024 bytes wastes 17%. See [packed-worlds.md](packed-worlds.md).
+
+Positional I/O got the seam it needed: `io::RandomAccessFile` with `readAt`/`writeAt`. On the host
+those are `pread`/`pwrite`; **devkitARM's newlib has neither**, so the 3DS build seeks first. That
+costs nothing here — libctru's devoptab `lseek` for `SEEK_SET` is arithmetic on a struct in the
+application's own memory, no IPC, and `read` then hands the stored offset to `FSFILE_Read`. Only
+`SEEK_END` would cost a round trip, and nothing seeks that way.
 
 ## 8. Faster inflate
 

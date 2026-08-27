@@ -38,6 +38,7 @@
 #include "platform/ctr/overlay.hpp"
 #include "platform/ctr/probe.hpp"
 #include "platform/ctr/renderer.hpp"
+#include "core/io/volume_info.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/util/memory.hpp"
 #include "core/util/worker.hpp"
@@ -539,7 +540,8 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
             }
 
             const ctr::PauseChoice paused =
-                menu.runPause(choice.worldName.c_str(), settings.renderDistance);
+                menu.runPause(choice.worldName.c_str(), choice.worldPath.c_str(),
+                              settings.renderDistance);
             menu.shutdown();
 
             // Three things the menu took away and this has to give back before
@@ -736,12 +738,31 @@ int runShell(bool isNew3DS, bool haveCstick)
     return result;
 }
 
+// The console's answer to "how big is a cluster and what is left", which core
+// cannot ask for itself -- see core/io/volume_info.hpp. The path is ignored
+// because there is one writable volume on this device.
+bool queryVolume(const char* path, mc::io::VolumeInfo* out)
+{
+    (void)path;
+
+    FS_ArchiveResource sd{};
+    if (R_FAILED(FSUSER_GetSdmcArchiveResource(&sd))) {
+        return false;
+    }
+    out->clusterSize = u64(sd.clusterSize);
+    out->freeBytes = u64(sd.freeClusters) * u64(sd.clusterSize);
+    out->totalBytes = u64(sd.totalClusters) * u64(sd.clusterSize);
+    return true;
+}
+
 }  // namespace
 
 int main()
 {
     gfxInitDefault();
     consoleInit(GFX_BOTTOM, nullptr);
+
+    mc::io::setVolumeInfoQuery(&queryVolume);
 
     bool isNew3DS = false;
     APT_CheckNew3DS(&isNew3DS);

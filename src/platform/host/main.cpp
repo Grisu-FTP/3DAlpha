@@ -7,6 +7,7 @@
 // libctru, and to expose the world tools that do not need a console.
 
 #include "core/io/posix_file_system.hpp"
+#include "core/io/volume_info.hpp"
 #include "core/block/registry.hpp"
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/visibility.hpp"
@@ -18,8 +19,12 @@
 #include "core/texture/jar_import.hpp"
 #include "core/texture/pack_list.hpp"
 #include "core/texture/zip_archive.hpp"
+#include "core/world/any_storage.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
+#include "core/world/format/converter.hpp"
+#include "core/world/world_format.hpp"
+#include "core/world/world_list.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_generator.hpp"
 #include "version_config.hpp"
 #include "version_slots.hpp"
@@ -32,6 +37,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <sys/statvfs.h>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -555,7 +561,7 @@ render::VboPool::Budget flyBudget(int distance)
 
 void fly(const char* worldDir, int distance, int frames, int switchTo,
          mesh::CubeFormat cubeFormat, bool flipFormat, bool generate, bool cacheThreaded,
-         int prefetchRings)
+         int prefetchRings, world::WorldFormat createAs)
 {
     HostVboAllocator allocator;
 
@@ -604,15 +610,25 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
     if (generate) {
         streamer.setGenerateMissing(true);
         io::PosixFileSystem fs;
-        mcver::Storage probe(fs);
+        // AnyStorage rather than the slot directly: an existing world opens in
+        // whichever shape it is already in, and only a world being *made* here
+        // needs a format named.
+        //
+        // **Folder unless asked otherwise**, deliberately -- the console makes
+        // packed worlds, but every documented --fly number in
+        // docs/3ds-performance.md was taken on a folder world, and a default
+        // that quietly changed the layout under them would move the table.
+        world::AnyStorage probe(fs);
         if (probe.open(worldDir, nowMillis()) == world::OpenResult::Ok) {
             probe.close(nowMillis());
-        } else if (probe.create(worldDir, 1234567890LL, nowMillis()) != world::OpenResult::Ok) {
+        } else if (probe.create(worldDir, 1234567890LL, nowMillis(), createAs)
+                   != world::OpenResult::Ok) {
             std::printf("cannot create %s\n", worldDir);
             return;
         } else {
             probe.close(nowMillis());
-            std::printf("created    %s (seed 1234567890)\n", worldDir);
+            std::printf("created    %s (seed 1234567890, %s)\n", worldDir,
+                        world::formatName(createAs));
         }
     }
 
@@ -900,7 +916,9 @@ bool collect(void* context, i32 x, i32 z)
 int meshWorld(const char* worldDir, mesh::CubeFormat cubeFormat)
 {
     io::PosixFileSystem fs;
-    mcver::Storage storage(fs);
+    // Whichever shape the folder is in, so a packed world can be measured
+    // against the folder world it came from without converting it back first.
+    world::AnyStorage storage(fs);
 
     const world::OpenResult opened = storage.open(worldDir, nowMillis());
     if (opened != world::OpenResult::Ok) {
@@ -1421,10 +1439,138 @@ int extractJar(const char* jarPath, const char* outDir)
     return 0;
 }
 
+// Converting a world between the two on-disk shapes, which on the console is a
+// button and here is the thing that proves it loses nothing:
+//
+//   ./3dalpha --convert <copy> pack
+//   ./3dalpha --convert <copy> unpack
+//   diff -r <original> <copy>          # must be empty
+//
+// **On a copy.** Every path here writes to the directory it is given.
+int convertWorldCommand(const char* worldDir, const char* which)
+{
+    io::PosixFileSystem fs;
+
+    world::WorldFormat target = world::WorldFormat::Unknown;
+    if (std::strcmp(which, "pack") == 0) {
+        target = world::WorldFormat::Packed;
+    } else if (std::strcmp(which, "unpack") == 0) {
+        target = world::WorldFormat::Folder;
+    } else {
+        std::printf("--convert wants `pack` or `unpack`, not `%s`\n", which);
+        return 1;
+    }
+
+    world::format::ConvertEstimate estimate;
+    const world::format::ConvertResult sized =
+        world::format::estimateConversion(fs, worldDir, target, &estimate);
+    if (sized != world::format::ConvertResult::Ok) {
+        std::printf("%s\n  \x1b[31m%s\x1b[0m\n", worldDir,
+                    world::format::describeConvertResult(sized));
+        return 1;
+    }
+
+    std::printf("%s -> %s\n", worldDir, world::formatName(target));
+    std::printf("  %u chunks, %u files\n", unsigned(estimate.chunks), unsigned(estimate.files));
+    std::printf("  %llu bytes on disk now, about %llu after (cluster %llu)\n",
+                (unsigned long long)estimate.sourceOnDisk,
+                (unsigned long long)estimate.targetOnDisk,
+                (unsigned long long)estimate.clusterSize);
+
+    // Every stage the console draws, printed instead. Same callback, same
+    // cancellation contract -- this one simply never cancels.
+    struct Progress {
+        const char* last = nullptr;
+
+        static bool observe(void* context, const world::format::ConvertProgress& p)
+        {
+            auto* self = static_cast<Progress*>(context);
+            if (self->last != p.stage) {
+                self->last = p.stage;
+                std::printf("  %s\n", p.stage);
+            }
+            return true;
+        }
+    };
+
+    Progress progress;
+    world::format::ConvertOptions options;
+    options.context = &progress;
+    options.observe = &Progress::observe;
+
+    const world::format::ConvertResult result =
+        world::format::convertWorld(fs, worldDir, target, options);
+    if (result != world::format::ConvertResult::Ok) {
+        std::printf("  \x1b[31m%s\x1b[0m\n", world::format::describeConvertResult(result));
+        return 1;
+    }
+    std::printf("  \x1b[32mdone\x1b[0m -- now %s\n",
+                world::formatName(world::detectFormat(fs, worldDir)));
+    return 0;
+}
+
+// What a world is and what it costs, without opening it. The number worth
+// looking at is the gap between the two sizes: that gap is cluster slack, and
+// it is the whole argument for the packed format.
+int worldInfo(const char* worldDir)
+{
+    io::PosixFileSystem fs;
+
+    const world::WorldFormat format = world::detectFormat(fs, worldDir);
+    if (format == world::WorldFormat::Unknown) {
+        std::printf("%s\n  not a world\n", worldDir);
+        return 1;
+    }
+
+    std::printf("%s\n  format     %s\n", worldDir, world::formatName(format));
+
+    world::AnyStorage storage(fs);
+    world::LevelData level;
+    if (storage.peekLevel(worldDir, &level)) {
+        std::printf("  seed       %lld\n", (long long)level.randomSeed);
+        std::printf("  last played %lld\n", (long long)level.lastPlayed);
+    }
+
+    world::WorldSize size;
+    if (!world::worldSize(fs, worldDir, &size)) {
+        std::printf("  could not measure it\n");
+        return 1;
+    }
+    std::printf("  content    %llu bytes\n", (unsigned long long)size.contentBytes);
+    std::printf("  on disk    %llu bytes in %u files and %u directories\n",
+                (unsigned long long)size.onDiskBytes, unsigned(size.fileCount),
+                unsigned(size.directoryCount));
+    if (size.contentBytes > 0) {
+        std::printf("  slack      %.2fx\n",
+                    double(size.onDiskBytes) / double(size.contentBytes));
+    }
+    return 0;
+}
+
+// The host's answer to the volume-info seam, so the size and free-space paths
+// the console takes are the ones the harness and the tests exercise too --
+// otherwise a conversion's refusal check would be dead code off-console.
+bool queryVolume(const char* path, io::VolumeInfo* out)
+{
+    struct statvfs info;
+    if (::statvfs(path, &info) != 0) {
+        return false;
+    }
+    // f_frsize is the allocation unit; f_bsize is a preferred I/O size and is
+    // not what a file's footprint rounds up to.
+    const u64 unit = info.f_frsize != 0 ? u64(info.f_frsize) : u64(info.f_bsize);
+    out->clusterSize = unit;
+    out->freeBytes = u64(info.f_bavail) * unit;
+    out->totalBytes = u64(info.f_blocks) * unit;
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
+    mc::io::setVolumeInfoQuery(&queryVolume);
+
     if (argc > 1 && std::strcmp(argv[1], "--version") == 0) {
         std::printf("3DAlpha host build\n");
         std::printf("  Minecraft version  %s\n", mcver::kDisplay);
@@ -1458,7 +1604,11 @@ int main(int argc, char** argv)
     const bool flip = std::strcmp(last, "flip") == 0;
     const bool generateSync = std::strcmp(last, "gensync") == 0;
     const bool generate = std::strcmp(last, "gen") == 0 || generateSync;
-    const bool trailingWord = quads || flip || generate;
+    // `packed` makes a *created* world packed instead of folder-shaped. It has
+    // to be opt-in: every documented --fly number was taken on a folder world,
+    // and changing the layout under them would move the table.
+    const bool packed = std::strcmp(last, "packed") == 0;
+    const bool trailingWord = quads || flip || generate || packed;
     const mesh::CubeFormat cubeFormat =
         quads ? mesh::CubeFormat::Quads : mesh::CubeFormat::Vertices;
 
@@ -1487,6 +1637,14 @@ int main(int argc, char** argv)
         return extractJar(argv[2], argv[3]);
     }
 
+    if (argc > 3 && std::strcmp(argv[1], "--convert") == 0) {
+        return convertWorldCommand(argv[2], argv[3]);
+    }
+
+    if (argc > 2 && std::strcmp(argv[1], "--world-info") == 0) {
+        return worldInfo(argv[2]);
+    }
+
     // The console's own loop, without the console. Everything between reading
     // the SD card and issuing a draw call runs here, so a streaming bug is a
     // sanitizer report rather than a puzzle on a 240-line screen.
@@ -1496,9 +1654,14 @@ int main(int argc, char** argv)
         // Optional, and 0 by default so every documented invocation reports the
         // same numbers it always did.
         const int switchTo = (argc > 5 && !(trailingWord && argc == 6)) ? std::atoi(argv[5]) : 0;
-        const bool threadedCache = generate && !generateSync;
-        fly(argv[2], distance, frames, switchTo, cubeFormat, flip, generate, threadedCache,
-            threadedCache ? 2 : 0);
+        // `packed` implies generation: there is no other way for the harness
+        // to be the thing that creates a world, and a trailing word that
+        // silently did nothing would be worse than one that is refused.
+        const bool wantsGeneration = generate || packed;
+        const bool threadedCache = wantsGeneration && !generateSync;
+        fly(argv[2], distance, frames, switchTo, cubeFormat, flip, wantsGeneration,
+            threadedCache, threadedCache ? 2 : 0,
+            packed ? world::WorldFormat::Packed : world::WorldFormat::Folder);
         return 0;
     }
 
@@ -1512,6 +1675,11 @@ int main(int argc, char** argv)
     std::printf("        report what scaling it needed; writes atlas.pam to look at\n");
     std::printf("  --extract-jar <jar> <packs-dir>      turn a client jar into a texture pack,\n");
     std::printf("        the same code the console's Extract-from-a-jar button runs\n");
+    std::printf("  --convert <world-dir> pack|unpack    move a world between the two on-disk\n");
+    std::printf("        shapes, in place. Pack it, unpack it, and `diff -r` against the\n");
+    std::printf("        original must be empty -- that is what \"loses no data\" means\n");
+    std::printf("  --world-info <world-dir>             format, seed and what it occupies;\n");
+    std::printf("        the gap between content and on-disk is cluster slack\n");
     std::printf("  --fly <world-dir> [distance] [frames] [switch-to] [quads|flip]\n");
     std::printf("        run the console's render loop; switch-to changes the render\n");
     std::printf("        distance halfway, the way the debug settings page does\n");
@@ -1526,6 +1694,9 @@ int main(int argc, char** argv)
     std::printf("  `gensync` is the same, with every read and write on the calling\n");
     std::printf("  thread and nothing read ahead. Generate a seed both ways and diff\n");
     std::printf("  the trees: they must be identical.\n");
+    std::printf("  `packed` (--fly only) generates like `gen`, but a world created by\n");
+    std::printf("  the run is packed rather than folder-shaped -- the console's\n");
+    std::printf("  default. Existing worlds open in whichever shape they are in.\n");
     std::printf("Run the unit tests with: make test\n");
     return 0;
 }

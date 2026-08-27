@@ -15,7 +15,7 @@ src/
   core/                version- and platform-independent; builds for host + 3DS
     nbt/               NBT reader/writer, generic tree copy + dump
     world/             Chunk column, Section (16^3), palette storage, lighting
-    world/format/      the `storage` slot contract
+    world/format/      the packed on-disk format: region containers, manifest, conversion
     block/             BlockDef + render types; the table itself is generated
     item/              ItemStack; later ItemRegistry, recipes
     entity/            entity types, physics, AI

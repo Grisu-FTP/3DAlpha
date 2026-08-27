@@ -235,6 +235,8 @@ void WorldStreamer::workerMain()
         std::lock_guard<std::mutex> guard(queueLock_);
         workerPeakLive_ = generator_->stats().peakLive;
         workerEvictedLive_ = generator_->stats().evictedLive;
+        workerUnlightable_ = generator_->stats().sweepUnlightable;
+        workerIncomplete_ = generator_->stats().sweepIncomplete;
         // The coordinate goes back to the main thread, which keeps it off the
         // slate until drainGenerated has put the column in the grid. A list
         // rather than a single slot, because more than one column can finish
@@ -287,6 +289,8 @@ void WorldStreamer::drainGenerated(ChunkRenderer& renderer)
         stats_.generatorPeakLive = workerPeakLive_;
         stats_.generatorEvictedLive = workerEvictedLive_;
         stats_.generationFailures = generationFailures_;
+        stats_.generationUnlightable = workerUnlightable_;
+        stats_.generationIncomplete = workerIncomplete_;
     }
     if (batch.empty()) {
         return;
@@ -1200,6 +1204,8 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     if (generator_ != nullptr && !workerRunning_) {
         stats_.generatorPeakLive = generator_->stats().peakLive;
         stats_.generatorEvictedLive = generator_->stats().evictedLive;
+        stats_.generationUnlightable = generator_->stats().sweepUnlightable;
+        stats_.generationIncomplete = generator_->stats().sweepIncomplete;
     }
     stats_.workerRunning = workerRunning_;
 

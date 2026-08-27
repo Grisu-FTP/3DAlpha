@@ -162,3 +162,71 @@ TEST(the_chunk_generator_matches_a_real_world)
         CHECK_EQ(int(stats.lit), 4);
     }
 }
+
+// **The seam between a world made elsewhere and the ground beyond it, which is
+// where generation used to stop for good.**
+//
+// A column that comes out of the save with `terrainPopulated` set is one whose
+// population pass has already run, and `ft` skips it on exactly that basis. But
+// that pass writes into a 2x2, and we -- unlike the original -- have to know
+// when a column has stopped changing before we can light it. So the four
+// columns the skipped pass reaches still have to record it as done.
+//
+// While they did not, the first generated column east of a stored one waited
+// for a pass that would never run again: `provide` failed `lightable` for it
+// and for everything behind it, every frame, for the rest of the session. On
+// hardware that is generation stopping and the world going undrawn -- a
+// streamer will not publish a column whose neighbour is still `Ungenerated`, so
+// the unlit frontier walks back inward.
+//
+// The store here is half a world: everything at x <= 0 is stored and populated,
+// everything east of it has to be made. Asking for (2, 0) sweeps x from -1 to
+// 4, so the seam sits inside one sweep.
+TEST(generation_continues_past_the_edge_of_a_world_made_elsewhere)
+{
+    struct Half {
+        std::unique_ptr<world::ChunkColumn> scratch;
+    };
+    Half half;
+
+    ChunkGenerator::Store store;
+    store.context = &half;
+    store.load = [](void* context, i32 chunkX, i32 chunkZ,
+                    world::ChunkColumn* scratch) -> const world::ChunkColumn* {
+        (void)context;
+        if (chunkX > 0) {
+            return nullptr;  // never made; this is what the generator is for
+        }
+        // Stored, and through the whole pipeline once already. The blocks do
+        // not matter here -- what is being tested is the bookkeeping around
+        // them -- so bare stone is enough to be a column that is not air.
+        *scratch = world::ChunkColumn(chunkX, chunkZ);
+        for (int sy = 0; sy < 4; ++sy) {
+            world::Section& section = scratch->section(sy);
+            for (int i = 0; i < world::Section::kVolume; ++i) {
+                section.setBlock(i, world::BlockId(1));
+            }
+        }
+        scratch->terrainPopulated = true;
+        return scratch;
+    };
+
+    worldgen::GeneratorOptions options;
+    auto generator = std::make_unique<ChunkGenerator>(1234567890LL, options, store);
+    auto column = std::make_unique<world::ChunkColumn>();
+
+    // Every column the far side of the seam, out to where a sweep no longer
+    // touches a stored one at all. Each of these failed before.
+    for (i32 x = 1; x <= 6; ++x) {
+        for (i32 z = -1; z <= 1; ++z) {
+            CHECK(generator->provide(x, z, column.get()));
+            CHECK(column->terrainPopulated);
+        }
+    }
+
+    const ChunkGenerator::Stats& stats = generator->stats();
+    CHECK_EQ(int(stats.refusedOutOfWindow), 0);
+    CHECK_EQ(int(stats.populationEscapes), 0);
+    CHECK_EQ(int(stats.evictedLive), 0);
+    CHECK_EQ(int(stats.lit), 18);
+}

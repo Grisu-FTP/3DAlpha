@@ -28,7 +28,7 @@ hard oracle to check itself against.
 | M5 Multiplayer (protocol 2) | not started |
 | M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
 
-**505 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**506 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -89,6 +89,12 @@ streaming, meshing and saving end to end under sanitizers. **It writes to the di
 It also sleeps a millisecond a frame, because generation is on another thread now and a host with
 nothing to draw would otherwise finish its frame budget before the worker had made anything; expect
 a sanitized run to fill far less than an `-O3` one in the same frame count.
+
+Two environment variables put the console's pacing on the host, and `--fly … gen` is where they
+belong: **`MC_IO_LATENCY_US`** is what one storage operation costs (~4000 is a card; 0, the default,
+is the host's page cache) and **`MC_FLY_FRAME_MS`** is how long a frame takes (33 is the console's
+refresh rate; 1 is the default). Together they are what made §0k reproducible without hardware.
+`MC_FLY_AUTOSAVE` overrides the autosave interval.
 
 `--fly` is the one to reach for when something is wrong with the renderer. It runs everything the
 console does between reading the SD card and issuing a draw call — streaming, the walk, meshing,
@@ -1851,6 +1857,81 @@ diff of tracked files only. The new sources are untracked, so they were invisibl
 505 tests pass under ASan/UBSan at `-O3`; TSan clean. `--fly` under sanitizers streams a packed
 world, and `--fly … packed` creates, generates, meshes and saves one. The 3DS target links and
 `tools/check3dsx.py` accepts the image. **None of the UI has been seen on hardware.**
+
+### 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
+
+Reported from hardware after §0i: **on loading a world it is invisible until you move a little, and
+generation pauses, works sparsely, and stops again.** One fault, and this time it was reproducible
+on the host — because two knobs were added that put the console's pacing on a dev machine, which is
+what §0i said could not be done. See "Modelling the console's card" below.
+
+**What was wrong.** A column that comes out of the save with `terrainPopulated` set has had its
+population pass run already, and `ft` skips it on exactly that basis. `ChunkGenerator` skipped it
+too — and skipped the bookkeeping with it. The pass writes into a 2×2, and because we light a
+column once it is final rather than relighting lazily for ever, each of those four columns records
+which of the four passes that reach it have run (`Entry::popMask`). A pass that ran in an *earlier
+session* was never recorded, so the first generated column east of a stored one waited for a pass
+that would never run again.
+
+`provide()` then failed `lightable` for that column, for its neighbours, and for everything behind
+them, every frame, for the rest of the session. The frontier never advanced — and because
+`WorldStreamer::neighboursReady` will not publish a column whose neighbour is still `Ungenerated`,
+the unlit seam walked back inward and the world stopped being drawn at all. **That is both halves of
+the report**: generation stopping is the sweep failing, and the world being invisible is the
+publishing that failure blocks.
+
+Measured, walking east off the reference world at distance 8 with the console's pacing modelled
+(`MC_FLY_FRAME_MS=33 MC_IO_LATENCY_US=4000 --fly <world> 8 3000 gen`):
+
+| | before | after |
+|---|---|---|
+| failed sweeps | **4,897** | **0** |
+| columns resident at the end | 208 of 361 | **361 of 361** |
+| columns still owed | 153 | **0** |
+| sections drawn, last 300 frames | fell to **0** | 143–282 |
+
+Every one of the 4,897 was `lightable`, not the cache — which matters, because §0i's counter
+reported all of them as "the generator's cache could not hold one". **A page that names the wrong
+cause is worse than one that names none**, so the counter is two counters now
+(`Stats::sweepUnlightable`, `Stats::sweepIncomplete`), the Info page's `fail` reads `failL` or
+`failC`, and `--fly` prints the split.
+
+**The fix is one line of bookkeeping and it is the faithful answer.** `ensure()`'s four triggers
+keep every one of `ft`'s residency checks and drop the `isTerrainPopulated` test, which moves into
+`populate()` — where it already was. A pass whose column is already populated does not run and does
+mark its 2×2 as done, through `notePopulated()`. What a player sees at that seam — missing trees and
+ores along the border of ground generated in another session — is a1.1.2's own seam: it skips the
+same pass for the same reason and simply never notices, because nothing in it asks whether a column
+has stopped changing.
+
+Held by `generation_continues_past_the_edge_of_a_world_made_elsewhere`: a store that is half a world
+(everything at x ≤ 0 stored and populated, everything east of it not), asking for eighteen columns
+across the seam. Fails on the first one without the fix. The seed-exact fixtures are untouched — a
+world with no stored chunks never reaches the new path — which is what says the fix changes the
+border and nothing else.
+
+#### Modelling the console's card, so this class of bug stops needing hardware
+
+§0i had to say "there is no way to tell the two candidates apart from here, because neither can be
+reproduced without the console". That is no longer true, and the reason it was is that a dev host
+answers a chunk read out of the page cache in tens of microseconds while the console pays four to
+six IPC round trips, and runs frames a hundred times faster than 30 Hz. Two knobs close both gaps:
+
+| Knob | What it does |
+|---|---|
+| `MC_IO_LATENCY_US` | `ChunkCache::Config::opLatencyMicros` — what one storage operation costs, paid where storage is actually touched: a read, a write, a group listing, the `stat` fallback. ~4000 is a card. |
+| `MC_FLY_FRAME_MS` | how long a `--fly` frame takes. 33 is the console's refresh rate, and it is what makes the per-frame budgets mean what they mean on hardware — two columns adopted per frame is 60 a second at 30 Hz and 2,000 a second at the 1 ms default. |
+
+Both default to the old behaviour, so every documented `--fly` number stays where it was. `--fly …
+gen` also prints per-frame card operations split into reads, listings and writes, which is what made
+the shape of a stall legible.
+
+**One thing they measured that is not a bug but is worth recording**: on a *folder* world the leaf
+directory holds chunks 64 apart, so a group listing answers for exactly one cell in view. Measured
+over 900 frames: **135 listings against 125 reads** — the group index amortises nothing there and
+doubles the card operations classification costs. It is already in the numbers `--world-info`
+reports (1,157 listings for 1,122 chunks, against packed's 1) and it is one more reason packed is
+the format the console makes.
 
 ### 1. Run it on a console
 

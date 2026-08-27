@@ -92,6 +92,11 @@ public:
         // frontier never advances. Must read zero; a non-zero one means the
         // generator's cache could not hold a sweep.
         u32 generationFailures = 0;
+        // ...and which of the two it was. `generationUnlightable` is the one
+        // that reported itself as the other for a whole hardware session; see
+        // ChunkGenerator::Stats.
+        u32 generationUnlightable = 0;
+        u32 generationIncomplete = 0;
         i64 generateMicros = 0;       // main-thread cost only: 0 while the worker runs
         u32 generatorPeakLive = 0;    // the generator's own high-water mark
         u32 generatorEvictedLive = 0; // must stay zero; see ChunkGenerator
@@ -578,6 +583,8 @@ private:
     // generator itself knows nothing about threads and should not have to.
     u32 workerPeakLive_ = 0;
     u32 workerEvictedLive_ = 0;
+    u32 workerUnlightable_ = 0;
+    u32 workerIncomplete_ = 0;
 
     world::LevelData level_;
     std::string path_;

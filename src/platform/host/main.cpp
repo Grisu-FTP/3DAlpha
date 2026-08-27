@@ -595,6 +595,19 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
     world::ChunkCache::Config cacheConfig;
     cacheConfig.cleanCapBytes = 8u << 20;
     cacheConfig.threaded = cacheThreaded;
+
+    // **`MC_IO_LATENCY_US` is how a console's card is put on a dev host.**
+    //
+    // A chunk read here comes out of the page cache in tens of microseconds; on
+    // the console it is four to six IPC round trips to the FS sysmodule. Every
+    // scheduling question in ChunkCache -- which queue starves which, when the
+    // dirty backstop bites, how long classification takes to catch up -- is
+    // decided by that ratio and by nothing else, so without this knob they are
+    // only answerable on hardware. 4000 is about what a card measures per
+    // operation; 0, the default, keeps every documented number where it was.
+    if (const char* latency = std::getenv("MC_IO_LATENCY_US")) {
+        cacheConfig.opLatencyMicros = u32(std::atoi(latency));
+    }
     streamer.setCacheConfig(cacheConfig);
     streamer.setPrefetchRings(prefetchRings);
     // Seconds, and deliberately short by default: a --fly run is a handful of
@@ -606,6 +619,18 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
     // dirty columns either works or does not.
     const char* autosave = std::getenv("MC_FLY_AUTOSAVE");
     streamer.setAutosaveSeconds(autosave != nullptr ? std::atoi(autosave) : 1);
+
+    // **How long a frame is allowed to take, which is what turns a frame count
+    // into wall time.** The default of 1 ms keeps every documented `--fly`
+    // number where it was; `MC_FLY_FRAME_MS=33` is the console's refresh rate,
+    // and it is the setting that makes the per-frame budgets mean what they
+    // mean on hardware -- two columns adopted per frame is 60 a second at 30 Hz
+    // and 2,000 a second here. Paired with `MC_IO_LATENCY_US` it is the whole
+    // of the console's pacing: a slow card and a slow frame.
+    const char* framePace = std::getenv("MC_FLY_FRAME_MS");
+    const int frameMillis = framePace != nullptr && std::atoi(framePace) > 0
+                                ? std::atoi(framePace)
+                                : 1;
 
     if (generate) {
         streamer.setGenerateMissing(true);
@@ -705,9 +730,19 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
     usize peakDirty = 0;
     u32 peakDirtyColumns = 0;
 
+    // **What the card did in this frame, split three ways.** With
+    // `MC_IO_LATENCY_US` set these are the only thing spending wall time on the
+    // I/O thread, so the shape of a stall reads straight off them: reads
+    // outrank listings in `takeJobLocked`, and a row of listings that never
+    // gets a turn is classification standing still, which is generation
+    // standing still.
+    u32 lastReads = 0;
+    u32 lastListings = 0;
+    u32 lastWrites = 0;
+
     if (generate) {
         std::printf("frame  loaded  pending  drawn  queued  meshed  quads     pool MB  evict"
-                    "  gen-owed  unclassified\n");
+                    "  gen-owed  unclassified   rd  ls  wr\n");
     } else {
         std::printf("frame  loaded  pending  drawn  queued  meshed  quads     pool MB  evict\n");
     }
@@ -720,7 +755,7 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
         // else. A millisecond a frame is not the console's pacing, but it is
         // enough for the run to mean something.
         if (generate) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(frameMillis));
 
             // **The console's save path, exercised under sanitizers.** The
             // camera has no body here, but the position and the world clock go
@@ -844,11 +879,16 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
                         double(renderer.pool().stats().resident) / (1024.0 * 1024.0),
                         renderer.pool().stats().evictions);
             if (generate) {
-                std::printf("  %8d  %12d%s", streaming.pendingGeneration,
-                            streaming.unclassified,
+                std::printf("  %8d  %12d  %3u %3u %3u%s", streaming.pendingGeneration,
+                            streaming.unclassified, streaming.io.reads - lastReads,
+                            streaming.io.listings - lastListings,
+                            streaming.io.writes - lastWrites,
                             streaming.generationGated ? "  GATED" : "");
             }
             std::printf("\n");
+            lastReads = streaming.io.reads;
+            lastListings = streaming.io.listings;
+            lastWrites = streaming.io.writes;
         }
     }
 
@@ -863,6 +903,13 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
     std::printf("ended at        %.1f %.1f, chunk (%d, %d)\n", px, pz,
                 int(std::floor(px / 16.0)), int(std::floor(pz / 16.0)));
     std::printf("meshed          %zu sections over %d frames\n", totalMeshed, frames);
+    std::printf("card            %u reads, %u listings, %u writes",
+                streamer.stats().io.reads, streamer.stats().io.listings,
+                streamer.stats().io.writes);
+    if (cacheConfig.opLatencyMicros != 0) {
+        std::printf(", modelled at %u us each", cacheConfig.opLatencyMicros);
+    }
+    std::printf("\n");
     if (generate) {
         std::printf("generation      %s, %d columns still owed\n",
                     streamer.stats().workerRunning ? "on a worker thread"
@@ -871,8 +918,12 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
         if (streamer.stats().generationFailures != 0) {
             // Loud, because it is the one way generation stops for good: the
             // nearest owed column is retried every frame and fails every frame.
-            std::printf("sweeps failed   %u -- the generator's cache could not hold one\n",
-                        streamer.stats().generationFailures);
+            // **Named by cause**, because when this last fired on hardware it
+            // was reported as the cache and was not the cache.
+            std::printf("sweeps failed   %u -- %u unlightable, %u could not be swept\n",
+                        streamer.stats().generationFailures,
+                        streamer.stats().generationUnlightable,
+                        streamer.stats().generationIncomplete);
         }
         std::printf("classification  %d cells still to ask about, %s\n",
                     streamer.stats().unclassified,

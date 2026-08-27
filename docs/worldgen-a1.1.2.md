@@ -803,6 +803,9 @@ Three gates, each measured or derived rather than guessed:
   re-checks that on every chunk it makes rather than trusting six cases to speak for a world
   (`populationEscapes`, asserted zero).
 - **A column is final once the four passes that can write into it have run**, at (cx−1..cx, cz−1..cz).
+  **"Have run" includes "ran in an earlier session."** A column that comes out of the save with
+  `terrainPopulated` set has had its pass, and `ft` skips it on that basis; skipping the *record* of
+  it as well is what walled off the ground east of any world made elsewhere. See status.md §0k.
 - **Lighting the centre needs the 3×3 around it final.** The original never has to make this call:
   it relights lazily from a queue, so it converges to the same answer after the fact. We compute the
   fixed point once, so the blocks have to have stopped moving first.

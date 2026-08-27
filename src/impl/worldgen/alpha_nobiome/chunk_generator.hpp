@@ -152,6 +152,14 @@ public:
         u32 scratchColumns = 0;      // window columns generated outside the cache
         u32 scratchHits = 0;
 
+        // **The two ways provide() can return false, kept apart.** They were
+        // one number once, reported as "the cache could not hold a sweep" --
+        // and when generation did stop on hardware, the cause was the other
+        // one, so the number said the wrong thing at exactly the moment it was
+        // being read. Both must stay zero.
+        u32 sweepIncomplete = 0;   // a column of the 6x6 had nowhere to live
+        u32 sweepUnlightable = 0;  // the 3x3 never became final
+
         // Dungeon chests and spawners population produced. They are counted and
         // dropped: the blocks are placed, the contents are not, because chunk
         // tile entities round-trip as an opaque blob and have never been
@@ -275,6 +283,17 @@ private:
 
     // `ft.a(aw, int, int)` -- populate once, flag first.
     void populate(i32 px, i32 pz);
+
+    // **Records that the pass at (px, pz) has run**, by setting its bit in the
+    // popMask of each of the four columns it can write into.
+    //
+    // Separate from populate() because a pass can have run in a *previous
+    // session*: a column that came out of the save with `terrainPopulated` set
+    // is one whose pass is done, and the original skips it on that basis. Its
+    // four columns still have to be told, or a freshly generated neighbour of a
+    // stored chunk waits for ever for a pass that will never run again. See the
+    // note in ensure().
+    void notePopulated(i32 px, i32 pz);
 
     Entry* acquire(i32 x, i32 z);
     u8* blocksOf(const Entry& entry) { return blocks_.data() + usize(entry.slot) * usize(kChunkBlocks); }

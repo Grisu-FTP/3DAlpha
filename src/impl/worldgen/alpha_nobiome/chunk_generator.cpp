@@ -269,21 +269,47 @@ ChunkGenerator::Entry* ChunkGenerator::ensure(i32 x, i32 z)
     }
 
     // The four overlapping quadrants, in the original's order and with its
-    // conditions -- including the two it tests twice, which are transcribed
-    // rather than tidied so a diff against `ft`'s bytecode stays readable.
-    if (!entry->populated && exists(x + 1, z + 1) && exists(x, z + 1) && exists(x + 1, z)) {
+    // residency conditions -- including the two it tests twice, which are
+    // transcribed rather than tidied so a diff against `ft`'s bytecode stays
+    // readable.
+    //
+    // **`isTerrainPopulated` is tested inside populate() rather than here, and
+    // that is not tidying -- it is the fix for a world that stopped
+    // generating.** The original's guard is `!chunk.isTerrainPopulated` and it
+    // decides whether the pass *runs*. Ours has a second job the original does
+    // not have: recording that the pass is *done*, because we light a column
+    // once it is final rather than relighting lazily for ever. Those two
+    // answers differ for exactly one column -- one that came out of the save
+    // already populated. Its pass ran in an earlier session, so it must not run
+    // again, and it must still be recorded.
+    //
+    // Skipping the call entirely conflated the two, and the symptom was a wall:
+    // walk to the edge of a world made elsewhere and the first generated column
+    // beyond it waits for the passes at the stored column west of it, which
+    // will never run again. `provide` then fails `lightable` for that column and
+    // for its eastern neighbours, every frame, for the rest of the session --
+    // and because `WorldStreamer` will not publish a column whose neighbour is
+    // still `Ungenerated`, the unlit frontier propagates back inward and the
+    // world stops being drawn at all. Reproduced on the host by walking off the
+    // east edge of the reference world under `MC_IO_LATENCY_US`: 4,205 failed
+    // sweeps over 3,000 frames, every one of them `lightable` rather than the
+    // cache, every one on the two columns either side of the seam. Zero after.
+    //
+    // **What the player sees at that seam is the original's own seam.** a1.1.2
+    // skips the same pass for the same reason and leaves the same missing
+    // trees and ores along the border of ground generated in another session;
+    // it simply never notices, because nothing in it asks whether a column has
+    // stopped changing. Marking the pass done is what makes us agree with it.
+    if (exists(x + 1, z + 1) && exists(x, z + 1) && exists(x + 1, z)) {
         populate(x, z);
     }
-    if (exists(x - 1, z) && !find(x - 1, z)->populated && exists(x - 1, z + 1) &&
-        exists(x, z + 1) && exists(x - 1, z)) {
+    if (exists(x - 1, z) && exists(x - 1, z + 1) && exists(x, z + 1) && exists(x - 1, z)) {
         populate(x - 1, z);
     }
-    if (exists(x, z - 1) && !find(x, z - 1)->populated && exists(x + 1, z - 1) &&
-        exists(x, z - 1) && exists(x + 1, z)) {
+    if (exists(x, z - 1) && exists(x + 1, z - 1) && exists(x, z - 1) && exists(x + 1, z)) {
         populate(x, z - 1);
     }
-    if (exists(x - 1, z - 1) && !find(x - 1, z - 1)->populated && exists(x - 1, z - 1) &&
-        exists(x, z - 1) && exists(x - 1, z)) {
+    if (exists(x - 1, z - 1) && exists(x - 1, z - 1) && exists(x, z - 1) && exists(x - 1, z)) {
         populate(x - 1, z - 1);
     }
 
@@ -300,7 +326,17 @@ ChunkGenerator::Entry* ChunkGenerator::ensure(i32 x, i32 z)
 void ChunkGenerator::populate(i32 px, i32 pz)
 {
     Entry* centre = find(px, pz);
-    if (centre == nullptr || centre->populated) {
+    if (centre == nullptr) {
+        return;
+    }
+    if (centre->populated) {
+        // **The pass has run; it just did not run here.** Either an earlier
+        // trigger in this same sweep ran it -- in which case this is a no-op,
+        // the bits are already set -- or the column came out of the save with
+        // `terrainPopulated` set, and the pass ran in whatever session wrote
+        // it. Both are "done", and the four columns it reaches have to be told
+        // so, because nothing else will ever tell them. See ensure().
+        notePopulated(px, pz);
         return;
     }
 
@@ -394,6 +430,11 @@ void ChunkGenerator::populate(i32 px, i32 pz)
         ++stats_.populationEscapes;
     }
 
+    notePopulated(px, pz);
+}
+
+void ChunkGenerator::notePopulated(i32 px, i32 pz)
+{
     for (int dx = 0; dx <= 1; ++dx) {
         for (int dz = 0; dz <= 1; ++dz) {
             Entry* e = find(px + dx, pz + dz);
@@ -525,6 +566,7 @@ bool ChunkGenerator::provide(i32 chunkX, i32 chunkZ, world::ChunkColumn* out)
     for (i32 x = chunkX - 3; x <= chunkX + 2; ++x) {
         for (i32 z = chunkZ - 3; z <= chunkZ + 2; ++z) {
             if (ensure(x, z) == nullptr) {
+                ++stats_.sweepIncomplete;
                 return false;
             }
         }
@@ -541,6 +583,7 @@ bool ChunkGenerator::provide(i32 chunkX, i32 chunkZ, world::ChunkColumn* out)
     }
 
     if (!lightable(chunkX, chunkZ)) {
+        ++stats_.sweepUnlightable;
         return false;
     }
     const bool ok = finish(chunkX, chunkZ, out);

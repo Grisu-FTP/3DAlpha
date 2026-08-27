@@ -59,6 +59,61 @@ using namespace mc;
 
 constexpr float kPi = 3.14159265358979f;
 
+// What the pause menu draws over, and the shape citro3d wants to be handed.
+//
+// The renderer owns the frame -- it opens it, draws the world on every eye and
+// ends it -- and the menu is one callback inside that. Doing it the other way
+// round is what the pause menu used to do, with a render target of its own, and
+// it is why the world used to disappear behind a wall of dirt when a player
+// paused. See ctr::PauseBackdrop.
+struct PausedWorld {
+    ctr::Renderer* renderer;
+    const ctr::Camera* camera;
+};
+
+void drawPausedWorld(void* context, void* overlayContext,
+                     void (*overlay)(void* overlayContext, C3D_RenderTarget* target))
+{
+    PausedWorld& paused = *static_cast<PausedWorld*>(context);
+    paused.renderer->drawFrame(*paused.camera, overlayContext, overlay);
+}
+
+// The "Saving level.." screen's counter.
+//
+// It is the bottom-screen console rather than the top, because the top screen
+// still holds the last frame of the world and the console is where every other
+// word this shell says to the player goes. `owed` is 0 when there was nothing
+// to write, which is worth its own line: it is the answer to "did pressing
+// START a moment ago already do this", and the answer is yes.
+struct SaveScreen {
+    // **Redrawn on the number, not on the poll.** close() reports every 16 ms
+    // and consoleInit turns double buffering off, so each print is a clear and
+    // a redraw of the bottom screen straight into the framebuffer -- sixty a
+    // second of that, to show the same figure, is work taken off the thread
+    // that is trying to write the world.
+    int lastPercent = -1;
+};
+
+void printSaveProgress(void* context, u32 written, u32 owed)
+{
+    SaveScreen& screen = *static_cast<SaveScreen*>(context);
+    const int percent = owed == 0 ? 100 : int((written * 100u) / owed);
+    if (percent == screen.lastPercent) {
+        return;
+    }
+    screen.lastPercent = percent;
+
+    std::printf("\x1b[2J\x1b[1;1H\x1b[32mSaving level..\x1b[0m ");
+    if (owed == 0) {
+        std::printf("already saved\n");
+        return;
+    }
+    // `u32` is `unsigned long` on this toolchain, hence the casts rather than
+    // %u on the value itself.
+    std::printf("%3d%%\n\n", percent);
+    std::printf("%lu of %lu columns\n", (unsigned long)written, (unsigned long)owed);
+}
+
 // An analogue axis as -1..1, with the deadzone taken out.
 //
 // Both sticks rest a little off centre on most consoles, so anything under a
@@ -521,42 +576,64 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
         const u32 down = hidKeysDown();
         const u32 held = hidKeysHeld();
         if (down & KEY_START) {
-            // **Save now**, and everything the autosave timer would write:
-            // dirty columns, level.dat with the position and the world clock,
-            // and the session.lock refresh. The world stops dead while the menu
-            // is up, so the I/O thread has the whole of it to itself and is
-            // finished long before the player resumes -- nothing here waits for
-            // it. It is also more than the original does: a1.1.2 only writes
-            // everything out on Save and quit to title.
-            world.saveNow(ctr::nowMillis());
+            // **Save now, but only what is owed.** Everything the autosave
+            // timer would write: dirty columns, level.dat with the position and
+            // the world clock, and the session.lock refresh. The world stops
+            // dead while the menu is up, so the I/O thread has the whole of it
+            // to itself and is finished long before the player resumes --
+            // nothing here waits for it. It is also more than the original
+            // does: a1.1.2 only writes everything out on Save and quit to
+            // title.
+            //
+            // **Nothing dirty means nothing written at all**, which is what
+            // makes opening the pause menu twice in a row, or opening it and
+            // leaving, cost one save rather than two. What is given up is the
+            // level.dat refresh that would have ridden along with it -- the
+            // position and the world clock -- and that is covered twice over
+            // already: the autosave timer writes it on its own interval, and
+            // close() writes it on the way out. `dirtyColumns` is read from the
+            // cache rather than from the frame's copy of its counters, which is
+            // as old as the last update().
+            const bool owed = world.dirtyColumns() > 0;
+            if (owed) {
+                world.saveNow(ctr::nowMillis());
+            }
 
-            // No room for the pause menu's target or its vertex buffer. That is
-            // a console with nothing left to give, and trapping the player in a
-            // world they cannot leave is the worst of the answers available --
-            // so START does what it did before there was a pause menu.
-            if (!menu.init(isNew3DS)) {
+            // **No target, no screen taken, nothing read off the card.** The
+            // menu draws into this loop's own frames, over the world, so all
+            // this asks for is citro2d and a text buffer. It is also why there
+            // is no listing here: the pause menu shows neither the world list
+            // nor the pack list, and reading either was what made pressing
+            // START a two-second stop.
+            if (!menu.initOverlay(isNew3DS)) {
                 std::printf("\x1b[31mno memory for the pause menu\x1b[0m\n");
                 break;
             }
 
+            // The world as it stood when START was pressed, redrawn every frame
+            // the menu is up. Nothing is ticked, streamed or meshed while it is
+            // -- the camera does not move and the sun does not either -- so
+            // every one of those frames is the same picture with the menu over
+            // it.
+            PausedWorld backdropWorld{&renderer, &camera};
+            ctr::PauseBackdrop backdrop;
+            backdrop.context = &backdropWorld;
+            backdrop.drawFrame = drawPausedWorld;
+
             const ctr::PauseChoice paused =
                 menu.runPause(choice.worldName.c_str(), choice.worldPath.c_str(),
-                              settings.renderDistance);
+                              settings.renderDistance, backdrop);
             menu.shutdown();
 
-            // Three things the menu took away and this has to give back before
-            // the next frame:
+            // Two things the menu took, where there used to be three. The top
+            // screen is no longer one of them: the menu never created a target
+            // of its own and never called gfxSet3D, so citro3d's output table
+            // still holds both eyes and there is nothing to reclaim.
             //
-            //   * The top screen. The menu's own render target evicted the
-            //     left eye from citro3d's one-per-output table and deleting it
-            //     left the slot empty, so without this the world is drawn and
-            //     never displayed -- see Renderer::reclaimScreen, which also
-            //     undoes the menu's gfxSet3D(false).
             //   * The bottom-screen console, which the menu cleared and wrote
             //     its own help onto.
             //   * The clock. `dt` is measured from the last frame, and the last
             //     frame was however long ago the player pressed START.
-            renderer.reclaimScreen();
             overlay.invalidate();
             lastTick = svcGetSystemTick();
 
@@ -689,8 +766,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // The original says the same thing on its way out of a world, and it is
     // worth saying: close() rewrites level.dat and flushes every dirty column,
     // which on a card is long enough for a still screen to look like a hang.
-    std::printf("\x1b[2J\x1b[1;1H\x1b[32mSaving level..\x1b[0m\n");
-    world.close(ctr::nowMillis());
+    // **With a percentage**, because "long enough to look like a hang" is
+    // exactly the case a number answers and a word does not -- and because a
+    // world saved a moment ago by the pause menu owes nothing at all, which
+    // this now says rather than sitting on the same still screen.
+    SaveScreen saveScreen;
+    world.close(ctr::nowMillis(), &saveScreen, printSaveProgress);
     renderer.shutdown();
     return 0;
 }

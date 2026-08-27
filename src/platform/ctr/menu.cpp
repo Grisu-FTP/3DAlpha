@@ -28,6 +28,10 @@ namespace {
 constexpr float kScreenWidth = 400.0f;
 constexpr float kScreenHeight = 240.0f;
 
+// citro2d's vertex budget, in quads. See the note in initCommon.
+constexpr int kMenuObjects = 1024;
+constexpr int kOverlayObjects = 2 * kMenuObjects;
+
 // The palette. Ours, not Mojang's -- see the note at the top of menu.hpp.
 constexpr u32 kInk = C2D_Color32(0xF0, 0xF0, 0xF0, 0xFF);
 constexpr u32 kInkDim = C2D_Color32(0xA0, 0xA0, 0xA0, 0xFF);
@@ -243,7 +247,7 @@ i64 nowMillis()
     return i64(osGetTime()) - 2208988800000LL;
 }
 
-bool Menu::init(bool isNew3DS)
+bool Menu::initCommon(bool isNew3DS, int objects)
 {
     isNew3DS_ = isNew3DS;
     maxDistance_ = isNew3DS ? kPlayMaxDistanceNew3DS : kPlayMaxDistanceOld3DS;
@@ -288,16 +292,27 @@ bool Menu::init(bool isNew3DS)
         chunkCacheMB_ = isNew3DS ? 8 : 2;
     }
 
-    // **1024 objects, and the number is arithmetic rather than taste.** citro2d
-    // sizes its vertex buffer from this and silently drops geometry once it is
-    // full, so it has to cover the busiest frame: the backdrop, six rows at
-    // five quads each, and a few hundred glyphs -- twice, because every label
-    // draws its shadow as a second pass. The backdrop used to be 240 quads of
-    // its own and is one since it became a tiled texture, which is most of the
-    // headroom the glyphs now spend. It is 128 KB of linear memory, which is
-    // why this is not simply C2D_DEFAULT_MAX_OBJECTS -- the menu gives it back
+    // **The object budget is arithmetic rather than taste.** citro2d sizes its
+    // vertex buffer from this and silently drops geometry once it is full, so
+    // it has to cover the busiest frame: the backdrop, six rows at five quads
+    // each, and a few hundred glyphs -- twice, because every label draws its
+    // shadow as a second pass. The backdrop used to be 240 quads of its own and
+    // is one since it became a tiled texture, which is most of the headroom the
+    // glyphs now spend. 1024 objects is 128 KB of linear memory, which is why
+    // this is not simply C2D_DEFAULT_MAX_OBJECTS -- the menu gives it back
     // before the renderer asks for its pool.
-    if (!C2D_Init(1024)) {
+    //
+    // **The pause menu asks for twice that, and the reason is the second eye.**
+    // The buffer is per *frame*, not per scene: citro2d resets it at
+    // C3D_FrameEnd, so an overlay drawn once per eye spends it twice, and the
+    // busiest screen it can reach in game -- the pack list, six rows of names
+    // and counts -- lands near 400 objects an eye. 1024 would very nearly do
+    // and "very nearly" here means a row of text silently missing from one eye
+    // on the console and on nothing else. Falling back to 1024 rather than
+    // refusing, because a menu that cannot be opened is worse than one that is
+    // thin on room: at slider zero there is only one eye and the question does
+    // not arise.
+    if (!C2D_Init(objects) && !C2D_Init(1024)) {
         return false;
     }
     C2D_Prepare();
@@ -311,16 +326,6 @@ bool Menu::init(bool isNew3DS)
         shutdown();
         return false;
     }
-
-    target_ = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
-    if (target_ == nullptr) {
-        shutdown();
-        return false;
-    }
-
-    // The left eye only. Nothing here has any depth to it, and the right eye's
-    // framebuffer would otherwise hold whatever the last game frame left in it.
-    gfxSet3D(false);
 
     // What the system font's line box actually is on this console, asked once.
     // Every y in the drawing code was written against it; fontTop() converts.
@@ -336,13 +341,44 @@ bool Menu::init(bool isNew3DS)
     }
     C2D_TextBufClear(textBuf_);
 
-    refreshWorlds();
-    // Builds the atlas if there is not one yet, and ends by decoding and
-    // uploading the pack's font and backdrop -- so a menu that is up has its
-    // art whether this is the first visit or the fifth.
-    refreshPacks();
+    // The atlas and the pack's art, neither of which needs a listing. **The
+    // world list and the pack list are not read here**, and that is the whole
+    // of why a pause menu now opens in a frame rather than in a second or two:
+    // listWorlds opens and gunzips a level.dat per world on the card, and
+    // listPacks reads every pack zip in its entirety to count what is in it.
+    // Neither is on screen when the menu opens, and the screens that show them
+    // ask for them on the way in.
+    ensureAtlas();
     consoleDirty_ = true;
     return true;
+}
+
+bool Menu::init(bool isNew3DS)
+{
+    // One eye: the main menu turns stereo off on its way in.
+    if (!initCommon(isNew3DS, kMenuObjects)) {
+        return false;
+    }
+
+    target_ = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
+    if (target_ == nullptr) {
+        shutdown();
+        return false;
+    }
+
+    // The left eye only. Nothing here has any depth to it, and the right eye's
+    // framebuffer would otherwise hold whatever the last game frame left in it.
+    gfxSet3D(false);
+    return true;
+}
+
+bool Menu::initOverlay(bool isNew3DS)
+{
+    // No target and no gfxSet3D: the renderer still owns the top screen and is
+    // about to draw the world this menu sits on top of. That is also why
+    // nothing here has to be given back afterwards -- there is no screen to
+    // reclaim and no eye to put back in citro3d's output table.
+    return initCommon(isNew3DS, kOverlayObjects);
 }
 
 void Menu::shutdown()
@@ -429,24 +465,33 @@ void Menu::refreshPacks()
         }
     }
 
-    if (atlas_.empty()) {
-        // Whatever the saved name was, there is no image yet on the first pass
-        // through here. Building it now means the pack screen can show what is
-        // live and `run` always has something to hand `runGame`.
-        const std::string path =
-            packName_.empty() ? std::string() : texture::packPath(texture::kPacksDir, packName_);
-        const texture::PackError error = texture::buildAtlas(fs_, path, &atlas_);
-        if (error != texture::PackError::Ok) {
-            // The saved pack is on the card and will not decode -- a truncated
-            // download, or a zip somebody edited. Falling back silently would
-            // leave the player looking at Dev Art with no idea why, so the
-            // reason goes on the console and 3ds.ini is left alone: the pack
-            // may be fixable, and forgetting the choice for them is not ours
-            // to do.
-            message_ = texture::packErrorText(error);
-            packName_.clear();
-            texture::buildAtlas(fs_, std::string(), &atlas_);
-        }
+    // The atlas may have been thrown away just above, by a pack that is no
+    // longer on the card.
+    ensureAtlas();
+}
+
+void Menu::ensureAtlas()
+{
+    if (!atlas_.empty()) {
+        loadPackArt(/*force=*/false);
+        return;
+    }
+
+    // Whatever the saved name is, there is no image yet on the first pass
+    // through here. Building it means the pack screen can show what is live and
+    // `run` always has something to hand `runGame`.
+    const std::string path =
+        packName_.empty() ? std::string() : texture::packPath(texture::kPacksDir, packName_);
+    const texture::PackError error = texture::buildAtlas(fs_, path, &atlas_);
+    if (error != texture::PackError::Ok) {
+        // The saved pack is gone, or is on the card and will not decode -- a
+        // truncated download, or a zip somebody edited. Falling back silently
+        // would leave the player looking at Dev Art with no idea why, so the
+        // reason goes on the console and 3ds.ini is left alone: the pack may be
+        // fixable, and forgetting the choice for them is not ours to do.
+        message_ = texture::packErrorText(error);
+        packName_.clear();
+        texture::buildAtlas(fs_, std::string(), &atlas_);
     }
 
     loadPackArt(/*force=*/false);
@@ -808,6 +853,13 @@ MenuChoice Menu::run()
 {
     MenuChoice choice;
 
+    // The card, read here rather than in init(): this is the entry point with
+    // a world list on it, and the pause menu -- which has none -- should not
+    // pay for one. recoverConversions rides along with it, which is right: a
+    // conversion interrupted by a flat battery is settled the next time the
+    // saves folder is looked at, and that is here.
+    refreshWorlds();
+
     while (aptMainLoop()) {
         hidScanInput();
         const u32 down = hidKeysDown();
@@ -869,8 +921,16 @@ MenuChoice Menu::run()
     return choice;
 }
 
-PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int renderDistance)
+PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int renderDistance,
+                           const PauseBackdrop& backdrop)
 {
+    // Held for the length of the loop. With one, every frame is the caller's
+    // and carries the world. Without one -- which means a caller that opened
+    // this with init() rather than initOverlay() -- the menu draws its own
+    // frames onto its own target, dirt backdrop and all, exactly as it did
+    // before it could be transparent.
+    backdrop_ = backdrop;
+
     // **The live distance, not the saved one.** The debug settings page can put
     // a world at distance 20, well past what this screen will offer; clamping
     // to maxDistance_ here would mean that merely opening the pause menu undid
@@ -936,6 +996,7 @@ PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int ren
     }
 
     inGame_ = false;
+    backdrop_ = PauseBackdrop{};
     pauseWorldName_ = "";
     // What the caller applies to the world it still has open. The file was
     // written the moment the row changed; this is the copy in memory.
@@ -1712,10 +1773,85 @@ bool Menu::createWorld(const std::string& name, i64 seed, MenuChoice* choice)
 
 void Menu::drawFrame()
 {
+    if (backdrop_.drawFrame != nullptr) {
+        // The caller's frame, with the world already in it. It calls back once
+        // per eye; everything this function would otherwise do -- begin, clear,
+        // pick a target, end -- belongs to whoever owns the world.
+        backdrop_.drawFrame(backdrop_.context, this, &Menu::drawOverlayEntry);
+        return;
+    }
+
+    if (target_ == nullptr) {
+        // initOverlay() and then no backdrop to draw on, which is a caller that
+        // paired the two wrong rather than anything a player can reach. There
+        // is no target and the screen belongs to somebody else, so the only
+        // safe thing to draw is nothing.
+        return;
+    }
+
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-    C2D_TextBufClear(textBuf_);
+    prepare2D();
     C2D_TargetClear(target_, C2D_Color32(0x18, 0x14, 0x10, 0xFF));
     C2D_SceneBegin(target_);
+    drawScreen();
+    C3D_FrameEnd(0);
+}
+
+void Menu::prepare2D()
+{
+    // citro2d's own state: its shader, its attribute and buffer layout, its
+    // combiner stages, and the dirty flags that make it re-send the rest.
+    C2D_Prepare();
+
+    // **The two pieces of state citro2d never sets and always assumes.** It
+    // calls neither C3D_AlphaBlend nor C3D_AlphaTest anywhere -- checked in
+    // libcitro2d.a, not assumed -- and simply inherits what C3D_Init left:
+    // src-alpha over one-minus-src-alpha, and no alpha test. That holds right
+    // up until something else has drawn, and the something else here is a world
+    // renderer that turns blending off for its opaque pass and the alpha test
+    // on for its cutouts. Inheriting those would make the scrim solid -- which
+    // is the whole of the transparency this menu is drawing for -- and would
+    // punch every glyph's antialiased edge out of a pack's font.
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+    C3D_AlphaTest(false, GPU_ALWAYS, 0x00);
+}
+
+void Menu::drawOverlayEntry(void* context, C3D_RenderTarget* target)
+{
+    static_cast<Menu*>(context)->drawOverlay(target);
+}
+
+void Menu::drawOverlay(C3D_RenderTarget* target)
+{
+    // citro2d's whole state, re-established over the renderer's. It is the
+    // supported way round: prepare2D puts back everything citro2d needs, and
+    // Renderer::applyWorldState does the same for the world at the top of
+    // every eye.
+    prepare2D();
+
+    // **Off, not merely reordered.** citro2d draws with GEQUAL against depths
+    // of its own between 0 and 0.5; the buffer under it now holds the world's,
+    // written by a pass whose test is GREATER and whose near geometry sits high
+    // in the range. A menu that respected that would be a menu with terrain
+    // poking through it. Order within the 2D pass is submission order, which is
+    // the order these functions already draw in, and no depth is written back.
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+
+    C2D_SceneBegin(target);
+    drawScreen();
+
+    // The batch has to be handed over before the caller ends the frame or draws
+    // the next eye over it; citro2d otherwise holds it until its next flush.
+    C2D_Flush();
+}
+
+void Menu::drawScreen()
+{
+    // Once per eye rather than once per frame, which is right either way: every
+    // label is re-parsed as it is drawn, and the buffer is only a scratch pad
+    // between the parse and the draw.
+    C2D_TextBufClear(textBuf_);
 
     drawBackground();
     switch (screen_) {
@@ -1750,12 +1886,20 @@ void Menu::drawFrame()
         drawConfirmDeleteJar();
         break;
     }
-
-    C3D_FrameEnd(0);
 }
 
 void Menu::drawBackground()
 {
+    // **Over a world there is no backdrop at all, only the scrim.** That is
+    // what the original does: `GuiScreen.drawScreen` draws the dirt only when
+    // `mc.theWorld` is null, and fills the screen with a gradient over the
+    // world when it is not. The world under this one is the caller's, drawn
+    // into this same frame a moment ago -- see PauseBackdrop.
+    if (backdrop_.drawFrame != nullptr) {
+        drawScrim();
+        return;
+    }
+
     // a1.1.2's own menu backdrop: the dirt tile, tiled at 32 pixels and
     // multiplied by 0x404040. Both constants are read out of `GuiScreen`
     // (`bh.class`) rather than remembered, and the darkening is already in the
@@ -1781,33 +1925,30 @@ void Menu::drawBackground()
         }
     }
 
-    // Darker over a world than over the title screen.
-    //
-    // The original draws its pause menu straight over the frame the game was
-    // on, dimmed. We cannot: the world is in the renderer's own colour buffers
-    // and this is a separate 2D target with its own -- and putting the two in
-    // one frame means citro2d and citro3d taking turns inside it, which is the
-    // seam `crashlogs/004-loading-a-world-from-the-menu` came out of. So the
-    // backdrop is the same tiles, and the scrim is what says the world is
-    // still there behind them rather than gone.
     if (inGame_) {
-        // The original's own scrim, now that the backdrop under it is the
-        // original's too: `GuiScreen.drawScreen` fills the screen with a
-        // gradient from 0xC0101010 to 0xD0101010 when a world is open. Two
-        // alphas eight apart is barely a gradient, which is the point -- it is
-        // what the original draws, and it was worth taking now that the numbers
-        // were in front of us in `bh.class` anyway.
-        //
-        // 0.05 rather than the backdrop's 0.0. citro2d draws with the depth
-        // test on and set to GEQUAL, so a tie would in fact pass -- but every
-        // other layer here already states its order in this number (outline
-        // 0.1, fill 0.2, bevel 0.3, text 0.4) and a scrim that leant on the
-        // comparison being the inclusive one would be the odd one out.
-        const u32 top = C2D_Color32(0x10, 0x10, 0x10, 0xC0);
-        const u32 bottom = C2D_Color32(0x10, 0x10, 0x10, 0xD0);
-        C2D_DrawRectangle(0.0f, 0.0f, 0.05f, kScreenWidth, kScreenHeight, top, top, bottom,
-                          bottom);
+        // A world behind the menu that the menu is *not* drawing over: this is
+        // the pause menu without a backdrop, which is the fallback path. The
+        // dirt is up, and the scrim is what says the world is still there
+        // rather than gone.
+        drawScrim();
     }
+}
+
+void Menu::drawScrim()
+{
+    // The original's own: `GuiScreen.drawScreen` fills the screen with a
+    // gradient from 0xC0101010 to 0xD0101010 whenever a world is open behind
+    // it, read out of `bh.class` rather than remembered. Two alphas eight apart
+    // is barely a gradient, which is the point -- it is what the original
+    // draws.
+    //
+    // 0.05 rather than the backdrop's 0.0. Over a world the depth test is off
+    // and only submission order matters, but the two paths draw the same thing
+    // and the numbers here already state their own order (outline 0.1, fill
+    // 0.2, bevel 0.3, text 0.4).
+    const u32 top = C2D_Color32(0x10, 0x10, 0x10, 0xC0);
+    const u32 bottom = C2D_Color32(0x10, 0x10, 0x10, 0xD0);
+    C2D_DrawRectangle(0.0f, 0.0f, 0.05f, kScreenWidth, kScreenHeight, top, top, bottom, bottom);
 }
 
 void Menu::drawTitle()

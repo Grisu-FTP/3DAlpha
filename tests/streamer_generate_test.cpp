@@ -198,6 +198,82 @@ TEST(a_streamer_fills_an_empty_world_and_saves_what_it_makes)
 // A second session over the same world must **read** it, not make it again.
 // Regenerating would not merely be slow: population order follows the sequence
 // of loads, so a second pass over the same ground is a different world.
+// **What a save screen is told while it waits.**
+//
+// close() writes every dirty column, and on a card that is long enough to look
+// like a hang -- so it reports as it drains. What matters is that the report is
+// monotonic, that it ends at everything it started with, and that it happens at
+// all when there is nothing to write, because "already saved" is the answer the
+// pause menu's own save leaves behind and the shell prints it from here.
+TEST(closing_a_world_reports_what_it_is_writing)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("Progress");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 99LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 1;
+    config.budget = {0, 4 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 1, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+    CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 20000) < 20000);
+
+    struct Report {
+        int calls = 0;
+        u32 owed = 0;
+        u32 lastWritten = 0;
+        bool monotonic = true;
+        bool withinOwed = true;
+    };
+    Report report;
+
+    streamer.close(kNow, &report, [](void* context, u32 written, u32 owed) {
+        Report& seen = *static_cast<Report*>(context);
+        if (seen.calls > 0) {
+            seen.monotonic = seen.monotonic && written >= seen.lastWritten && owed == seen.owed;
+        }
+        seen.withinOwed = seen.withinOwed && written <= owed;
+        seen.owed = owed;
+        seen.lastWritten = written;
+        ++seen.calls;
+    });
+
+    // Called at least once even with nothing owed -- that is the "already
+    // saved" answer rather than the absence of one.
+    CHECK(report.calls >= 1);
+    CHECK(report.monotonic);
+    CHECK(report.withinOwed);
+    // Whatever it started with, it finished.
+    CHECK_EQ(int(report.lastWritten), int(report.owed));
+
+    // And the world really is on the card, which is what the count was about.
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.open(dir.c_str(), kNow) == world::OpenResult::Ok);
+        CHECK(storage.hasChunk(0, 0));
+        CHECK(storage.close(kNow));
+    }
+}
+
 TEST(a_second_session_reads_what_the_first_one_generated)
 {
     TempDir temp;

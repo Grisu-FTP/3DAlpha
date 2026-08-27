@@ -155,6 +155,34 @@ struct PauseChoice {
     settings::Gamemode gamemode = settings::Gamemode::Spectator;
 };
 
+// How the pause menu gets the world behind it.
+//
+// **The pause menu used to draw its own dirt backdrop over a world it had
+// hidden**, with a scrim on top to say the world was still there. The reason
+// was real -- the menu had its own render target and its own frame, and putting
+// citro2d and citro3d in one frame was the seam `crashlogs/004` came out of --
+// but the answer was the wrong way round. What the original does is draw the
+// world and then a gradient over it, and that is what this makes possible: the
+// caller owns the frame, draws the frozen world into it, and hands each eye's
+// target to the menu to draw 2D on.
+//
+// The crash that shaped the old arrangement is not what stops this: it was
+// `C2D_Fini` freeing a shader program citro3d still pointed at, which
+// parkShaderProgram already answers. Interleaving inside a live frame is
+// supported -- `C2D_Prepare` re-establishes every piece of state citro2d needs,
+// and Renderer::applyWorldState does the same for the world.
+//
+// A default-constructed one means "no world behind me", which is the main menu.
+struct PauseBackdrop {
+    void* context = nullptr;
+
+    // Opens a frame, draws the frozen world on every eye, and calls
+    // `overlay(overlayContext, target)` on each one before ending the frame.
+    void (*drawFrame)(void* context, void* overlayContext,
+                      void (*overlay)(void* overlayContext, C3D_RenderTarget* target)) =
+        nullptr;
+};
+
 class Menu {
 public:
     // Builds the citro2d context and the top-screen target. C3D_Init must have
@@ -166,10 +194,20 @@ public:
     // game session would take it out of the VRAM the atlas and the VBO pool are
     // measured against.
     bool init(bool isNew3DS);
+
+    // The same, for a pause menu that draws into somebody else's frame: no
+    // render target of its own, and the top screen is left exactly as the
+    // renderer has it. **Nothing here reads the card**, which is the whole
+    // difference the player feels -- see the note on init().
+    bool initOverlay(bool isNew3DS);
+
     void shutdown();
 
     // Runs the menu until the player picks a world or leaves. Owns the frame
     // loop while it runs, including its own vsync.
+    //
+    // The world list and the pack list are read here rather than in init(),
+    // because this is the only entry point that shows either.
     MenuChoice run();
 
     // The pause menu: Resume, World Settings, Options, Exit World, over a world
@@ -185,7 +223,11 @@ public:
     // **init() has to have been called and shutdown() has to follow**, exactly
     // as around `run`, and for the same reason: the 400x240 target and
     // citro2d's vertex buffer are not worth holding through a game session.
-    PauseChoice runPause(const char* worldName, const char* worldPath, int renderDistance);
+    // `backdrop` is what makes the menu transparent: with one, the caller draws
+    // the frozen world and this draws over it; without one, it falls back to
+    // the dirt backdrop and needs a target of its own from init().
+    PauseChoice runPause(const char* worldName, const char* worldPath, int renderDistance,
+                         const PauseBackdrop& backdrop = PauseBackdrop{});
 
     // The live block atlas. Borrowed -- it belongs to the Menu, which outlives
     // every game session in the shell. Read after runPause when
@@ -217,6 +259,18 @@ private:
         // guessed, which is why it is a screen and not a line of text.
         ConfirmConvert,
     };
+
+    // The shared half of init() and initOverlay(): citro2d, the text buffer,
+    // the settings and the pack's art. Neither the card nor the screen.
+    // `objects` is citro2d's vertex budget in quads, which differs between the
+    // two because an overlay is drawn once per eye.
+    bool initCommon(bool isNew3DS, int objects);
+
+    // The atlas the game is handed, built from the saved pack name without
+    // listing the packs folder. Listing it costs a full read of every zip on
+    // the card -- see texture::listPacks -- and that is a price for the screen
+    // that shows the list, not for every visit to the menu.
+    void ensureAtlas();
 
     void refreshWorlds();
     void refreshPacks();
@@ -330,6 +384,24 @@ private:
 
     void drawFrame();
     void drawBackground();
+
+    // The dim over a world that is still open behind the menu, gradient and
+    // all. Its own function because both backdrops end in it: the dirt one
+    // draws it on top, and the transparent one is nothing else.
+    void drawScrim();
+
+    // citro2d's drawing state, put back over whatever drew last. Both paths
+    // call it, because after a game session the renderer's state is what a
+    // fresh citro2d frame would otherwise inherit.
+    void prepare2D();
+
+    // The 2D half of a frame, drawn on whichever target is current. Shared by
+    // both paths: the menu's own frame and the caller's.
+    void drawScreen();
+
+    // Renderer::Overlay2D's shape. Unpacks the Menu and draws one eye.
+    static void drawOverlayEntry(void* context, C3D_RenderTarget* target);
+    void drawOverlay(C3D_RenderTarget* target);
     void drawTitle();
     void drawPause();
     void drawWorlds();
@@ -372,6 +444,11 @@ private:
 
     C3D_RenderTarget* target_ = nullptr;
     C2D_TextBuf textBuf_ = nullptr;
+
+    // Set for as long as runPause is drawing into somebody else's frame. Null
+    // means this menu owns its frames and its target, which is the main menu
+    // and a pause menu with no backdrop to draw on.
+    PauseBackdrop backdrop_;
 
     // The system font's line box at scale 1, measured through citro2d rather
     // than written down: fontTop() converts against it, and a system font that

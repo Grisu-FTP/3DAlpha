@@ -23,12 +23,12 @@ hard oracle to check itself against.
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
 | **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world. **Plus a second on-disk format**, `Packed`: sector-allocated region containers, 9× smaller than the folder layout on a 16 KB-cluster card and 280× fewer file operations, converted losslessly in either direction and byte-exact on a real 1,119-chunk world. New worlds are created in it. See §0j and [packed-worlds.md](packed-worlds.md) |
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, and needs a seventh launch to say whether it closes the gap |
-| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and it costs nothing, because the world is stopped and the I/O thread has the whole pause to itself. Options has an autosave row beside render distance and texture pack |
+| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
 | M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
 
-**504 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**505 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -984,10 +984,52 @@ nothing has to be re-meshed. The old texture is released *before* the new one is
 `Atlas::init` prefers VRAM and holding 256 KB of the old one would silently demote the new one to
 linear on a console that is nearly full.
 
-**The world genuinely stops.** `runPause` owns the frame loop, so nothing is streamed, nothing is
-meshed, no column is generated and the sun does not move. The generation worker finishes at most the
-one column it had in flight and then blocks on its condition variable, which is what it does when
-idle anyway.
+**The world genuinely stops, and it is still on screen while it does.** `runPause` owns the frame
+loop, so nothing is streamed, nothing is meshed, no column is generated and the sun does not move.
+The generation worker finishes at most the one column it had in flight and then blocks on its
+condition variable, which is what it does when idle anyway. What the player sees behind the menu is
+that stopped world — the same frame redrawn — under the original's own dim.
+
+#### The pause menu draws into the game's frame, not into one of its own
+
+**The first version drew a wall of dirt over the world and a scrim on top of it to say the world was
+still there.** The reasoning was that the world lives in the renderer's colour buffers and the menu
+had a 2D target of its own, and that putting citro2d and citro3d in one frame was the seam
+`crashlogs/004` came out of. The first half was true and the conclusion was the wrong way round: it
+is not interleaving that crashed, it was `C2D_Fini` freeing a shader program citro3d still pointed
+at, which `parkShaderProgram` already answers.
+
+So the ownership is inverted. `Renderer::drawFrame` takes an optional overlay callback and calls it
+once per eye with the frame still open and the world already on that eye; `Menu::runPause` takes a
+`PauseBackdrop` — a pointer to whoever owns the frame — and its `drawFrame` delegates to it instead
+of opening one. What is left is a1.1.2's own arrangement: `GuiScreen.drawScreen` draws the dirt only
+when `mc.theWorld` is null and fills the screen with a gradient from `0xC0101010` to `0xD0101010`
+over the world when it is not, and both numbers are now what this draws.
+
+Four things had to be right for it, and three of them are state nobody sets on purpose:
+
+* **Per eye, not once.** citro2d's vertex buffer is reset at `C3D_FrameEnd`, so 2D drawn on one eye
+  and not the other is a menu half the player can see, and 2D drawn on both spends the object budget
+  twice. The pause menu asks for 2048 objects where the main menu asks for 1024, and falls back to
+  1024 rather than refusing to open.
+* **The frame-level GPU state is re-applied per eye.** `Renderer::applyWorldState` is the old head of
+  `drawFrame` — texture binds, alpha test, the three combiner stages, cull/depth/blend — hoisted so
+  that an overlay between two eyes cannot leave the second one drawing through citro2d's settings.
+* **The depth test is turned off for the 2D pass.** citro2d draws with `GEQUAL` against depths of its
+  own between 0 and 0.5; the buffer under it now holds the world's, written by a pass whose test is
+  `GREATER`. A menu that respected that would be a menu with terrain through it.
+* **citro2d sets neither `C3D_AlphaBlend` nor `C3D_AlphaTest`, anywhere.** Checked in
+  `libcitro2d.a`, not assumed: it inherits what `C3D_Init` left — src-alpha blending, no alpha test —
+  and that holds only until something else has drawn. The something else here is a renderer that
+  turns blending off for its opaque pass and the alpha test on for its cutouts, so `Menu::prepare2D`
+  states both. Without it the scrim is solid, which is the whole of the transparency, and a pack
+  font's edges get punched out by an alpha test meant for torches.
+
+**The menu no longer takes the top screen at all**, which is the other half of what this bought: no
+render target of its own (a 400×240 colour buffer plus depth that used to be allocated while the
+world's two eyes were live), no `gfxSet3D(false)`, and so nothing to give back on the way out.
+`Renderer::reclaimScreen` has no caller any more and is kept for the next thing that wants the screen
+to itself — the finding below is still true, and was expensive to find.
 
 **The live render distance is passed in rather than read back.** The debug page can put a world at
 distance 20, past anything this screen will offer; clamping on entry would mean that merely *opening*
@@ -1029,6 +1071,44 @@ within a run of frames it was already right — but the *first* frame after anyt
 inherited src-alpha blending for its opaque pass. Benign, because opaque texels have alpha 255 and
 cutouts are alpha-tested away, and it used to happen once per session. With a pause menu it happens
 every resume, so `drawFrame` now states it with the rest of its per-frame state.
+
+#### Opening it costs a frame, not two seconds
+
+**`Menu::init` used to read the card, and the pause menu paid for it.** Two listings ran on every
+visit to either menu, and neither is on screen when a pause menu opens:
+
+* `world::listWorlds` opens and gunzips a `level.dat` per world on the card, through
+  `Storage::peekLevel`.
+* `texture::listPacks` **reads every pack zip in the packs folder in its entirety** — `describeZip`
+  takes the whole file to walk its central directory and count which of the 58 names it carries. A
+  jar-derived pack is around a megabyte, and there is one per pack.
+
+Both are now asked for by the screen that shows them: `Menu::run` reads the world list on its way in
+(and `recoverConversions` with it, which is where an interrupted conversion belongs anyway), and the
+pack list is already read when `Screen::TexturePacks` opens. What `init` still does is build the
+atlas if there is not one yet — `ensureAtlas`, which needs the saved pack's *name* and not a listing
+— and upload the pack's font and backdrop, which are decoded once per pack and kept.
+
+So the pause path reads two small files (`3dalpha.ini` and the world's format) and allocates
+citro2d's vertex buffer, and that is all.
+
+**And it saves only what is owed.** START used to call `saveNow` unconditionally; it now asks
+`WorldStreamer::dirtyColumns()` first, taken live from the cache rather than from the once-a-frame
+copy in `stats()`. Pausing twice in a row, or pausing and leaving, costs one save. What is given up
+is the `level.dat` refresh that rode along with it, and that is covered twice over: the autosave
+timer writes it on its own interval and `close()` writes it on the way out.
+
+#### "Saving level.." says how far along it is
+
+`close()` takes an optional progress callback and reports as the write queue drains — columns
+written against columns owed — so the still screen on the way out of a world has a number on it. The
+drain is done here rather than inside `ChunkCache::close`'s blocking wait, because a call that
+returns when it is finished can say nothing while it runs. Two details are load-bearing: the cache
+recounts its columns in `pump()` and nowhere else, so polling `stats()` without it reports the same
+number forever; and unthreaded — the host harnesses — `pump()` is also what runs the writes, so the
+same loop drains and terminates there too. **Nothing owed prints "already saved"**, which is the
+visible half of the rule above: a world the pause menu has just written owes nothing, and now says
+so instead of sitting on a still screen.
 
 **Unrun.** It builds, links, and `check3dsx.py` accepts the image; nothing here has been on hardware.
 
@@ -1768,7 +1848,7 @@ survived, and fails without the fix.
 A third finding -- that seven new headers were missing and nothing builds -- was the review reading a
 diff of tracked files only. The new sources are untracked, so they were invisible to it.
 
-504 tests pass under ASan/UBSan at `-O3`; TSan clean. `--fly` under sanitizers streams a packed
+505 tests pass under ASan/UBSan at `-O3`; TSan clean. `--fly` under sanitizers streams a packed
 world, and `--fly … packed` creates, generates, meshes and saves one. The 3DS target links and
 `tools/check3dsx.py` accepts the image. **None of the UI has been seen on hardware.**
 

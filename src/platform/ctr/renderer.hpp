@@ -154,10 +154,17 @@ public:
     // simply leave the atlas deleted.
     bool setAtlas(const texture::AtlasImage& image);
 
-    // **Call this after anything else has drawn to the top screen**, which for
-    // now means after every visit to the pause menu. It is the whole of what a
-    // Renderer needs to pick the screen back up; nothing else it owns was
-    // touched.
+    // **Call this after anything else has *taken* the top screen.**
+    //
+    // **Nothing does today, and that is a deliberate state rather than an
+    // oversight.** The pause menu used to: it created a screen target of its
+    // own and called gfxSet3D(false), and this was what put both back. It now
+    // draws into this renderer's own frames instead -- see the overlay hook on
+    // drawFrame -- so it takes neither, and there is nothing to give back.
+    // This is kept because the next thing that wants the top screen to itself
+    // will need it, and because the two paragraphs below are the reason a
+    // resumed world used to freeze on its last frame forever. They were
+    // expensive to find.
     //
     // Two things are taken and neither is given back:
     //
@@ -203,7 +210,22 @@ public:
     float stereoFocalBlocks() const { return focalBlocks_; }
 
     // Clears both eyes, draws the world, ends the frame.
-    void drawFrame(const Camera& camera);
+    //
+    // `overlay` is called once per eye with the frame still open and that eye's
+    // target already carrying the world, which is how the pause menu draws over
+    // a world instead of over a backdrop of its own. **Per eye rather than
+    // once**: at any slider setting above zero there are two targets, and 2D
+    // drawn on one of them is 2D half the player can see. The frame-level GPU
+    // state is re-applied at the top of every eye precisely so that a 2D pass
+    // between them cannot leave the next one drawing through citro2d's depth
+    // test and culling.
+    //
+    // The context pointer is the same idiom io::FileSystem::listDirectory uses,
+    // and for the same reason: -fno-exceptions, -fno-rtti, and no appetite for
+    // a std::function's allocation in a frame.
+    using Overlay2D = void (*)(void* context, C3D_RenderTarget* target);
+    void drawFrame(const Camera& camera, void* overlayContext = nullptr,
+                   Overlay2D overlay = nullptr);
 
     const FrameStats& frameStats() const { return frameStats_; }
 
@@ -246,6 +268,12 @@ private:
     float fogStartBlocks() const { return fogEndBlocks() * 0.25f; }
 
     void drawEye(int eye, const Camera& camera, float iod);
+
+    // Everything a frame sets once and every eye depends on: the texture binds,
+    // the alpha test, the three combiner stages, and the cull/depth/blend the
+    // cube pass starts from. Hoisted out of drawFrame so it can run again
+    // between eyes, after an overlay has drawn 2D over the first one.
+    void applyWorldState();
 
     // Which of a section's three ranges a pass draws. The order here is the
     // order they are drawn in and the order they sit in memory.

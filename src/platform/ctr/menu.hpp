@@ -19,13 +19,15 @@
 //     seeds itself with `new Random().nextLong()`. Being able to type one is
 //     the player-facing proof that the generator is seed-exact, which is worth
 //     a deviation on a screen that is ours anyway.
-//   * **It draws with citro2d and the 3DS system font.** We ship no Mojang
-//     assets, and there is no PNG decoder or RomFS in the tree yet, so a
-//     Minecraft-style `default.png` is not available -- see docs/assets.md.
-//     Nothing here is textured at all: the background is shaded quads and the
-//     buttons are rectangles, in the same spirit as the placeholder atlas. When
-//     the asset pipeline lands, `C2D_FontLoad` and a real widget sheet replace
-//     the drawing without touching the menu's logic.
+//   * **It draws with the pack's own art when the pack has any, and with
+//     citro2d and the 3DS system font when it does not.** We ship no Mojang
+//     assets, so the backdrop and the font are whatever the player's pack
+//     carries: `dirt.png` tiled and darkened the way `GuiScreen` does it, and
+//     `default.png` as a bitmap font with a1.1.2's own glyph widths. A pack
+//     with neither -- Dev Art, or a pack carrying terrain.png alone -- still
+//     gets a backdrop out of its own dirt tile, and falls back to the system
+//     font for text. See platform/ctr/gui_art.hpp and docs/assets.md. The
+//     buttons are still rectangles: there is no widget sheet consumer yet.
 //
 // The bottom screen stays the text console throughout, printing the controls
 // for whichever screen is up.
@@ -43,11 +45,14 @@
 #include "core/settings/settings_file.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/atlas_image.hpp"
+#include "core/texture/font.hpp"
 #include "core/texture/pack_list.hpp"
 #include "core/util/types.hpp"
 #include "core/world/format/converter.hpp"
 #include "core/world/world_format.hpp"
 #include "core/world/world_list.hpp"
+
+#include "platform/ctr/gui_art.hpp"
 
 #include <citro2d.h>
 
@@ -236,6 +241,33 @@ private:
     // is the whole point of doing this here instead of in the renderer.
     bool selectPack(int index);
 
+    // Decodes the live pack's `default.png` and `dirt.png`, then uploads both.
+    //
+    // Separate from the atlas because they fail separately and none of the
+    // three is required: a pack with no font leaves the system font in place,
+    // and a pack with no dirt.png draws the dirt tile of its own terrain.png.
+    // `force` re-reads the card even when the pack's name has not changed,
+    // which is what a jar re-extracted over an existing pack needs.
+    void loadPackArt(bool force);
+
+    // Puts the decoded art on the GPU. Called on every visit to the menu,
+    // because init() and shutdown() bracket each one and the textures go with
+    // them -- the decoded copies above do not.
+    void uploadPackArt();
+
+    // The bitmap font's scale for a label written in the system font's units.
+    //
+    // The call sites all say things like 0.5f, which was a multiplier on the
+    // 3DS system font's ~30-pixel line box. A bitmap font has one honest size,
+    // its cell, and whole multiples of it; this maps the one to the other so
+    // the layout keeps its hierarchy without every call site being rewritten.
+    int fontScale(float scale) const;
+
+    // Where a bitmap line starts so that it sits where the system font's line
+    // box would have put its middle. Keeps every y in the drawing code meaning
+    // what it meant before the font changed.
+    float fontTop(float y, float scale, int pixels) const;
+
     // Points the World Settings screen at a world and reads what it needs off
     // the card: the per-world settings file, the format, and -- when the world
     // is closed -- its size. Called on the way in, so the screen never walks a
@@ -341,6 +373,11 @@ private:
     C3D_RenderTarget* target_ = nullptr;
     C2D_TextBuf textBuf_ = nullptr;
 
+    // The system font's line box at scale 1, measured through citro2d rather
+    // than written down: fontTop() converts against it, and a system font that
+    // is not 30 pixels on some console would otherwise shift every label.
+    float systemLineHeight_ = 30.0f;
+
     io::PosixFileSystem fs_;
     std::vector<world::WorldEntry> worlds_;
 
@@ -398,6 +435,24 @@ private:
     std::vector<texture::JarEntry> jars_;
     texture::AtlasImage atlas_;
     std::string packName_;
+
+    // The pack's menu art, decoded once per pack rather than once per visit --
+    // 68 KB held for the process against three card reads per visit to the
+    // menu, which on a pause menu is three reads a player waits on with a world
+    // already open. Empty is a real state for both: it means "this pack has
+    // none", and the drawing falls back rather than refusing.
+    texture::FontImage fontImage_;
+    std::vector<u8> backgroundTile_;
+    // Which pack the two above came from, so a second visit to the menu costs
+    // an upload and not three card reads.
+    std::string artPackName_;
+    bool artLoaded_ = false;
+    // Whether the two above are on the GPU. False after every shutdown(),
+    // because the textures go with it.
+    bool artUploaded_ = false;
+
+    BitmapFont font_;
+    Background background_;
 
     // Bumped by every successful selectPack. The pause menu reports a changed
     // atlas by comparing this across the visit rather than by comparing

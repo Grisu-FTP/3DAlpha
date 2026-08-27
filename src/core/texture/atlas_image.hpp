@@ -86,14 +86,35 @@ struct AtlasImage {
     bool empty() const { return rgba.size() != kAtlasBytes; }
 };
 
-// Rescales a square source into a kAtlasEdge^2 RGBA buffer.
+// Rescales a square source into an `edge` x `edge` RGBA buffer.
 //
 // Larger sources are area-averaged over the covering source rectangle.
 // **The average is premultiplied by alpha**, or every cutout tile -- a torch,
 // a sapling, the rim of a leaf -- picks up a dark halo from the transparent
-// texels beside it, whose RGB is usually black. Sources smaller than the atlas
+// texels beside it, whose RGB is usually black. Sources smaller than the target
 // are replicated nearest-neighbour, so a 8x pack stays crisp rather than blurry.
+//
+// The size is a parameter rather than kAtlasEdge because the font sheet is
+// scaled by the same two rules into a 128x128 buffer; see core/texture/font.hpp.
+void scaleSquare(const Image& source, int edge, std::vector<u8>* out);
+
+// scaleSquare into the atlas's own size, which is what a terrain.png wants.
 void scaleToAtlas(const Image& source, std::vector<u8>* out);
+
+// Reads one file out of a pack, whether the pack is a `.zip` or a directory
+// holding the tree loose.
+//
+// **NotFound means the pack has no such file**, which for anything but
+// terrain.png is a pack that simply does not carry it rather than a broken one.
+// The other errors are the pack's: unopenable, unreadable, absent.
+//
+// Each call opens the pack again. That is one card read per file and it is
+// deliberate: the menu asks for three files at the moment a pack is chosen, a
+// pack is a megabyte or so, and holding an open archive across the three would
+// mean an object with a lifetime for the sake of two reads a player waits on
+// once.
+PackError readPackFile(io::FileSystem& fs, std::string_view packPath, std::string_view name,
+                       std::vector<u8>* out);
 
 // Builds the atlas for a pack. An empty `packPath` means Dev Art.
 //

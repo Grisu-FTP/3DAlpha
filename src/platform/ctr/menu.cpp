@@ -4,6 +4,7 @@
 #include "platform/ctr/renderer.hpp"
 
 #include "core/settings/world_settings.hpp"
+#include "core/texture/background.hpp"
 #include "core/texture/jar_import.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/seed_text.hpp"
@@ -289,10 +290,13 @@ bool Menu::init(bool isNew3DS)
 
     // **1024 objects, and the number is arithmetic rather than taste.** citro2d
     // sizes its vertex buffer from this and silently drops geometry once it is
-    // full, so it has to cover the busiest frame: 240 backdrop tiles, six rows
-    // at five quads each, and a few hundred glyphs. It is 128 KB of linear
-    // memory, which is why this is not simply C2D_DEFAULT_MAX_OBJECTS -- the
-    // menu gives it back before the renderer asks for its pool.
+    // full, so it has to cover the busiest frame: the backdrop, six rows at
+    // five quads each, and a few hundred glyphs -- twice, because every label
+    // draws its shadow as a second pass. The backdrop used to be 240 quads of
+    // its own and is one since it became a tiled texture, which is most of the
+    // headroom the glyphs now spend. It is 128 KB of linear memory, which is
+    // why this is not simply C2D_DEFAULT_MAX_OBJECTS -- the menu gives it back
+    // before the renderer asks for its pool.
     if (!C2D_Init(1024)) {
         return false;
     }
@@ -318,7 +322,24 @@ bool Menu::init(bool isNew3DS)
     // framebuffer would otherwise hold whatever the last game frame left in it.
     gfxSet3D(false);
 
+    // What the system font's line box actually is on this console, asked once.
+    // Every y in the drawing code was written against it; fontTop() converts.
+    C2D_Text probe;
+    C2D_TextParse(&probe, textBuf_, "Ag");
+    float probeWidth = 0.0f;
+    float probeHeight = 0.0f;
+    C2D_TextGetDimensions(&probe, 1.0f, 1.0f, &probeWidth, &probeHeight);
+    if (probeHeight > 0.0f) {
+        // A zero would put every bitmap label half a line high. The default it
+        // keeps is the 3DS system font's own line box.
+        systemLineHeight_ = probeHeight;
+    }
+    C2D_TextBufClear(textBuf_);
+
     refreshWorlds();
+    // Builds the atlas if there is not one yet, and ends by decoding and
+    // uploading the pack's font and backdrop -- so a menu that is up has its
+    // art whether this is the first visit or the fifth.
     refreshPacks();
     consoleDirty_ = true;
     return true;
@@ -332,6 +353,13 @@ void Menu::shutdown()
     // which is precisely what `crashlogs/004-loading-a-world-from-the-menu` is.
     // See parkShaderProgram in renderer.hpp.
     parkShaderProgram();
+
+    // Before C2D_Fini as well, though for a plainer reason than the shader
+    // park: these are two textures' worth of linear memory and the renderer is
+    // about to ask for its pool.
+    font_.shutdown();
+    background_.shutdown();
+    artUploaded_ = false;
 
     if (target_ != nullptr) {
         C3D_RenderTargetDelete(target_);
@@ -420,6 +448,8 @@ void Menu::refreshPacks()
             texture::buildAtlas(fs_, std::string(), &atlas_);
         }
     }
+
+    loadPackArt(/*force=*/false);
 }
 
 void Menu::refreshJars()
@@ -464,8 +494,87 @@ bool Menu::selectPack(int index)
     ++packRevision_;
     message_ = nullptr;
     consoleDirty_ = true;
+
+    // Forced, because the pack's *name* is not what changed here: extracting a
+    // jar a second time rewrites a pack in place, and the menu would otherwise
+    // keep drawing with the font the old copy had.
+    loadPackArt(/*force=*/true);
+
     saveSettings();
     return true;
+}
+
+void Menu::loadPackArt(bool force)
+{
+    const std::string path =
+        packName_.empty() ? std::string() : texture::packPath(texture::kPacksDir, packName_);
+
+    bool decoded = false;
+    if (force || !artLoaded_ || artPackName_ != packName_) {
+        // Neither failure is worth a message. A pack with no default.png is not
+        // broken -- the pack screen already says how many of the 58 files it
+        // carries -- and the drawing falls back on its own.
+        texture::buildFont(fs_, path, &fontImage_);
+        texture::buildBackground(fs_, path, atlas_, &backgroundTile_);
+        artPackName_ = packName_;
+        artLoaded_ = true;
+        decoded = true;
+    }
+
+    // Only when there is something new to upload or nothing on the GPU yet.
+    // refreshPacks() also runs when the player opens the pack list, and
+    // deleting and recreating two textures under a menu that is mid-frame is
+    // not something a keypress should be doing.
+    if (decoded || !artUploaded_) {
+        uploadPackArt();
+    }
+}
+
+void Menu::uploadPackArt()
+{
+    // Torn down first: this runs again on every visit to the menu and after
+    // every pack change, and C3D_TexInit over a live texture would leak it.
+    font_.shutdown();
+    background_.shutdown();
+
+    if (!fontImage_.empty()) {
+        font_.init(fontImage_);
+    }
+    if (backgroundTile_.size() == texture::kBackgroundBytes) {
+        background_.init(backgroundTile_.data());
+    }
+    artUploaded_ = true;
+}
+
+int Menu::fontScale(float scale) const
+{
+    // Four steps, and the thresholds are where the system font's line box
+    // passes the cell heights: 0.65 x 30 is 19 pixels against two cells' 16,
+    // 0.9 x 30 is 27 against three cells' 24, 1.2 x 30 is 36 against four
+    // cells' 32. Body text lands on one cell, which is the size a1.1.2 draws
+    // every one of its own menus at -- the top screen is 400x240 and the
+    // original's GUI space at scale 2 is 427x240, so a cell here is a cell
+    // there.
+    if (scale >= 1.2f) {
+        return 4;
+    }
+    if (scale >= 0.9f) {
+        return 3;
+    }
+    if (scale >= 0.65f) {
+        return 2;
+    }
+    return 1;
+}
+
+float Menu::fontTop(float y, float scale, int pixels) const
+{
+    // The system font's line box, centred on the smaller bitmap line. Rounded,
+    // because a glyph drawn on a half pixel is a glyph with a soft edge.
+    const float box = systemLineHeight_ * scale;
+    const float line = float(texture::kFontCellPixels * pixels);
+    const float top = y + (box - line) * 0.5f;
+    return float(int(top + 0.5f));
 }
 
 void Menu::extractJar(int index)
@@ -1647,21 +1756,28 @@ void Menu::drawFrame()
 
 void Menu::drawBackground()
 {
-    // a1.1.2's own menu backdrop is the dirt tile drawn dark and tiled
-    // (`GuiScreen` multiplies it by 0x404040). We have no dirt tile and will
-    // not ship one, so each tile is a flat colour with a stable per-tile shade
-    // -- the same reasoning as the placeholder atlas, and the same replacement
-    // path when a real pack lands.
-    constexpr float kTile = 20.0f;
-    constexpr int kCols = int(kScreenWidth / kTile);
-    constexpr int kRows = int(kScreenHeight / kTile);
+    // a1.1.2's own menu backdrop: the dirt tile, tiled at 32 pixels and
+    // multiplied by 0x404040. Both constants are read out of `GuiScreen`
+    // (`bh.class`) rather than remembered, and the darkening is already in the
+    // texels -- see core/texture/background.hpp.
+    if (background_.ready()) {
+        background_.draw(kScreenWidth, kScreenHeight, 0.0f);
+    } else {
+        // Nothing to tile with, which means no atlas either -- a menu that
+        // failed to build one at all. Flat quads with a stable per-tile shade,
+        // which is what this screen drew before any pack was read.
+        constexpr float kTile = 20.0f;
+        constexpr int kCols = int(kScreenWidth / kTile);
+        constexpr int kRows = int(kScreenHeight / kTile);
 
-    for (int y = 0; y < kRows; ++y) {
-        for (int x = 0; x < kCols; ++x) {
-            const int shade = int(tileHash(x, y) & 15u) - 7;
-            const u32 colour = C2D_Color32(clampByte(70 + shade), clampByte(52 + shade),
-                                           clampByte(37 + shade), 0xFF);
-            C2D_DrawRectSolid(float(x) * kTile, float(y) * kTile, 0.0f, kTile, kTile, colour);
+        for (int y = 0; y < kRows; ++y) {
+            for (int x = 0; x < kCols; ++x) {
+                const int shade = int(tileHash(x, y) & 15u) - 7;
+                const u32 colour = C2D_Color32(clampByte(70 + shade), clampByte(52 + shade),
+                                               clampByte(37 + shade), 0xFF);
+                C2D_DrawRectSolid(float(x) * kTile, float(y) * kTile, 0.0f, kTile, kTile,
+                                  colour);
+            }
         }
     }
 
@@ -1675,13 +1791,22 @@ void Menu::drawBackground()
     // backdrop is the same tiles, and the scrim is what says the world is
     // still there behind them rather than gone.
     if (inGame_) {
-        // 0.05 rather than the tiles' 0.0. citro2d draws with the depth test on
-        // and set to GEQUAL, so a tie would in fact pass -- but every other
-        // layer here already states its order in this number (outline 0.1, fill
-        // 0.2, bevel 0.3, text 0.4) and a scrim that leant on the comparison
-        // being the inclusive one would be the odd one out.
-        C2D_DrawRectSolid(0.0f, 0.0f, 0.05f, kScreenWidth, kScreenHeight,
-                          C2D_Color32(0x00, 0x00, 0x00, 0x9C));
+        // The original's own scrim, now that the backdrop under it is the
+        // original's too: `GuiScreen.drawScreen` fills the screen with a
+        // gradient from 0xC0101010 to 0xD0101010 when a world is open. Two
+        // alphas eight apart is barely a gradient, which is the point -- it is
+        // what the original draws, and it was worth taking now that the numbers
+        // were in front of us in `bh.class` anyway.
+        //
+        // 0.05 rather than the backdrop's 0.0. citro2d draws with the depth
+        // test on and set to GEQUAL, so a tie would in fact pass -- but every
+        // other layer here already states its order in this number (outline
+        // 0.1, fill 0.2, bevel 0.3, text 0.4) and a scrim that leant on the
+        // comparison being the inclusive one would be the odd one out.
+        const u32 top = C2D_Color32(0x10, 0x10, 0x10, 0xC0);
+        const u32 bottom = C2D_Color32(0x10, 0x10, 0x10, 0xD0);
+        C2D_DrawRectangle(0.0f, 0.0f, 0.05f, kScreenWidth, kScreenHeight, top, top, bottom,
+                          bottom);
     }
 }
 
@@ -2131,6 +2256,23 @@ void Menu::drawButton(const Rect& rect, const char* label, bool selected, bool e
 void Menu::drawLabel(const char* text, float x, float y, float scale, u32 color, u32 flags,
                      bool shadow)
 {
+    if (font_.ready()) {
+        // The pack's font. `x` means what the alignment flag says it means, so
+        // the width has to be known before anything is drawn -- which costs a
+        // walk of the string and no glyph buffer at all.
+        const int pixels = fontScale(scale);
+        const float width = float(font_.measure(text) * pixels);
+        float left = x;
+        if ((flags & C2D_AlignMask) == C2D_AlignCenter) {
+            left = x - width * 0.5f;
+        } else if ((flags & C2D_AlignMask) == C2D_AlignRight) {
+            left = x - width;
+        }
+        font_.draw(text, float(int(left + 0.5f)), fontTop(y, scale, pixels), pixels, color,
+                   shadow, 0.4f);
+        return;
+    }
+
     C2D_Text parsed;
     C2D_TextParse(&parsed, textBuf_, text);
     C2D_TextOptimize(&parsed);
@@ -2145,6 +2287,19 @@ void Menu::drawLabel(const char* text, float x, float y, float scale, u32 color,
 void Menu::drawLabelClipped(const char* text, float x, float y, float scale, u32 color,
                             float maxWidth)
 {
+    if (font_.ready()) {
+        // Exact rather than estimated, unlike the system-font path below: the
+        // widths are a table, so how much fits is arithmetic and the ellipsis
+        // goes exactly where the last glyph that fits ended.
+        const int pixels = fontScale(scale);
+        char clipped[128];
+        const std::string_view shown =
+            font_.clip(text, int(maxWidth) / pixels, clipped, sizeof(clipped));
+        font_.draw(shown, float(int(x + 0.5f)), fontTop(y, scale, pixels), pixels, color,
+                   /*shadow=*/true, 0.4f);
+        return;
+    }
+
     char buffer[96];
     std::snprintf(buffer, sizeof(buffer), "%s", text);
 
@@ -2183,6 +2338,15 @@ void Menu::drawLabelClipped(const char* text, float x, float y, float scale, u32
 void Menu::drawLabelCentered(const char* text, float cx, float cy, float scale, u32 color,
                              bool shadow)
 {
+    if (font_.ready()) {
+        const int pixels = fontScale(scale);
+        const float width = float(font_.measure(text) * pixels);
+        const float top = cy - float(texture::kFontCellPixels * pixels) * 0.5f;
+        font_.draw(text, float(int(cx - width * 0.5f + 0.5f)), float(int(top + 0.5f)), pixels,
+                   color, shadow, 0.4f);
+        return;
+    }
+
     C2D_Text parsed;
     C2D_TextParse(&parsed, textBuf_, text);
     C2D_TextOptimize(&parsed);

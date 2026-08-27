@@ -14,7 +14,9 @@ extract or convert game data, and no feature is gated behind having a jar.
 | Asset | Bundled? | If the player supplies nothing |
 |---|---|---|
 | Block textures | **Generated** — "Dev Art", `core/texture/dev_art.cpp` | Everything renders, in the placeholder's style |
-| GUI, font | Neither is bundled and neither is read yet | The menu draws with the 3DS system font |
+| Font | Not bundled. A pack's `default.png` is the menu's font when it has one | The menu draws with the 3DS system font |
+| Menu backdrop | Not bundled. A pack's `dirt.png`, tiled and darkened as `GuiScreen` does it | The dirt tile of whatever `terrain.png` is live, Dev Art's included |
+| GUI widgets | Not bundled and not read yet | Buttons are drawn rectangles |
 | Sounds | No — a1.1.2 never shipped them | Game runs silently |
 | DSP firmware (`dspfirm.cdc`) | Cannot be — Nintendo copyright | Audio disabled, one line in the options screen |
 | Block/item/recipe data, worldgen | **Compiled into the binary** | Not applicable — always present |
@@ -110,10 +112,17 @@ filtered into another file on the player's own card.
 
 ## What a pack actually changes today
 
-**Only `terrain.png`.** A pack's `gui/`, `mob/`, `default.png`, `char.png` and the rest are copied,
-counted and left alone: the menu draws with the 3DS system font, there is no GUI sheet, and there are
-no mobs, so there is nothing to point them at yet. The texture-pack screen says so rather than
-implying more happened than did.
+**`terrain.png`, `default.png` and `dirt.png`.** The first is the block atlas; the other two are the
+menu — the font it draws every label with, and the backdrop behind them. A pack's `gui/`, `mob/`,
+`char.png` and the rest are still copied, counted and left alone: there is no GUI sheet consumer and
+there are no mobs, so there is nothing to point them at yet.
+
+**None of the three is required and none of them fails loudly.** A pack with no `default.png` leaves
+the menu on the 3DS system font, which is what it drew with before any of this existed. A pack with
+no `dirt.png` gets a backdrop cut out of its own `terrain.png` — the dirt block's tile, looked up in
+the generated block table rather than written down — which is also what serves Dev Art, since
+generated art has no `dirt.png` and never will. The texture-pack screen still counts all 58 files
+rather than implying more of them are read than are.
 
 The atlas is **always 256×256**, whatever the pack's tile size, and that is a decision with a
 measurement behind it. VRAM is 6 MB, render targets already take 0.8–1.5 MB, and a 64× pack's
@@ -228,8 +237,9 @@ steps went away.**
    and `png.cpp` are built on it, so the whole feature added no third-party dependency.
 2. **Assemble the block atlas** — `atlas_image.cpp`. Missing tiles do not fall back per-tile: a pack
    supplies a whole `terrain.png` or it is not a pack, and the fallback is per-*pack* to Dev Art.
-   Partial packs work because a pack that carries only `terrain.png` is exactly as usable as one
-   that carries all 58 files, nothing else being read yet.
+   Partial packs work: a pack that carries only `terrain.png` still plays, and the two files the
+   menu reads have fallbacks of their own — see [What a pack actually changes
+   today](#what-a-pack-actually-changes-today).
 3. ~~Choose a GPU format per image; ETC1A4 by default.~~ Not done. The atlas is RGBA8 at 256 KB,
    which is what it has always been, and the VRAM pressure ETC1 was for does not exist while the
    atlas is capped at 256×256. Worth revisiting if the cap is ever lifted.
@@ -279,16 +289,33 @@ then means filling a field that already exists rather than changing the vertex f
 
 ## Fonts
 
-**The main menu draws with the 3DS system font today**, through citro2d's `C2D_TextParse`. The
-reason has narrowed since this was written: there **is** a PNG decoder now, and a pack that carries
-`default.png` has it sitting in the packs folder unread. What is still missing is the consumer — a
-glyph atlas, per-glyph widths and a text drawer that uses them instead of citro2d's. `C2D_FontLoad`
-takes a converted BCFNT, so that path is for a bundled font rather than for a pack's bitmap one.
-Nothing else in the menu is textured either -- see [status.md](status.md) §0b.
+**The menu draws with the pack's `default.png` when the pack carries one**, and falls back to the
+3DS system font when it does not. `C2D_FontLoad` was never the path: it takes a converted BCFNT, so
+it would only ever serve a bundled font, and there is no bundled font. What the menu uses instead is
+`core/texture/font.hpp` for the rules and `platform/ctr/gui_art.hpp` for the drawing — one quad per
+glyph, the pen advancing by the glyph's own width.
 
-`default.png` is a 16×16 grid of glyphs with per-glyph widths derived by scanning columns, exactly
-as the original does. Derive the widths at conversion time and store them in the `.3dtex` cache
-rather than rescanning at boot.
+Every rule in it was read out of `kd.class`, the original's font renderer, rather than remembered:
+
+* The sheet is a 16×16 grid of 8-pixel cells, 128×128 in the original.
+* A glyph's advance is the last column of its cell with anything in it, plus two. The space is
+  forced to 4 rather than measured.
+* **"Anything in it" is the blue channel, not alpha.** The original reads `getRGB` and tests
+  `pixel & 255`, which on an ARGB int is blue. A pack whose glyphs are pure red measures as
+  entirely empty and draws one pixel wide per character. That is reproduced, not corrected.
+* Text is not indexed by character code: each character is looked up in a fixed string running from
+  the space to `»`, and the position plus 32 is the glyph. A character outside it draws nothing and
+  advances nothing — including a backtick, because the original's string repeats an apostrophe where
+  one would go.
+* `§` and a hex digit switch colour, both consumed by drawing and by measuring alike; an
+  unrecognised digit means white. The sixteen colours are built the way the original's constructor
+  builds them, gold's extra 85 of red included.
+
+The one deviation is HD packs. The original hardcodes 8 and 128.0f and would read a 256×256
+`default.png` as a garbled grid of its own top-left quarter; here the sheet is scaled to 128×128
+first, exactly as `terrain.png` is scaled to the atlas, and every rule above applies to the scaled
+copy. Widths are derived at load — a 128×128 scan is 16k texels once per pack change, which is not
+worth a cache format.
 
 ## Audio and DSP firmware
 

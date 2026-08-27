@@ -26,9 +26,9 @@ hard oracle to check itself against.
 | M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and it costs nothing, because the world is stopped and the I/O thread has the whole pause to itself. Options has an autosave row beside render distance and texture pack |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
-| M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Only `terrain.png` has a consumer** -- a pack's gui, font and mob textures are carried and counted and nothing reads them yet. See §0c and [assets.md](assets.md) |
+| M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
 
-**478 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**504 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -803,11 +803,26 @@ with nothing reading them.
   is that seed, anything else is `String.hashCode()` sign-extended — and `core/util/seed_text.cpp`
   implements it against reference values printed by a real JVM, including the UTF-8 → UTF-16 decode
   that makes a seed with an emoji in it hash the same on a console as on a PC.
-- **Nothing is textured.** The backdrop is shaded quads and the buttons are rectangles, drawn with
-  citro2d and the 3DS system font. We ship no Mojang assets, and there is no PNG decoder or RomFS in
-  the tree, so `default.png` and `widgets.png` are not available — same position as the placeholder
-  atlas, and `C2D_FontLoad` plus a widget sheet replace the drawing without touching the menu's
-  logic when [assets.md](assets.md) lands.
+- **The backdrop and the font are the pack's; the widgets are still rectangles.** We ship no Mojang
+  assets, so what the menu draws with is whatever the player's pack carries. The backdrop is
+  `dirt.png` tiled at 32 pixels and multiplied by 0x404040, both read out of `GuiScreen`
+  (`bh.class`), baked into the texels because citro2d's image tint interpolates towards a colour
+  rather than multiplying by it. The font is `default.png` with a1.1.2's own glyph widths — the
+  column scan that reads the *blue* channel, the character string that starts at the space, the `§`
+  colour codes, all of it out of `kd.class`; see [assets.md](assets.md#fonts). Neither is required:
+  a pack with no font leaves the 3DS system font in place, and a pack with no `dirt.png` — Dev Art
+  included — gets a backdrop out of the dirt tile of whatever `terrain.png` is live. `widgets.png`
+  still has no consumer, so buttons are drawn rectangles.
+  **Built, verified off-console, not yet seen on hardware.** What could be checked here was:
+  a host mock linked against the real `lib3dalpha_core.a` built the font and the backdrop from a
+  real a1.1.2 jar and rendered the title, world-list, World Settings and pause screens to PNGs at
+  400×240 — the layout holds, nothing overflows, and the derived widths are Minecraft's own
+  (`i` 2, `l` 3, `I` 4, space 4, everything else 6). Orientation was checked against `tex3ds`
+  itself: run on a test image, its output stores the source's *top* row first in memory with the
+  subtexture's `top` at v = 1, which is exactly what `GuiTexture::init` writes and what the glyph
+  cells assume. What is left for a console is the `GPU_REPEAT` wrap under the single backdrop quad,
+  whether citro2d's tint at blend 1.0 leaves a glyph's alpha alone, and whether 8-pixel text is
+  comfortable on the panel rather than merely correct on it.
 
 **A listing never opens a world, and that is a rule rather than an optimisation.** `Storage::open()`
 writes `session.lock` and `close()` rewrites `level.dat`, so a menu built on them would re-stamp
@@ -1753,7 +1768,7 @@ survived, and fails without the fix.
 A third finding -- that seven new headers were missing and nothing builds -- was the review reading a
 diff of tracked files only. The new sources are untracked, so they were invisible to it.
 
-478 tests pass under ASan/UBSan at `-O3`; TSan clean. `--fly` under sanitizers streams a packed
+504 tests pass under ASan/UBSan at `-O3`; TSan clean. `--fly` under sanitizers streams a packed
 world, and `--fly … packed` creates, generates, meshes and saves one. The 3DS target links and
 `tools/check3dsx.py` accepts the image. **None of the UI has been seen on hardware.**
 

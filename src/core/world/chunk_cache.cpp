@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 
 namespace mc::world {
 namespace {
@@ -201,6 +202,7 @@ bool ChunkCache::hasChunk(i32 x, i32 z)
     const auto begin = std::chrono::steady_clock::now();
     bool exists = false;
     {
+        payOpLatency();
         std::lock_guard<std::mutex> guard(storageLock_);
         exists = storage_.hasChunk(x, z);
     }
@@ -857,10 +859,22 @@ bool ChunkCache::takeJobLocked(Job* out)
     return false;
 }
 
+// **The card being modelled, and nothing else in this class knows about it.**
+// Called immediately before the storage lock is taken, so a thread waiting for
+// that lock waits the way it would on a console.
+void ChunkCache::payOpLatency() const
+{
+    if (config_.opLatencyMicros == 0) {
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(config_.opLatencyMicros));
+}
+
 bool ChunkCache::readThrough(i64 k, ChunkColumn* out)
 {
     bool ok = false;
     {
+        payOpLatency();
         std::lock_guard<std::mutex> guard(storageLock_);
         ok = storage_.loadChunk(keyX(k), keyZ(k), out);
     }
@@ -939,6 +953,7 @@ void ChunkCache::runJob(const Job& job)
         // has to be locked while 46 KB of NBT is built and compressed.
         bool ok = false;
         {
+            payOpLatency();
             std::lock_guard<std::mutex> guard(storageLock_);
             ok = storage_.saveChunk(*column);
         }
@@ -974,6 +989,7 @@ void ChunkCache::runJob(const Job& job)
             player = pendingPlayer_;
         }
         {
+            payOpLatency();
             std::lock_guard<std::mutex> guard(storageLock_);
             applyPlayerState(player);
             storage_.saveLevel();
@@ -999,6 +1015,7 @@ void ChunkCache::runJob(const Job& job)
         std::vector<i64> found;
         GroupScan scan{&found};
         {
+            payOpLatency();
             std::lock_guard<std::mutex> guard(storageLock_);
             storage_.listChunkGroup(keyX(job.chunk), keyZ(job.chunk), &scan, &collectChunk);
         }

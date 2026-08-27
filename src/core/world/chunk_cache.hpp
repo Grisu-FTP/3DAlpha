@@ -131,6 +131,23 @@ public:
         // what the tests and the `--mesh` harness want: no thread, no timing,
         // and a miss is a read rather than a request. The game turns it on.
         bool threaded = false;
+
+        // **What one storage operation costs on the card being modelled**, in
+        // microseconds, and 0 -- the default -- means the host's own disk.
+        //
+        // A dev host answers a chunk read out of the page cache in tens of
+        // microseconds; the console pays four to six IPC round trips to the FS
+        // sysmodule for the same read. That single ratio is the difference
+        // between the two machines' behaviour here, and until it could be
+        // dialled in, every scheduling bug in this class was reproducible only
+        // on hardware. It is paid where storage is actually touched -- a read,
+        // a write, a group listing, the `stat` fallback -- so the queue
+        // priorities, the starvation and the back-pressure all see the shape
+        // they see on a console.
+        //
+        // Set by the host harness from `MC_IO_LATENCY_US`. The game leaves it
+        // at 0: the console has the real cost already.
+        u32 opLatencyMicros = 0;
     };
 
     struct Stats {
@@ -442,6 +459,10 @@ private:
     // --- no lock held ---
     void runJob(const Job& job);
     bool readThrough(i64 k, ChunkColumn* out);
+
+    // One modelled card operation. Does nothing unless Config::opLatencyMicros
+    // says otherwise, and is called with no lock held.
+    void payOpLatency() const;
 
     bool startWorker();
     void stopWorker();

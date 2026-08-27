@@ -470,10 +470,24 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
         // `fail` wins because it is the worse one: a sweep that cannot finish
         // means the frontier never advances again, where a gate clears itself
         // as soon as a directory listing lands.
+        //
+        // **Which failure it is, in one letter.** `L` is a sweep whose 3x3
+        // never became final and `C` is one the generator's cache could not
+        // hold; they used to be one number, reported as the cache, and the time
+        // it actually fired it was `L`. A page that names the wrong cause is
+        // worse than one that names none.
         char tail[16] = {};
         if (streaming.generationFailures != 0) {
-            std::snprintf(tail, sizeof(tail), " fail %2lu",
-                          static_cast<unsigned long>(streaming.generationFailures));
+            // Clamped to two digits: the row is 40 columns and the count runs
+            // into the thousands within seconds of this firing. Whether it is
+            // 99 or 4,897 changes nothing a reader would do about it.
+            const u32 failures = streaming.generationFailures > 99u
+                                     ? 99u
+                                     : streaming.generationFailures;
+            std::snprintf(tail, sizeof(tail), " fail%c%2lu",
+                          streaming.generationUnlightable >= streaming.generationIncomplete ? 'L'
+                                                                                            : 'C',
+                          static_cast<unsigned long>(failures));
         } else if (streaming.generationGated) {
             std::snprintf(tail, sizeof(tail), " GATE");
         }

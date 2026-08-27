@@ -1,5 +1,7 @@
 #include "core/settings/settings_file.hpp"
 
+#include "core/settings/ini.hpp"
+
 #include <cstdio>
 #include <cstring>
 #include <string_view>
@@ -13,47 +15,6 @@ namespace {
 // else, and reading it would be reading whatever that is.
 constexpr usize kMaxBytes = 64 * 1024;
 
-std::string_view trim(std::string_view text)
-{
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
-        text.remove_prefix(1);
-    }
-    while (!text.empty()
-           && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r')) {
-        text.remove_suffix(1);
-    }
-    return text;
-}
-
-// A decimal integer, or false. Deliberately not atoi: "12abc" is a line
-// somebody mistyped, and taking the 12 out of it silently is worse than
-// ignoring the line.
-//
-// A leading '-' is accepted because the settings that mean "not chosen yet"
-// say so with -1, and a value the game writes has to be one the game can read
-// back -- otherwise the file round-trips through the parse failure rather than
-// through the parser, which works by accident and stops working the moment
-// anything else reads it.
-bool parseInt(std::string_view text, int* out)
-{
-    const bool negative = !text.empty() && text.front() == '-';
-    if (negative) {
-        text.remove_prefix(1);
-    }
-    if (text.empty() || text.size() > 9) {
-        return false;
-    }
-    int value = 0;
-    for (const char c : text) {
-        if (c < '0' || c > '9') {
-            return false;
-        }
-        value = value * 10 + (c - '0');
-    }
-    *out = negative ? -value : value;
-    return true;
-}
-
 }  // namespace
 
 bool loadSettings(io::FileSystem& fs, const char* path, GameSettings* out)
@@ -66,22 +27,9 @@ bool loadSettings(io::FileSystem& fs, const char* path, GameSettings* out)
     }
 
     std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    while (!text.empty()) {
-        const usize newline = text.find('\n');
-        std::string_view line = newline == std::string_view::npos ? text : text.substr(0, newline);
-        text = newline == std::string_view::npos ? std::string_view() : text.substr(newline + 1);
-
-        line = trim(line);
-        if (line.empty() || line.front() == '#') {
-            continue;
-        }
-        const usize equals = line.find('=');
-        if (equals == std::string_view::npos) {
-            continue;
-        }
-        const std::string_view key = trim(line.substr(0, equals));
-        const std::string_view value = trim(line.substr(equals + 1));
-
+    std::string_view key;
+    std::string_view value;
+    while (nextEntry(&text, &key, &value)) {
         if (key == "render_distance") {
             int distance = 0;
             if (parseInt(value, &distance)) {

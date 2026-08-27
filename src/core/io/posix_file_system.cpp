@@ -52,6 +52,123 @@ bool writeExactly(int fd, const u8* src, usize count)
     return true;
 }
 
+// Positional reads and writes on one descriptor.
+//
+// **Two implementations, because devkitARM's newlib has no pread/pwrite.**
+// Where they exist they are the right primitive: one call, no seek state, and
+// nothing to get wrong if a handle is ever shared. Where they do not, the
+// fallback is an explicit seek followed by the ordinary loop.
+//
+// The fallback costs nothing on the console it is for. libctru's devoptab
+// `lseek` for SEEK_SET is arithmetic on a struct in the application's own
+// memory -- no IPC at all -- and `read` then hands the stored offset to
+// `FSFILE_Read`, which takes a u64 offset of its own. So a positional read is
+// one round trip either way; only SEEK_END would cost a second, and nothing
+// here seeks that way. See docs/3ds-performance.md.
+#if defined(__3DS__)
+#define MC_POSITIONAL_IO_VIA_SEEK 1
+#else
+#define MC_POSITIONAL_IO_VIA_SEEK 0
+#endif
+
+class PosixRandomAccessFile final : public RandomAccessFile {
+public:
+    explicit PosixRandomAccessFile(int fd) : fd_(fd) {}
+
+    ~PosixRandomAccessFile() override
+    {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+    }
+
+    bool readAt(u64 offset, ByteSpan out) override
+    {
+#if MC_POSITIONAL_IO_VIA_SEEK
+        if (!seekTo(offset)) {
+            return false;
+        }
+        return readExactly(fd_, out.data(), out.size());
+#else
+        usize done = 0;
+        while (done < out.size()) {
+            const ssize_t n =
+                ::pread(fd_, out.data() + done, out.size() - done, off_t(offset + done));
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return false;
+            }
+            if (n == 0) {
+                return false;  // the file ends before the caller's range does
+            }
+            done += usize(n);
+        }
+        return true;
+#endif
+    }
+
+    bool writeAt(u64 offset, ConstByteSpan data) override
+    {
+#if MC_POSITIONAL_IO_VIA_SEEK
+        // Seeking past the end and writing is what extends a file with a hole
+        // in it, and FAT fills the gap with zeroes -- which is the behaviour
+        // the region container's "holes read zero" rule depends on.
+        if (!seekTo(offset)) {
+            return false;
+        }
+        return writeExactly(fd_, data.data(), data.size());
+#else
+        usize done = 0;
+        while (done < data.size()) {
+            const ssize_t n =
+                ::pwrite(fd_, data.data() + done, data.size() - done, off_t(offset + done));
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return false;
+            }
+            if (n == 0) {
+                return false;
+            }
+            done += usize(n);
+        }
+        return true;
+#endif
+    }
+
+    bool size(u64* out) override
+    {
+        struct stat info;
+        if (::fstat(fd_, &info) != 0 || info.st_size < 0) {
+            return false;
+        }
+        *out = u64(info.st_size);
+        return true;
+    }
+
+    bool flush() override { return ::fsync(fd_) == 0; }
+
+private:
+#if MC_POSITIONAL_IO_VIA_SEEK
+    bool seekTo(u64 offset)
+    {
+        // off_t is 64-bit here, but the cast is checked rather than assumed:
+        // an offset that does not survive it would land somewhere else in the
+        // file, which is worse than failing.
+        const off_t target = off_t(offset);
+        if (target < 0 || u64(target) != offset) {
+            return false;
+        }
+        return ::lseek(fd_, target, SEEK_SET) == target;
+    }
+#endif
+
+    int fd_ = -1;
+};
+
 bool buildTempPath(const char* path, char* out, usize outSize)
 {
     const usize length = std::strlen(path);
@@ -232,6 +349,48 @@ bool PosixFileSystem::listDirectory(const char* path, void* context, DirVisitor 
 
     ::closedir(dir);
     return true;
+}
+
+std::unique_ptr<RandomAccessFile> PosixFileSystem::openRandomAccess(const char* path,
+                                                                   bool create)
+{
+    const int flags = O_RDWR | (create ? O_CREAT : 0);
+    const int fd = ::open(path, flags, 0666);
+    if (fd < 0) {
+        return nullptr;
+    }
+    return std::unique_ptr<RandomAccessFile>(new PosixRandomAccessFile(fd));
+}
+
+bool PosixFileSystem::rename(const char* from, const char* to)
+{
+    if (std::rename(from, to) == 0) {
+        return true;
+    }
+
+    // **The source has to exist before the target is cleared.** Without this
+    // check a rename that failed for any other reason -- a missing source most
+    // of all -- would unlink the target, fail again, and return false having
+    // destroyed the very file it was asked to replace. `writeFileAtomic` gets
+    // away with the same shape because it has just written its temporary and
+    // knows it is there; a general-purpose rename knows nothing of the sort.
+    //
+    // Checked by probing rather than by reading errno, because the errno
+    // devkitARM reports for a target that is in the way is not something this
+    // side can verify. A probe is right whatever it turns out to be, and it
+    // only ever runs on the failure path.
+    if (!exists(from)) {
+        return false;
+    }
+
+    // The same FAT caveat writeFileAtomic carries: devkitARM's rename refuses
+    // when the target exists, where POSIX would have replaced it. Only a file
+    // can be cleared this way -- unlink on a directory fails, and a caller
+    // moving a directory over another one has to remove that one itself.
+    if (::unlink(to) != 0 && errno != ENOENT) {
+        return false;
+    }
+    return std::rename(from, to) == 0;
 }
 
 }  // namespace mc::io

@@ -3,9 +3,13 @@
 #include "platform/ctr/overlay.hpp"
 #include "platform/ctr/renderer.hpp"
 
+#include "core/settings/world_settings.hpp"
 #include "core/texture/jar_import.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/seed_text.hpp"
+#include "core/world/any_storage.hpp"
+#include "core/world/format/converter.hpp"
+#include "core/world/world_format.hpp"
 
 #include "version_config.hpp"
 #include "version_slots.hpp"
@@ -173,6 +177,64 @@ void autosaveLabel(int seconds, char* out, usize size)
     }
 }
 
+// The order the gamemode row steps through. Spectator first because it is the
+// default and the only implemented one; the other two are drawn disabled --
+// see settings::gamemodeImplemented.
+constexpr settings::Gamemode kGamemodeOrder[] = {
+    settings::Gamemode::Spectator,
+    settings::Gamemode::Survival,
+    settings::Gamemode::Creative,
+};
+constexpr int kGamemodeCount = int(sizeof(kGamemodeOrder) / sizeof(kGamemodeOrder[0]));
+
+int gamemodeIndex(settings::Gamemode mode)
+{
+    for (int i = 0; i < kGamemodeCount; ++i) {
+        if (kGamemodeOrder[i] == mode) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+// Bytes as something a player can read at a glance. Deliberately coarse: this
+// is a size on a screen, not an accounting figure, and "1.4 MB" answers the
+// question "will this fit" better than eight digits do.
+void formatBytes(u64 bytes, char* out, usize size)
+{
+    if (bytes < 1024ull) {
+        std::snprintf(out, size, "%llu B", (unsigned long long)bytes);
+    } else if (bytes < 1024ull * 1024ull) {
+        std::snprintf(out, size, "%.1f KB", double(bytes) / 1024.0);
+    } else {
+        std::snprintf(out, size, "%.1f MB", double(bytes) / (1024.0 * 1024.0));
+    }
+}
+
+// The rows of the World Settings screen. In game there is a world open and
+// streaming behind this, so copying, deleting and converting it are not on
+// offer -- the three of them all mean rewriting files something else holds.
+enum WorldSettingsRow {
+    kRowGamemode = 0,
+    kRowFormat,
+    kRowSize,
+    kRowCopy,
+    kRowDelete,
+    kRowBack,
+    kRowCount,
+};
+constexpr int kWorldSettingsRowsInGame = 2;  // gamemode, back
+
+int worldSettingsRowFor(int cursor, bool inGame)
+{
+    // In game the cursor only has two positions, and the second of them is
+    // Back -- which is the last row, not the second one.
+    if (!inGame) {
+        return cursor;
+    }
+    return cursor == 0 ? kRowGamemode : kRowBack;
+}
+
 }  // namespace
 
 i64 nowMillis()
@@ -284,6 +346,12 @@ void Menu::shutdown()
 
 void Menu::refreshWorlds()
 {
+    // Before the list, not after: a console switched off part way through a
+    // conversion leaves either a staging directory worth nothing or a world
+    // half unpacked, and both are settled here rather than shown to the player.
+    // Cheap when there is nothing to do, which is every boot but one.
+    world::format::recoverConversions(fs_, kSavesDir);
+
     world::listWorlds(fs_, kSavesDir, &worlds_);
 
     const int rows = rowCount(worlds_.size());
@@ -513,7 +581,8 @@ void Menu::printConsoleHelp()
     case Screen::Worlds:
         std::printf("Up/Down  choose a world\n");
         std::printf("A        play it\n");
-        std::printf("X        delete it\n");
+        std::printf("X        its settings, size,\n");
+        std::printf("         copy and delete\n");
         std::printf("B        back\n\n");
         std::printf("Worlds live on the card at:\n");
         std::printf("  \x1b[33m%s/\x1b[0m\n\n", kSavesDir);
@@ -523,6 +592,41 @@ void Menu::printConsoleHelp()
             std::printf("-- a level.dat and the base36 chunk\n");
             std::printf("folders beside it.\n");
         }
+        break;
+    case Screen::WorldSettings:
+        std::printf("Left/Right  change the value\n");
+        std::printf("Up/Down     choose a row\n");
+        std::printf("A           run the row\n");
+        std::printf("B           back\n\n");
+        std::printf("These belong to one world, not to\n");
+        std::printf("the console. They are kept in\n");
+        std::printf("  \x1b[33m<world>/%s\x1b[0m\n", settings::kWorldSettingsName);
+        std::printf("which a real Minecraft client never\n");
+        std::printf("reads, so nothing here changes what\n");
+        std::printf("a PC copy of the world means.\n\n");
+        if (inGame_) {
+            // Said rather than left to be discovered: the rows are simply not
+            // there, and a player who used them from the home screen would
+            // otherwise think they had gone missing.
+            std::printf("Copy, Delete and Format need the\n");
+            std::printf("world closed. Exit the world first.\n");
+        } else {
+            std::printf("\x1b[33mSurvival and Creative are greyed\n");
+            std::printf("out\x1b[0m: there is no player body yet,\n");
+            std::printf("so Spectator is the only mode that\n");
+            std::printf("would tell the truth.\n");
+        }
+        break;
+    case Screen::ConfirmConvert:
+        std::printf("Converting rewrites every file in\n");
+        std::printf("the world into the other shape.\n\n");
+        std::printf("\x1b[33mNothing is lost either way.\x1b[0m Files\n");
+        std::printf("this format does not understand are\n");
+        std::printf("carried across untouched, and every\n");
+        std::printf("chunk is read back and checked\n");
+        std::printf("before the old copy is removed.\n\n");
+        std::printf("A  convert it\n");
+        std::printf("B  leave it alone\n");
         break;
     case Screen::Options:
         std::printf("Left/Right  change the value\n");
@@ -622,10 +726,16 @@ MenuChoice Menu::run()
         case Screen::ConfirmDeleteJar:
             handleConfirmDeleteJar(down);
             break;
+        case Screen::WorldSettings:
+            handleWorldSettings(down);
+            break;
+        case Screen::ConfirmConvert:
+            handleConfirmConvert(down);
+            break;
         case Screen::Pause:
-            // Unreachable: runPause puts the screen back on its way out. Named
-            // rather than defaulted so the compiler keeps saying so if a
-            // screen is ever added and forgotten here.
+            // Unreachable: it lives under runPause, which puts the screen back
+            // on its way out. Named rather than defaulted so the compiler keeps
+            // saying so if a screen is ever added and forgotten here.
             setScreen(Screen::Title);
             break;
         }
@@ -650,7 +760,7 @@ MenuChoice Menu::run()
     return choice;
 }
 
-PauseChoice Menu::runPause(const char* worldName, int renderDistance)
+PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int renderDistance)
 {
     // **The live distance, not the saved one.** The debug settings page can put
     // a world at distance 20, well past what this screen will offer; clamping
@@ -661,6 +771,10 @@ PauseChoice Menu::runPause(const char* worldName, int renderDistance)
 
     inGame_ = true;
     pauseWorldName_ = worldName != nullptr ? worldName : "";
+    // The screen is the same one the world list opens, so it is pointed at a
+    // world the same way. Copied rather than borrowed: unlike the name, which
+    // is only drawn, this is what saveWorldSettings writes to.
+    openWorldSettings(pauseWorldName_, worldPath != nullptr ? worldPath : "");
     pauseCursor_ = 0;
     resumeScreen_ = screen_;
     setScreen(Screen::Pause);
@@ -682,6 +796,9 @@ PauseChoice Menu::runPause(const char* worldName, int renderDistance)
         switch (screen_) {
         case Screen::Pause:
             done = handlePause(down, &choice);
+            break;
+        case Screen::WorldSettings:
+            handleWorldSettings(down);
             break;
         case Screen::Options:
             handleOptions(down);
@@ -711,6 +828,9 @@ PauseChoice Menu::runPause(const char* worldName, int renderDistance)
 
     inGame_ = false;
     pauseWorldName_ = "";
+    // What the caller applies to the world it still has open. The file was
+    // written the moment the row changed; this is the copy in memory.
+    choice.gamemode = worldSettings_.gamemode;
     // Back to where the main menu was standing when this world was opened, so
     // Exit World returns to the world list rather than to the pause menu.
     setScreen(resumeScreen_);
@@ -788,11 +908,15 @@ bool Menu::handleTitle(u32 down, MenuChoice* choice)
 // title**, **Options...**. The title is kept; the order and two of the labels
 // are not, and both deviations are deliberate.
 //
-// The order here is Resume, Options, Exit World, which puts the destructive
-// row at the far end of the list from the cursor's resting place. On a console
-// the cursor is moved with a d-pad rather than pointed at, so "one row down
-// from where it starts" is a place a thumb lands by accident; on the original's
-// order that row is the one that closes the world.
+// The order here is Resume, World Settings, Options, Exit World, which puts the
+// destructive row at the far end of the list from the cursor's resting place. On
+// a console the cursor is moved with a d-pad rather than pointed at, so "one row
+// down from where it starts" is a place a thumb lands by accident; on the
+// original's order that row is the one that closes the world.
+//
+// World Settings is a fourth row the original does not have, and it sits above
+// Options rather than below it because the two are read as a pair and the
+// narrower one -- this world -- comes before the wider one -- this console.
 //
 // "Exit World" rather than "Save and quit to title" because the saving is not
 // optional and never has been: `WorldStreamer::close` writes level.dat on the
@@ -801,7 +925,7 @@ bool Menu::handleTitle(u32 down, MenuChoice* choice)
 // The console line under the screen says it happens.
 bool Menu::handlePause(u32 down, PauseChoice* choice)
 {
-    constexpr int kRows = 3;  // resume, options, exit world
+    constexpr int kRows = 4;  // resume, world settings, options, exit world
     pauseCursor_ = step(down, pauseCursor_, kRows);
 
     // START opened this and START closes it again, which is the gesture a
@@ -820,6 +944,13 @@ bool Menu::handlePause(u32 down, PauseChoice* choice)
         choice->action = PauseChoice::Action::Resume;
         return true;
     case 1:
+        message_ = nullptr;
+        worldSettingsCursor_ = 0;
+        // Already pointed at the open world by runPause; nothing to re-read,
+        // and nothing here may walk the tree of a world that is streaming.
+        setScreen(Screen::WorldSettings);
+        return false;
+    case 2:
         message_ = nullptr;
         setScreen(Screen::Options);
         return false;
@@ -848,8 +979,17 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
         return false;
     }
 
-    if ((down & KEY_X) != 0 && worldCursor_ > 0) {
-        setScreen(Screen::ConfirmDelete);
+    // X is the world's own screen rather than a delete confirmation. Delete is
+    // still one press further in, behind the same confirmation it always had;
+    // what changed is that X now also reaches size, format and copy, which had
+    // nowhere to live when it went straight to a yes/no.
+    if ((down & KEY_X) != 0 && worldCursor_ > 0
+        && usize(worldCursor_ - 1) < worlds_.size()) {
+        const world::WorldEntry& entry = worlds_[usize(worldCursor_ - 1)];
+        message_ = nullptr;
+        worldSettingsCursor_ = 0;
+        openWorldSettings(entry.name, entry.path);
+        setScreen(Screen::WorldSettings);
         return false;
     }
 
@@ -873,6 +1013,14 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
     choice->action = MenuChoice::Action::Play;
     choice->worldPath = entry.path;
     choice->worldName = entry.name;
+
+    // Read here rather than left to the caller: a per-world setting has to
+    // start from the world it is about, and this is the one place a world is
+    // chosen. Reading it fresh is also what stops the last world's gamemode
+    // leaking into the next one.
+    settings::WorldSettings worldSettings;
+    settings::loadWorldSettings(fs_, entry.path, &worldSettings);
+    choice->gamemode = worldSettings.gamemode;
     return true;
 }
 
@@ -921,24 +1069,276 @@ void Menu::handleOptions(u32 down)
     }
 }
 
+// Everything the screen needs off the card, taken once on the way in.
+//
+// **Nothing here happens in a draw.** Reading a settings file is one open, but
+// measuring a folder world is a stat per chunk file across up to 4,096 leaf
+// directories, and doing that per frame would turn a menu into a card
+// benchmark.
+void Menu::openWorldSettings(const std::string& name, const std::string& path)
+{
+    selectedWorldName_ = name;
+    selectedWorldPath_ = path;
+    selectedSize_ = world::WorldSize();
+    selectedSizeKnown_ = false;
+
+    worldSettings_ = settings::WorldSettings();
+    selectedFormat_ = world::WorldFormat::Unknown;
+    if (!selectedWorldPath_.empty()) {
+        // False means there is no file, which is the ordinary state of every
+        // world that predates this feature. The defaults stand and nothing is
+        // written until a row changes.
+        settings::loadWorldSettings(fs_, selectedWorldPath_, &worldSettings_);
+        selectedFormat_ = world::detectFormat(fs_, selectedWorldPath_);
+    }
+    // The row starts on the world's own mode, so browsing on one world never
+    // shows up on the next.
+    gamemodeCursor_ = gamemodeIndex(worldSettings_.gamemode);
+
+    // In game the size row is not drawn, and the world is open and being
+    // written to, so a total taken now would be stale before it was read.
+    if (!inGame_) {
+        measureSelectedWorld();
+    }
+}
+
+void Menu::measureSelectedWorld()
+{
+    if (selectedWorldPath_.empty()) {
+        return;
+    }
+
+    // One frame saying what is happening, for the same reason extractJar draws
+    // one: a screen that simply stops for a second looks like a crash.
+    std::printf("\x1b[2J\x1b[1;1H");
+    std::printf("Measuring\n  \x1b[33m%s\x1b[0m\n\n", selectedWorldName_.c_str());
+    std::printf("Adding up what it occupies on the\n");
+    std::printf("card. A folder world is one file per\n");
+    std::printf("chunk, so this takes a moment.\n");
+    drawFrame();
+
+    selectedSizeKnown_ = world::worldSize(fs_, selectedWorldPath_, &selectedSize_);
+    consoleDirty_ = true;
+}
+
+void Menu::saveWorldSettings()
+{
+    if (selectedWorldPath_.empty()) {
+        return;
+    }
+    // Failing to write is worth saying, unlike 3ds.ini: this is a setting about
+    // one world, and a player who set it and came back to find it reset would
+    // have no way to tell that from the row not working.
+    if (!settings::saveWorldSettings(fs_, selectedWorldPath_, worldSettings_)) {
+        message_ = "could not write the world's settings";
+        consoleDirty_ = true;
+    }
+}
+
+// The world's own settings, as against the console's.
+void Menu::handleWorldSettings(u32 down)
+{
+    const int rows = inGame_ ? kWorldSettingsRowsInGame : int(kRowCount);
+    worldSettingsCursor_ = step(down, worldSettingsCursor_, rows);
+    const int row = worldSettingsRowFor(worldSettingsCursor_, inGame_);
+
+    if (row == kRowGamemode) {
+        const int before = gamemodeCursor_;
+        if ((down & kLeft) != 0 && gamemodeCursor_ > 0) {
+            --gamemodeCursor_;
+        }
+        if ((down & kRight) != 0 && gamemodeCursor_ < kGamemodeCount - 1) {
+            ++gamemodeCursor_;
+        }
+        // **The row moves onto a disabled mode; the world does not.** It is the
+        // value that is refused, not the movement -- a player can put the row
+        // on Survival, see it greyed out and read why, which is the whole
+        // reason the two unimplemented modes are listed rather than hidden. A
+        // dead arrow key would say nothing at all.
+        if (gamemodeCursor_ != before
+            && settings::gamemodeImplemented(kGamemodeOrder[gamemodeCursor_])) {
+            worldSettings_.gamemode = kGamemodeOrder[gamemodeCursor_];
+            saveWorldSettings();
+        }
+    }
+
+    if ((down & KEY_A) != 0 || (down & (kLeft | kRight)) != 0) {
+        switch (row) {
+        case kRowFormat:
+            // Left, Right and A all mean the same thing here, because there
+            // are exactly two formats: whichever one this world is not.
+            beginConvert();
+            return;
+        case kRowCopy:
+            if ((down & KEY_A) != 0) {
+                copySelectedWorld();
+                return;
+            }
+            break;
+        case kRowDelete:
+            if ((down & KEY_A) != 0) {
+                setScreen(Screen::ConfirmDelete);
+                return;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && row == kRowBack)) {
+        setScreen(inGame_ ? Screen::Pause : Screen::Worlds);
+    }
+}
+
+bool Menu::beginConvert()
+{
+    if (inGame_ || selectedWorldPath_.empty()) {
+        return false;
+    }
+    convertTarget_ = selectedFormat_ == world::WorldFormat::Packed ? world::WorldFormat::Folder
+                                                                  : world::WorldFormat::Packed;
+
+    std::printf("\x1b[2J\x1b[1;1H");
+    std::printf("Looking at\n  \x1b[33m%s\x1b[0m\n\n", selectedWorldName_.c_str());
+    std::printf("Working out what converting it would\n");
+    std::printf("cost, before anything is written.\n");
+    drawFrame();
+
+    convertEstimate_ = world::format::ConvertEstimate();
+    const world::format::ConvertResult result =
+        world::format::estimateConversion(fs_, selectedWorldPath_, convertTarget_,
+                                          &convertEstimate_);
+    consoleDirty_ = true;
+    if (result != world::format::ConvertResult::Ok) {
+        message_ = world::format::describeConvertResult(result);
+        return false;
+    }
+    message_ = nullptr;
+    setScreen(Screen::ConfirmConvert);
+    return true;
+}
+
+void Menu::runConvert()
+{
+    // The progress callback the converter drives. It draws a frame and reads
+    // the buttons, which is the whole reason a synchronous conversion is
+    // bearable: the console has nothing else to do, so the frame loop lives
+    // inside the operation rather than around it.
+    struct Pump {
+        Menu* menu;
+
+        static bool observe(void* context, const world::format::ConvertProgress& progress)
+        {
+            Pump* pump = static_cast<Pump*>(context);
+
+            if (!aptMainLoop()) {
+                // The system is taking the application away. Cancelling is the
+                // safe answer and the only one: the staging directory goes and
+                // the world is untouched.
+                return false;
+            }
+            hidScanInput();
+            if ((hidKeysDown() & KEY_B) != 0) {
+                return false;
+            }
+
+            std::printf("\x1b[2J\x1b[1;1H");
+            std::printf("Converting\n  \x1b[33m%s\x1b[0m\n\n", pump->menu->selectedWorldName_.c_str());
+            std::printf("%s\n", progress.stage);
+            if (progress.filesTotal > 0) {
+                std::printf("  %lu / %lu\n", (unsigned long)progress.filesDone,
+                            (unsigned long)progress.filesTotal);
+            }
+            std::printf("\nB  stop -- the world is not changed\n");
+            std::printf("   until this finishes.\n");
+            pump->menu->drawFrame();
+            return true;
+        }
+    };
+
+    Pump pump{this};
+    world::format::ConvertOptions options;
+    options.context = &pump;
+    options.observe = &Pump::observe;
+
+    const world::format::ConvertResult result =
+        world::format::convertWorld(fs_, selectedWorldPath_, convertTarget_, options);
+    consoleDirty_ = true;
+
+    if (result != world::format::ConvertResult::Ok) {
+        message_ = world::format::describeConvertResult(result);
+    } else {
+        message_ = nullptr;
+    }
+
+    // Either way the world on the card may have changed shape and size, so both
+    // the list and this screen are re-read rather than patched.
+    refreshWorlds();
+    openWorldSettings(selectedWorldName_, selectedWorldPath_);
+    setScreen(Screen::WorldSettings);
+}
+
+void Menu::handleConfirmConvert(u32 down)
+{
+    if ((down & KEY_B) != 0) {
+        setScreen(Screen::WorldSettings);
+        return;
+    }
+    if ((down & KEY_A) != 0) {
+        runConvert();
+    }
+}
+
+void Menu::copySelectedWorld()
+{
+    if (inGame_ || selectedWorldPath_.empty()) {
+        return;
+    }
+
+    std::string name;
+    if (!askCopyName(selectedWorldName_, &name)) {
+        return;
+    }
+
+    const std::string target = world::worldPath(kSavesDir, name);
+
+    std::printf("\x1b[2J\x1b[1;1H");
+    std::printf("Copying\n  \x1b[33m%s\x1b[0m\nto\n  \x1b[33m%s\x1b[0m\n\n",
+                selectedWorldName_.c_str(), name.c_str());
+    std::printf("File for file, in whichever format\n");
+    std::printf("the original is in. A copy is a\n");
+    std::printf("backup, not a conversion.\n");
+    drawFrame();
+
+    const bool ok = world::copyWorld(fs_, selectedWorldPath_, target);
+    consoleDirty_ = true;
+    message_ = ok ? nullptr : "could not copy that world -- is the card full?";
+    refreshWorlds();
+}
+
 void Menu::handleConfirmDelete(u32 down)
 {
     if (down & KEY_B) {
-        setScreen(Screen::Worlds);
+        setScreen(Screen::WorldSettings);
         return;
     }
     if ((down & KEY_A) == 0) {
         return;
     }
 
-    // The cursor cannot be on the create row here -- ConfirmDelete is only
-    // reachable from a world row -- but the list is re-read on every refresh,
-    // so the index is bounds-checked rather than trusted.
-    if (worldCursor_ > 0 && usize(worldCursor_ - 1) < worlds_.size()) {
-        const std::string path = worlds_[usize(worldCursor_ - 1)].path;
-        message_ = world::deleteWorld(fs_, path) ? nullptr : "could not delete that world";
+    // The world this screen is about is the one the settings screen was opened
+    // on, held by path rather than by list index: the list is re-read on every
+    // refresh, and an index would be pointing at a different row.
+    if (!selectedWorldPath_.empty()) {
+        message_ = world::deleteWorld(fs_, selectedWorldPath_) ? nullptr
+                                                               : "could not delete that world";
     }
     refreshWorlds();
+    // Back to the list rather than to the settings screen: the world it was
+    // about is gone.
+    selectedWorldPath_.clear();
+    selectedWorldName_.clear();
     setScreen(Screen::Worlds);
 }
 
@@ -1064,6 +1464,47 @@ bool Menu::askWorldName(std::string* out)
     return world::sanitizeWorldName(text, out);
 }
 
+bool Menu::askCopyName(std::string_view sourceName, std::string* out)
+{
+    constexpr int kMaxText = 64;
+
+    // The first free "World<n>" rather than the source's name with something
+    // appended: the validator refuses a name already on the card, so offering
+    // the source's own name would open the keyboard on a value it will not
+    // accept.
+    char initial[kMaxText];
+    const std::string suggestion = world::defaultWorldName(worlds_);
+    std::snprintf(initial, sizeof(initial), "%s", suggestion.c_str());
+
+    char hint[64];
+    std::snprintf(hint, sizeof(hint), "Copy of %.*s", int(sourceName.size()),
+                  sourceName.data());
+
+    SwkbdState swkbd;
+    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, kMaxText - 1);
+    swkbdSetInitialText(&swkbd, initial);
+    swkbdSetHintText(&swkbd, hint);
+    swkbdSetFeatures(&swkbd, SWKBD_DARKEN_TOP_SCREEN);
+    swkbdSetValidation(&swkbd, SWKBD_NOTEMPTY_NOTBLANK, SWKBD_FILTER_CALLBACK, 0);
+    // The same validation the create keyboard uses, so a copy cannot land on a
+    // name a new world could not have.
+    gExistingWorlds = &worlds_;
+    swkbdSetFilterCallback(&swkbd, validateWorldName, nullptr);
+
+    char text[kMaxText];
+    const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
+    gExistingWorlds = nullptr;
+
+    consoleInit(GFX_BOTTOM, nullptr);
+    consoleDirty_ = true;
+    C2D_Prepare();
+
+    if (pressed != SWKBD_BUTTON_CONFIRM) {
+        return false;
+    }
+    return world::sanitizeWorldName(text, out);
+}
+
 bool Menu::askSeed(i64* out)
 {
     constexpr int kMaxText = 64;
@@ -1110,8 +1551,13 @@ bool Menu::createWorld(const std::string& name, i64 seed, MenuChoice* choice)
     const std::string path = world::worldPath(kSavesDir, name);
     const i64 now = nowMillis();
 
-    mcver::Storage storage(fs_);
-    if (storage.create(path, seed, now) != world::OpenResult::Ok) {
+    // **New worlds are packed.** It is the format that suits the hardware --
+    // one file per region instead of one per chunk, on a card whose clusters
+    // are 16 KB and whose file operations are IPC round trips -- and a world
+    // made here has no PC client waiting for it. A player who wants one goes
+    // to World Settings and converts, which is lossless in both directions.
+    world::AnyStorage storage(fs_);
+    if (storage.create(path, seed, now, world::WorldFormat::Packed) != world::OpenResult::Ok) {
         message_ = "could not create the world -- is the card full or locked?";
         consoleDirty_ = true;
         return false;
@@ -1135,11 +1581,19 @@ bool Menu::createWorld(const std::string& name, i64 seed, MenuChoice* choice)
         return false;
     }
 
+    // The one place a world comes into existence, so the one place its
+    // settings file starts out. Written rather than left absent so a player who
+    // opens the folder on a PC finds it and can see what it holds; a world that
+    // predates this, or one copied in from a PC, still reads as defaults.
+    settings::WorldSettings worldSettings;
+    settings::saveWorldSettings(fs_, path, worldSettings);
+
     message_ = nullptr;
     choice->action = MenuChoice::Action::Play;
     choice->worldPath = path;
     choice->worldName = name;
     choice->created = true;
+    choice->gamemode = worldSettings.gamemode;
     return true;
 }
 
@@ -1164,6 +1618,12 @@ void Menu::drawFrame()
         break;
     case Screen::Worlds:
         drawWorlds();
+        break;
+    case Screen::WorldSettings:
+        drawWorldSettings();
+        break;
+    case Screen::ConfirmConvert:
+        drawConfirmConvert();
         break;
     case Screen::Options:
         drawOptions();
@@ -1248,16 +1708,173 @@ void Menu::drawPause()
     // allowed to run off both edges.
     drawLabelClipped(pauseWorldName_, 40.0f, 62.0f, 0.5f, kInkDim, kScreenWidth - 80.0f);
 
+    // Four rows rather than three, so they start higher and are spaced tighter
+    // than they were: 240 pixels does not stretch, and the line about saving
+    // still has to sit under the last of them.
     const float x = (kScreenWidth - kButtonWidth) * 0.5f;
-    const char* labels[] = {"Resume", "Options", "Exit World"};
-    for (int i = 0; i < 3; ++i) {
-        const Rect rect{x, 92.0f + float(i) * (kButtonHeight + 8.0f), kButtonWidth,
+    const char* labels[] = {"Resume", "World Settings", "Options", "Exit World"};
+    for (int i = 0; i < 4; ++i) {
+        const Rect rect{x, 80.0f + float(i) * (kButtonHeight + 4.0f), kButtonWidth,
                         kButtonHeight};
         drawButton(rect, labels[i], pauseCursor_ == i, true);
     }
 
     drawLabelCentered("Exiting saves the world.", kScreenWidth * 0.5f, 206.0f, 0.45f, kInkDim,
                       true);
+}
+
+void Menu::drawWorldSettings()
+{
+    drawLabelCentered("World Settings", kScreenWidth * 0.5f, 8.0f, 0.7f, kInk, true);
+    // Clipped rather than centred, for the same reason every other name here
+    // is: it came off a card and can be anything a PC let somebody type.
+    drawLabelClipped(selectedWorldName_.c_str(), 40.0f, 28.0f, 0.5f, kInkDim,
+                     kScreenWidth - 80.0f);
+
+    const float x = (kScreenWidth - kButtonWidth) * 0.5f;
+    const int rows = inGame_ ? kWorldSettingsRowsInGame : int(kRowCount);
+
+    // **Six rows and two lines of note in 240 pixels**, which is what sets
+    // these numbers rather than taste. The buttons are shorter than
+    // kButtonHeight and the pitch is five pixels wider than they are, so
+    // drawButton's two-pixel outline does not overlap the row below: 42 + 6 x
+    // 28 puts the last outline's bottom edge at 207, and the note fits under
+    // it.
+    const float top = 42.0f;
+    const float pitch = 28.0f;
+    const float height = 23.0f;
+
+    // A row's value sits to the right of its name on the same button, so six
+    // rows fit in 240 pixels without a second column of labels.
+    constexpr float kValueX = 96.0f;
+
+    for (int i = 0; i < rows; ++i) {
+        const int row = worldSettingsRowFor(i, inGame_);
+        const Rect rect{x, top + float(i) * pitch, kButtonWidth, height};
+        const bool selected = worldSettingsCursor_ == i;
+
+        if (row == kRowBack) {
+            drawButton(rect, "Back", selected, true);
+            continue;
+        }
+        if (row == kRowCopy || row == kRowDelete) {
+            drawButton(rect, row == kRowCopy ? "Copy..." : "Delete...", selected, true);
+            continue;
+        }
+
+        drawButton(rect, "", selected, true);
+        const char* name = row == kRowGamemode ? "Gamemode:"
+                                               : (row == kRowFormat ? "Format:" : "Size:");
+        drawLabel(name, rect.x + 8.0f, rect.y + 6.0f, 0.5f, kInkDim, C2D_AlignLeft, true);
+
+        char value[64];
+        u32 colour = kInk;
+        if (row == kRowGamemode) {
+            const settings::Gamemode mode = kGamemodeOrder[gamemodeCursor_];
+            std::snprintf(value, sizeof(value), "%s", settings::gamemodeLabel(mode));
+            // The value, not the button, is what says a mode is unavailable:
+            // the row itself still works, and greying the whole button would
+            // read as "this row is broken".
+            colour = settings::gamemodeImplemented(mode) ? kInk : kInkDim;
+        } else if (row == kRowFormat) {
+            std::snprintf(value, sizeof(value), "%s",
+                          world::formatName(selectedFormat_));
+        } else if (!selectedSizeKnown_) {
+            std::snprintf(value, sizeof(value), "--");
+            colour = kInkDim;
+        } else {
+            // On-disk first, because that is what the card actually gives up
+            // and the number a player checking free space needs. The chunk
+            // count comes with it so the two formats can be compared.
+            char onDisk[24];
+            formatBytes(selectedSize_.onDiskBytes, onDisk, sizeof(onDisk));
+            std::snprintf(value, sizeof(value), "%s  (%lu files)", onDisk,
+                          (unsigned long)selectedSize_.fileCount);
+        }
+        drawLabelClipped(value, rect.x + kValueX, rect.y + 5.0f, 0.5f, colour,
+                         rect.w - kValueX - 8.0f);
+    }
+
+    // A line under the rows, saying whichever thing this screen most needs to
+    // say. Not on the console alone: a row that can be moved onto and refuses
+    // to change is otherwise indistinguishable from one that is broken.
+    const int row = worldSettingsRowFor(worldSettingsCursor_, inGame_);
+    const float noteY = top + float(rows) * pitch + 2.0f;
+    if (row == kRowGamemode && !settings::gamemodeImplemented(kGamemodeOrder[gamemodeCursor_])) {
+        drawLabelCentered("Not implemented yet -- there is no player", kScreenWidth * 0.5f,
+                          noteY, 0.42f, kInkWarn, true);
+        drawLabelCentered("body to collide with. Spectator is real.", kScreenWidth * 0.5f,
+                          noteY + 13.0f, 0.42f, kInkDim, true);
+    } else if (row == kRowFormat && !inGame_) {
+        drawLabelCentered(selectedFormat_ == world::WorldFormat::Packed
+                              ? "Packed: fast on this console, but only"
+                              : "Folder: what a PC Minecraft client opens.",
+                          kScreenWidth * 0.5f, noteY, 0.42f, kInkDim, true);
+        drawLabelCentered(selectedFormat_ == world::WorldFormat::Packed
+                              ? "3DAlpha opens it. A/Left/Right converts."
+                              : "A/Left/Right packs it for this console.",
+                          kScreenWidth * 0.5f, noteY + 13.0f, 0.42f, kInkDim, true);
+    } else if (row == kRowSize && selectedSizeKnown_) {
+        char content[24];
+        char onDisk[24];
+        formatBytes(selectedSize_.contentBytes, content, sizeof(content));
+        formatBytes(selectedSize_.onDiskBytes, onDisk, sizeof(onDisk));
+        char line[96];
+        // Both numbers, because the gap between them *is* the argument for
+        // packing: a 2,917-byte chunk in a 16 KB cluster costs 16 KB.
+        std::snprintf(line, sizeof(line), "%s of data, %s of card", content, onDisk);
+        drawLabelCentered(line, kScreenWidth * 0.5f, noteY, 0.42f, kInkDim, true);
+    } else if (inGame_) {
+        drawLabelCentered("Copy, Delete and Format need the world", kScreenWidth * 0.5f,
+                          noteY, 0.42f, kInkDim, true);
+        drawLabelCentered("closed. They are on the world list's X.",
+                          kScreenWidth * 0.5f, noteY + 13.0f, 0.42f, kInkDim, true);
+    }
+}
+
+void Menu::drawConfirmConvert()
+{
+    const bool toPacked = convertTarget_ == world::WorldFormat::Packed;
+
+    drawLabelCentered(toPacked ? "Pack this world?" : "Unpack this world?",
+                      kScreenWidth * 0.5f, 30.0f, 0.8f, kInk, true);
+    drawLabelClipped(selectedWorldName_.c_str(), 40.0f, 58.0f, 0.55f, kInkWarn,
+                     kScreenWidth - 80.0f);
+
+    char now[24];
+    char after[24];
+    char free[24];
+    formatBytes(convertEstimate_.sourceOnDisk, now, sizeof(now));
+    formatBytes(convertEstimate_.targetOnDisk, after, sizeof(after));
+    formatBytes(convertEstimate_.freeBytes, free, sizeof(free));
+
+    char line[96];
+    std::snprintf(line, sizeof(line), "%s now, about %s after", now, after);
+    drawLabelCentered(line, kScreenWidth * 0.5f, 88.0f, 0.5f, kInk, true);
+
+    // **Both copies exist at once**, so the space that matters is the target's
+    // size on top of what is already there, not the difference between them.
+    if (convertEstimate_.freeBytes > 0) {
+        std::snprintf(line, sizeof(line), "%s free -- both copies exist at once", free);
+    } else {
+        std::snprintf(line, sizeof(line), "free space unknown on this card");
+    }
+    drawLabelCentered(line, kScreenWidth * 0.5f, 108.0f, 0.42f, kInkDim, true);
+
+    std::snprintf(line, sizeof(line), "%lu chunks, %lu files",
+                  (unsigned long)convertEstimate_.chunks, (unsigned long)convertEstimate_.files);
+    drawLabelCentered(line, kScreenWidth * 0.5f, 126.0f, 0.42f, kInkDim, true);
+
+    drawLabelCentered(toPacked ? "A packed world is not openable on a PC."
+                               : "The result is a plain Alpha save again.",
+                      kScreenWidth * 0.5f, 148.0f, 0.42f, toPacked ? kInkWarn : kInkDim,
+                      true);
+
+    const float half = kButtonWidth * 0.5f;
+    drawButton(Rect{kScreenWidth * 0.5f - half - 8.0f, 176.0f, half, kButtonHeight},
+               "A Convert", true, true);
+    drawButton(Rect{kScreenWidth * 0.5f + 8.0f, 176.0f, half, kButtonHeight}, "B Cancel",
+               false, true);
 }
 
 void Menu::drawWorlds()
@@ -1479,9 +2096,9 @@ void Menu::drawConfirmDeleteJar()
 
 void Menu::drawConfirmDelete()
 {
-    const char* name = worldCursor_ > 0 && usize(worldCursor_ - 1) < worlds_.size()
-                           ? worlds_[usize(worldCursor_ - 1)].name.c_str()
-                           : "";
+    // The world the settings screen was opened on, held by name rather than by
+    // list index -- the list is re-read on every refresh.
+    const char* name = selectedWorldName_.c_str();
 
     drawLabelCentered("Delete this world?", kScreenWidth * 0.5f, 60.0f, 0.8f, kInk, true);
     drawLabelCentered(name, kScreenWidth * 0.5f, 100.0f, 0.6f, kInkWarn, true);

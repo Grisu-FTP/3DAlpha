@@ -41,14 +41,18 @@
 
 #include "core/io/posix_file_system.hpp"
 #include "core/settings/settings_file.hpp"
+#include "core/settings/world_settings.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/pack_list.hpp"
 #include "core/util/types.hpp"
+#include "core/world/format/converter.hpp"
+#include "core/world/world_format.hpp"
 #include "core/world/world_list.hpp"
 
 #include <citro2d.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mc::ctr {
@@ -84,6 +88,11 @@ struct MenuChoice {
     // game waits for the spawn area before handing over; an existing world has
     // chunks on the card and needs no such wait.
     bool created = false;
+
+    // The world's own gamemode, read out of its 3dalpha.ini when it was
+    // chosen. Handed over with the world rather than looked up by the caller,
+    // because the menu has already opened that file to draw the row.
+    settings::Gamemode gamemode = settings::Gamemode::Spectator;
 
     // What the player picked on the options screen, already clamped to what
     // this model will be offered. The shell hands it to the renderer.
@@ -134,6 +143,11 @@ struct PauseChoice {
     // The player chose a different texture pack. The image is Menu::atlas();
     // the caller hands it to Renderer::setAtlas.
     bool atlasChanged = false;
+
+    // What the World Settings screen settled on. Already written to the
+    // world's 3dalpha.ini by the time this comes back -- this field is for the
+    // caller to *apply*, the way renderDistance above is, not to persist.
+    settings::Gamemode gamemode = settings::Gamemode::Spectator;
 };
 
 class Menu {
@@ -153,19 +167,20 @@ public:
     // loop while it runs, including its own vsync.
     MenuChoice run();
 
-    // The pause menu: Resume, Options, Exit World, over a world that is still
-    // open behind it. Owns the frame loop the same way `run` does, so the game
-    // is genuinely paused while this is up -- nothing is streamed, nothing is
-    // meshed and the sun does not move.
+    // The pause menu: Resume, World Settings, Options, Exit World, over a world
+    // that is still open behind it. Owns the frame loop the same way `run`
+    // does, so the game is genuinely paused while this is up -- nothing is
+    // streamed, nothing is meshed and the sun does not move.
     //
     // `renderDistance` is the live one rather than the saved one; see
     // PauseChoice. `worldName` is drawn under the heading and is only read
-    // while this runs.
+    // while this runs; `worldPath` is what the World Settings screen writes
+    // its 3dalpha.ini to, and is copied rather than borrowed.
     //
     // **init() has to have been called and shutdown() has to follow**, exactly
     // as around `run`, and for the same reason: the 400x240 target and
     // citro2d's vertex buffer are not worth holding through a game session.
-    PauseChoice runPause(const char* worldName, int renderDistance);
+    PauseChoice runPause(const char* worldName, const char* worldPath, int renderDistance);
 
     // The live block atlas. Borrowed -- it belongs to the Menu, which outlives
     // every game session in the shell. Read after runPause when
@@ -186,6 +201,16 @@ private:
         // from `inGame_`, because that is the only thing that differs: where
         // B goes back to.
         Pause,
+        // The world's own settings, as against the console's. Reached from
+        // **both** loops, and `inGame_` says which -- but unlike Options, that
+        // flag changes more than where B goes: a world that is open and
+        // streaming cannot be copied, deleted or converted, so in game this
+        // screen is Gamemode and Back and nothing else.
+        WorldSettings,
+        // The estimate a conversion is worth showing before it starts. Home
+        // screen only, and its numbers are taken from the card rather than
+        // guessed, which is why it is a screen and not a line of text.
+        ConfirmConvert,
     };
 
     void refreshWorlds();
@@ -199,6 +224,8 @@ private:
     bool handlePause(u32 down, PauseChoice* choice);
     bool handleWorlds(u32 down, MenuChoice* choice);
     void handleOptions(u32 down);
+    void handleWorldSettings(u32 down);
+    void handleConfirmConvert(u32 down);
     void handleConfirmDelete(u32 down);
     void handleTexturePacks(u32 down);
     void handlePickJar(u32 down);
@@ -208,6 +235,35 @@ private:
     // the previous pack stays selected and `message_` names the reason, which
     // is the whole point of doing this here instead of in the renderer.
     bool selectPack(int index);
+
+    // Points the World Settings screen at a world and reads what it needs off
+    // the card: the per-world settings file, the format, and -- when the world
+    // is closed -- its size. Called on the way in, so the screen never walks a
+    // tree from inside a draw.
+    void openWorldSettings(const std::string& name, const std::string& path);
+
+    // Adds up the selected world's size, drawing a frame first because on a
+    // folder world this is a stat per chunk file and the screen would
+    // otherwise simply stop.
+    void measureSelectedWorld();
+
+    // Writes the selected world's 3dalpha.ini. Called when a row changes
+    // rather than on the way out, for the same reason saveSettings is: the way
+    // out of this screen is often the player launching a world.
+    void saveWorldSettings();
+
+    // Reads what the pending conversion would cost, and puts up the screen
+    // that says so. False leaves a message and stays where it is.
+    bool beginConvert();
+
+    // Runs the conversion the ConfirmConvert screen was about, drawing
+    // progress and polling B to cancel. Synchronous: the world is closed and
+    // the console has nothing else to do.
+    void runConvert();
+
+    // swkbd for the new name, then a tree copy. The copy keeps whichever
+    // format the source is in -- it is a backup, not a conversion.
+    void copySelectedWorld();
 
     // Reads the jar at `index` in jars_, writes a pack beside it and verifies
     // the result. Only a verified import moves on to ConfirmDeleteJar -- that
@@ -227,6 +283,11 @@ private:
     bool askWorldName(std::string* out);
     bool askSeed(i64* out);
 
+    // The same keyboard and the same validation as askWorldName, with the
+    // source world's name offered as the starting point. Separate only because
+    // the hint text and the suggestion differ.
+    bool askCopyName(std::string_view sourceName, std::string* out);
+
     // Makes the world on the card and fills in the choice. False leaves a
     // message on the console and stays in the menu.
     bool createWorld(const std::string& name, i64 seed, MenuChoice* choice);
@@ -241,6 +302,8 @@ private:
     void drawPause();
     void drawWorlds();
     void drawOptions();
+    void drawWorldSettings();
+    void drawConfirmConvert();
     void drawConfirmDelete();
     void drawTexturePacks();
     void drawPickJar();
@@ -290,6 +353,43 @@ private:
     int worldCursor_ = 0;  // 0 is "+ Create New World"
     int worldScroll_ = 0;
     int optionsCursor_ = 0;
+    int worldSettingsCursor_ = 0;
+
+    // The world the World Settings screen is about, and everything it reads
+    // off the card on the way in.
+    //
+    // **Its own copy of the name and path, not an index into worlds_.** The
+    // list is re-read on every refresh and a conversion or a copy refreshes it,
+    // so an index would be pointing at a different row -- or at nothing --
+    // halfway through the operation it started. It is also what lets the same
+    // screen serve the pause menu, where there is no list at all.
+    std::string selectedWorldName_;
+    std::string selectedWorldPath_;
+    world::WorldFormat selectedFormat_ = world::WorldFormat::Unknown;
+    world::WorldSize selectedSize_;
+    bool selectedSizeKnown_ = false;
+
+    // The world's own settings, as they are on the card. Read in
+    // openWorldSettings and written back the moment a row changes, so the file
+    // and the screen never disagree.
+    //
+    // Gamemode lives here rather than in level.dat -- a key no version of the
+    // original ever wrote would travel back to a PC copy of the world -- and
+    // rather than in 3ds.ini, where one value would serve every world on the
+    // card. See core/settings/world_settings.hpp.
+    settings::WorldSettings worldSettings_;
+
+    // Which entry of kGamemodeOrder the row is *showing*, which is not always
+    // the world's mode. Survival and Creative can be stepped onto and read --
+    // greyed out, with the reason under them -- without being adopted; only an
+    // implemented mode is written to the file. Reset from the file whenever the
+    // screen is pointed at a world, so browsing never leaks into the next one.
+    int gamemodeCursor_ = 0;
+
+    // What ConfirmConvert is about: the format being converted *to*, and what
+    // the card said it would cost.
+    world::WorldFormat convertTarget_ = world::WorldFormat::Unknown;
+    world::format::ConvertEstimate convertEstimate_;
 
     // The pack list, with Dev Art pinned at index 0 and always present, and
     // which of them is live. `packName_` is the file name inside the packs

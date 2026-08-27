@@ -1,6 +1,8 @@
 #include "core/world/world_list.hpp"
 
+#include "core/io/volume_info.hpp"
 #include "core/util/fat_name.hpp"
+#include "core/world/any_storage.hpp"
 
 #include "version_slots.hpp"
 
@@ -20,10 +22,22 @@ struct NameCollector {
     std::vector<std::string> names;
 };
 
+// The suffix a half-finished conversion carries. Skipping it is load-bearing
+// rather than tidy: a staging directory mid-pack holds a perfectly valid
+// `world.3dm`, so without this the list would offer it as a playable world and
+// the recovery pass would find it already opened.
+constexpr char kConvertingSuffix[] = ".converting";
+
+bool endsWith(std::string_view text, std::string_view suffix)
+{
+    return text.size() >= suffix.size()
+           && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
 bool collectDirectory(void* context, const io::DirEntry& entry)
 {
     NameCollector& collector = *static_cast<NameCollector*>(context);
-    if (!entry.isDirectory || entry.name[0] == '.') {
+    if (!entry.isDirectory || entry.name[0] == '.' || endsWith(entry.name, kConvertingSuffix)) {
         return true;
     }
     collector.names.emplace_back(entry.name);
@@ -34,6 +48,11 @@ bool collectDirectory(void* context, const io::DirEntry& entry)
 // generous rather than tight. It bounds the recursion against a directory tree
 // that loops back on itself, which a card mounted on a PC can be made to have.
 constexpr int kMaxDeleteDepth = 8;
+
+// A single file inside a world that is larger than this is not something a copy
+// should be allocating for. Chunk files are kilobytes; this is generous by
+// three orders of magnitude and still bounds the damage.
+constexpr usize kMaxCopyFileBytes = 64u << 20;
 
 bool removeTree(io::FileSystem& fs, const std::string& path, int depth)
 {
@@ -88,13 +107,17 @@ void listWorlds(io::FileSystem& fs, std::string_view savesDir, std::vector<World
 
     // One storage object for the whole walk. peekLevel touches none of its
     // state, so this is a place to hang the file system and nothing more.
-    mcver::Storage storage(fs);
+    // AnyStorage rather than the version's slot, because a packed world has no
+    // level.dat to peek at and would otherwise be silently missing from the
+    // list of the player's own worlds.
+    AnyStorage storage(fs);
 
     out->reserve(collector.names.size());
     for (const std::string& name : collector.names) {
         WorldEntry entry;
         entry.name = name;
         entry.path = worldPath(savesDir, name);
+        entry.format = detectFormat(fs, entry.path);
 
         LevelData level;
         if (!storage.peekLevel(entry.path, &level)) {
@@ -155,14 +178,146 @@ bool sanitizeWorldName(std::string_view typed, std::string* out)
 bool deleteWorld(io::FileSystem& fs, std::string_view worldDir)
 {
     const std::string path(worldDir);
-    LevelData level;
-    mcver::Storage storage(fs);
-    if (!storage.peekLevel(path, &level)) {
-        // Not a world. Refusing here is what stops a caller bug from becoming
-        // an unbounded delete, so it is not merely a courtesy check.
+    if (detectFormat(fs, path) == WorldFormat::Unknown) {
+        // Not a world in either shape. Refusing here is what stops a caller bug
+        // from becoming an unbounded delete, so it is not merely a courtesy
+        // check -- it is why this lives in core with a test on it.
         return false;
     }
     return removeTree(fs, path, 0);
+}
+
+bool removeTree(io::FileSystem& fs, std::string_view path)
+{
+    return removeTree(fs, std::string(path), 0);
+}
+
+namespace {
+
+// Both walks below follow removeTree's shape: names are gathered inside the
+// visitor and acted on after it returns, because on the console a file
+// operation inside a directory walk is one IPC round trip nested inside
+// another's iterator. The depth cap is the same one, for the same reason.
+struct Children {
+    std::vector<std::pair<std::string, bool>> entries;  // name, isDirectory
+};
+
+bool collectChildren(void* context, const io::DirEntry& entry)
+{
+    static_cast<Children*>(context)->entries.emplace_back(entry.name, entry.isDirectory);
+    return true;
+}
+
+bool measureTree(io::FileSystem& fs, const std::string& path, u64 clusterSize,
+                 WorldSize* out, int depth)
+{
+    if (depth > kMaxDeleteDepth) {
+        return false;
+    }
+    Children found;
+    if (!fs.listDirectory(path.c_str(), &found, collectChildren)) {
+        return false;
+    }
+    ++out->directoryCount;
+    // A directory costs a cluster of its own on FAT, and in the Alpha layout
+    // there is a leaf directory per chunk for any world smaller than 64x64
+    // chunks -- which makes the directories about half of what a world
+    // occupies. Leaving them out would understate the cost by 2x.
+    out->onDiskBytes += clusterSize;
+
+    for (const auto& entry : found.entries) {
+        const std::string child = path + "/" + entry.first;
+        if (entry.second) {
+            if (!measureTree(fs, child, clusterSize, out, depth + 1)) {
+                return false;
+            }
+            continue;
+        }
+        usize bytes = 0;
+        if (!fs.fileSize(child.c_str(), &bytes)) {
+            continue;
+        }
+        ++out->fileCount;
+        out->contentBytes += u64(bytes);
+        out->onDiskBytes += io::onDiskSize(u64(bytes), clusterSize);
+    }
+    return true;
+}
+
+bool copyTree(io::FileSystem& fs, const std::string& source, const std::string& target,
+              int depth)
+{
+    if (depth > kMaxDeleteDepth) {
+        return false;
+    }
+    Children found;
+    if (!fs.listDirectory(source.c_str(), &found, collectChildren)) {
+        return false;
+    }
+    if (!fs.makeDirectories(target.c_str())) {
+        return false;
+    }
+
+    std::vector<u8> bytes;
+    for (const auto& entry : found.entries) {
+        const std::string from = source + "/" + entry.first;
+        const std::string to = target + "/" + entry.first;
+        if (entry.second) {
+            if (!copyTree(fs, from, to, depth + 1)) {
+                return false;
+            }
+            continue;
+        }
+        bytes.clear();
+        // The ceiling is the same one the chunk reader uses: a file on a card
+        // the player also uses for other things could be any size, and a copy
+        // is not a reason to allocate it.
+        if (!fs.readFile(from.c_str(), &bytes, kMaxCopyFileBytes)) {
+            return false;
+        }
+        if (!fs.writeFileAtomic(to.c_str(), ConstByteSpan(bytes.data(), bytes.size()))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool worldSize(io::FileSystem& fs, std::string_view worldDir, WorldSize* out)
+{
+    *out = WorldSize();
+
+    io::VolumeInfo volume;
+    // Unknown is a normal answer -- the host has no SD card. Then the two
+    // numbers come out equal, which is honest: a footprint nobody can measure
+    // is better reported as the content it holds than guessed at.
+    const u64 clusterSize = io::queryVolumeInfo(std::string(worldDir).c_str(), &volume)
+                                ? volume.clusterSize
+                                : 0;
+    return measureTree(fs, std::string(worldDir), clusterSize, out, 0);
+}
+
+bool copyWorld(io::FileSystem& fs, std::string_view sourceDir, std::string_view targetDir)
+{
+    const std::string source(sourceDir);
+    const std::string target(targetDir);
+    if (detectFormat(fs, source) == WorldFormat::Unknown) {
+        return false;
+    }
+    // Never merge into something that is already there. The menu checks the
+    // name against the world list before asking, but the card is also editable
+    // on a PC and this is the check that cannot be raced.
+    if (fs.exists(target.c_str())) {
+        return false;
+    }
+    if (!copyTree(fs, source, target, 0)) {
+        // A half-written copy is not something to leave on the card under a
+        // name that looks like a world.
+        removeTree(fs, target, 0);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace mc::world

@@ -30,8 +30,10 @@
 //
 //   bool forEachChunk(void* context, ChunkVisitor visit);
 //
-//   u32  chunkGroupKey(i32 x, i32 z) const;
+//   u64  chunkGroupKey(i32 x, i32 z) const;
 //   bool listChunkGroup(i32 x, i32 z, void* context, ChunkVisitor visit);
+//
+//   bool commit();
 //
 // The last two are what lets a cache answer "does the world have this chunk"
 // without a `stat` per chunk, and without knowing the on-disk layout.
@@ -48,6 +50,19 @@
 // A backend whose existence check is already cheap (a packed region's header is
 // its own index) may give every chunk its own key and report just that chunk,
 // which degenerates to one `hasChunk` per question and stays correct.
+//
+// The key is `u64` because the widest backend needs it: a packed region's key
+// is a pair of region coordinates, 34 bits inside a legal a1.1.2 world, and a
+// narrower key would collide there -- which would make the cache answer
+// "absent" for a chunk that exists and generate fresh terrain over it. The
+// Alpha format uses twelve of the sixty-four.
+//
+// `commit()` is what makes staged writes findable, and it exists because one
+// backend batches. The Alpha format writes a whole file per chunk, so a save is
+// already durable and its `commit` is `return true`. A packed region stages the
+// directory entry instead: committing per chunk would rewrite a 16 KB directory
+// and a header for every column, which would make packed mode slower to save
+// than the format it replaces. The cache calls it where it already flushes.
 //
 // `nowMillis` is passed in rather than read from a clock. Core has no clock
 // seam, the value only ever lands in session.lock and LastPlayed, and tests

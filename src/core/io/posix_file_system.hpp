@@ -29,6 +29,8 @@ public:
     bool removeFile(const char* path) override;
     bool removeDirectory(const char* path) override;
     bool listDirectory(const char* path, void* context, DirVisitor visit) override;
+    std::unique_ptr<RandomAccessFile> openRandomAccess(const char* path, bool create) override;
+    bool rename(const char* from, const char* to) override;
 };
 
 }  // namespace mc::io

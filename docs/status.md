@@ -21,14 +21,14 @@ hard oracle to check itself against.
 |---|---|
 | **M0** Toolchain, version-driven build, 3DSX packaging | **done** — validated on a New 3DS. `make cia` is wired but inert until `makerom` is on PATH |
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
-| **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world |
+| **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world. **Plus a second on-disk format**, `Packed`: sector-allocated region containers, 9× smaller than the folder layout on a 16 KB-cluster card and 280× fewer file operations, converted losslessly in either direction and byte-exact on a real 1,119-chunk world. New worlds are created in it. See §0j and [packed-worlds.md](packed-worlds.md) |
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, and needs a seventh launch to say whether it closes the gap |
-| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, Options, Exit World, over a world that stays open and stops dead while the menu is up. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and it costs nothing, because the world is stopped and the I/O thread has the whole pause to itself. Options has an autosave row beside render distance and texture pack |
+| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and it costs nothing, because the world is stopped and the I/O thread has the whole pause to itself. Options has an autosave row beside render distance and texture pack |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
 | M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Only `terrain.png` has a consumer** -- a pack's gui, font and mob textures are carried and counted and nothing reads them yet. See §0c and [assets.md](assets.md) |
 
-**421 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**478 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -1624,6 +1624,138 @@ which clears itself as soon as a listing lands, where this does not) and a line 
 * `closing_a_world_with_listings_and_read_ahead_in_flight_finishes` — the same for `close()`.
 
 429 tests pass, three consecutive `-O3` runs; ASan and TSan clean.
+
+### 0j. Packed worlds, per-world settings, and the world options screen
+
+Three requests that turned out to be one feature with three faces: a per-world settings file, the
+`X` on the world list becoming a real screen, and an on-disk format built for this console.
+
+**The size problem, restated with the number that was missing.** The Alpha format stores one gzipped
+file per chunk column. A real card measures **16 KB clusters** and a median chunk is 2,917 bytes, so
+each chunk costs a whole cluster — that much was known. What was not: **the folder format pays the
+slack twice**, because the leaf directory `<x&63>/<z&63>` also costs a cluster, and below a
+64×64-chunk span every chunk is alone in its own leaf. The measured 1,119-chunk world has 1,157
+directories to 1,122 files. So the cost is `(chunks + leaves) × cluster`, and the saving is far
+bigger than `packed-worlds.md` first guessed:
+
+| Cluster | Folder | Packed | |
+|---|---|---|---|
+| 4 KB | 9,609,216 B | 4,079,616 B | 2.36× |
+| **16 KB (measured card)** | **37,339,136 B** | **4,145,152 B** | **9.01×** |
+| 32 KB | 74,678,272 B | 4,259,840 B | 17.53× |
+
+Reading every chunk goes from 1,122 file opens and 1,157 directory listings to **4 and 1**. At four
+to six IPC round trips per file operation that is ~9,100–13,700 down to ~25. **The wall-clock figure
+is still owed**: on a Linux host with a warm cache the same walk differs by 8%, which measures the
+host's cheap `open` rather than the console's expensive one.
+
+**Sectors are 1,024 bytes, not McRegion's 4,096**, re-derived rather than borrowed. Against 4,096
+the median chunk takes two sectors and wastes 53%, because a1.1.2's chunk sizes (min 1,194, median
+2,917, max 5,872) straddle the sector rather than sitting inside it. Against 1,024 it wastes 17%.
+
+**Two formats in one binary, without breaking the slot system.** The version slots bind exactly one
+storage implementation per binary, statically, no vtable — and a converter needs both at once. The
+resolution is `world::AnyStorage`, a tagged wrapper over `mcver::Storage` and
+`format::PackedStorage`, dispatching on an enum. Not a vtable: every storage call is once per chunk,
+never per block. **The blast radius was one line** — `ChunkCache` owns its storage, and
+`AnyStorage::open()` reads the format off the folder, so no existing test changed.
+
+**The bug that cost the most to find, and the only one that was a real defect.** Widening
+`chunkGroupKey` from `u32` to `u64` — a region-pair key needs 34 bits — missed four places where the
+key was still carried as a `u32`: two range-for loops, two `.front()` reads, and `groupRep_`'s map
+key. The folder backend's key fits in 12 bits so nothing showed. On a packed world, regions (0, 0)
+and (100, 0) differ only above bit 32, so the second was marked queued, never listed, and
+`--fly … packed` reported *"GATED: the nearest owed columns are waiting on a listing"* and generated
+nothing at all. `tests/chunk_cache_test.cpp` now streams exactly that pair; re-narrowing the types
+fails it.
+
+**What is deliberately not done**, on the user's instruction that this is a Minecraft save and not a
+bank ledger: no per-chunk CRC on the gameplay read path (a payload is a gzip stream and inflate
+checks gzip's own), no persisted free map (derived from the directory at open, so it cannot disagree
+with it), no Compact action, no `mtime` restore. Crash-safety is the generation counter and the rule
+that live data is never overwritten: a torn commit loses the last save, never the region.
+
+**Verification is where the promise is absolute — conversion.** The headline result:
+
+```
+cp -r <real World1> /tmp/w-rt
+./build-host/3dalpha --convert /tmp/w-rt pack      # 1119 chunks, 1122 files -> 5 files
+./build-host/3dalpha --convert /tmp/w-rt unpack
+diff -r <original> /tmp/w-rt                       # empty
+```
+
+Byte-for-byte on a real 1,119-chunk world, stray files and all. A file counts as a chunk only if its
+name parses **and** it sits at the canonical path for those coordinates **and** nothing else has
+claimed that slot — a `c.-d.18.dat` in the wrong leaf directory survives as a stray file rather than
+being silently relocated.
+
+**One honest deviation, and it is the original's property rather than ours.** A region listing
+settles 1,024 chunks at once where a folder listing settles a scattered mod-64 set, so the streamer
+reaches the frontier in a different order — and population order is part of an Alpha world; see the
+note at the top of `impl/worldgen/alpha_nobiome/chunk_generator.hpp`. Flying the same seed to the
+same place in both formats gave **891 identical chunks and 7 that differ by a handful of blocks**,
+all where the two runs had populated different neighbours. Each format is deterministic run to run
+(two identical runs are byte-identical in both), reopening a packed world regenerates nothing
+(179/179 unchanged, 0 lost), and converting an existing world is byte-exact. Only newly generated
+frontier can differ, exactly as it does between two a1.1.2 clients that walked different routes.
+
+**Per-world settings.** `<world>/3dalpha.ini`, a plain `key=value` file sharing `3ds.ini`'s parser,
+in the world folder in both formats. Not `level.dat` — a key no version of a1.1.2 ever wrote would
+travel back to a PC copy of the world — and not `3ds.ini`, where a per-world value would be one
+value for every world on the card. A real Alpha client enumerates `level.dat` and the base36 tree and
+nothing else, so an unknown sibling file is inert. Absent means defaults and writes nothing, which is
+every world that exists today.
+
+**Gamemode is real now, and honest.** Spectator is the default and the only implemented mode,
+because it is what the game already does: there is no player body, so movement is free flight with
+no collision. Survival and Creative are listed and drawn disabled, in the same spirit as the
+Multiplayer row — a button that is missing reads as an oversight, one that is greyed out reads as a
+plan. The value is stored as a **word**, not an ordinal, so a file written by a later build is
+readable rather than a number that silently means something else.
+
+**The world options screen.** `X` on a world row opened `ConfirmDelete` directly; it now opens the
+world's own screen — Gamemode, Format, Size, Copy, Delete, Back — and Delete keeps its confirmation
+one press further in. The same screen serves the pause menu, where `inGame_` cuts it to Gamemode and
+Back: copying, deleting or converting a world that is open and streaming all mean rewriting files
+something else holds. It carries its own `selectedWorldName_`/`selectedWorldPath_` rather than an
+index into `worlds_`, because the list is re-read on every refresh and a conversion refreshes it.
+
+**Size is computed when that screen opens, for one world**, never per row: measuring a folder world
+is a stat per chunk file across up to 4,096 leaf directories. Both numbers are shown, content and
+on-disk, because the gap between them *is* the argument for packing.
+
+**New worlds are created packed**, which reverses what `packed-worlds.md` said. Deliberately the
+last step, so every path that reads a packed world was tested before one could be made by accident.
+
+**New harness commands.** `--convert <world> pack|unpack` and `--world-info <world>`; a trailing
+`packed` on `--fly` creates a packed world instead of a folder one. Opt-in, so every documented
+`--fly` number keeps meaning what it did.
+
+**Two defects a review caught after the fact, both in code this change touched.**
+
+*The autosave was committing the wrong thing.* Housekeeping ends in
+`storage_.commit()` -- the call that makes staged packed writes findable -- and it was reaching that
+call before the writes it was meant to cover. Two faces of one mistake: threaded, `saveNow` asked for
+housekeeping *before* it queued the writes, so the I/O thread could wake to an empty write queue and
+commit early; unthreaded, `requestHousekeeping` runs the job on the calling thread and bypassed
+`takeJobLocked`'s write-first priority entirely. So an autosave left its own chunks staged until the
+next one, and a power cut between two of them cost two intervals rather than one. `saveNow` now
+flushes first, and `requestHousekeeping`'s inline path drains the write queue itself.
+
+*`rename` destroyed the target when it failed.* The FAT fallback -- unlink the target, retry --
+fired on *any* first-failure, including a source that was not there, so a failed rename could take
+the file it was asked to replace with it. `writeFileAtomic` gets away with that shape because it has
+just written its temporary and knows it is there; a general-purpose rename knows nothing of the sort.
+It now probes for the source before clearing anything. The test in this change already called
+`rename` with a missing source and only checked that it returned false; it now checks the target
+survived, and fails without the fix.
+
+A third finding -- that seven new headers were missing and nothing builds -- was the review reading a
+diff of tracked files only. The new sources are untracked, so they were invisible to it.
+
+478 tests pass under ASan/UBSan at `-O3`; TSan clean. `--fly` under sanitizers streams a packed
+world, and `--fly … packed` creates, generates, meshes and saves one. The 3DS target links and
+`tools/check3dsx.py` accepts the image. **None of the UI has been seen on hardware.**
 
 ### 1. Run it on a console
 

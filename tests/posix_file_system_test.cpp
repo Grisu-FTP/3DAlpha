@@ -1,6 +1,7 @@
 #include "framework.hpp"
 
 #include "core/io/posix_file_system.hpp"
+#include "core/io/volume_info.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -200,4 +201,129 @@ TEST(remove_file_is_idempotent)
     CHECK(!fs.exists(path.c_str()));
     // Removing what is already gone is the outcome the caller wanted.
     CHECK(fs.removeFile(path.c_str()));
+}
+
+TEST(positional_reads_and_writes_land_where_they_are_asked_to)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string path = temp.at("region.bin");
+
+    auto file = fs.openRandomAccess(path.c_str(), true);
+    CHECK(file != nullptr);
+
+    const u8 first[] = {1, 2, 3, 4};
+    const u8 second[] = {9, 9};
+    CHECK(file->writeAt(0, ConstByteSpan(first, sizeof(first))));
+    // Past the current end: the gap has to read back as zero, because a sector
+    // allocator that skips a hole depends on it.
+    CHECK(file->writeAt(8, ConstByteSpan(second, sizeof(second))));
+
+    u64 size = 0;
+    CHECK(file->size(&size));
+    CHECK_EQ(size, u64(10));
+
+    u8 whole[10] = {};
+    CHECK(file->readAt(0, ByteSpan(whole, sizeof(whole))));
+    CHECK_EQ(int(whole[0]), 1);
+    CHECK_EQ(int(whole[3]), 4);
+    CHECK_EQ(int(whole[4]), 0);
+    CHECK_EQ(int(whole[7]), 0);
+    CHECK_EQ(int(whole[8]), 9);
+
+    // A read that runs past the end is a failure, not a short success: a
+    // truncated region file has to be reported as broken rather than quietly
+    // handing back half a chunk.
+    u8 tooMuch[16] = {};
+    CHECK(!file->readAt(0, ByteSpan(tooMuch, sizeof(tooMuch))));
+    CHECK(!file->readAt(10, ByteSpan(tooMuch, 1)));
+
+    CHECK(file->flush());
+}
+
+TEST(a_random_access_handle_survives_being_reopened)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string path = temp.at("region.bin");
+
+    const u8 payload[] = {7, 6, 5};
+    {
+        auto file = fs.openRandomAccess(path.c_str(), true);
+        CHECK(file != nullptr);
+        CHECK(file->writeAt(4096, ConstByteSpan(payload, sizeof(payload))));
+    }  // the descriptor closes here
+
+    auto again = fs.openRandomAccess(path.c_str(), false);
+    CHECK(again != nullptr);
+    u8 read[3] = {};
+    CHECK(again->readAt(4096, ByteSpan(read, sizeof(read))));
+    CHECK_EQ(int(read[0]), 7);
+    CHECK_EQ(int(read[2]), 5);
+}
+
+TEST(opening_a_missing_file_without_create_fails)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+
+    CHECK(fs.openRandomAccess(temp.at("nothing.bin").c_str(), false) == nullptr);
+    CHECK(!fs.exists(temp.at("nothing.bin").c_str()));
+
+    CHECK(fs.openRandomAccess(temp.at("made.bin").c_str(), true) != nullptr);
+    CHECK(fs.exists(temp.at("made.bin").c_str()));
+}
+
+TEST(rename_moves_a_file_and_replaces_the_target)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+
+    const u8 body[] = {42};
+    CHECK(fs.writeFileAtomic(temp.at("from.bin").c_str(), ConstByteSpan(body, sizeof(body))));
+    CHECK(fs.rename(temp.at("from.bin").c_str(), temp.at("to.bin").c_str()));
+    CHECK(!fs.exists(temp.at("from.bin").c_str()));
+    CHECK(fs.exists(temp.at("to.bin").c_str()));
+
+    // Replacing an existing target is what committing a conversion does.
+    const u8 other[] = {7};
+    CHECK(fs.writeFileAtomic(temp.at("from.bin").c_str(), ConstByteSpan(other, sizeof(other))));
+    CHECK(fs.rename(temp.at("from.bin").c_str(), temp.at("to.bin").c_str()));
+
+    std::vector<u8> read;
+    CHECK(fs.readFile(temp.at("to.bin").c_str(), &read, 16));
+    CHECK_EQ(read.size(), usize(1));
+    CHECK_EQ(int(read[0]), 7);
+
+    // **A rename that fails must not have destroyed the target.** The FAT
+    // fallback below clears the target before retrying, and a source that is
+    // not there is the case where that clearing has nothing to put back.
+    CHECK(!fs.rename(temp.at("missing.bin").c_str(), temp.at("to.bin").c_str()));
+    CHECK(fs.exists(temp.at("to.bin").c_str()));
+    read.clear();
+    CHECK(fs.readFile(temp.at("to.bin").c_str(), &read, 16));
+    CHECK_EQ(read.size(), usize(1));
+    CHECK_EQ(int(read[0]), 7);
+}
+
+TEST(an_unset_volume_query_is_an_answer_rather_than_a_crash)
+{
+    // The seam is process-wide and the harness installs one; a test binary does
+    // not, and the size paths have to work anyway. Unknown means "report bytes
+    // and skip the free-space refusal", never "refuse to run".
+    io::VolumeInfo info;
+    const bool known = io::queryVolumeInfo("/tmp", &info);
+    if (!known) {
+        CHECK_EQ(info.clusterSize, u64(0));
+    }
+
+    CHECK_EQ(io::onDiskSize(0, 4096), u64(0));
+    CHECK_EQ(io::onDiskSize(1, 4096), u64(4096));
+    CHECK_EQ(io::onDiskSize(4096, 4096), u64(4096));
+    CHECK_EQ(io::onDiskSize(4097, 4096), u64(8192));
+    // The measured card: 2,917 bytes of chunk occupying a 16 KB cluster is the
+    // whole argument for the packed format.
+    CHECK_EQ(io::onDiskSize(2917, 16384), u64(16384));
+    // An unknown cluster size reports the content rather than guessing.
+    CHECK_EQ(io::onDiskSize(2917, 0), u64(2917));
 }

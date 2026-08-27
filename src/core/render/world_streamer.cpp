@@ -1268,8 +1268,17 @@ void WorldStreamer::saveNow(i64 nowMillis)
     // easy to write them from this thread, which is the render thread -- and a
     // deflate plus an atomic write inside a frame every interval is precisely
     // the thing this whole arrangement exists to stop.
-    cache_.requestHousekeeping(nowMillis, player_);
+    //
+    // **Writes are queued first, and the order is load-bearing.** The two calls
+    // take `mutex_` separately, so the I/O thread can run between them. Ask for
+    // housekeeping first and it can wake to an empty write queue, take the
+    // housekeeping job, and reach `storage_.commit()` before this cycle's
+    // chunks have been handed over -- which on the packed backend commits the
+    // state *before* the autosave and leaves its own writes staged until the
+    // next one. Queue the writes first and `takeJobLocked` settles it: writes
+    // outrank housekeeping, so the commit necessarily follows them.
     flushSaves(false);
+    cache_.requestHousekeeping(nowMillis, player_);
 }
 
 void WorldStreamer::flushSaves(bool blocking)

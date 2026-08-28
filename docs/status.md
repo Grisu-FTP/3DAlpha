@@ -23,12 +23,12 @@ hard oracle to check itself against.
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
 | **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world. **Plus a second on-disk format**, `Packed`: sector-allocated region containers, 9× smaller than the folder layout on a 16 KB-cluster card and 280× fewer file operations, converted losslessly in either direction and byte-exact on a real 1,119-chunk world. New worlds are created in it. See §0j and [packed-worlds.md](packed-worlds.md) |
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, and needs a seventh launch to say whether it closes the gap |
-| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack |
+| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now the gamemode's**: the Normal page is a different screen in each of the three, chosen by a switch with no default so a mode added later cannot ship without one, while the three debug pages stay shared and unchanged. Spectator's is a **map** -- 192 by 192 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds, with the player's coordinates, chunk and later-version map tile beside it and a marker for where they are and which way they face. **Run on hardware, where it read 5,000 us a redraw**; a per-chunk patch cache took that to a copy, and the number is on the screen. Survival and Creative get the screens their hotbar and block palette will be built on. See [map.md](map.md) |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
 | M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
 
-**506 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**527 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -73,6 +73,8 @@ tools/lumadump.py <dump.dmp> [--elf <elf>]          # read a Luma exception dump
 ./build-host/3dalpha --fly <world-dir> [dist] [frames] [switch-to] [quads|flip|gen|gensync]
 ./build-host/3dalpha --pack <zip|dir|devart>        # assemble a pack's atlas, write atlas.pam
 ./build-host/3dalpha --extract-jar <jar> <packs-dir> # the console's jar importer, sanitised
+./build-host/3dalpha --map <world-dir> [pack] [grid] # draw the spectator screen's map of a
+                                                    # whole world, write map.pam, report cost
 ```
 
 A trailing **`quads`** on either harness puts the cube range in the geometry-shader format — one
@@ -116,6 +118,8 @@ core/io/          FileSystem seam + the POSIX implementation both targets use
 core/texture/     PNG decoder, zip reader/writer, pack listing, atlas assembly, Dev Art, jar import,
                   the PICA tiling map the CPU writes textures through
 core/settings/    3ds.ini -- render distance, texture pack, autosave interval, cache size
+core/map/         the bottom screen's map, with no screen in it: chunk sampling, the
+                  palette built from the texture pack, the sample store and the shading
 core/mesh/        three vertex formats, MeshScratch, mesher, fluid, torch, visibility masks
 core/render/      SectionField + buildVisibleSet (the visibility walk); VboPool;
                   ChunkRenderer (one frame, no GPU); WorldStreamer (columns in and out,
@@ -131,8 +135,9 @@ impl/worldgen/alpha_nobiome/     noise, terrain, caves, the nine population gene
                   the pass driver, and ChunkGenerator -- `ft`, which decides what gets
                   generated and when it gets populated
 platform/ctr/     heap policy, VBO allocator, atlas/lightmap/fog, citro3d renderer,
-                  citro2d main menu, debug overlay, game loop, M0 probe
-platform/host/    harness: --version, --mesh, --fly, --generate
+                  citro2d main menu, the bottom screen (one per gamemode, plus the three
+                  debug pages) and the spectator map's framebuffer half, game loop, M0 probe
+platform/host/    harness: --version, --mesh, --fly, --generate, --map
 tools/            configure.py, extract_blocks.py, javap.py, nbtdiff.py, genref.java
 ```
 
@@ -1933,6 +1938,106 @@ doubles the card operations classification costs. It is already in the numbers `
 reports (1,157 listings for 1,122 chunks, against packed's 1) and it is one more reason packed is
 the format the console makes.
 
+### 0l. A bottom screen per gamemode, and a map on the spectator one
+
+**The Normal page is now the gamemode's, and the three debug pages stay everyone's.** That is the
+split the bottom screen has been waiting for since the hotbar was promised on it: what a *maintainer*
+looks at -- frame split, pool residency, storage counters, the settings row -- is the same wherever
+you are, and what a *player* looks at depends entirely on what they are playing. The page is chosen
+by a `switch` over `settings::Gamemode` with **no `default`**, so a mode added later does not compile
+until it has been given a screen.
+
+Survival and Creative get the screens their hotbar and block palette will be built on; both say so
+and list the controls, which today are free flight in all three modes because there is still no
+player body. Spectator gets a map, which is the one with anything in it.
+
+#### The map
+
+192 by 192 blocks at **one pixel per block**, centred on the block the player is standing in, drawn
+from the columns `WorldStreamer` already holds -- **it never asks the card for anything**. Beside it,
+in the sixteen character columns the map leaves free: the coordinates, the chunk, which of later
+versions' 128-block map tiles this ground is on, how much has been seen, and what the last redraw
+cost.
+
+Three claims, and each of them is something to check rather than assert:
+
+- **It lines up with the chunks.** Sixteen pixels to a chunk, because the window origin is a whole
+  block. `d-pad left/right` cycles the grid overlay off / 128-block / 16-and-128, which is that
+  alignment made visible. The d-pad is free to take because it is one page of one gamemode: the
+  stereo tuner wants Y held and the debug pages want SELECT.
+- **It lines up with the maps of later versions.** `MapData` at `scale = 0` covers the 128 blocks
+  starting at `tile * 128 - 64`; that grid is what the red lines are and what the "map tile" readout
+  names. Every tile edge is a chunk edge, because 64 is a multiple of 16 -- which is what lets both
+  claims hold at once.
+- **The player is a marker on it.** A diamond with a tick for facing. `map::drawMarker` takes a
+  position, a facing and a colour and assumes nothing about there being one of them, so multiplayer
+  adds callers rather than parameters.
+
+**a1.1.2 has no maps at all**, so there was no oracle and the specification is a later version's:
+`MapData.updateVisitedBlocks` for the shading, `MapColor`'s 180/220/255 for the brightnesses, the
+height map for where the surface scan starts. The one thing that could not be borrowed is the colour
+table -- later versions key it off `Material`, and a1.1.2's materials are coarser than the set those
+colours were written for, so grass and dirt share one and a material-keyed table paints every meadow
+brown. **The colour is the average of the block's top face in the loaded `terrain.png` instead**,
+alpha-weighted; the store holds block ids rather than pixels, so changing the pack recolours ground
+that was sampled long ago and is no longer loaded. See [map.md](map.md) for the whole derivation and
+for the two divergences it is honest about.
+
+#### What it cost -- **and the hardware number that changed the design**
+
+The screen was built to print its own last redraw time in microseconds, because 132 µs on a 3 GHz
+host said only that an ARM11 would want a millisecond or three and no amount of host testing narrows
+that. **A console read 5,000 µs** -- a third of a frame, on every block the player crosses -- and all
+of it was re-deriving pixels that had been derived before.
+
+So the fix that was named and costed in this section got built: a chunk's 16 x 16 patch of pixels is
+drawn once and kept beside its sample, and a redraw is a copy. Everything a pixel depends on is
+either inside its chunk or knowable from its coordinates -- its own heights, the row of heights
+immediately north of it, the palette and the grid style -- so nothing else can invalidate a patch,
+and `MapStore` stamps them with what they were drawn with.
+
+| | how often | host, `-O3`, real world |
+|---|---|---|
+| **sample** a chunk | once per chunk, ever | **1.3 µs** |
+| **draw** a chunk's patch | when it is sampled, when its northern neighbour arrives, or when the palette or grid changes | **0.8 µs** |
+| **copy** the 192 x 192 window | when the player crosses a block | **17.4 µs**, against the **132 µs** it replaced |
+
+If the same host-to-console ratio holds, that puts the redraw near **700 µs** on the console that
+read 5,000. The screen still prints the figure, because that is the number that found this.
+
+Two decisions inside it are worth keeping:
+
+- **`MapChunkSample` is stored x-major** while `ChunkColumn::heightMap` is z-major, which is what
+  took the shading pass from 361 µs to 132 µs before any of the above. The walk goes down a column
+  because a pixel's brightness is the height step to the block one to the north, and carrying that
+  forward costs a register in this order and a screen-width buffer in the other; z-major storage made
+  every pixel of that walk a 32-byte stride, a fresh cache line per pixel on a 16 KB L1. The strided
+  access moved into `sampleChunk`, which pays it once per chunk ever.
+- **A patch is stored x-major with z running backwards**, `patch[x * 16 + (15 - z)]`, which is what
+  makes the copy a `memcpy`. The bottom screen is stored in columns from the bottom up, so going
+  south steps back through the framebuffer; written in reverse, a chunk column and the sixteen
+  halfwords it lands on run the same direction and the copy is 32 bytes moved. `renderMapWindow`
+  takes that path when the z stride is exactly -1 and walks pixel by pixel otherwise, which is how a
+  host test reading a row-major buffer checks the same picture.
+
+What still costs the old price is a **texture-pack change or a grid toggle**: every patch in the
+window is stale at once, 156 of them, about 4.7 ms -- once, at a moment the screen is already
+expected to stop and think. Deliberately not budgeted: spreading it over frames would show the old
+pack's colours for a while, which is worse than the hitch.
+
+One behaviour changed with the split and is better for it. A chunk whose northern neighbour has never
+been sampled now shades its first row *level* rather than against a height of zero. Zero is not a
+neutral seed -- every surface is above it -- so the old continuous walk gave the first row after
+every gap the bright step, and the northern edge of explored ground was a bright fringe that moved
+with the player. Measured on the real world: 608 pixels changed, every one of them directly south of
+unexplored ground.
+
+`--map <world-dir> [pack] [grid]` draws the same three pieces over a **whole** world instead of a
+192-pixel window and writes `map.pam`, which is how the shading and the palette were checked against
+real terrain rather than against a unit test's idea of it. It also prints the surface census -- what
+fraction of the world's top block is grass, water, sand -- which is the check that matters when the
+colours are derived from a pack rather than declared.
+
 ### 1. Run it on a console
 
 **This is the only thing that matters next, and none of it can be done here.** The renderer is
@@ -2407,6 +2512,19 @@ What has to be checked next, roughly in the order it will break:
   same surface in twice. Each fails differently: no blending is opaque water; depth writes left on
   hides the further of two water surfaces; culling left off makes every lake read twice as deep.
   The placeholder atlas gives water alpha 150 so all of this is judgeable at a glance.
+- **The spectator map (§0l), which is the first thing this project has drawn with the CPU.** Four
+  things it could get wrong that no host test reaches, in the order they would be obvious:
+  *nothing on the right-hand two thirds of the bottom screen* is `gfxGetFramebuffer` not returning
+  what `consoleInit` left there -- the code checks for 240 x 320 and draws nothing rather than
+  guessing, so a blank map with live text is that check firing; *the map drawn sideways or in
+  stripes* is the framebuffer's column-major, bottom-up layout, which
+  `tests/map_test.cpp` pins against the exact strides but only against this build's idea of them;
+  *the map appearing and then being eaten a row at a time* is console text reaching past sixteen
+  columns; and *the whole thing tearing or lagging a frame behind* would mean `gfxFlushBuffers` is
+  not enough for a screen the CPU is writing under a GPU-driven top screen. **Read the `draw` figure
+  in the left-hand column while flying** -- it already earned its place once: it read 5,000 µs, which
+  is what the patch cache in §0l was built to answer. It should now read a fraction of that while
+  flying, and jump for one frame when the texture pack or the grid changes.
 
 ### 2. The M2 gate — **half measured, and the baseline fails**
 
@@ -2542,6 +2660,14 @@ fragment-bound.
   one CPU pass over 65,536 texels at the moment the player picks a pack. Build it when hardware says
   that pass is slow enough to notice — and the swizzle being back on the CPU (ninth launch) makes
   that measurement worth taking rather than assuming.
+- **A map that survives closing the world.** The sample store is memory only. Persisting it needs
+  two things that are each a design step: the card is not allowed on the render thread, so tiles
+  would have to go through the I/O thread or through the two moments a world already blocks; and the
+  packed-world converter stashes every file it does not recognise *into* the container, so a map
+  directory would vanish from plain view the first time a world was packed unless it were given the
+  same "carried as well as stashed" treatment `3dalpha.ini` has. Getting the second one wrong is data
+  loss on a conversion. Until then the map remembers 512 chunks on an old 3DS and 1,536 on a New one,
+  which is a session's worth.
 - **Meshing on a worker thread.** Everything is on the main thread behind a 4-sections-per-frame
   budget. `WorldStreamer` is the seam. Doing it now would be building on a guess: the budget that
   makes the main thread survivable is measurable, and there is no frame time to measure yet.

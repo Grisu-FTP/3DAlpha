@@ -9,6 +9,10 @@
 #include "core/io/posix_file_system.hpp"
 #include "core/io/volume_info.hpp"
 #include "core/block/registry.hpp"
+#include "core/map/map_palette.hpp"
+#include "core/map/map_render.hpp"
+#include "core/map/map_sample.hpp"
+#include "core/map/map_store.hpp"
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/visibility.hpp"
 #include "core/render/chunk_renderer.hpp"
@@ -1471,6 +1475,276 @@ int inspectPack(const char* path)
     return 0;
 }
 
+// The bottom screen's map, drawn on the host so it can be looked at.
+//
+// **This is the only way to see what the spectator screen draws without a
+// console**, and it runs the same three pieces the console runs -- the chunk
+// sampler, the store and the window renderer -- over a whole real world instead
+// of a 192-pixel window. What comes out is a picture of the save, one pixel per
+// block, which makes a wrong scan or a wrong shade obvious in a way that a
+// number never would.
+//
+// It also prints what the world is *made of* at the surface, which is the check
+// that matters when the colours come from a texture pack rather than a table: a
+// world whose top block is 60 % grass and whose map is not mostly green has a
+// palette bug, not an artistic difference.
+//
+// **It writes to the directory it is given**, like every other harness here:
+// opening a world writes session.lock. Point it at a copy.
+int mapWorld(const char* worldDir, const char* packPath, bool grid)
+{
+    io::PosixFileSystem fs;
+    world::AnyStorage storage(fs);
+
+    const world::OpenResult opened = storage.open(worldDir, nowMillis());
+    if (opened != world::OpenResult::Ok) {
+        std::printf("cannot open %s: %s\n", worldDir, world::describeOpenResult(opened));
+        return 1;
+    }
+
+    // "" is Dev Art, which is what the console falls back to and what this
+    // defaults to so the harness needs no pack on disk to run.
+    texture::AtlasImage atlas;
+    const texture::PackError packError =
+        texture::buildAtlas(fs, packPath == nullptr ? "" : packPath, &atlas);
+    if (packError != texture::PackError::Ok) {
+        std::printf("pack %s: %s\n", packPath, texture::packErrorText(packError));
+        return 1;
+    }
+    map::MapPalette palette;
+    map::buildMapPalette(atlas, &palette);
+
+    std::vector<std::pair<i32, i32>> coords;
+    if (!storage.forEachChunk(&coords, collect)) {
+        std::printf("scan failed\n");
+        return 1;
+    }
+    if (coords.empty()) {
+        std::printf("%s has no chunks\n", worldDir);
+        return 1;
+    }
+
+    map::MapStore store;
+    store.setCapacity(int(coords.size()));
+
+    i32 minChunkX = coords[0].first;
+    i32 maxChunkX = coords[0].first;
+    i32 minChunkZ = coords[0].second;
+    i32 maxChunkZ = coords[0].second;
+
+    std::map<block::BlockId, int> surfaceCounts;
+    int sampled = 0;
+    map::MapChunkSample sample;
+    for (const auto& c : coords) {
+        world::ChunkColumn column;
+        if (!storage.loadChunk(c.first, c.second, &column)) {
+            continue;
+        }
+        map::sampleChunk(column, &sample);
+        store.store(c.first, c.second, sample);
+        ++sampled;
+
+        minChunkX = c.first < minChunkX ? c.first : minChunkX;
+        maxChunkX = c.first > maxChunkX ? c.first : maxChunkX;
+        minChunkZ = c.second < minChunkZ ? c.second : minChunkZ;
+        maxChunkZ = c.second > maxChunkZ ? c.second : maxChunkZ;
+
+        for (int i = 0; i < map::kChunkSamples; ++i) {
+            ++surfaceCounts[sample.surface[i]];
+        }
+    }
+
+    map::MapWindow window;
+    window.originBlockX = minChunkX * map::kChunkPixels;
+    window.originBlockZ = minChunkZ * map::kChunkPixels;
+    window.width = (maxChunkX - minChunkX + 1) * map::kChunkPixels;
+    window.height = (maxChunkZ - minChunkZ + 1) * map::kChunkPixels;
+
+    // A world spread thinly over a huge area would otherwise ask for a
+    // gigabyte of picture. 4,096 blocks across is more than any world this has
+    // been pointed at and small enough to open.
+    constexpr int kMaxEdge = 4096;
+    if (window.width > kMaxEdge) {
+        window.originBlockX += (window.width - kMaxEdge) / 2;
+        window.width = kMaxEdge;
+    }
+    if (window.height > kMaxEdge) {
+        window.originBlockZ += (window.height - kMaxEdge) / 2;
+        window.height = kMaxEdge;
+    }
+
+    std::vector<map::MapPixel> pixels(usize(window.width) * usize(window.height), 0);
+    map::MapStyle style;
+    style.unexplored = map::rgb565(20, 22, 34);
+    style.chunkGrid = grid;
+    style.tileGrid = grid;
+    style.tileGridColour = map::rgb565(150, 60, 60);
+
+    map::MapSurface surface;
+    surface.pixels = pixels.data();
+    surface.strideX = 1;
+    surface.strideZ = window.width;
+    // Draw every chunk's patch, then copy them onto the picture -- the same two
+    // steps the console takes, in the same order.
+    map::refreshMapWindow(store, palette, window, style, 1);
+    map::renderMapWindow(store, window, style, surface);
+
+    // **The player marker, where the player actually is.** Not decoration: it
+    // is the same call the console makes, on the same surface, and it is the
+    // only place the marker's shape and its facing can be looked at without a
+    // console. A world nobody has stood in has no Player compound, and the
+    // marker is left off rather than pinned to the origin.
+    const world::PlayerData& player = storage.level().player;
+    if (player.present) {
+        map::drawMarker(surface, window, player.pos[0], player.pos[2],
+                        map::facingFromYaw(player.rotation[0]), 2, map::rgb565(255, 255, 255),
+                        map::rgb565(0, 0, 0));
+    }
+
+    usize unexplored = 0;
+    for (const map::MapPixel pixel : pixels) {
+        if (pixel == style.unexplored) {
+            ++unexplored;
+        }
+    }
+
+    std::printf("%s\n", worldDir);
+    std::printf("  %d of %zu chunks sampled\n", sampled, coords.size());
+    std::printf("  chunks x %d..%d  z %d..%d\n", minChunkX, maxChunkX, minChunkZ, maxChunkZ);
+    std::printf("  picture %d x %d blocks from (%d, %d)\n", window.width, window.height,
+                window.originBlockX, window.originBlockZ);
+    if (player.present) {
+        std::printf("  player at (%.1f, %.1f) facing %d\n", player.pos[0], player.pos[2],
+                    map::facingFromYaw(player.rotation[0]));
+    }
+    std::printf("  %zu of %zu pixels unexplored\n", unexplored, pixels.size());
+
+    // **What the console actually pays, measured rather than argued about.**
+    //
+    // Three costs, and they are separate because they happen at different
+    // rates. A chunk is *sampled* once ever. A chunk's patch is *drawn* when it
+    // is sampled, when its northern neighbour arrives, or when the palette or
+    // the grid changes. The window is *copied* on every block the player
+    // crosses, which is the one that has to be cheap -- and the one a New 3DS
+    // measured at 5,000 us before the patches existed.
+    //
+    // **Timed through the console's own strides**, not a row-major buffer: the
+    // copy takes its `memcpy` path only when the z stride is -1, so timing it
+    // any other way would measure a path the console never runs.
+    {
+        constexpr int kRepeats = 200;
+        constexpr int kScreenWidth = 320;
+        constexpr int kScreenHeight = 240;
+        constexpr int kMapPixels = 192;
+        constexpr int kMapLeft = kScreenWidth - kMapPixels;
+        constexpr int kMapTop = 24;
+
+        map::MapWindow screen;
+        screen.width = kMapPixels;
+        screen.height = kMapPixels;
+        screen.originBlockX = window.originBlockX + window.width / 2 - kMapPixels / 2;
+        screen.originBlockZ = window.originBlockZ + window.height / 2 - kMapPixels / 2;
+
+        std::vector<map::MapPixel> framebuffer(usize(kScreenWidth) * usize(kScreenHeight), 0);
+        map::MapSurface screenSurface;
+        screenSurface.pixels =
+            framebuffer.data() + kMapLeft * kScreenHeight + (kScreenHeight - 1 - kMapTop);
+        screenSurface.strideX = kScreenHeight;
+        screenSurface.strideZ = -1;
+
+        map::refreshMapWindow(store, palette, screen, style, 1);
+
+        const auto beforeCopy = std::chrono::steady_clock::now();
+        for (int i = 0; i < kRepeats; ++i) {
+            map::renderMapWindow(store, screen, style, screenSurface);
+        }
+        const auto afterCopy = std::chrono::steady_clock::now();
+
+        // Every patch in the window, drawn again from scratch: a fresh stamp
+        // each time is what a texture-pack change costs.
+        const auto beforeDraw = std::chrono::steady_clock::now();
+        int patches = 0;
+        for (int i = 0; i < kRepeats; ++i) {
+            patches = map::refreshMapWindow(store, palette, screen, style, u32(2 + i));
+        }
+        const auto afterDraw = std::chrono::steady_clock::now();
+
+        world::ChunkColumn probe;
+        const bool haveProbe = storage.loadChunk(coords[coords.size() / 2].first,
+                                                 coords[coords.size() / 2].second, &probe);
+        const auto beforeSample = std::chrono::steady_clock::now();
+        if (haveProbe) {
+            for (int i = 0; i < kRepeats; ++i) {
+                map::sampleChunk(probe, &sample);
+            }
+        }
+        const auto afterSample = std::chrono::steady_clock::now();
+
+        const double copyUs =
+            std::chrono::duration<double, std::micro>(afterCopy - beforeCopy).count() / kRepeats;
+        const double drawUs =
+            std::chrono::duration<double, std::micro>(afterDraw - beforeDraw).count() / kRepeats;
+        const double sampleUs =
+            std::chrono::duration<double, std::micro>(afterSample - beforeSample).count()
+            / kRepeats;
+        std::printf("  host cost: %.1f us to copy a 192x192 window\n", copyUs);
+        std::printf("             %.1f us to draw its %d patches (%.1f us each)\n", drawUs,
+                    patches, patches > 0 ? drawUs / patches : 0.0);
+        std::printf("             %.1f us to sample a chunk\n", haveProbe ? sampleUs : 0.0);
+    }
+
+    // The surface census. Sorted by how much of the world it is, which is the
+    // order that makes a wrong colour findable.
+    std::vector<std::pair<int, block::BlockId>> ranked;
+    for (const auto& entry : surfaceCounts) {
+        ranked.emplace_back(entry.second, entry.first);
+    }
+    std::sort(ranked.begin(), ranked.end(),
+              [](const std::pair<int, block::BlockId>& a, const std::pair<int, block::BlockId>& b) {
+                  return a.first > b.first;
+              });
+    const int total = sampled * map::kChunkSamples;
+    std::printf("  surface blocks:\n");
+    for (usize i = 0; i < ranked.size() && i < 8; ++i) {
+        const block::BlockId id = ranked[i].second;
+        const u32 rgb = palette.base[id];
+        std::printf("    %-16s %5.1f %%  #%02X%02X%02X%s\n", block::def(id).name,
+                    total > 0 ? 100.0 * double(ranked[i].first) / double(total) : 0.0,
+                    (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF,
+                    palette.known[id] ? "" : "  (no colour: never drawn on a map)");
+    }
+
+    // Expanded to eight bits a channel on the way out. RGB565 is what the
+    // console's screen holds and what the renderer therefore produces; a viewer
+    // wants the bits replicated rather than shifted, so white stays white.
+    std::vector<u8> rgb(pixels.size() * 3);
+    for (usize i = 0; i < pixels.size(); ++i) {
+        const u32 value = pixels[i];
+        const u32 r = (value >> 11) & 0x1F;
+        const u32 g = (value >> 5) & 0x3F;
+        const u32 b = value & 0x1F;
+        rgb[i * 3 + 0] = u8((r << 3) | (r >> 2));
+        rgb[i * 3 + 1] = u8((g << 2) | (g >> 4));
+        rgb[i * 3 + 2] = u8((b << 3) | (b >> 2));
+    }
+
+    std::FILE* file = std::fopen("map.pam", "wb");
+    if (file == nullptr) {
+        std::printf("  could not write map.pam\n");
+        return 1;
+    }
+    std::fprintf(file, "P7\nWIDTH %d\nHEIGHT %d\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n",
+                 window.width, window.height);
+    const usize written = std::fwrite(rgb.data(), 1, rgb.size(), file);
+    std::fclose(file);
+    if (written != rgb.size()) {
+        std::printf("  could not write map.pam\n");
+        return 1;
+    }
+    std::printf("  wrote map.pam\n");
+    return 0;
+}
+
 int extractJar(const char* jarPath, const char* outDir)
 {
     io::PosixFileSystem fs;
@@ -1696,6 +1970,14 @@ int main(int argc, char** argv)
         return worldInfo(argv[2]);
     }
 
+    if (argc > 2 && std::strcmp(argv[1], "--map") == 0) {
+        // `grid` is this command's own trailing word rather than the shared
+        // one above, which only ever means something to --fly and --mesh.
+        const bool grid = argc > 3 && std::strcmp(argv[argc - 1], "grid") == 0;
+        const char* pack = (argc > 3 && !(grid && argc == 4)) ? argv[3] : nullptr;
+        return mapWorld(argv[2], pack, grid);
+    }
+
     // The console's own loop, without the console. Everything between reading
     // the SD card and issuing a draw call runs here, so a streaming bug is a
     // sanitizer report rather than a puzzle on a 240-line screen.
@@ -1729,6 +2011,10 @@ int main(int argc, char** argv)
     std::printf("  --convert <world-dir> pack|unpack    move a world between the two on-disk\n");
     std::printf("        shapes, in place. Pack it, unpack it, and `diff -r` against the\n");
     std::printf("        original must be empty -- that is what \"loses no data\" means\n");
+    std::printf("  --map <world-dir> [pack] [grid]      draw the bottom screen's map of a\n");
+    std::printf("        whole world, one pixel per block, and report what its surface is\n");
+    std::printf("        made of; writes map.pam to look at. `grid` draws the chunk and\n");
+    std::printf("        128-block map-tile lines the spectator screen draws\n");
     std::printf("  --world-info <world-dir>             format, seed and what it occupies;\n");
     std::printf("        the gap between content and on-disk is cluster slack\n");
     std::printf("  --fly <world-dir> [distance] [frames] [switch-to] [quads|flip]\n");

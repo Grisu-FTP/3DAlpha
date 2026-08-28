@@ -129,6 +129,27 @@ void Overlay::begin(const char* worldName, const char* model)
     worldName_ = worldName;
     model_ = model;
     dirty_ = true;
+    // A different world: every chunk the map remembers belongs to the last one.
+    map_.reset();
+}
+
+void Overlay::setGamemode(settings::Gamemode mode)
+{
+    if (mode == gamemode_) {
+        return;
+    }
+    gamemode_ = mode;
+    // The Normal page is a different screen now, and the one on the glass
+    // belongs to the mode that has just been left.
+    dirty_ = true;
+}
+
+void Overlay::tickMap(const render::WorldStreamer& world, const Camera& camera)
+{
+    if (gamemode_ != settings::Gamemode::Spectator) {
+        return;
+    }
+    map_.update(world, camera);
 }
 
 bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* camera)
@@ -145,6 +166,17 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
             page_ = Page(((int(page_) + step) % kPageCount));
             cursor_ = 0;
             dirty_ = true;
+        }
+        return false;
+    }
+
+    // **The spectator screen owns the bare d-pad while it is up**, which costs
+    // nothing global: it is one page of one gamemode, and every other binding
+    // in a world is already spoken for by a modifier -- Y for the stereo
+    // tuner, SELECT for the pages.
+    if (page_ == Page::Normal && gamemode_ == settings::Gamemode::Spectator) {
+        if (down & (KEY_DLEFT | KEY_DRIGHT)) {
+            map_.cycleGrid((down & KEY_DRIGHT) != 0 ? 1 : -1);
         }
         return false;
     }
@@ -309,33 +341,66 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
         ioPrevious_ = io;
     }
 
-    // Printing is the expensive part -- libctru's console renders every glyph
-    // into the bottom framebuffer on the CPU -- so it happens once per sample
-    // block, not once per frame. An overlay that costs several milliseconds
-    // would be measuring itself. A page change or a settings edit is the
-    // exception: waiting a third of a second to see a button press is worse.
-    if (!tick && !dirty_) {
-        return;
-    }
-
-    // The Normal page has nothing that changes, so once drawn it stays drawn.
-    if (page_ == Page::Normal && !dirty_) {
-        return;
-    }
-
+    // **The header and the footer are reprinted only on a page change**, and
+    // they are printed here rather than after the body because the spectator
+    // screen below returns before ever reaching the end. `row()` blanks a whole
+    // line -- forty columns, the full width of the screen -- so a footer written
+    // after the map would take a strip out of the map the moment either moved a
+    // row.
+    const bool cleared = dirty_;
     if (dirty_) {
         clearScreen();
         // Clipped like everything else: a world name is a path off the SD card
         // and there is nothing stopping it being longer than the screen.
         row(1, "\x1b[32m3DAlpha %s\x1b[0m  %s", mcver::kDisplay, model_);
         row(2, "%s", worldName_);
+        row(kFooterRow, "SELECT+Y / SELECT+X  change page");
+        row(kFooterRow + 1, "START pause");
         dirty_ = false;
+    }
+
+    // **The spectator screen is not on the sample-block clock.** Every other
+    // page is a set of numbers that would be unreadable if they changed every
+    // frame; this one is a picture of where the player is, and a third of a
+    // second of lag in it is the difference between a map and a memory. It
+    // costs nothing to ask every frame: it redraws when the player has crossed
+    // into another block or a chunk has been sampled, and returns immediately
+    // when neither has happened.
+    if (page_ == Page::Normal && gamemode_ == settings::Gamemode::Spectator) {
+        map_.draw(camera, cleared);
+        return;
+    }
+
+    // Printing is the expensive part -- libctru's console renders every glyph
+    // into the bottom framebuffer on the CPU -- so it happens once per sample
+    // block, not once per frame. An overlay that costs several milliseconds
+    // would be measuring itself. A page change or a settings edit is the
+    // exception: waiting a third of a second to see a button press is worse.
+    if (!tick && !cleared) {
+        return;
+    }
+
+    // The other Normal screens have nothing on them that changes, so once drawn
+    // they stay drawn.
+    if (page_ == Page::Normal && !cleared) {
+        return;
     }
 
     int next = kBodyRow;
     switch (page_) {
     case Page::Normal:
-        next = drawNormal();
+        // No default: a gamemode added later has to be given a screen here
+        // before this compiles, which is the point of the switch.
+        switch (gamemode_) {
+        case settings::Gamemode::Spectator:
+            break;  // handled above, before the sample-block throttle
+        case settings::Gamemode::Survival:
+            next = drawSurvival();
+            break;
+        case settings::Gamemode::Creative:
+            next = drawCreative();
+            break;
+        }
         break;
     case Page::Info:
         next = drawInfo(renderer, world, camera, timeOfDay);
@@ -355,18 +420,15 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
     while (next < kFooterRow) {
         blank(next++);
     }
-
-    row(kFooterRow, "SELECT+Y / SELECT+X  change page");
-    row(kFooterRow + 1, "START pause");
 }
 
-int Overlay::drawNormal()
+namespace {
+
+// The controls every mode shares today, which is all of them: there is no
+// player body yet, so Survival and Creative fly exactly as Spectator does. Kept
+// in one place so the two screens below cannot drift apart while that is true.
+int drawFreeFlightControls(int r)
 {
-    int r = kBodyRow;
-    blank(r++);
-    row(r++, "  The hotbar and inventory live here");
-    row(r++, "  from M3. Until then:");
-    blank(r++);
     row(r++, "  circle pad   move");
     row(r++, "  C-stick      look  (New 3DS)");
     row(r++, "  touch drag   look");
@@ -376,6 +438,35 @@ int Overlay::drawNormal()
     row(r++, "  SELECT+Y     debug pages, and");
     row(r++, "               teleport");
     return r;
+}
+
+}  // namespace
+
+int Overlay::drawSurvival()
+{
+    int r = kBodyRow;
+    blank(r++);
+    row(r++, "  \x1b[33mSurvival\x1b[0m");
+    blank(r++);
+    row(r++, "  The hotbar and inventory live here");
+    row(r++, "  from M3. There is no player body");
+    row(r++, "  yet, so this world flies rather");
+    row(r++, "  than walks:");
+    blank(r++);
+    return drawFreeFlightControls(r);
+}
+
+int Overlay::drawCreative()
+{
+    int r = kBodyRow;
+    blank(r++);
+    row(r++, "  \x1b[33mCreative\x1b[0m");
+    blank(r++);
+    row(r++, "  The block palette lives here from");
+    row(r++, "  M3. There is nothing to place with");
+    row(r++, "  it yet, so this world flies:");
+    blank(r++);
+    return drawFreeFlightControls(r);
 }
 
 int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& world,

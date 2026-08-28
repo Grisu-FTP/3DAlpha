@@ -14,6 +14,16 @@
 
 namespace mc {
 
+// Floor division, which is what a coordinate grid wants and what C's
+// truncating `/` is not: -1 / 16 is 0, and the block at -1 is in the chunk
+// below zero. Java's own `/` truncates too, which is why the original spells
+// this out wherever it divides a coordinate.
+inline i32 floorDiv(i32 value, i32 divisor)
+{
+    const i32 quotient = value / divisor;
+    return (value % divisor != 0 && ((value < 0) != (divisor < 0))) ? quotient - 1 : quotient;
+}
+
 struct Vec3 {
     float x = 0.0f, y = 0.0f, z = 0.0f;
 };

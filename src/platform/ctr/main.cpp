@@ -475,11 +475,24 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // before the mantissa stopped naming individual ticks.
     double worldTicks = double(world.level().time);
 
-    ctr::Overlay overlay;
+    // **Static for the same reason `world` above is**, and now with a second
+    // reason: the overlay carries the spectator screen's map, whose colour
+    // table alone is a few kilobytes, and a 3DSX gets a 32 KB main-thread stack
+    // that nothing in the binary can enlarge. It lives for the whole process
+    // either way. `begin()` below is what makes it forget the last world.
+    static ctr::Overlay overlay;
     // The name, not the path: the header is 40 columns wide and the player knows
     // which card their worlds are on. `choice` outlives this call, which is why
     // the overlay may keep the pointer.
     overlay.begin(choice.worldName.c_str(), isNew3DS ? "New 3DS" : "Old 3DS");
+    // **The bottom screen is the world's gamemode's**, which is why this is read
+    // off the choice rather than assumed: Spectator gets the map, and the modes
+    // that will have a hotbar get the screens it is going in.
+    overlay.setGamemode(choice.gamemode);
+    overlay.configureMap(isNew3DS);
+    // The same atlas the world is drawn with. `choice` outlives the game loop,
+    // but the palette is copied out of it here and not held.
+    overlay.setMapAtlas(choice.atlas);
     // After open(), because open() is where the worker is started and therefore
     // where the answer becomes known. Whether it started at all is a separate
     // question and the overlay reads that from the streamer's own stats.
@@ -646,11 +659,19 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
                 break;
             }
 
+            // The world settings screen can change the gamemode without leaving
+            // the world, and the gamemode is which bottom screen this is.
+            overlay.setGamemode(paused.gamemode);
+
             if (paused.atlasChanged) {
                 if (!renderer.setAtlas(menu.atlas())) {
                     std::printf("\x1b[31mcould not upload that pack\x1b[0m\n");
                     overlay.invalidate();
                 }
+                // The map is drawn from the same pack as the world, so ground
+                // sampled under the old one is recoloured rather than redrawn:
+                // the store holds block ids, not pixels.
+                overlay.setMapAtlas(menu.atlas());
                 // The outline atlas went with the old one and may not have come
                 // back, so the debug page is told what is actually on rather
                 // than what was asked for -- the same read-back the page does
@@ -757,6 +778,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
 
         timing.walkMs = ctr::millisFromTicks(beforeStream - beforeWalk);
         timing.streamMs = ctr::millisFromTicks(afterStream - beforeStream);
+
+        // **After the streamer and before the draw**, because it reads columns
+        // out of the grid and the grid is settled for the frame by now. It
+        // samples at most a chunk or two and does nothing at all in a mode
+        // whose bottom screen has no map on it.
+        overlay.tickMap(world, camera);
 
         renderer.drawFrame(camera);
 

@@ -2,11 +2,20 @@
 
 // The bottom screen.
 //
-// Three pages, cycled with SELECT + Y (forward) and SELECT + X (back):
+// Four pages, cycled with SELECT + Y (forward) and SELECT + X (back):
 //
-//   Normal    what a player sees. Empty of diagnostics on purpose -- this is
-//             where the hotbar and inventory go at M3, and until they exist it
-//             is the controls and nothing else.
+//   Normal    what a player sees, and **it is a different screen in every
+//             gamemode**. That is the split the bottom screen has been waiting
+//             for: the three debug pages below are the maintainer's and are the
+//             same wherever you are, while the Normal page belongs to whatever
+//             the world is being played as. Spectator gets a map and the
+//             player's coordinates (see map_screen.hpp); Survival and Creative
+//             get the screens their hotbars and inventories will be built on,
+//             which today say so and list what the buttons currently do.
+//
+//             **A mode with no screen of its own is not possible**, because the
+//             page is chosen by a switch over the enum with no default -- a
+//             mode added later will not compile until it has been given one.
 //   Info      the debug readout. Every number here answers a question the
 //             design has an opinion about, so a wrong opinion shows up as a
 //             number rather than as a vague sense that the game feels slow:
@@ -29,8 +38,11 @@
 // cleared, so it does not flicker and costs nothing worth measuring. Only a
 // page change clears.
 
-#include "platform/ctr/renderer.hpp"
 #include "core/render/world_streamer.hpp"
+#include "core/settings/world_settings.hpp"
+#include "core/texture/atlas_image.hpp"
+#include "platform/ctr/map_screen.hpp"
+#include "platform/ctr/renderer.hpp"
 
 namespace mc::ctr {
 
@@ -132,8 +144,31 @@ public:
     };
     static constexpr int kPageCount = 4;
 
-    // Remembered so a page change can reprint the header.
+    // Remembered so a page change can reprint the header. Also forgets
+    // everything the last world's map remembered, which is the one piece of
+    // state here that would be actively wrong carried across.
     void begin(const char* worldName, const char* model);
+
+    // **Which screen the Normal page is.** Set at world open from the world's
+    // own 3dalpha.ini, and again whenever the pause menu's World Settings
+    // screen changes it, so a mode switched in a world takes effect without
+    // leaving it.
+    void setGamemode(settings::Gamemode mode);
+    settings::Gamemode gamemode() const { return gamemode_; }
+
+    // Sizes the map's memory against the model. Once, at world open.
+    void configureMap(bool isNew3DS) { map_.configure(isNew3DS); }
+
+    // The pack the map takes its colours from -- the same atlas the world is
+    // drawn with, because a map that disagreed with the world about what stone
+    // looks like would be worse than one with no colour at all. Called at world
+    // open and again when the pause menu changes the pack.
+    void setMapAtlas(const texture::AtlasImage& atlas) { map_.setPalette(atlas); }
+
+    // Once a frame. Samples a chunk or two into the map, and does nothing at
+    // all in a mode whose screen has no map -- there is no point paying for a
+    // picture nothing will draw.
+    void tickMap(const render::WorldStreamer& world, const Camera& camera);
 
     // Which core the generation worker actually got, as a label for the debug
     // page. Asked for and got are different questions -- a New 3DS launched
@@ -190,7 +225,12 @@ private:
     // first row it did not use, so the caller can blank the rest. They place
     // every line absolutely and never write a newline -- see `row()` in
     // overlay.cpp for why that is the whole point.
-    int drawNormal();
+    // The Normal page, per gamemode. Each draws its own body and returns the
+    // first row it did not use, exactly like the debug pages -- except the
+    // spectator screen, which owns its rows *and* the pixels beside them and so
+    // is drawn straight from `draw` rather than through this shape.
+    int drawSurvival();
+    int drawCreative();
     int drawInfo(const Renderer& renderer, const render::WorldStreamer& world,
                  const Camera& camera, float timeOfDay);
     // **The page this whole arrangement is answerable to.** `main` is
@@ -209,6 +249,9 @@ private:
     static bool teleportViaKeyboard(Camera* camera);
 
     static constexpr int kSettingCount = 4;
+
+    settings::Gamemode gamemode_ = settings::Gamemode::Spectator;
+    MapScreen map_;
 
     Page page_ = Page::Normal;
     int cursor_ = 0;

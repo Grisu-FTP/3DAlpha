@@ -1331,6 +1331,15 @@ void WorldStreamer::flushSaves(bool blocking)
     cache_.flush(blocking);
 }
 
+const world::ChunkColumn* WorldStreamer::residentColumn(i32 chunkX, i32 chunkZ) const
+{
+    const Cell* cell = find(chunkX, chunkZ);
+    if (cell == nullptr || cell->state != CellState::Loaded || !cell->published) {
+        return nullptr;
+    }
+    return cell->column.get();
+}
+
 void WorldStreamer::countResidency()
 {
     stats_.columnsResident = 0;

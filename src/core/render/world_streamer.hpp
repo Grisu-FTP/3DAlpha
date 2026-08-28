@@ -298,6 +298,23 @@ public:
 
     const Stats& stats() const { return stats_; }
 
+    // **A column that is resident right now, or null.** The one read-only door
+    // into the grid, and it exists for the bottom screen's map: the map is a
+    // projection of blocks the game already has in memory, and re-reading them
+    // from the card to draw a picture of them would be absurd.
+    //
+    // Main thread only, and the pointer is good only until the next `update()`
+    // -- the grid drops columns that leave the radius, and the generation
+    // worker's finished columns are adopted in there. Nothing may hold it
+    // across a frame.
+    //
+    // Published rather than merely loaded: an unpublished column is one whose
+    // neighbours have not all arrived, which for meshing means "not yet" and
+    // for a map means nothing at all -- but publishing is also the moment the
+    // column is known to be complete and lit, so it is the honest gate for
+    // both.
+    const world::ChunkColumn* residentColumn(i32 chunkX, i32 chunkZ) const;
+
 private:
     enum class CellState : u8 {
         Empty,        // never asked about

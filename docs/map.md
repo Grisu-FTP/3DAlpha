@@ -20,10 +20,12 @@ in every mode: they are the maintainer's, not the player's. See
 
 ## The picture
 
-One pixel is one block — later versions' `scale = 0` — and the window is 192 by 176 blocks centred
-on the block the player is standing in. (It was 192 square; the sixteen rows went to the tab strip
-and the frame around it, which makes the copy below cheaper rather than dearer — 33,792 pixels
-against the 36,864 the hardware number was measured on.) Three things follow, and the first two are the point:
+One pixel is one block — later versions' `scale = 0` — and the window is 208 by 200 blocks centred
+on the block the player is standing in. (It was 192 square, then 192 by 176 when the tab strip took
+sixteen rows, and it is bigger than either now that the strip of button hints along the bottom is
+gone and the coordinate column has been cut from 120 pixels to 96. That is 41,600 pixels against the
+36,864 the hardware number was measured on, so the copy costs about a fifth of a millisecond more —
+see [what it costs](#what-it-costs--and-the-hardware-number-that-changed-the-design).) Three things follow, and the first two are the point:
 
 * **It lines up with the chunks.** Sixteen pixels to a chunk, always, because the window's origin is
   a whole block and a chunk is sixteen blocks. The debug settings page draws the chunk lines so you
@@ -145,13 +147,15 @@ performance story:
 |---|---|---|
 | **sample** a chunk into surface / height / depth | once per chunk, ever | **1.3 µs** |
 | **draw** a chunk's 16 × 16 patch of pixels | when it is sampled, when its northern neighbour arrives, or when the palette or grid changes | **0.8 µs** |
-| **copy** the 192 × 176 window onto the screen | when the player crosses a block, or turns far enough to move the marker | **14.2 µs** |
+| **copy** the 208 × 200 window onto the screen | when the player crosses a block, or turns far enough to move the marker | **16.9 µs** |
 
 The copy row is a best of four runs of `--map`, which is how the 17.4 µs it replaced was taken: this
-machine spreads that measurement over 14–22 µs depending on what else is running, and the same run
-that gives 14.2 gives 1.3 and 0.7 for the two rows above it. The window losing sixteen rows to the
-tab strip is worth about three of those microseconds; it is not worth reading anything else into the
-difference.
+machine spreads that measurement over 17–31 µs depending on what else is running, and the same run
+that gives 16.9 gives 1.2 and 0.7 for the two rows above it. It scales with the window and with
+nothing else — 33,792 pixels measured 14.2 µs on the same machine, and 41,600 measures 16.9 — so the
+**estimate for the console is about 790 µs**, against the 700 the smaller window was reckoned at.
+That is a fifth of a millisecond on a redraw, and it is the first thing to give back if a frame
+budget ever needs it.
 
 **The second row did not exist at first, and a console is why it does.** The original design kept
 only the samples and shaded every pixel on its way to the screen — 132 µs on the host, which said
@@ -161,8 +165,8 @@ all of it re-deriving pixels that had been derived before.
 
 Everything a pixel depends on is either inside its chunk or knowable from the chunk's coordinates —
 its own heights, the row of heights immediately north of it, the palette and the grid style. So a
-chunk's patch is drawn once and kept beside its sample, and a redraw is a copy: **14.2 µs on the
-host against the 132 µs it replaced**, which on the same console should be something near 700 µs. A
+chunk's patch is drawn once and kept beside its sample, and a redraw is a copy: **16.9 µs on the
+host against the 132 µs it replaced**, which on the same console should be something near 790 µs. A
 patch costs 512 bytes, taking a chunk to 1,536.
 
 The copy has a `memcpy` fast path, and it is why a patch is stored **x-major with z running
@@ -174,7 +178,7 @@ path when the surface's z stride is exactly −1 and walks pixel by pixel otherw
 reading a row-major buffer gets the same picture — which `tests/map_test.cpp` checks both ways.
 
 What still costs the old price is a **texture pack change or a grid toggle**: every patch in the
-window is stale at once, which is 156 of them, about 4.7 ms on that console — once, at a moment the
+window is stale at once, which is at most 196 of them, about 5.9 ms on that console — once, at a moment the
 screen is already expected to stop and think. That is deliberately not budgeted: spreading it over
 frames would mean showing the old pack's colours for a while, which is worse than the hitch.
 
@@ -206,8 +210,12 @@ which is a remembered area of roughly 512 and 780 blocks square.
 
 ## The bottom screen it lives on
 
-The screen is 320 × 240 in three bands: the tab strip on rows 1–3, the page on rows 4–27, and a
-strip of control hints on rows 28–30.
+The screen is 320 × 240 in two bands: the tab strip on rows 1–3, and the page on rows 4–30.
+
+**There was a third band and it said what the buttons did.** It is gone: the hints were the same
+three lines on every page, spending a twelfth of the screen to repeat themselves at a player who had
+read them once. The debug pages still carry theirs, which is where `SELECT + Y` is worth naming — it
+is the one binding that is not discoverable by touching the screen.
 
 **It is still libctru's text console, and that is still deliberate** — every message this shell says
 to the player goes through it, and the three debug pages are built on it. What changed is that the
@@ -230,7 +238,15 @@ border thick enough to eat the picture. The backdrop behind them is the pack's `
 darkened exactly as `GuiScreen.drawBackground` tiles it, so the two screens do not disagree about
 what this pack looks like.
 
-### Coordinates, and nothing else
+### Coordinates, and nothing else — in 96 pixels
+
+The column beside the map is 96 pixels wide, and what pays for that is the axis letters: **they are
+drawn as five-pixel glyphs rather than printed.** A character cell is eight pixels wide and a Far
+Lands coordinate is nine characters — `-12550824` — so a printed `X` would cost an eighth of the
+column to say something one glyph's width can. The same seven-letter, five-by-seven font labels the
+compass ribbon on the Look page, and for the same reason: a character cell cannot slide by the pixel
+as the player turns.
+
 
 The chunk, the later-version map tile, the count of chunks remembered and the redraw time were all
 on this page and all four are the maintainer's questions rather than the player's — a page that

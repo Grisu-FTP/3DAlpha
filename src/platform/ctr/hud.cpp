@@ -27,16 +27,19 @@ int writeColours(char* out, usize size, u32 fg, u32 bg)
                          (unsigned long)((bg >> 8) & 0xFF), (unsigned long)(bg & 0xFF));
 }
 
-// The compass ribbon's letters. Five by seven, one byte a row with 0x10 as the
-// leftmost pixel -- small enough to hand-draw and the only four glyphs on the
-// screen that cannot come from the console, because they have to slide by the
-// pixel as the player turns and a character cell cannot.
-constexpr int kGlyphWidth = 5;
-constexpr int kGlyphHeight = 7;
-const u8 kGlyphN[kGlyphHeight] = {0x11, 0x19, 0x15, 0x15, 0x13, 0x11, 0x11};
-const u8 kGlyphE[kGlyphHeight] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F};
-const u8 kGlyphS[kGlyphHeight] = {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
-const u8 kGlyphW[kGlyphHeight] = {0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11};
+// The seven letters, five by seven, one byte a row with 0x10 as the leftmost
+// pixel. Indexed by `Letter`, so the order here is the order there.
+constexpr int kGlyphWidth = kLetterWidth;
+constexpr int kGlyphHeight = kLetterHeight;
+const u8 kGlyphs[7][kGlyphHeight] = {
+    {0x11, 0x19, 0x15, 0x15, 0x13, 0x11, 0x11},  // N
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F},  // E
+    {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E},  // S
+    {0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11},  // W
+    {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11},  // X
+    {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04},  // Y
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F},  // Z
+};
 
 void drawGlyph(const gui::Surface& surface, int x, int y, const u8* rows, gui::Pixel colour)
 {
@@ -55,8 +58,9 @@ void drawGlyph(const gui::Surface& surface, int x, int y, const u8* rows, gui::P
 // The eight compass points, as the glyphs that spell them. Index 0 is north and
 // they run clockwise, which is the order a bearing counts in.
 const u8* const kPointGlyphs[8][2] = {
-    {kGlyphN, nullptr}, {kGlyphN, kGlyphE}, {kGlyphE, nullptr}, {kGlyphS, kGlyphE},
-    {kGlyphS, nullptr}, {kGlyphS, kGlyphW}, {kGlyphW, nullptr}, {kGlyphN, kGlyphW},
+    {kGlyphs[0], nullptr},      {kGlyphs[0], kGlyphs[1]}, {kGlyphs[1], nullptr},
+    {kGlyphs[2], kGlyphs[1]},   {kGlyphs[2], nullptr},    {kGlyphs[2], kGlyphs[3]},
+    {kGlyphs[3], nullptr},      {kGlyphs[0], kGlyphs[3]},
 };
 
 // The look pad and the compass ribbon inside it, shared by the two calls that
@@ -64,7 +68,7 @@ const u8* const kPointGlyphs[8][2] = {
 constexpr int kPadX = 8;
 constexpr int kPadY = 32;
 constexpr int kPadW = kScreenWidth - kPadX * 2;
-constexpr int kPadH = 176;
+constexpr int kPadH = 200;
 constexpr int kRibbonX = kPadX + 8;
 constexpr int kRibbonY = kPadY + 8;
 constexpr int kRibbonW = kPadW - 16;
@@ -147,6 +151,11 @@ void textCentred(int row, int left, int width, u32 fg, u32 bg, const char* strin
     text(row, column + 1, length, fg, bg, "%s", string);
 }
 
+void drawLetter(const gui::Surface& surface, int x, int y, Letter letter, u32 colour)
+{
+    drawGlyph(surface, x, y, kGlyphs[int(letter)], px(colour));
+}
+
 void panel(const gui::Surface& surface, int x, int y, int w, int h)
 {
     gui::bevelBox(surface, x, y, w, h, px(kPanelFace), px(kPanelLight), px(kPanelDark), true);
@@ -220,31 +229,25 @@ int tabAt(const TabStrip& tabs, int touchX, int touchY)
     return -1;
 }
 
-void drawFooter(const gui::Surface& surface, const char* hint)
-{
-    gui::bevelBox(surface, 0, kFooterTop, kScreenWidth, kFooterHeight, px(kPanelFace),
-                  px(kPanelLight), px(kPanelDark), true);
-    textCentred(kFooterRow, 0, kScreenWidth, kPanelText, kPanelFace, hint);
-}
-
 void drawItemsPage(const gui::Surface& surface)
 {
     // Nine slots across at 24 pixels, three rows and a hotbar under them, which
     // is the original's layout at the largest size a 320-pixel screen will take
-    // it. The panel is eight pixels of margin around that.
+    // it. The panel is eight pixels of margin around that, a title row above
+    // and a line below saying why the slots are empty.
     constexpr int kSlotPixels = 24;
     constexpr int kSlotColumns = 9;
     constexpr int kGridWidth = kSlotColumns * kSlotPixels;
     constexpr int kPanelX = (kScreenWidth - kGridWidth) / 2 - 8;
     constexpr int kPanelW = kGridWidth + 16;
-    constexpr int kPanelY = 48;
-    constexpr int kPanelH = 144;
+    constexpr int kPanelY = 56;
+    constexpr int kPanelH = 152;
     constexpr int kGridX = kPanelX + 8;
-    constexpr int kGridY = 72;
+    constexpr int kGridY = 80;
     constexpr int kHotbarY = kGridY + 3 * kSlotPixels + 8;
 
     panel(surface, kPanelX, kPanelY, kPanelW, kPanelH);
-    textCentred(8, kPanelX, kPanelW, kPanelText, kPanelFace, "Inventory");
+    textCentred(9, kPanelX, kPanelW, kPanelText, kPanelFace, "Inventory");
 
     for (int row = 0; row < 3; ++row) {
         for (int column = 0; column < kSlotColumns; ++column) {
@@ -255,6 +258,10 @@ void drawItemsPage(const gui::Surface& surface)
     for (int column = 0; column < kSlotColumns; ++column) {
         slot(surface, kGridX + column * kSlotPixels, kHotbarY, kSlotPixels, kSlotPixels);
     }
+
+    // Row 25 is the eight pixels under the hotbar. Dimmer than the title,
+    // because it is an apology rather than a heading.
+    textCentred(25, kPanelX, kPanelW, kPanelDark, kPanelFace, "empty until M3");
 }
 
 void drawLookPage(const gui::Surface& surface)

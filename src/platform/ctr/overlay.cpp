@@ -216,23 +216,6 @@ void Overlay::selectTab(int index)
     dirty_ = true;
 }
 
-// What the buttons do on the page that is up. A control hint, which is the one
-// thing a second screen is unambiguously for -- and the only text on the
-// player's half that is not a coordinate.
-const char* Overlay::footerHint() const
-{
-    switch (playerPage_) {
-    case PlayerPage::Map:
-        return "START pause    SELECT+Y debug";
-    case PlayerPage::Items:
-        // Honest rather than blank: there is nothing to put in these slots yet.
-        return "the inventory arrives with M3";
-    case PlayerPage::Look:
-        break;
-    }
-    return "drag below to look around";
-}
-
 int Overlay::touchLookTop() const
 {
     // A press that began on the tab strip belongs to it until it is let go, so
@@ -549,7 +532,6 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         clearScreen();
         hud::drawBackdrop(screen, haveBackdrop_ ? backdrop_ : nullptr);
         hud::drawTabs(screen, tabs());
-        hud::drawFooter(screen, footerHint());
         dirty_ = false;
         // The pages below all key off "has this moved", and after a clear
         // nothing on the screen is theirs any more.

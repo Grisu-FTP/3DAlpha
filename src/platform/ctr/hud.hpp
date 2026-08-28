@@ -22,17 +22,21 @@
 // label here is printed that way, which is why nothing in the layout has to
 // route around the character grid.
 //
-// The layout is 320 x 240, in three bands:
+// The layout is 320 x 240, in two bands:
 //
 //     +----------------------------------------+  y = 0
 //     |  [ Map ]  [ Items ]  [ Look ]          |  the tab strip, rows 1-3
 //     +----------------------------------------+  y = 24
 //     |                                        |
-//     |               the page                 |  rows 4-27
+//     |               the page                 |  rows 4-30
 //     |                                        |
-//     +----------------------------------------+  y = 216
-//     |  what the buttons do here              |  rows 28-30
 //     +----------------------------------------+  y = 240
+//
+// **There was a third band, and it said what the buttons did.** It is gone, and
+// the page has the 24 pixels: the hints were the same three lines on every page
+// and they were spending a twelfth of the screen to repeat themselves. The
+// debug pages still carry theirs, which is where SELECT + Y is worth naming --
+// it is the one binding that is not discoverable by touching the screen.
 
 #include "core/gui/paint.hpp"
 #include "core/util/types.hpp"
@@ -46,15 +50,12 @@ inline constexpr int kScreenHeight = 240;
 inline constexpr int kColumns = kScreenWidth / kCell;   // 40
 inline constexpr int kRows = kScreenHeight / kCell;     // 30
 
-// The three bands. The tab strip is three character rows so a label sits in the
-// middle of it with a row of pixels either side.
+// The two bands. The tab strip is three character rows so a label sits in the
+// middle of it with a row of pixels either side; the page is everything below.
 inline constexpr int kTabTop = 0;
 inline constexpr int kTabHeight = 24;
 inline constexpr int kBodyTop = kTabTop + kTabHeight;   // 24
-inline constexpr int kBodyHeight = 192;
-inline constexpr int kFooterTop = kBodyTop + kBodyHeight;  // 216
-inline constexpr int kFooterHeight = kScreenHeight - kFooterTop;
-inline constexpr int kFooterRow = kFooterTop / kCell + 2;  // row 29, the middle one
+inline constexpr int kBodyHeight = kScreenHeight - kBodyTop;  // 216
 
 // **a1.1.2's own GUI colours, and only its own.** A panel is the face plus a
 // light bevel and a dark one; a slot is the same two bevels the other way
@@ -99,6 +100,19 @@ void text(int row, int column, int columns, u32 fg, u32 bg, const char* fmt, ...
 // middle, since a glyph cannot start half way through one.
 void textCentred(int row, int left, int width, u32 fg, u32 bg, const char* string);
 
+// **Seven letters drawn as pixels rather than printed**, five wide and seven
+// tall, placed anywhere rather than on the character grid.
+//
+// Two things need that and nothing else does. The compass ribbon's points slide
+// by the pixel as the player turns, and a character cell cannot slide. And a
+// coordinate readout is 96 pixels wide against a Far Lands coordinate that is
+// nine characters long -- so the label beside it cannot afford a whole cell of
+// its own, and gets five pixels instead.
+enum class Letter { N, E, S, W, X, Y, Z };
+void drawLetter(const gui::Surface& surface, int x, int y, Letter letter, u32 colour);
+inline constexpr int kLetterWidth = 5;
+inline constexpr int kLetterHeight = 7;
+
 // The three shapes every page is made of.
 void panel(const gui::Surface& surface, int x, int y, int w, int h);
 void slot(const gui::Surface& surface, int x, int y, int w, int h);
@@ -125,10 +139,6 @@ void drawTabs(const gui::Surface& surface, const TabStrip& tabs);
 // Which tab a touch landed on, or -1 for none -- including every touch below
 // the strip, which is what keeps a drag on the page from changing the page.
 int tabAt(const TabStrip& tabs, int touchX, int touchY);
-
-// The strip along the bottom that says what the buttons do here. Not data: a
-// control hint, which is the one thing a second screen is unambiguously for.
-void drawFooter(const gui::Surface& surface, const char* hint);
 
 // **The inventory, drawn empty.** There is no inventory yet -- M3 has not
 // started -- so what this page is today is the frame the slots will be dealt

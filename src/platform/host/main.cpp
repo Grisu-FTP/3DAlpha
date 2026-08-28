@@ -1636,11 +1636,11 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
         constexpr int kScreenWidth = 320;
         constexpr int kScreenHeight = 240;
         // The console's own rectangle, so the number below is the one it pays:
-        // 192 by 176 at (120, 32), with the tab strip above it and the
+        // 208 by 200 at (104, 32), with the tab strip above it and the
         // coordinate panel beside it. See platform/ctr/map_screen.hpp.
-        constexpr int kMapWidth = 192;
-        constexpr int kMapHeight = 176;
-        constexpr int kMapLeft = 120;
+        constexpr int kMapWidth = 208;
+        constexpr int kMapHeight = 200;
+        constexpr int kMapLeft = 104;
         constexpr int kMapTop = 32;
 
         map::MapWindow screen;

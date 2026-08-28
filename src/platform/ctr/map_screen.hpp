@@ -13,21 +13,27 @@
 // background colour so the two do not fight. See hud.hpp.
 //
 //     +----------------------------------------+
-//     |  [ Map ]   [ Items ]   [ Look ]        |  the tab strip, hud.hpp's
-//     |                                        |
-//     |  +--------+  +----------------------+  |
-//     |  | X  -12 |  |                      |  |
-//     |  +--------+  |                      |  |
-//     |  +--------+  |        the map       |  |
-//     |  | Y   71 |  |                      |  |
-//     |  +--------+  |                      |  |
-//     |  +--------+  |                      |  |
-//     |  | Z  456 |  |                      |  |
-//     |  +--------+  +----------------------+  |
-//     |  3DAlpha                               |
-//     |                                        |
-//     |  START pause    SELECT+Y debug         |  the footer, hud.hpp's
+//     | [ Map ]   [ Items ]   [ Look ]         |  the tab strip, hud.hpp's
+//     |+-------+ +---------------------------+ |
+//     ||       | |                           | |
+//     ||x  -12 | |                           | |
+//     ||       | |                           | |
+//     ||       | |                           | |
+//     ||y   71 | |          the map          | |
+//     ||       | |                           | |
+//     ||       | |                           | |
+//     ||z  456 | |                           | |
+//     ||       | |                           | |
+//     ||3DAlpha| |                           | |
+//     |+-------+ +---------------------------+ |
 //     +----------------------------------------+
+//
+// **The strip of button hints along the bottom is gone**, and so are 24 pixels
+// of the coordinate column: the map is 208 by 200 where it was 192 by 176,
+// which is a quarter more picture. The axis letters are what paid for the
+// column -- they are drawn as five-pixel glyphs rather than printed, because a
+// character cell is eight wide and a Far Lands coordinate needs all nine of the
+// columns that leaves.
 //
 // **Coordinates and nothing else.** The chunk, the later-version map tile, the
 // count of chunks remembered and the redraw time all used to be on here, and
@@ -62,24 +68,25 @@ namespace mc::ctr {
 // The map's rectangle on the 320x240 bottom screen, and the column of text
 // beside it.
 //
-// **192 by 176 rather than 192 by 192.** The window lost sixteen rows to the
-// tab strip and the frame around it, which is 33,792 pixels against the 36,864
-// that were measured at about 700 microseconds a redraw on a New 3DS -- so the
-// copy got cheaper rather than dearer, and the number the design rests on still
-// bounds it.
-inline constexpr int kMapWidth = 192;
-inline constexpr int kMapHeight = 176;
-inline constexpr int kMapLeft = 120;
+// **208 by 200, and it costs what a bigger picture costs.** 41,600 pixels
+// against the 36,864 that were measured at about 700 microseconds a redraw on a
+// New 3DS, so the copy is an estimated 790 -- a fifth of a millisecond more, on
+// a redraw that happens when the player crosses a block or turns far enough to
+// move the marker. Not free, and the thing to shrink first if a frame budget
+// ever needs it back.
+inline constexpr int kMapWidth = 208;
+inline constexpr int kMapHeight = 200;
+inline constexpr int kMapLeft = 104;
 inline constexpr int kMapTop = 32;
 
 // How many characters wide the column beside it is. The frame around the map
-// starts at pixel 118, so fourteen columns -- 112 pixels -- is the most that
-// can be printed without a glyph landing on it.
-inline constexpr int kMapTextColumns = 14;
+// starts at pixel 102, so twelve columns -- 96 pixels -- is the most that can
+// be printed without a glyph landing on it.
+inline constexpr int kMapTextColumns = 12;
 
 static_assert(kMapTextColumns * hud::kCell + 6 <= kMapLeft,
               "the text column must stop before the map's frame");
-static_assert(kMapTop + kMapHeight <= hud::kFooterTop, "the map must fit above the footer");
+static_assert(kMapTop + kMapHeight + 8 <= hud::kScreenHeight, "the map must fit on the screen");
 
 class MapScreen {
 public:

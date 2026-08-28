@@ -30,23 +30,35 @@ const map::MapPixel kMarkerOutline = map::rgb565(0, 0, 0);
 // work with and the shape changes as it turns.
 constexpr float kMarkerLength = 6.5f;
 
-// The panel beside the map, and the three readouts in it. Everything is a
-// multiple of eight where a character cell has to land on it and a multiple of
-// four everywhere else.
-constexpr int kPanelX = 4;
-constexpr int kPanelY = kMapTop;
-constexpr int kPanelW = 108;
-constexpr int kPanelH = kMapHeight;
+// The panel beside the map, and the three readouts in it. It runs the full
+// height of the map's frame, flush to the left edge of the screen, because
+// every pixel it does not use is one the map does.
+constexpr int kPanelX = 0;
+constexpr int kPanelY = kMapTop - 2;
+constexpr int kPanelW = 96;
+constexpr int kPanelH = kMapHeight + 4;
 
 constexpr int kFieldX = kPanelX + 4;
 constexpr int kFieldW = kPanelW - 8;
 constexpr int kFieldH = 24;
 // Evenly spaced down the panel with the wordmark under them, which is what
 // keeps three numbers from reading as a column that ran out of things to say.
-constexpr int kFieldY[3] = {kPanelY + 8, kPanelY + 56, kPanelY + 104};
+constexpr int kFieldY[3] = {48, 104, 160};
 // The console row each one's text sits on: the middle of its box.
-constexpr int kFieldRow[3] = {7, 13, 19};
-constexpr int kWordmarkRow = 24;
+constexpr int kFieldRow[3] = {8, 15, 22};
+constexpr int kWordmarkRow = 27;
+
+// The axis letter, as pixels. **It is five wide where a character cell is
+// eight**, and that is the whole reason the column fits in 96 pixels: a Far
+// Lands coordinate is nine characters -- `-12550824` -- and nine cells is 72 of
+// the 88 the box has inside it.
+constexpr hud::Letter kFieldLetter[3] = {hud::Letter::X, hud::Letter::Y, hud::Letter::Z};
+constexpr int kLetterX = kFieldX + 4;
+// The first text column of the number, and how many it gets. Columns are
+// 1-based, so column 3 is the cell starting at pixel 16 -- clear of the letter,
+// which ends at 12.
+constexpr int kValueColumn = 3;
+constexpr int kValueColumns = 9;
 
 }  // namespace
 
@@ -188,6 +200,12 @@ void MapScreen::drawFurniture(const gui::Surface& surface)
     hud::panel(surface, kPanelX, kPanelY, kPanelW, kPanelH);
     for (int i = 0; i < 3; ++i) {
         hud::readout(surface, kFieldX, kFieldY[i], kFieldW, kFieldH);
+        // The letter is furniture, not text: it never changes, so it is drawn
+        // with the box rather than reprinted every time the number moves. One
+        // pixel down, which centres seven rows of glyph in an eight-pixel
+        // character row.
+        hud::drawLetter(surface, kLetterX, kFieldY[i] + hud::kCell + 1, kFieldLetter[i],
+                        hud::kReadoutLabel);
     }
     // The frame, two pixels of it, cut into the panel colour the way a slot is
     // -- so the map reads as something set into the screen rather than pasted
@@ -206,14 +224,10 @@ void MapScreen::drawText(const Camera& camera)
     // which is the block next door. The same rule the teleport row uses.
     const long values[3] = {(long)i32(std::floor(camera.x)), (long)i32(std::floor(camera.y)),
                             (long)i32(std::floor(camera.z))};
-    const char* const labels[3] = {"X", "Y", "Z"};
 
     for (int i = 0; i < 3; ++i) {
-        // Two prints rather than one, so the label can be dimmer than the
-        // number. The cell between them is never written and keeps the box's
-        // own colour.
-        hud::text(kFieldRow[i], 3, 1, hud::kReadoutLabel, hud::kReadoutFace, "%s", labels[i]);
-        hud::text(kFieldRow[i], 5, 9, hud::kReadoutText, hud::kReadoutFace, "%9ld", values[i]);
+        hud::text(kFieldRow[i], kValueColumn, kValueColumns, hud::kReadoutText, hud::kReadoutFace,
+                  "%*ld", kValueColumns, values[i]);
     }
 }
 

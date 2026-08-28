@@ -291,7 +291,6 @@ private:
     // strip and the page from ever disagreeing about that.
     int selectedTab() const;
     void selectTab(int index);
-    const char* footerHint() const;
 
     // The player's half. Each returns true when it put pixels on the screen, so
     // the cache flush the LCD needs happens when there was something to flush

@@ -138,14 +138,43 @@ struct MapStep {
 };
 extern const MapStep kFacingStep[8];
 
-// One player on the map: a filled diamond with an outline, and -- when
-// `facing` is a direction rather than -1 -- a tick pointing the way they are
-// looking.
+// ...and what each of them is called, in the same order, so a compass point can
+// be printed without a second table beside the one that steps it.
+extern const char* const kCompass[8];
+
+// One player on the map: an arrowhead at their position, pointing where they
+// are looking.
+//
+// **It takes a yaw and not a compass point, and that is the whole of the
+// change.** What was here before was a diamond with a tick made of whole
+// blocks, stepped along one of `kFacingStep`'s eight directions -- so it could
+// only ever point eight ways, and because a diagonal block step is the square
+// root of two longer than a straight one, the tick grew and shrank as the
+// player turned. `gui::drawArrow` rotates a shape instead of stepping one, so
+// the marker is the same length at every angle and points at the angle it is
+// given. See core/gui/paint.hpp.
 //
 // **Written for more than one of them from the start.** Multiplayer adds
 // callers, not parameters: every other player is this function with their own
 // position, yaw and colour.
 void drawMarker(const MapSurface& surface, const MapWindow& window, double blockX, double blockZ,
-                int facing, int radius, MapPixel fill, MapPixel outline);
+                float yawDegrees, float length, MapPixel fill, MapPixel outline);
+
+// How many steps a yaw is rounded to before the marker is drawn, and the reason
+// there are any.
+//
+// A redraw is a copy of the whole window, so redrawing on every yaw a player's
+// thumb can produce would be a copy every frame they are turning. The angle is
+// quantised instead, and the same quantised angle is what the marker is drawn
+// with, so what is on the screen and what the screen thinks is on it can never
+// disagree. 64 steps is 5.6 degrees, which moves the tip of an eight-pixel
+// arrow by less than a pixel -- so the rounding is below what the marker can
+// draw, and it reads as continuous.
+inline constexpr int kYawSteps = 64;
+
+// The step a yaw falls in, 0..kYawSteps-1, and the angle at the middle of that
+// step. Negative and multi-turn yaws wrap.
+int yawStep(float yawDegrees);
+float yawFromStep(int step);
 
 }  // namespace mc::map

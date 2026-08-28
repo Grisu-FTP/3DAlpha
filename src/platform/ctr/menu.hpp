@@ -234,6 +234,14 @@ public:
     // PauseChoice::atlasChanged says the pack was swapped.
     const texture::AtlasImage& atlas() const { return atlas_; }
 
+    // The pack's darkened dirt tile, as `buildBackground` produced it: 32 x 32
+    // RGBA, or empty when the pack has none and the atlas could not supply one
+    // either. **The bottom screen's HUD tiles it behind its panels**, which is
+    // the same picture and the same reasoning as the menu's own backdrop -- the
+    // two screens should not disagree about what this pack looks like. Held for
+    // the process, so it survives `shutdown()` and a world may read it.
+    const std::vector<u8>& backgroundTile() const { return backgroundTile_; }
+
 private:
     enum class Screen {
         Title,

@@ -174,24 +174,36 @@ void clampPitch(ctr::Camera& camera)
                                           : (camera.pitch > kLimit ? kLimit : camera.pitch);
 }
 
-// The bottom screen is the debug console, and it is also the only pointing
-// device an old 3DS has. Dragging on it looks around; a fresh touch does not,
-// or every tap would snap the view.
+// The bottom screen is the game's UI, and it is also the only pointing device
+// an old 3DS has. Dragging on it looks around; a fresh touch does not, or every
+// tap would snap the view.
+//
+// **`top` is which of the two owns this press**, and it is the overlay's answer
+// rather than this function's: the Look page hands the pad below the tab strip
+// to the camera, the map and the inventory keep their own presses, and the
+// debug pages hand over the whole screen the way the bottom screen always did.
+// -1 is "not yours". See Overlay::touchLookTop.
 //
 // Both axes follow the mouse convention: drag right, look right. Yaw increases
 // clockwise -- Camera::look sends yaw 0 to +Z and positive yaw toward -X, which
 // is south turning to west -- so dragging right *adds* to it. It used to
 // subtract, which meant the view turned the opposite way from the finger.
-void lookWithTouch(ctr::Camera& camera, bool* dragging, touchPosition* last)
+void lookWithTouch(ctr::Camera& camera, bool* dragging, touchPosition* last, int top)
 {
     const u32 held = hidKeysHeld();
-    if (!(held & KEY_TOUCH)) {
+    if (!(held & KEY_TOUCH) || top < 0) {
         *dragging = false;
         return;
     }
 
     touchPosition touch;
     hidTouchRead(&touch);
+
+    // Checked when the drag starts and not afterwards, so a drag that began on
+    // the pad may wander anywhere without stopping dead at the edge.
+    if (!*dragging && int(touch.py) < top) {
+        return;
+    }
 
     if (*dragging) {
         constexpr float kSensitivity = 0.012f;
@@ -493,6 +505,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // The same atlas the world is drawn with. `choice` outlives the game loop,
     // but the palette is copied out of it here and not held.
     overlay.setMapAtlas(choice.atlas);
+    // ...and the same dirt the menu draws its own backdrop with, behind the
+    // panels on the bottom screen. Copied out here too, in the format the
+    // framebuffer wants.
+    overlay.setBackdropTile(menu.backgroundTile());
     // After open(), because open() is where the worker is started and therefore
     // where the answer becomes known. Whether it started at all is a separate
     // question and the overlay reads that from the streamer's own stats.
@@ -672,6 +688,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
                 // sampled under the old one is recoloured rather than redrawn:
                 // the store holds block ids, not pixels.
                 overlay.setMapAtlas(menu.atlas());
+                overlay.setBackdropTile(menu.backgroundTile());
                 // The outline atlas went with the old one and may not have come
                 // back, so the debug page is told what is actually on rather
                 // than what was asked for -- the same read-back the page does
@@ -729,7 +746,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
         // X is sprint and also SELECT + X is a page back, so sprint waits for
         // SELECT to be let go.
         moveCamera(camera, dt, (held & KEY_X) != 0 && !(held & KEY_SELECT));
-        lookWithTouch(camera, &dragging, &lastTouch);
+        lookWithTouch(camera, &dragging, &lastTouch, overlay.touchLookTop());
         if (haveCstick) {
             lookWithCstick(camera, dt);
         }

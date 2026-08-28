@@ -129,8 +129,12 @@ void Overlay::begin(const char* worldName, const char* model)
     worldName_ = worldName;
     model_ = model;
     dirty_ = true;
-    // A different world: every chunk the map remembers belongs to the last one.
+    // A different world: every chunk the map remembers belongs to the last one,
+    // and so does whatever page was up and whichever way it was facing.
     map_.reset();
+    playerPage_ = PlayerPage::Map;
+    lookYawStep_ = -1;
+    uiTouchActive_ = false;
 }
 
 void Overlay::setGamemode(settings::Gamemode mode)
@@ -139,21 +143,142 @@ void Overlay::setGamemode(settings::Gamemode mode)
         return;
     }
     gamemode_ = mode;
-    // The Normal page is a different screen now, and the one on the glass
-    // belongs to the mode that has just been left.
+    // Spectator has no Items tab, so a player who was on it has to be moved
+    // off before the strip is next drawn -- otherwise the selected index would
+    // name a tab that no longer exists.
+    if (mode == settings::Gamemode::Spectator && playerPage_ == PlayerPage::Items) {
+        playerPage_ = PlayerPage::Map;
+    }
+    // The strip has a different number of tabs on it now.
     dirty_ = true;
+}
+
+void Overlay::setBackdropTile(const std::vector<u8>& rgba)
+{
+    haveBackdrop_ = rgba.size() == texture::kBackgroundBytes
+                    && texture::kBackgroundEdge == hud::kTileEdge;
+    if (!haveBackdrop_) {
+        return;
+    }
+    for (usize i = 0; i < usize(hud::kTileEdge) * hud::kTileEdge; ++i) {
+        backdrop_[i] = gui::rgb565(int(rgba[i * 4 + 0]), int(rgba[i * 4 + 1]), int(rgba[i * 4 + 2]));
+    }
+    dirty_ = true;
+}
+
+// **Built here rather than stored, because the gamemode is what it depends
+// on.** The switch has no default: a mode added later does not compile until
+// somebody has decided which tabs it gets.
+hud::TabStrip Overlay::tabs() const
+{
+    hud::TabStrip strip;
+    strip.labels[strip.count++] = "Map";
+    switch (gamemode_) {
+    case settings::Gamemode::Spectator:
+        break;  // no inventory to show, so no tab for one
+    case settings::Gamemode::Survival:
+    case settings::Gamemode::Creative:
+        strip.labels[strip.count++] = "Items";
+        break;
+    }
+    strip.labels[strip.count++] = "Look";
+    strip.selected = selectedTab();
+    return strip;
+}
+
+int Overlay::selectedTab() const
+{
+    const bool hasItems = gamemode_ != settings::Gamemode::Spectator;
+    switch (playerPage_) {
+    case PlayerPage::Map:
+        return 0;
+    case PlayerPage::Items:
+        return 1;
+    case PlayerPage::Look:
+        break;
+    }
+    return hasItems ? 2 : 1;
+}
+
+void Overlay::selectTab(int index)
+{
+    const bool hasItems = gamemode_ != settings::Gamemode::Spectator;
+    PlayerPage wanted = PlayerPage::Map;
+    if (index == 1) {
+        wanted = hasItems ? PlayerPage::Items : PlayerPage::Look;
+    } else if (index >= 2) {
+        wanted = PlayerPage::Look;
+    }
+    if (wanted == playerPage_) {
+        return;
+    }
+    playerPage_ = wanted;
+    dirty_ = true;
+}
+
+// What the buttons do on the page that is up. A control hint, which is the one
+// thing a second screen is unambiguously for -- and the only text on the
+// player's half that is not a coordinate.
+const char* Overlay::footerHint() const
+{
+    switch (playerPage_) {
+    case PlayerPage::Map:
+        return "START pause    SELECT+Y debug";
+    case PlayerPage::Items:
+        // Honest rather than blank: there is nothing to put in these slots yet.
+        return "the inventory arrives with M3";
+    case PlayerPage::Look:
+        break;
+    }
+    return "drag below to look around";
+}
+
+int Overlay::touchLookTop() const
+{
+    // A press that began on the tab strip belongs to it until it is let go, so
+    // a drag that wanders down onto the pad cannot turn the view with it.
+    if (uiTouchActive_) {
+        return -1;
+    }
+    // The debug pages are the maintainer's and have nothing to touch, so they
+    // hand the whole screen over -- which is what the bottom screen did
+    // everywhere before the player's half had anything on it.
+    if (page_ != Page::Player) {
+        return 0;
+    }
+    if (playerPage_ != PlayerPage::Look) {
+        return -1;
+    }
+    return hud::kLookPadTop;
 }
 
 void Overlay::tickMap(const render::WorldStreamer& world, const Camera& camera)
 {
-    if (gamemode_ != settings::Gamemode::Spectator) {
-        return;
-    }
     map_.update(world, camera);
 }
 
 bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* camera)
 {
+    // **The touch screen, before the buttons**, because a tap on a tab has to
+    // be claimed in the same frame it lands: the caller asks `touchLookTop()`
+    // straight afterwards to decide whether the camera gets the drag.
+    if ((held & KEY_TOUCH) == 0) {
+        uiTouchActive_ = false;
+    } else if ((down & KEY_TOUCH) != 0 && page_ == Page::Player) {
+        touchPosition touch;
+        hidTouchRead(&touch);
+        const int tab = hud::tabAt(tabs(), int(touch.px), int(touch.py));
+        if (tab >= 0) {
+            selectTab(tab);
+            uiTouchActive_ = true;
+        } else if (playerPage_ != PlayerPage::Look) {
+            // The map and the inventory keep their own presses. Marking the
+            // touch as the UI's is what stops a drag on the map from turning
+            // the camera, which is what it used to do.
+            uiTouchActive_ = true;
+        }
+    }
+
     // SELECT is the modifier rather than a page key of its own, so the page
     // cycle cannot be hit by accident while flying: X is sprint and Y is the
     // stereo tuner, and both of those read the same buttons.
@@ -170,17 +295,10 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
         return false;
     }
 
-    // **The spectator screen owns the bare d-pad while it is up**, which costs
-    // nothing global: it is one page of one gamemode, and every other binding
-    // in a world is already spoken for by a modifier -- Y for the stereo
-    // tuner, SELECT for the pages.
-    if (page_ == Page::Normal && gamemode_ == settings::Gamemode::Spectator) {
-        if (down & (KEY_DLEFT | KEY_DRIGHT)) {
-            map_.cycleGrid((down & KEY_DRIGHT) != 0 ? 1 : -1);
-        }
-        return false;
-    }
-
+    // **The player's pages leave the d-pad alone.** It used to cycle the map's
+    // grids, which is a debug question and now lives on the settings page --
+    // and leaving the whole d-pad free is what lets a hotbar be built on the
+    // Items page later without taking a binding back off anybody.
     if (page_ != Page::Settings) {
         return false;
     }
@@ -216,6 +334,15 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     if (cursor_ == 2) {
         settings->wireframe = !settings->wireframe;
         return true;
+    }
+
+    // The map's grids. **Not in DebugSettings**, because nothing outside this
+    // file applies it: the MapScreen owns the style, marks every patch stale
+    // and redraws itself. Reported as "nothing changed" for exactly that
+    // reason -- the caller has no pool to rebuild.
+    if (cursor_ == 3) {
+        map_.cycleGrid(delta);
+        return false;
     }
 
     // Teleport. Either direction opens it, because the row has no value to step
@@ -341,13 +468,25 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
         ioPrevious_ = io;
     }
 
-    // **The header and the footer are reprinted only on a page change**, and
-    // they are printed here rather than after the body because the spectator
-    // screen below returns before ever reaching the end. `row()` blanks a whole
-    // line -- forty columns, the full width of the screen -- so a footer written
-    // after the map would take a strip out of the map the moment either moved a
-    // row.
     const bool cleared = dirty_;
+
+    // **The player's half is not on the sample-block clock.** Every debug page
+    // is a set of numbers that would be unreadable if they changed every frame;
+    // these are a picture of where the player is and which way they are facing,
+    // and a third of a second of lag in either is the difference between a map
+    // and a memory. It costs nothing to ask every frame: each page redraws only
+    // when what it draws has moved, and returns immediately when it has not.
+    if (page_ == Page::Player) {
+        if (drawPlayerPage(camera, cleared)) {
+            // The CPU has just written a buffer the LCD reads by DMA.
+            gfxFlushBuffers();
+        }
+        return;
+    }
+
+    // **The header and the footer are reprinted only on a page change.**
+    // `row()` blanks a whole line -- forty columns, the full width of the
+    // screen -- which is why nothing on the player's half above uses it.
     if (dirty_) {
         clearScreen();
         // Clipped like everything else: a world name is a path off the SD card
@@ -359,18 +498,6 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
         dirty_ = false;
     }
 
-    // **The spectator screen is not on the sample-block clock.** Every other
-    // page is a set of numbers that would be unreadable if they changed every
-    // frame; this one is a picture of where the player is, and a third of a
-    // second of lag in it is the difference between a map and a memory. It
-    // costs nothing to ask every frame: it redraws when the player has crossed
-    // into another block or a chunk has been sampled, and returns immediately
-    // when neither has happened.
-    if (page_ == Page::Normal && gamemode_ == settings::Gamemode::Spectator) {
-        map_.draw(camera, cleared);
-        return;
-    }
-
     // Printing is the expensive part -- libctru's console renders every glyph
     // into the bottom framebuffer on the CPU -- so it happens once per sample
     // block, not once per frame. An overlay that costs several milliseconds
@@ -380,28 +507,10 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
         return;
     }
 
-    // The other Normal screens have nothing on them that changes, so once drawn
-    // they stay drawn.
-    if (page_ == Page::Normal && !cleared) {
-        return;
-    }
-
     int next = kBodyRow;
     switch (page_) {
-    case Page::Normal:
-        // No default: a gamemode added later has to be given a screen here
-        // before this compiles, which is the point of the switch.
-        switch (gamemode_) {
-        case settings::Gamemode::Spectator:
-            break;  // handled above, before the sample-block throttle
-        case settings::Gamemode::Survival:
-            next = drawSurvival();
-            break;
-        case settings::Gamemode::Creative:
-            next = drawCreative();
-            break;
-        }
-        break;
+    case Page::Player:
+        break;  // handled above, before the sample-block throttle
     case Page::Info:
         next = drawInfo(renderer, world, camera, timeOfDay);
         break;
@@ -422,51 +531,68 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
     }
 }
 
-namespace {
-
-// The controls every mode shares today, which is all of them: there is no
-// player body yet, so Survival and Creative fly exactly as Spectator does. Kept
-// in one place so the two screens below cannot drift apart while that is true.
-int drawFreeFlightControls(int r)
+bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
 {
-    row(r++, "  circle pad   move");
-    row(r++, "  C-stick      look  (New 3DS)");
-    row(r++, "  touch drag   look");
-    row(r++, "  L / R        down / up");
-    row(r++, "  X            sprint");
-    row(r++, "  Y + d-pad    tune the 3D");
-    row(r++, "  SELECT+Y     debug pages, and");
-    row(r++, "               teleport");
-    return r;
+    gui::Surface screen;
+    // False when libctru is not handing back the framebuffer this expects,
+    // which is the cue to draw nothing at all rather than to write pixels at
+    // computed offsets into whatever is there.
+    if (!hud::bottomSurface(&screen)) {
+        dirty_ = true;
+        return false;
+    }
+
+    if (cleared) {
+        // The console first: `\x1b[2J` blanks every cell, and every panel below
+        // is drawn over the top of that. Doing it the other way round would
+        // erase the panels.
+        clearScreen();
+        hud::drawBackdrop(screen, haveBackdrop_ ? backdrop_ : nullptr);
+        hud::drawTabs(screen, tabs());
+        hud::drawFooter(screen, footerHint());
+        dirty_ = false;
+        // The pages below all key off "has this moved", and after a clear
+        // nothing on the screen is theirs any more.
+        lookYawStep_ = -1;
+    }
+
+    switch (playerPage_) {
+    case PlayerPage::Map:
+        map_.draw(screen, camera, cleared);
+        // The map times and flushes its own writes -- see MapScreen::draw --
+        // and it is the one page here that draws on most frames.
+        return cleared;
+    case PlayerPage::Items:
+        // Nothing on it changes yet, so once drawn it stays drawn.
+        if (cleared) {
+            hud::drawItemsPage(screen);
+        }
+        return cleared;
+    case PlayerPage::Look:
+        break;
+    }
+    return drawLook(screen, camera, cleared);
 }
 
-}  // namespace
-
-int Overlay::drawSurvival()
+bool Overlay::drawLook(const gui::Surface& surface, const Camera& camera, bool cleared)
 {
-    int r = kBodyRow;
-    blank(r++);
-    row(r++, "  \x1b[33mSurvival\x1b[0m");
-    blank(r++);
-    row(r++, "  The hotbar and inventory live here");
-    row(r++, "  from M3. There is no player body");
-    row(r++, "  yet, so this world flies rather");
-    row(r++, "  than walks:");
-    blank(r++);
-    return drawFreeFlightControls(r);
-}
+    constexpr float kPi = 3.14159265358979f;
+    const int step = map::yawStep(camera.yaw * 180.0f / kPi);
 
-int Overlay::drawCreative()
-{
-    int r = kBodyRow;
-    blank(r++);
-    row(r++, "  \x1b[33mCreative\x1b[0m");
-    blank(r++);
-    row(r++, "  The block palette lives here from");
-    row(r++, "  M3. There is nothing to place with");
-    row(r++, "  it yet, so this world flies:");
-    blank(r++);
-    return drawFreeFlightControls(r);
+    if (cleared) {
+        hud::drawLookPage(surface);
+    } else if (step == lookYawStep_) {
+        return false;
+    }
+    lookYawStep_ = step;
+
+    // **Only the ribbon, on a turn.** The pad and its crosshair are 52,000
+    // pixels and do not move; the ribbon is 9,000 and does, and separating them
+    // is the difference between a redraw the player can feel and one they
+    // cannot. The angle drawn is the rounded one, so what is on the screen and
+    // what this thinks is on it can never disagree.
+    hud::drawCompassRibbon(surface, map::yawFromStep(step));
+    return true;
 }
 
 int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& world,
@@ -593,6 +719,14 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     row(r++, "free  linear %5lu KB  VRAM %5lu KB",
         static_cast<unsigned long>(renderer.freeLinearBytes() / kKb),
         static_cast<unsigned long>(renderer.freeVramBytes() / kKb));
+    // **The number that found the map's patch cache**, and the reason it is
+    // here rather than on the map: it is a cost to be watched, and everything
+    // else on this page is too. A redraw happens when the player crosses a
+    // block or turns far enough to move the marker, so a figure near 700 is the
+    // copy and a figure in the thousands is every patch being redrawn -- a
+    // texture pack change, or the grid above being toggled.
+    row(r++, "map   %5lu us a redraw",
+        static_cast<unsigned long>(map_.lastDrawMicros()));
 
     blank(r++);
     // **Two rows, because the Far Lands are the point.** x reaches 12,550,824
@@ -704,7 +838,7 @@ int Overlay::drawStorage(const render::WorldStreamer& world)
 int Overlay::drawSettings(const Renderer& renderer, const DebugSettings& settings,
                           const Camera& camera)
 {
-    const char* cursor[kSettingCount] = {"  ", "  ", "  ", "  "};
+    const char* cursor[kSettingCount] = {"  ", "  ", "  ", "  ", "  "};
     cursor[cursor_] = "\x1b[33m> \x1b[0m";
 
     int r = kBodyRow;
@@ -714,15 +848,20 @@ int Overlay::drawSettings(const Renderer& renderer, const DebugSettings& setting
     row(r++, "%scube format       %s", cursor[1],
         renderer.cubeFormat() == mesh::CubeFormat::Quads ? "geoshader" : "4-vertex ");
     row(r++, "%swireframe         %s", cursor[2], renderer.wireframe() ? "on " : "off");
+    // **The map's grids, which are a claim rather than a decoration.** 16 says
+    // the map is aligned with the chunks and 128 says it is aligned with the
+    // maps of later versions, and both are things this project asserts and
+    // should be able to show on the hardware. Off by default, because neither
+    // is anything a player wants drawn over their world.
+    row(r++, "%smap grid          %s", cursor[3], map_.gridName());
     // The row doubles as the readout: after a teleport it shows where you
     // landed, which is the only confirmation the player needs and costs no
     // extra state to keep. Integers because newlib's printf here has no float
     // support -- see the note on tenths().
-    row(r++, "%steleport          %d %d %d", cursor[3], int(std::floor(camera.x)),
+    row(r++, "%steleport          %d %d %d", cursor[4], int(std::floor(camera.x)),
         int(std::floor(camera.y)), int(std::floor(camera.z)));
     blank(r++);
     row(r++, "d-pad up/down choose, l/r change");
-    blank(r++);
     // Every setting here is honest about what it costs, because all three are
     // easy to leave switched on and then wonder at the numbers on the Info
     // page. The page is 30 rows and the footer is pinned at 28, so this text

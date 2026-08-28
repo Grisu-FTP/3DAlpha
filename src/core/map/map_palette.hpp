@@ -27,6 +27,7 @@
 // step to the north and from water depth; see map_render.hpp.
 
 #include "core/block/registry.hpp"
+#include "core/gui/paint.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/util/types.hpp"
 
@@ -38,12 +39,14 @@ namespace mc::map {
 // colour that a host test can pick apart. Nothing else about it is platform
 // specific: `map_render` writes through a stride pair, so the caller decides
 // the layout.
-using MapPixel = u16;
-
-inline constexpr MapPixel rgb565(int r, int g, int b)
-{
-    return MapPixel(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3));
-}
+//
+// **It is the HUD's pixel, and the name here is an alias rather than a second
+// definition.** The bottom screen draws panels, slots and the player's arrow
+// through core/gui/paint.hpp, into the same framebuffer and in the same format,
+// and two identical `u16`s with two `rgb565`s behind them would be a thing to
+// keep in step for no reason.
+using MapPixel = gui::Pixel;
+using gui::rgb565;
 
 // How many brightnesses a colour comes in. Later versions carry four -- the
 // fourth, 135, is only ever used by things this version does not have -- so the

@@ -5,6 +5,7 @@
 #include "core/map/map_sample.hpp"
 #include "core/map/map_store.hpp"
 
+#include <cmath>
 #include <vector>
 
 using namespace mc;
@@ -401,26 +402,134 @@ TEST(the_facing_of_a_yaw_is_minecrafts_own)
     CHECK_EQ(facingFromYaw(-360.0f), 0);
 }
 
-TEST(a_marker_is_drawn_where_the_player_is_and_is_clipped_to_the_window)
+// Everything the marker is, as numbers: how many pixels it filled, how far the
+// furthest of them is from the centre, and where that one is. **The tip and not
+// the centroid**, because an arrowhead with a bite out of its back has most of
+// its area beside the centre rather than in front of it -- its centroid is less
+// than half a pixel forward, which is no signal at all.
+struct MarkerShape {
+    int count = 0;
+    double reach = 0.0;  // the furthest filled pixel, in pixels
+    double tipX = 0.0;   // ...and where it is, relative to the centre
+    double tipZ = 0.0;
+};
+
+MarkerShape measureMarker(const Canvas& canvas, double centreX, double centreZ, MapPixel fill)
 {
-    Canvas canvas(32, 32);
-    MapWindow window{0, 0, 32, 32};
+    MarkerShape shape;
+    for (int z = 0; z < canvas.height; ++z) {
+        for (int x = 0; x < canvas.width; ++x) {
+            if (canvas.at(x, z) != fill) {
+                continue;
+            }
+            const double dx = double(x) + 0.5 - centreX;
+            const double dz = double(z) + 0.5 - centreZ;
+            const double distance = std::sqrt(dx * dx + dz * dz);
+            if (distance > shape.reach) {
+                shape.reach = distance;
+                shape.tipX = dx;
+                shape.tipZ = dz;
+            }
+            ++shape.count;
+        }
+    }
+    return shape;
+}
+
+TEST(a_marker_points_where_the_player_is_looking)
+{
+    const MapPixel fill = rgb565(255, 255, 255);
+    const MapPixel outline = rgb565(0, 0, 0);
+    const MapWindow window{0, 0, 32, 32};
+
+    // Minecraft's yaw: 0 looks along +Z, which is south and therefore down the
+    // map, and it increases towards -X, which is west and therefore left. The
+    // furthest pixel from the centre is the tip, so where the tip is is which
+    // way the arrow points.
+    struct Case {
+        float yaw;
+        double x;
+        double z;
+    };
+    const Case cases[4] = {
+        {0.0f, 0.0, 1.0},    // south
+        {90.0f, -1.0, 0.0},  // west
+        {180.0f, 0.0, -1.0}, // north
+        {270.0f, 1.0, 0.0},  // east
+    };
+
+    for (const Case& one : cases) {
+        Canvas canvas(32, 32);
+        drawMarker(canvas.surface(), window, 16.5, 16.5, one.yaw, 6.5f, fill, outline);
+        const MarkerShape shape = measureMarker(canvas, 16.5, 16.5, fill);
+        CHECK(shape.count > 8);
+        // The tip is a whole marker's length away along the axis it points
+        // down, and on that axis: the arrow is symmetric about it, so anything
+        // across it is the raster's rounding and nothing else.
+        CHECK(shape.tipX * one.x + shape.tipZ * one.z > 4.5);
+        CHECK(std::fabs(shape.tipX * one.z - shape.tipZ * one.x) < 1.5);
+    }
+}
+
+TEST(a_marker_is_the_same_length_whichever_way_it_points)
+{
+    // **The fault this replaced.** The old marker put its tick on a whole-block
+    // step, so a diagonal tick was the square root of two longer than a
+    // straight one and the marker grew as the player turned through it. A
+    // rotated shape cannot do that: every angle is the same arrowhead.
+    const MapPixel fill = rgb565(255, 255, 255);
+    const MapPixel outline = rgb565(0, 0, 0);
+    const MapWindow window{0, 0, 32, 32};
+
+    double shortest = 1e9;
+    double longest = 0.0;
+    for (int step = 0; step < 16; ++step) {
+        Canvas canvas(32, 32);
+        const float yaw = float(step) * 22.5f;
+        drawMarker(canvas.surface(), window, 16.5, 16.5, yaw, 6.5f, fill, outline);
+        const MarkerShape shape = measureMarker(canvas, 16.5, 16.5, fill);
+        shortest = shape.reach < shortest ? shape.reach : shortest;
+        longest = shape.reach > longest ? shape.reach : longest;
+    }
+    // Within a pixel of each other, which is as close as a raster can be. The
+    // old shape differed by a factor of 1.41.
+    CHECK(longest - shortest < 1.0);
+}
+
+TEST(a_marker_turns_by_less_than_an_eighth_of_a_turn)
+{
+    // The other half of the same fault: eight directions meant every yaw inside
+    // a 45-degree bucket drew exactly the same picture.
+    const MapPixel fill = rgb565(255, 255, 255);
+    const MapPixel outline = rgb565(0, 0, 0);
+    const MapWindow window{0, 0, 32, 32};
+
+    Canvas first(32, 32);
+    Canvas second(32, 32);
+    drawMarker(first.surface(), window, 16.5, 16.5, 0.0f, 6.5f, fill, outline);
+    drawMarker(second.surface(), window, 16.5, 16.5, 20.0f, 6.5f, fill, outline);
+    CHECK(first.pixels != second.pixels);
+
+    // ...and the step the screen rounds to is finer still, so the rounding is
+    // below what the arrow can draw.
+    CHECK(kYawSteps >= 32);
+    CHECK_EQ(yawStep(0.0f), 0);
+    CHECK_EQ(yawStep(360.0f), 0);
+    CHECK_EQ(yawStep(-360.0f), 0);
+    CHECK_EQ(yawStep(yawFromStep(9)), 9);
+    // Half a step either side still rounds home.
+    const float half = 360.0f / float(kYawSteps) * 0.4f;
+    CHECK_EQ(yawStep(yawFromStep(9) + half), 9);
+    CHECK_EQ(yawStep(yawFromStep(9) - half), 9);
+}
+
+TEST(a_marker_outside_the_window_writes_nothing)
+{
     const MapPixel fill = rgb565(255, 255, 255);
     const MapPixel outline = rgb565(0, 0, 0);
 
-    drawMarker(canvas.surface(), window, 16.5, 20.5, 4 /* north */, 2, fill, outline);
-
-    CHECK_EQ(canvas.at(16, 20), fill);
-    // The tick reaches north of the body.
-    CHECK_EQ(canvas.at(16, 20 - 4), fill);
-    // ...and nothing reaches the same distance south, because that is the tail.
-    CHECK(canvas.at(16, 20 + 4) != fill);
-    // The body is ringed.
-    CHECK_EQ(canvas.at(16 + 3, 20), outline);
-
-    // A marker outside the window writes nothing rather than off the end.
     Canvas edge(8, 8);
-    drawMarker(edge.surface(), MapWindow{0, 0, 8, 8}, -40.0, -40.0, 0, 2, fill, outline);
+    drawMarker(edge.surface(), MapWindow{0, 0, 8, 8}, -40.0, -40.0, 0.0f, 6.5f, fill, outline);
     for (usize i = 0; i < edge.pixels.size(); ++i) {
         CHECK_EQ(edge.pixels[i], MapPixel(0));
     }
@@ -469,9 +578,10 @@ TEST(a_negative_stride_surface_lands_exactly_where_the_bottom_screen_is)
     // it. This is that check, against the same numbers platform/ctr uses.
     constexpr int kScreenWidth = 320;
     constexpr int kScreenHeight = 240;
-    constexpr int kMapPixels = 192;
-    constexpr int kMapLeft = kScreenWidth - kMapPixels;
-    constexpr int kMapTop = 24;
+    constexpr int kMapWidth = 192;
+    constexpr int kMapHeight = 176;
+    constexpr int kMapLeft = 120;
+    constexpr int kMapTop = 32;
 
     MapPalette palette;
     buildMapPalette(solidAtlas(), &palette);
@@ -489,12 +599,12 @@ TEST(a_negative_stride_surface_lands_exactly_where_the_bottom_screen_is)
         }
     }
 
-    const MapWindow window{-96, -96, kMapPixels, kMapPixels};
+    const MapWindow window{-96, -96, kMapWidth, kMapHeight};
     MapStyle style;
     style.unexplored = rgb565(20, 22, 34);
 
     // Row-major, which every other test in this file reads.
-    Canvas expected(kMapPixels, kMapPixels);
+    Canvas expected(kMapWidth, kMapHeight);
     drawWindow(store, palette, window, style, expected.surface());
 
     // ...and through the framebuffer's own layout.
@@ -509,8 +619,8 @@ TEST(a_negative_stride_surface_lands_exactly_where_the_bottom_screen_is)
     for (int y = 0; y < kScreenHeight; ++y) {
         for (int x = 0; x < kScreenWidth; ++x) {
             const MapPixel got = screen[usize(x * kScreenHeight + (kScreenHeight - 1 - y))];
-            const bool insideMap = x >= kMapLeft && x < kMapLeft + kMapPixels && y >= kMapTop
-                                   && y < kMapTop + kMapPixels;
+            const bool insideMap = x >= kMapLeft && x < kMapLeft + kMapWidth && y >= kMapTop
+                                   && y < kMapTop + kMapHeight;
             if (!insideMap) {
                 // Not one pixel outside the rectangle: the console's text is
                 // there, and a stride that ran off the end would eat it.

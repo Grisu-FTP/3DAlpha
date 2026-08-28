@@ -54,6 +54,8 @@ const MapStep kFacingStep[8] = {
     {1, 1},    // south-east
 };
 
+const char* const kCompass[8] = {"S", "SW", "W", "NW", "N", "NE", "E", "SE"};
+
 int facingFromYaw(float yawDegrees)
 {
     float turns = yawDegrees / 45.0f;
@@ -214,83 +216,61 @@ void renderMapWindow(const MapStore& store, const MapWindow& window, const MapSt
     }
 }
 
-void drawMarker(const MapSurface& surface, const MapWindow& window, double blockX, double blockZ,
-                int facing, int radius, MapPixel fill, MapPixel outline)
+int yawStep(float yawDegrees)
 {
-    // Small on purpose: at one pixel per block a marker any larger stops being
-    // an indicator and starts being terrain the player cannot see under.
-    constexpr int kMaxRadius = 4;
-    if (surface.pixels == nullptr) {
+    const float perStep = 360.0f / float(kYawSteps);
+    float steps = std::floor(yawDegrees / perStep + 0.5f);
+    int index = int(std::fmod(steps, float(kYawSteps)));
+    return index < 0 ? index + kYawSteps : index;
+}
+
+float yawFromStep(int step)
+{
+    return float(step) * (360.0f / float(kYawSteps));
+}
+
+void drawMarker(const MapSurface& surface, const MapWindow& window, double blockX, double blockZ,
+                float yawDegrees, float length, MapPixel fill, MapPixel outline)
+{
+    if (surface.pixels == nullptr || window.width <= 0 || window.height <= 0) {
         return;
     }
-    if (radius < 1) {
-        radius = 1;
-    }
-    if (radius > kMaxRadius) {
-        radius = kMaxRadius;
-    }
 
-    // The tick reaches two blocks past the body, and the outline one past
-    // whatever that is.
-    const int reach = radius + 2;
-    const int edge = reach + 1;
-    const int span = edge * 2 + 1;
-    constexpr int kMaxSpan = (kMaxRadius + 3) * 2 + 1;
-    bool body[kMaxSpan * kMaxSpan] = {};
+    // The window's own pixels, as a thing that can be drawn on. The map's
+    // surface carries strides and no bounds, because the window is what says
+    // how big it is; `gui::Surface` wants both, and clips against them.
+    gui::Surface canvas;
+    canvas.pixels = surface.pixels;
+    canvas.strideX = surface.strideX;
+    canvas.strideY = surface.strideZ;
+    canvas.width = window.width;
+    canvas.height = window.height;
 
-    for (int dz = -reach; dz <= reach; ++dz) {
-        for (int dx = -reach; dx <= reach; ++dx) {
-            const int absSum = (dx < 0 ? -dx : dx) + (dz < 0 ? -dz : dz);
-            if (absSum <= radius) {
-                body[(dz + edge) * span + (dx + edge)] = true;
-            }
-        }
-    }
-    if (facing >= 0 && facing < 8) {
-        const MapStep step = kFacingStep[facing];
-        for (int i = radius; i <= radius + 2; ++i) {
-            const int dx = step.x * i;
-            const int dz = step.z * i;
-            if (dx >= -reach && dx <= reach && dz >= -reach && dz <= reach) {
-                body[(dz + edge) * span + (dx + edge)] = true;
-            }
-        }
-    }
+    // The arrow's own proportions, at whatever size the caller asked for. Every
+    // part scales together, so a marker drawn at half the size is the same
+    // shape and not a different one.
+    gui::ArrowShape shape;
+    const float scale = length / shape.length;
+    shape.length = length;
+    shape.halfWidth *= scale;
+    shape.tail *= scale;
+    shape.notch *= scale;
 
-    const i32 centreX = i32(std::floor(blockX));
-    const i32 centreZ = i32(std::floor(blockZ));
+    // **Minecraft's yaw against the surface's angle.** Yaw 0 looks along +Z,
+    // which is south and therefore *down* the map, and it increases towards -X,
+    // which is west and therefore left. `gui::drawArrow` measures clockwise
+    // from straight up, so south is half a turn away and the two rotate the
+    // same way -- which makes the conversion an offset and not a reflection.
+    constexpr float kPi = 3.14159265358979f;
+    const float angle = (yawDegrees + 180.0f) * kPi / 180.0f;
 
-    for (int dz = -edge; dz <= edge; ++dz) {
-        for (int dx = -edge; dx <= edge; ++dx) {
-            const bool inside = body[(dz + edge) * span + (dx + edge)];
+    // Where the player is inside the window, in pixels, sub-block part and all:
+    // one pixel is one block, so the fraction of a block they have walked into
+    // is the fraction of a pixel the arrow moves.
+    const float centreX = float(blockX - double(window.originBlockX));
+    const float centreZ = float(blockZ - double(window.originBlockZ));
 
-            // The outline is every empty cell touching a filled one, worked out
-            // here rather than drawn by hand, so a marker stays legible over
-            // any terrain colour without a second sprite per shape.
-            bool ring = false;
-            if (!inside) {
-                for (int ez = -1; ez <= 1 && !ring; ++ez) {
-                    for (int ex = -1; ex <= 1 && !ring; ++ex) {
-                        const int nz = dz + ez + edge;
-                        const int nx = dx + ex + edge;
-                        if (nz >= 0 && nz < span && nx >= 0 && nx < span) {
-                            ring = body[nz * span + nx];
-                        }
-                    }
-                }
-            }
-            if (!inside && !ring) {
-                continue;
-            }
-
-            const int px = int(centreX + dx - window.originBlockX);
-            const int pz = int(centreZ + dz - window.originBlockZ);
-            if (px < 0 || px >= window.width || pz < 0 || pz >= window.height) {
-                continue;
-            }
-            surface.pixels[px * surface.strideX + pz * surface.strideZ] = inside ? fill : outline;
-        }
-    }
+    gui::drawArrow(canvas, centreX, centreZ, angle, shape, fill, outline);
 }
 
 }  // namespace mc::map

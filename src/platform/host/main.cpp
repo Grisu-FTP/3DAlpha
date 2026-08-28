@@ -1596,9 +1596,8 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
     // marker is left off rather than pinned to the origin.
     const world::PlayerData& player = storage.level().player;
     if (player.present) {
-        map::drawMarker(surface, window, player.pos[0], player.pos[2],
-                        map::facingFromYaw(player.rotation[0]), 2, map::rgb565(255, 255, 255),
-                        map::rgb565(0, 0, 0));
+        map::drawMarker(surface, window, player.pos[0], player.pos[2], player.rotation[0], 6.5f,
+                        map::rgb565(255, 255, 255), map::rgb565(0, 0, 0));
     }
 
     usize unexplored = 0;
@@ -1614,8 +1613,9 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
     std::printf("  picture %d x %d blocks from (%d, %d)\n", window.width, window.height,
                 window.originBlockX, window.originBlockZ);
     if (player.present) {
-        std::printf("  player at (%.1f, %.1f) facing %d\n", player.pos[0], player.pos[2],
-                    map::facingFromYaw(player.rotation[0]));
+        std::printf("  player at (%.1f, %.1f) facing %s (yaw %.1f)\n", player.pos[0],
+                    player.pos[2], map::kCompass[map::facingFromYaw(player.rotation[0])],
+                    player.rotation[0]);
     }
     std::printf("  %zu of %zu pixels unexplored\n", unexplored, pixels.size());
 
@@ -1635,15 +1635,19 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
         constexpr int kRepeats = 200;
         constexpr int kScreenWidth = 320;
         constexpr int kScreenHeight = 240;
-        constexpr int kMapPixels = 192;
-        constexpr int kMapLeft = kScreenWidth - kMapPixels;
-        constexpr int kMapTop = 24;
+        // The console's own rectangle, so the number below is the one it pays:
+        // 192 by 176 at (120, 32), with the tab strip above it and the
+        // coordinate panel beside it. See platform/ctr/map_screen.hpp.
+        constexpr int kMapWidth = 192;
+        constexpr int kMapHeight = 176;
+        constexpr int kMapLeft = 120;
+        constexpr int kMapTop = 32;
 
         map::MapWindow screen;
-        screen.width = kMapPixels;
-        screen.height = kMapPixels;
-        screen.originBlockX = window.originBlockX + window.width / 2 - kMapPixels / 2;
-        screen.originBlockZ = window.originBlockZ + window.height / 2 - kMapPixels / 2;
+        screen.width = kMapWidth;
+        screen.height = kMapHeight;
+        screen.originBlockX = window.originBlockX + window.width / 2 - kMapWidth / 2;
+        screen.originBlockZ = window.originBlockZ + window.height / 2 - kMapHeight / 2;
 
         std::vector<map::MapPixel> framebuffer(usize(kScreenWidth) * usize(kScreenHeight), 0);
         map::MapSurface screenSurface;
@@ -1687,7 +1691,8 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
         const double sampleUs =
             std::chrono::duration<double, std::micro>(afterSample - beforeSample).count()
             / kRepeats;
-        std::printf("  host cost: %.1f us to copy a 192x192 window\n", copyUs);
+        std::printf("  host cost: %.1f us to copy a %dx%d window\n", copyUs, kMapWidth,
+                    kMapHeight);
         std::printf("             %.1f us to draw its %d patches (%.1f us each)\n", drawUs,
                     patches, patches > 0 ? drawUs / patches : 0.0);
         std::printf("             %.1f us to sample a chunk\n", haveProbe ? sampleUs : 0.0);

@@ -202,15 +202,18 @@ Those five names are the whole of it — `Minecraft.installResource` splits the 
 and recognises exactly those, so a folder that also carries `pack.mcmeta`, `icons/`, `pe/` or
 `sound3/` is fine and the rest is ignored. `music/` and `newmusic/` feed the same pool, and that
 pool is what the background-music timer draws from. The walk is directory listings only — nothing is
-read or decoded until a track actually plays — and it is capped at six levels and 4,096 entries,
-because a card can have anything on it.
+read or decoded until it is needed — and it is capped at six levels and 4,096 entries, because a
+card can have anything on it.
 
 If the folder is absent the game runs silently; audio is not a hard dependency. (Audio also needs a
 dumped DSP firmware — see below.)
 
-**Only music is played today.** The sound and streaming pools are indexed and counted, but nothing
-in the port can emit an effect yet — there is no block placement, no player body and no entities —
-and `streaming/*.mus` is Mojang's own container, which nothing here decodes. See
+**Music, plus one sound effect.** `random/click.ogg` — under `sound/` or `newsound/`, whichever
+the folder has — is decoded at boot and is what the
+menus click with; everything else in the sound pool is indexed and counted but not played, because
+nothing in the port can emit it yet — there is no block placement, no player body and no entities.
+`streaming/*.mus` is Mojang's own container, which nothing here decodes. A card with no
+`random/click.ogg` in either simply has silent menus. See
 [audio-a1.1.2.md](audio-a1.1.2.md).
 
 ## SD card layout

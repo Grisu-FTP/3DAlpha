@@ -88,6 +88,12 @@ public:
     // nothing was filed under it.
     const SoundEntry* randomEntry(std::string_view key);
 
+    // How many entries were filed under `key`. `randomEntry` answers a related
+    // question but draws from the pool's Random to do it, and a screen that
+    // wants to know whether a sound exists must not perturb the sequence that
+    // decides which one plays -- so asking is separate from picking.
+    usize countFor(std::string_view key) const;
+
     usize size() const { return entries_.size(); }
     bool empty() const { return entries_.empty(); }
 

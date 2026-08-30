@@ -116,12 +116,25 @@ void NdspBackend::shutdown()
 
     ndspSetCallback(nullptr, nullptr);
     ndspChnWaveBufClear(kMusicChannel);
+    for (int i = 0; i < kEffectVoices; ++i) {
+        ndspChnWaveBufClear(kFirstEffectChannel + i);
+    }
     ndspExit();
 
     if (ring_ != nullptr) {
         linearFree(ring_);
         ring_ = nullptr;
     }
+    // After ndspExit, so nothing the DSP might still be reading is handed back
+    // to the allocator first.
+    for (int i = 0; i < sampleCount_; ++i) {
+        if (samples_[i].data != nullptr) {
+            linearFree(samples_[i].data);
+            samples_[i] = LoadedSample{};
+        }
+    }
+    sampleCount_ = 0;
+    nextVoice_ = 0;
     status_ = AudioStatus::Disabled;
 }
 
@@ -195,6 +208,87 @@ void NdspBackend::applyGain()
     mix[0] = gain;
     mix[1] = gain;
     ndspChnSetMix(kMusicChannel, mix);
+}
+
+audio::SampleId NdspBackend::addSample(const audio::Sample& sample)
+{
+    // Not an error and never reported as one: a console with no firmware takes
+    // no samples, exactly as it plays no music. See audio::Backend::addSample.
+    if (status_ != AudioStatus::Ready || sampleCount_ >= kMaxSamples) {
+        return audio::kNoSample;
+    }
+    const usize frames = sample.frames();
+    if (frames == 0 || sample.channels < 1 || sample.channels > 2
+        || sample.sampleRate <= 0) {
+        return audio::kNoSample;
+    }
+
+    const usize bytes = frames * usize(sample.channels) * sizeof(i16);
+    i16* data = static_cast<i16*>(linearAlloc(bytes));
+    if (data == nullptr) {
+        return audio::kNoSample;
+    }
+    std::memcpy(data, sample.pcm.data(), bytes);
+
+    // Once, here, and never again: the bytes are const for the life of the
+    // process, so unlike the music ring there is nothing to re-flush per play.
+    DSP_FlushDataCache(data, bytes);
+
+    const audio::SampleId id = audio::SampleId(sampleCount_);
+    samples_[sampleCount_] = LoadedSample{data, u32(frames), sample.channels,
+                                          sample.sampleRate};
+    ++sampleCount_;
+    return id;
+}
+
+void NdspBackend::playSample(audio::SampleId id, float gain, float pitch)
+{
+    if (status_ != AudioStatus::Ready || id < 0 || id >= audio::SampleId(sampleCount_)) {
+        return;
+    }
+    const LoadedSample& sample = samples_[id];
+    if (sample.data == nullptr) {
+        return;
+    }
+
+    // Round-robin, and it steals. a1.1.2 does the same thing with its 256
+    // rotating source names -- `"sound_" + (id++ % 256)` -- and never looks to
+    // see whether the one it is about to reuse is still playing. Waiting for a
+    // free voice instead would mean a click that sometimes does not happen,
+    // which is worse than one that cuts another off.
+    const int voice = nextVoice_;
+    nextVoice_ = (nextVoice_ + 1) % kEffectVoices;
+    const int channel = kFirstEffectChannel + voice;
+
+    // Detach before touching the wave buffer: the DSP may still be reading the
+    // structure from a previous play, and reusing it under the hardware is the
+    // one way this can produce noise rather than sound.
+    ndspChnWaveBufClear(channel);
+    ndspChnReset(channel);
+    ndspChnSetInterp(channel, NDSP_INTERP_LINEAR);
+
+    // Pitch is a playback-rate multiplier, which is what the original's
+    // `setPitch` is too -- paulscode resamples rather than shifting. ndsp mixes
+    // at ~32,728 Hz and does the conversion in hardware; see the note in
+    // docs/audio-a1.1.2.md about why there is no resampler of ours here.
+    const float rate = float(sample.sampleRate) * (pitch > 0.0f ? pitch : 1.0f);
+    ndspChnSetRate(channel, rate);
+    ndspChnSetFormat(channel, sample.channels == 2 ? NDSP_FORMAT_STEREO_PCM16
+                                                   : NDSP_FORMAT_MONO_PCM16);
+
+    const float level = gain < 0.0f ? 0.0f : (gain > 1.0f ? 1.0f : gain);
+    float mix[12] = {};
+    mix[0] = level;
+    mix[1] = level;
+    ndspChnSetMix(channel, mix);
+
+    ndspWaveBuf& buffer = voices_[voice];
+    buffer = ndspWaveBuf{};
+    buffer.data_pcm16 = sample.data;
+    buffer.nsamples = sample.frames;
+    buffer.looping = false;
+    buffer.status = NDSP_WBUF_FREE;
+    ndspChnWaveBufAdd(channel, &buffer);
 }
 
 void NdspBackend::update()

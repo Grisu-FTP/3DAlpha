@@ -65,13 +65,27 @@ jobs:
           install -m755 /tmp/project_ctr/makerom/bin/makerom /usr/local/bin/makerom
           makerom 2>&1 | head -2 || true
 
-      # 3ds-zlib comes with the image; the Vorbis decoder does not. Without it
-      # the build still succeeds and the console is simply silent -- audio is
-      # never a startup dependency, see docs/assets.md -- so this step exists to
-      # make sure the artifact CI publishes is the one with sound in it, not to
-      # unblock the compile. 3ds-libogg arrives as a dependency.
-      - name: Install the Vorbis decoder
-        run: dkp-pacman -Sy --noconfirm --needed 3ds-libvorbisidec
+      # A build with no Vorbis decoder still succeeds and the console is simply
+      # silent -- audio is never a startup dependency, see docs/assets.md -- so
+      # the failure mode this step guards against is a quietly mute artifact,
+      # not a broken compile. That is why it ends in `test -f`: the assertion is
+      # the point, and it is what fails the run.
+      #
+      # The install is only a fallback. devkitpro/devkitarm:latest already ships
+      # 3ds-libvorbisidec and 3ds-libogg, and pkg.devkitpro.org sits behind
+      # Cloudflare, which answers Actions runners with a 403 often enough that
+      # an unconditional `dkp-pacman -Sy` was failing builds that had both
+      # libraries all along.
+      - name: Ensure the Vorbis decoder is present
+        run: |
+          libs="$DEVKITPRO/portlibs/3ds/lib"
+          if [ -f "$libs/libvorbisidec.a" ] && [ -f "$libs/libogg.a" ]; then
+            echo "3ds-libvorbisidec and 3ds-libogg are already in the image"
+          else
+            dkp-pacman -Sy --noconfirm --needed 3ds-libvorbisidec
+          fi
+          test -f "$libs/libvorbisidec.a"
+          test -f "$libs/libogg.a"
 
       # Not `make VERSION=...`: the Makefile builds into build/<version>/, and
       # that directory is committed to the repo with a CMakeCache.txt full of

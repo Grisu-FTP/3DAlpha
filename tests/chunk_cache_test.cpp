@@ -1086,3 +1086,147 @@ TEST(what_is_owed_to_the_card_stays_under_its_cap)
 
     cache.close(kNow);
 }
+
+// **Deferring is not the same as never.** A dirty column is the only copy of
+// that world, so it cannot be evicted -- which makes an unbounded dirty set a
+// leak, and one this cache has had before (11.28 MB against a 4 MB cap). Taking
+// the main thread off the write path must not reintroduce it: past a ceiling,
+// even the deferred path has to pay for a column rather than let the set grow.
+TEST(a_deferred_save_still_bounds_the_dirty_set)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache::Config config;
+    // Small enough that a handful of columns crosses it, with an unthreaded
+    // cache so nothing else can be doing the writing.
+    config.threaded = false;
+    config.dirtyCapBytes = 32 * 1024;
+    config.dirtyCapMaxBytes = 32 * 1024;
+
+    ChunkCache cache(fs);
+    cache.configure(config);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    for (i32 i = 0; i < 40; ++i) {
+        CHECK(cache.save(makeChunk(-i - 1, -i - 2, u8(i + 1)),
+                         ChunkCache::SavePressure::Defer));
+    }
+
+    // The set is held near the ceiling rather than growing with every save.
+    CHECK(cache.stats().dirtyBytes <= config.dirtyCapMaxBytes * 3);
+    CHECK(fs.writes > 0);   // it paid for some of them itself
+
+    cache.close(kNow);
+}
+
+// **The counters that replaced a per-frame walk of the whole table.**
+//
+// `stats().cleanColumns` and `dirtyColumns` used to be counted up by iterating
+// every entry, under the lock, at the end of every `pump()` -- and `pump()` is
+// called once per frame. They are maintained incrementally now, at the five
+// places an entry gains, loses or changes the dirtiness of its column. That is
+// only safe if something keeps checking it against the slow answer, because a
+// missed site does not fail: it drifts, quietly, and the debug page starts
+// lying about how much the card is owed.
+TEST(the_incremental_column_counters_agree_with_counting_them_up)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    auto agrees = [&cache]() {
+        u32 clean = 0;
+        u32 dirty = 0;
+        cache.debugCountColumns(&clean, &dirty);
+        return clean == cache.stats().cleanColumns && dirty == cache.stats().dirtyColumns;
+    };
+
+    // Negative coordinates throughout, per CONTRIBUTING: a chunk path that
+    // works only for positive ones is a bug this project has had before.
+    for (i32 i = 0; i < 24; ++i) {
+        CHECK(cache.save(makeChunk(-i - 1, -i - 3, u8(i + 1))));
+    }
+    CHECK(agrees());
+
+    // Saving over one that is already held replaces it rather than adding.
+    CHECK(cache.save(makeChunk(-1, -3, 99)));
+    CHECK(agrees());
+
+    // A save stores; it does not queue the write. Something has to ask -- the
+    // autosave timer, the pause menu, or world exit -- and then draining turns
+    // dirty columns into clean ones as those writes complete.
+    CHECK_EQ(cache.stats().dirtyColumns, 24u);
+    cache.flush(false);
+    drain(cache);
+    CHECK(agrees());
+    CHECK_EQ(cache.stats().dirtyColumns, 0u);
+    CHECK(cache.stats().cleanColumns > 0);
+
+    // Taking a clean column out removes it entirely -- the grid owns it now.
+    std::unique_ptr<ChunkColumn> taken;
+    CHECK(cache.tryTake(-1, -3, &taken) == ChunkCache::Take::Took);
+    CHECK(agrees());
+
+    // And giving one back puts it in as clean.
+    cache.give(std::make_unique<ChunkColumn>(makeChunk(-1, -3, 7)));
+    CHECK(agrees());
+
+    // A column saved after being given back is dirty again.
+    CHECK(cache.save(makeChunk(-1, -3, 8)));
+    CHECK(agrees());
+    cache.flush(false);
+    drain(cache);
+    CHECK(agrees());
+
+    cache.close(kNow);
+}
+
+// The main thread must never perform an SD write inside a frame. It became an
+// edit path when the tick system landed, and `ChunkCache::save`'s over-cap
+// back-pressure loop deflates and writes a column on whoever calls it.
+TEST(a_deferred_save_never_writes_on_the_calling_thread)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache::Config config;
+    // Over the cap but under the ceiling that makes the deferred path pay for a
+    // write itself, which is the band this test is about: the eight columns
+    // below come to roughly 144 KB.
+    config.dirtyCapBytes = 128 * 1024;
+    config.dirtyCapMaxBytes = 128 * 1024;
+
+    ChunkCache cache(fs);
+    cache.configure(config);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    const usize writesBefore = fs.writes;
+    for (i32 i = 0; i < 8; ++i) {
+        CHECK(cache.save(makeChunk(-i - 1, -i - 2, u8(i + 1)),
+                         ChunkCache::SavePressure::Defer));
+    }
+    // Not one byte reached the card on this thread while the dirty set is only
+    // a little over the cap.
+    CHECK_EQ(fs.writes, writesBefore);
+    CHECK(cache.stats().dirtyColumns > 0);
+
+    // The work was queued rather than skipped: draining still writes it all.
+    cache.flush(false);
+    drain(cache);
+    CHECK_EQ(cache.stats().dirtyColumns, 0u);
+    CHECK(fs.writes > writesBefore);
+
+    cache.close(kNow);
+}

@@ -41,6 +41,11 @@ build/<version>/gen/   generated: version_config.hpp, tables.cpp, packets.cpp, s
 The platform layer is a set of narrow interfaces — `IRenderer`, `IFileSystem`, `ISocket`, `IAudio`,
 `IInput` — implemented twice. `core` never includes `<3ds.h>` or `<citro3d.h>`.
 
+`IAudio` exists now and is called `audio::Backend` (`core/audio/backend.hpp`): ndsp behind it on the
+console, a `.wav` writer behind it on the host. It is deliberately the narrowest of them — start a
+stream, stop it, ask whether it is still playing — because that is all a1.1.2's music ticker needs
+and nothing in the port can emit a sound effect yet.
+
 The file system is the exception that proves the rule: `io::FileSystem` is an interface, but its
 POSIX implementation lives in `core` and serves *both* targets, because devkitARM's newlib provides
 the descriptor API and libctru's devoptab maps it almost directly onto the FS service. One

@@ -43,7 +43,14 @@ public:
         quads_.clear();
         details_.clear();
         translucent_.clear();
+        dropped_ = 0;
     }
+
+    // Quads refused because the stream had reached kMaxQuadsPerSection. Zero in
+    // every world anyone has meshed; it exists so that if a section ever does
+    // reach the bound, that shows up as a number rather than as a face quietly
+    // missing.
+    u32 droppedQuads() const { return dropped_; }
 
     // Reusing one builder across sections is the point: the vectors keep their
     // capacity, so a worker thread allocates during the first few meshes and
@@ -126,6 +133,8 @@ private:
     // and a union would need the format switch to destroy and rebuild them.
     std::vector<WorldVertex> cubes_;
     std::vector<QuadVertex> quads_;
+
+    u32 dropped_ = 0;
 
     std::vector<DetailVertex> details_;
     std::vector<DetailVertex> translucent_;

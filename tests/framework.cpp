@@ -28,6 +28,13 @@ void reportFailure(const char* file, int line, const std::string& message)
     g_failures++;
     g_caseFailures++;
     std::printf("      %s:%d: %s\n", file, line, message.c_str());
+    // **Flushed, because a failure is often followed by a crash.** CHECK
+    // returns from the test rather than unwinding, so a test that fails half
+    // way can leave a joinable thread or a half-open world behind and take the
+    // process down on the way out -- and a buffered message dies with it,
+    // leaving a crash with no reason attached. This costs one write per
+    // failure, on a path that is not supposed to run.
+    std::fflush(stdout);
 }
 
 std::string describe(bool value)

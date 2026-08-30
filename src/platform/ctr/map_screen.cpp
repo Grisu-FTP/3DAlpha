@@ -5,6 +5,7 @@
 
 #include <3ds.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace mc::ctr {
@@ -65,7 +66,10 @@ constexpr int kValueColumns = 9;
 void MapScreen::configure(bool isNew3DS)
 {
     store_.setCapacity(isNew3DS ? 1280 : 512);
-    sampleBudget_ = isNew3DS ? 2 : 1;
+    sampleBudget_ = isNew3DS ? 16 : 8;
+    // A new world, so the store knows nothing about it: burst until the window
+    // has caught up with what the streamer can give. See kPrimeBudget.
+    primed_ = false;
     shown_ = Signature{};
 }
 
@@ -138,30 +142,74 @@ void MapScreen::update(const render::WorldStreamer& world, const Camera& camera)
     // before sampleChunk overwrote every byte anyway.
     map::MapChunkSample sample;
 
-    int budget = sampleBudget_;
-    for (i32 chunkZ = minChunkZ; chunkZ <= maxChunkZ; ++chunkZ) {
-        for (i32 chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX) {
-            if (store_.find(chunkX, chunkZ) != nullptr) {
-                if (moved) {
-                    store_.touch(chunkX, chunkZ);
+    // **Nearest the player first, in square rings**, and the order is the whole
+    // difference between a map that fills in and a map that looks broken. The
+    // scan used to run in raster order from the north-west corner, so with a
+    // budget smaller than the window the ground under the marker -- the only
+    // part the player is looking at -- was sampled about halfway through, and
+    // everything before that was picture arriving in a corner. Rings put it
+    // under the marker first and grow outward, which is also the order the
+    // streamer brings the columns in, so the budget is rarely spent on a chunk
+    // that is not there yet.
+    //
+    // The centre is derived from the window rather than from the camera a
+    // second time, so the rings are centred on exactly the block the marker is
+    // drawn on however far from the origin the player is. See windowFor.
+    const i32 centreChunkX = floorDiv(window.originBlockX + kMapWidth / 2, map::kChunkPixels);
+    const i32 centreChunkZ = floorDiv(window.originBlockZ + kMapHeight / 2, map::kChunkPixels);
+    const i32 reach = std::max(std::max(centreChunkX - minChunkX, maxChunkX - centreChunkX),
+                               std::max(centreChunkZ - minChunkZ, maxChunkZ - centreChunkZ));
+
+    int budget = primed_ ? sampleBudget_ : kPrimeBudget;
+    bool tookAny = false;
+
+    for (i32 ring = 0; ring <= reach; ++ring) {
+        for (i32 chunkZ = centreChunkZ - ring; chunkZ <= centreChunkZ + ring; ++chunkZ) {
+            if (chunkZ < minChunkZ || chunkZ > maxChunkZ) {
+                continue;
+            }
+            const bool edgeRow = chunkZ == centreChunkZ - ring || chunkZ == centreChunkZ + ring;
+            for (i32 chunkX = centreChunkX - ring; chunkX <= centreChunkX + ring; ++chunkX) {
+                // Only the ring itself: every chunk inside it was visited by a
+                // smaller `ring`, and revisiting them would make this quartic.
+                if (!edgeRow && chunkX != centreChunkX - ring && chunkX != centreChunkX + ring) {
+                    continue;
                 }
-                continue;
+                if (chunkX < minChunkX || chunkX > maxChunkX) {
+                    continue;
+                }
+                if (store_.find(chunkX, chunkZ) != nullptr) {
+                    if (moved) {
+                        store_.touch(chunkX, chunkZ);
+                    }
+                    continue;
+                }
+                if (budget <= 0) {
+                    continue;
+                }
+                // **Only what the game already has in memory.** The map never
+                // asks the card for anything: a chunk that is not resident is
+                // one the player has not been near yet, and it is sampled the
+                // moment the streamer brings it in.
+                const world::ChunkColumn* column = world.residentColumn(chunkX, chunkZ);
+                if (column == nullptr) {
+                    continue;
+                }
+                map::sampleChunk(*column, &sample);
+                store_.store(chunkX, chunkZ, sample);
+                tookAny = true;
+                --budget;
             }
-            if (budget <= 0) {
-                continue;
-            }
-            // **Only what the game already has in memory.** The map never asks
-            // the card for anything: a chunk that is not resident is one the
-            // player has not been near yet, and it is sampled the moment the
-            // streamer brings it in.
-            const world::ChunkColumn* column = world.residentColumn(chunkX, chunkZ);
-            if (column == nullptr) {
-                continue;
-            }
-            map::sampleChunk(*column, &sample);
-            store_.store(chunkX, chunkZ, sample);
-            --budget;
         }
+    }
+
+    // **The cold start ends when a whole pass finds nothing to take.** Not when
+    // the window is full: the map reaches further than the render distance can
+    // at the smaller settings, so waiting for every chunk would leave the burst
+    // budget on for ever. A pass that takes nothing has caught up with whatever
+    // the streamer is able to give it, which is the same thing.
+    if (!tookAny) {
+        primed_ = true;
     }
 }
 

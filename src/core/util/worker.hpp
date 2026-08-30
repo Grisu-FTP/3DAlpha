@@ -10,8 +10,8 @@
 // priority-ordered, so such a thread runs only in whatever is left of a frame
 // after the main thread blocks -- which on a console holding 30 fps is a sliver.
 //
-// There are two background threads now and they want opposite things, which is
-// why the seam carries a role:
+// There are three background threads now and they want different things, which
+// is why the seam carries a role:
 //
 //   * **Generation** is pure CPU for tens of milliseconds at a time. On a New
 //     3DS it wants core 2, which is idle and which Luma's synthesised 3DSX
@@ -22,6 +22,20 @@
 //     VBlank and is preempted the instant the main thread is ready. Giving it a
 //     core of its own would waste one; giving it the main thread's priority
 //     would cost frames.
+//   * **Audio** is the awkward one: it is CPU-bound like Generation but has a
+//     deadline like nothing else here, because a decoder that misses its buffer
+//     is audible immediately. It takes core 2 on a New 3DS, sharing it with
+//     Generation at the same priority, and on an Old 3DS it takes the I/O
+//     policy -- core 0, just below the main thread -- because a 3DSX has no
+//     other core to move it to. CONTRIBUTING's "no decompression on core 0" is
+//     knowingly relaxed there.
+//
+//     **What makes it work on either console is buffer depth, not priority.**
+//     A third of a second of decoded audio is queued ahead, so the decoder only
+//     ever needs the slack the main thread already leaves at VBlank, and it
+//     never has to win a scheduling race to stay ahead. That is why it does not
+//     outrank Generation on a New 3DS even though it could ask to. See
+//     platform/ctr/audio.hpp.
 //
 // `spawn` returns an opaque handle, or null if the thread could not be started
 // -- in which case the caller falls back to doing the work inline, which is slow
@@ -35,6 +49,7 @@ namespace mc {
 enum class WorkerRole {
     Generation,
     Io,
+    Audio,
 };
 
 using WorkerSpawn = void* (*)(void (*entry)(void*), void* arg, WorkerRole role);

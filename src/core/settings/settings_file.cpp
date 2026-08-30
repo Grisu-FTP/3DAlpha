@@ -51,6 +51,27 @@ bool loadSettings(io::FileSystem& fs, const char* path, GameSettings* out)
             }
             continue;
         }
+        if (key == "audio") {
+            int enabled = 0;
+            if (parseInt(value, &enabled)) {
+                out->audio = enabled;
+            }
+            continue;
+        }
+        if (key == "music_volume") {
+            int volume = 0;
+            if (parseInt(value, &volume)) {
+                out->musicVolume = volume;
+            }
+            continue;
+        }
+        if (key == "sound_volume") {
+            int volume = 0;
+            if (parseInt(value, &volume)) {
+                out->soundVolume = volume;
+            }
+            continue;
+        }
         if (key == "texture_pack") {
             // A pack name is a file name and must stay one: a value with a
             // separator in it would let an edited ini point the loader outside
@@ -79,6 +100,13 @@ bool saveSettings(io::FileSystem& fs, const char* path, const GameSettings& sett
     std::snprintf(line, sizeof(line), "autosave_seconds=%d\n", settings.autosaveSeconds);
     text += line;
     std::snprintf(line, sizeof(line), "chunk_cache_mb=%d\n", settings.chunkCacheMB);
+    text += line;
+
+    std::snprintf(line, sizeof(line), "audio=%d\n", settings.audio);
+    text += line;
+    std::snprintf(line, sizeof(line), "music_volume=%d\n", settings.musicVolume);
+    text += line;
+    std::snprintf(line, sizeof(line), "sound_volume=%d\n", settings.soundVolume);
     text += line;
 
     text += "texture_pack=";

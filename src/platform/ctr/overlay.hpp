@@ -61,6 +61,7 @@
 #include "core/texture/background.hpp"
 #include "platform/ctr/hud.hpp"
 #include "platform/ctr/map_screen.hpp"
+#include "platform/ctr/audio.hpp"
 #include "platform/ctr/renderer.hpp"
 
 #include <vector>
@@ -78,6 +79,16 @@ namespace mc::ctr {
 struct FrameTiming {
     float walkMs = 0.0f;    // frustum + the visibility walk
     float streamMs = 0.0f;  // columns in and out, and the meshing budget
+
+    // **The world tick, on its own.** It used to be inside streamMs along with
+    // update(), sound.tick() and tickSaves(), which is four different things
+    // under one number and no way to tell from a console which of them a frame
+    // went into. The tick is the one that varies most: TickTimer lets ten whole
+    // ticks fall due in a single frame after any stall (tick_timer.hpp), and a
+    // tick random-ticks every loaded column, so this is the number that says
+    // whether a dropped frame was the tick catching up.
+    float tickMs = 0.0f;
+    int ticksRun = 0;
 };
 
 // How far the *debug* settings page will let the render distance go.
@@ -257,6 +268,12 @@ public:
     // world running behind it.
     void invalidate() { dirty_ = true; }
 
+    // The audio backend, borrowed, for the Info page's decode and underrun
+    // rows. Null on any build without audio, in which case those rows say so
+    // rather than disappearing -- a missing row reads as "fine" and a silent
+    // console is exactly what these numbers are for.
+    void setAudio(const NdspBackend* audio) { audio_ = audio; }
+
     void draw(const Renderer& renderer, const render::WorldStreamer& world, const Camera& camera,
               const FrameTiming& timing, float frameMs, float timeOfDay,
               const DebugSettings& settings);
@@ -274,6 +291,7 @@ private:
         float submit = 0.0f;
         float walk = 0.0f;
         float stream = 0.0f;
+        float tick = 0.0f;
     };
 
     // Each draws its page starting at the body's first row and returns the
@@ -297,6 +315,8 @@ private:
     // and not once a frame.
     bool drawPlayerPage(const Camera& camera, bool cleared);
     bool drawLook(const gui::Surface& surface, const Camera& camera, bool cleared);
+
+    const NdspBackend* audio_ = nullptr;
 
     int drawInfo(const Renderer& renderer, const render::WorldStreamer& world,
                  const Camera& camera, float timeOfDay);

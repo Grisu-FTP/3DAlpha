@@ -84,6 +84,21 @@ public:
         return meshSlot(chunkX, sectionY, chunkZ) != kNoMesh;
     }
 
+    // **"Needs remeshing" is not the same state as "has no mesh", and
+    // conflating them is what made edited chunks flash.** A block change used
+    // to hand the section's block straight back and set the slot to kNoMesh,
+    // which took the section out of the draw list a frame before its
+    // replacement existed: the visible set is built at the top of the frame and
+    // the remesh runs after it, so the new geometry cannot reach the list until
+    // the frame after that. One frame of hole at best, and while a fluid is
+    // flowing the mesh budget never catches up, so it is a hole that stays.
+    //
+    // Marked dirty instead, the section keeps its slot and goes into *both*
+    // lists: it draws one tick of stale geometry this frame and is remeshed for
+    // the next. Falling behind then costs latency rather than a hole.
+    bool sectionDirty(i32 chunkX, int sectionY, i32 chunkZ) const;
+    void setSectionDirty(i32 chunkX, int sectionY, i32 chunkZ, bool dirty);
+
     // The column a cell is holding, which need not be the one asked for: the
     // grid wraps, so a column moving in evicts whatever shared its cell. The
     // renderer asks before publishing, because the outgoing column's meshes are
@@ -108,6 +123,11 @@ private:
         bool occupied = false;
         u16 visibility[kSectionsY] = {};
         u16 mesh[kSectionsY];
+
+        // One bit per section. A byte rather than an array of bools because
+        // there is one Cell per column of the render distance and this is read
+        // once per section per frame by the visibility walk.
+        u8 dirty = 0;
 
         Cell()
         {
@@ -137,6 +157,15 @@ struct VisibleSection {
     // Carrying it here saves the caller a second field lookup per drawn section
     // in the one loop that runs on every frame.
     u16 slot = SectionField::kNoMesh;
+
+    // The pool generation of `slot` when this list was built. The list is a
+    // snapshot taken before the frame's meshing runs, and an upload or an
+    // eviction later in the same frame can hand that slot to a different
+    // section -- which would then be drawn with *this* section's model matrix,
+    // i.e. one chunk's geometry standing where another chunk is. Filled in by
+    // ChunkRenderer::beginFrame, which is where the pool is in scope, and
+    // checked once per draw.
+    u16 slotGeneration = 0;
 };
 
 struct VisibleSet {

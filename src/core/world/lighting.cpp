@@ -80,7 +80,7 @@ void LightEngine::buildOpacity(const u8* const* columns)
     bool clearOf[256];
     for (int id = 0; id < 256; ++id) {
         opacityOf[id] = clampedOpacity(u8(id));
-        lightOf[id] = emitted(u8(id));
+        lightOf[id] = emittedLight(u8(id));
         // The height map's own test, and it is **not** the clamped opacity:
         // clamping turns a raw 0 into a 1, which would make air stop the
         // height map. It has to be read before the clamp, which is why this

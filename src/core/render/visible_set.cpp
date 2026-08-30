@@ -106,6 +106,10 @@ void SectionField::setColumn(i32 chunkX, i32 chunkZ, const SectionVisibility* pe
             cell.mesh[sy] = kNoMesh;
         }
     }
+    if (!sameColumn) {
+        // A different column's pending remeshes are not this one's.
+        cell.dirty = 0;
+    }
 }
 
 bool SectionField::cellOccupant(i32 chunkX, i32 chunkZ, i32* outChunkX, i32* outChunkZ) const
@@ -154,6 +158,26 @@ void SectionField::setMeshSlot(i32 chunkX, int sectionY, i32 chunkZ, u16 slot)
     }
     if (Cell* cell = find(chunkX, chunkZ)) {
         cell->mesh[sectionY] = slot;
+    }
+}
+
+bool SectionField::sectionDirty(i32 chunkX, int sectionY, i32 chunkZ) const
+{
+    if (sectionY < 0 || sectionY >= kSectionsY) {
+        return false;
+    }
+    const Cell* cell = find(chunkX, chunkZ);
+    return cell != nullptr && (cell->dirty & u8(1u << sectionY)) != 0;
+}
+
+void SectionField::setSectionDirty(i32 chunkX, int sectionY, i32 chunkZ, bool dirty)
+{
+    if (sectionY < 0 || sectionY >= kSectionsY) {
+        return;
+    }
+    if (Cell* cell = find(chunkX, chunkZ)) {
+        const u8 bit = u8(1u << sectionY);
+        cell->dirty = dirty ? u8(cell->dirty | bit) : u8(cell->dirty & ~bit);
     }
 }
 
@@ -211,12 +235,27 @@ void buildVisibleSet(const SectionField& field, const Frustum& frustum,
 
         if (field.isLoaded(step.chunkX, step.chunkZ)) {
             const u16 slot = field.meshSlot(step.chunkX, step.sectionY, step.chunkZ);
+            const bool dirty = field.sectionDirty(step.chunkX, step.sectionY, step.chunkZ);
+
             if (slot == SectionField::kNoMesh) {
                 // This is the whole point: reached, therefore worth meshing.
                 // Anything the walk never gets to never enters this list.
                 out->toMesh.push_back({step.chunkX, step.chunkZ, step.sectionY, slot});
-            } else if (slot != SectionField::kEmptyMesh) {
+            } else if (slot == SectionField::kEmptyMesh) {
+                // Meshed, and there was nothing there. Only worth revisiting if
+                // a block change since says there might be now.
+                if (dirty) {
+                    out->toMesh.push_back({step.chunkX, step.chunkZ, step.sectionY, slot});
+                }
+            } else {
+                // **Both lists when it is dirty**, and that is the fix for the
+                // flash: the geometry it is holding is one tick out of date, and
+                // one tick out of date draws far better than not at all. See
+                // SectionField::sectionDirty.
                 out->draw.push_back({step.chunkX, step.chunkZ, step.sectionY, slot});
+                if (dirty) {
+                    out->toMesh.push_back({step.chunkX, step.chunkZ, step.sectionY, slot});
+                }
             }
             // A section that meshed to nothing is in neither list. It is still
             // walked through: it is air, so it connects everything it touches.

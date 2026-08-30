@@ -160,6 +160,14 @@ public:
         u32 sweepIncomplete = 0;   // a column of the 6x6 had nowhere to live
         u32 sweepUnlightable = 0;  // the 3x3 never became final
 
+        // What retire() has let go of. `retired` is every column it freed;
+        // `retiredLive` is the share of those that had not been handed over,
+        // which is the leak it exists to drain. Unlike `evictedLive` these are
+        // not a fault: a retired region goes as a unit, so nothing is left
+        // holding a half-written neighbour. See retire().
+        u32 retired = 0;
+        u32 retiredLive = 0;
+
         // Dungeon chests and spawners population produced. They are counted and
         // dropped: the blocks are placed, the contents are not, because chunk
         // tile entities round-trip as an opaque blob and have never been
@@ -176,16 +184,26 @@ public:
     // reached and the passes have not finished with. That band's length grows
     // with the radius being generated, which is the one number here that is not
     // a constant. Measured peak, columns held and not yet handed over, filling
-    // a fresh world nearest-first:
+    // a fresh world nearest-first from a *fixed* centre:
     //
     //     radius  4 -> 98      radius 8 -> 162      radius 11 -> 210
     //
     // which is close enough to linear that 16 per ring plus the 6x6 sweep and
-    // headroom covers it. **Undersizing is not a slow path, it is a wrong
-    // world**: the cache refuses to evict a column still being written into,
-    // and when it has no choice it takes one anyway and counts `evictedLive`,
-    // after which that column comes back as bare terrain with its neighbours'
-    // populations missing. Watch that counter, not the hit rate.
+    // headroom covers it.
+    //
+    // **This formula is only correct because retire() exists, and for a long
+    // time it was not.** Those numbers come from `--generate`, which fills a
+    // disc and stops. A player walks, and a moving centre abandons live columns
+    // along the sides of the corridor it sweeps: measured under `--fly`, the
+    // peak goes 235, 274, 372, 468 as the walk goes 75, 200, 400, 600 chunks,
+    // which no fixed size covers. Retiring what the player has left behind is
+    // what turns the walking case back into the fixed-centre case this is
+    // fitted to.
+    //
+    // With retirement running, a walk peaks at 128, 158, 192, 224 and 256 for
+    // load radii 4, 6, 8, 10 and 12 -- `16r + 64`, so this leaves a flat 32
+    // columns of headroom at every distance. **Undersizing is still not a slow
+    // path but a wrong world**; see the note on `evictedLive` in acquire().
     //
     // 32,768 bytes a column, so radius 11 is 8.4 MB -- the second largest thing
     // the chunk worker owns. It is only needed while a world is being made:
@@ -233,6 +251,49 @@ public:
     // stopped requesting columns -- the player standing still -- still wants
     // the last sweep's work put away rather than held.
     void flush();
+
+    // **Forgets everything further than `radius` from (centreX, centreZ)**, and
+    // it is what keeps the cache from growing without bound.
+    //
+    // A live column -- one whose four passes have not all run -- cannot be
+    // evicted, because its neighbours' populations are written into it and
+    // nowhere else. Nothing ever finishes the ones the player walked away from:
+    // a column at the lateral edge of the corridor a walk sweeps out never gets
+    // its eastern and southern neighbours, so it stays live for the rest of the
+    // session. Measured on the host with an 8,240-column cache, walking in a
+    // straight line at distance 8, peak live against distance walked:
+    //
+    //     75 chunks -> 235      200 -> 274      400 -> 372      600 -> 468
+    //
+    // -- linear in distance travelled and bounded by nothing. Whatever
+    // `cacheColumnsFor` says, a long enough session fills it, and then acquire()
+    // has no delivered victim and takes a live column instead: `evictedLive`,
+    // after which that column comes back as bare terrain with its neighbours'
+    // trees and snow missing, `lightable` fails for it and its neighbours for
+    // ever, and generation stops until the world is reloaded. All four of those
+    // were reported from hardware at once.
+    //
+    // **Dropping a whole region at once is what makes this safe**, and dropping
+    // one column is not. A live column that goes on its own comes back bare
+    // while the passes that wrote into it stay marked done, so its share of
+    // their work is lost silently. Everything outside the radius goes together,
+    // so the neighbourhood re-derives as a unit -- exactly the state a world
+    // reload leaves behind, which is the case the design already accounts for
+    // (see ChunkCache::save on regenerating against populated neighbours).
+    //
+    // The radius has to cover what a sweep can reach: provide() touches
+    // (cx-3..cx+2), and the caller's own load radius on top of that. Returns the
+    // number of columns freed.
+    u32 retire(i32 centreX, i32 centreZ, int radius);
+
+    // What a sweep in progress needs kept: provide() touches (cx-3..cx+2) in
+    // both axes, which is Chebyshev radius 3 around its own centre.
+    static constexpr int kSweepKeepRadius = 3;
+
+    // Columns held that have not been handed over. `Stats::peakLive` is this at
+    // its worst; this is it now, which is what a caller sizing its retirement
+    // radius wants.
+    u32 liveColumns() const;
 
     const Stats& stats() const { return stats_; }
 
@@ -295,7 +356,14 @@ private:
     // note in ensure().
     void notePopulated(i32 px, i32 pz);
 
+    Entry* claimFreeSlot(i32 x, i32 z);
     Entry* acquire(i32 x, i32 z);
+
+    // The column provide() is sweeping for, so acquire()'s last resort knows
+    // which 36 entries it must not let go of. Meaningless outside a sweep, and
+    // only read there.
+    i32 sweepX_ = 0;
+    i32 sweepZ_ = 0;
     u8* blocksOf(const Entry& entry) { return blocks_.data() + usize(entry.slot) * usize(kChunkBlocks); }
     const u8* blocksOf(const Entry& entry) const
     {

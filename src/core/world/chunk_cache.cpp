@@ -44,6 +44,8 @@ OpenResult ChunkCache::open(const char* worldDir, i64 nowMillis)
     }
     open_ = true;
     entries_.clear();
+    cleanColumns_ = 0;
+    dirtyColumns_ = 0;
     groups_.clear();
     readQueue_.clear();
     writeQueue_.clear();
@@ -111,6 +113,8 @@ void ChunkCache::close(i64 nowMillis, const PlayerState& player)
     storage_.commit();
     storage_.close(nowMillis);
     entries_.clear();
+    cleanColumns_ = 0;
+    dirtyColumns_ = 0;
     groups_.clear();
     cleanBytes_ = 0;
     dirtyBytes_ = 0;
@@ -237,6 +241,7 @@ ChunkCache::Take ChunkCache::tryTake(i32 x, i32 z, std::unique_ptr<ChunkColumn>*
                 // with it, so keeping a second copy here would store every
                 // resident column twice. One owed to the card stays.
                 cleanBytes_ -= entry->bytes;
+                --cleanColumns_;
                 entries_.erase(k);
             } else {
                 entry->used = ++clock_;
@@ -343,7 +348,7 @@ void ChunkCache::warmGroupLocked(i32 x, i32 z, bool urgent)
 
 // ------------------------------------------------------------- the writes --
 
-bool ChunkCache::save(const ChunkColumn& column)
+bool ChunkCache::save(const ChunkColumn& column, SavePressure pressure)
 {
     const i64 k = key(column.x, column.z);
     auto copy = std::make_shared<const ChunkColumn>(column.clone());
@@ -378,9 +383,10 @@ bool ChunkCache::save(const ChunkColumn& column)
     // interval collects them, and a dirty column cannot be evicted -- it is the
     // only copy of that world. So over the cap, whoever dirtied the column
     // writes one itself. That is back-pressure paid by the generation worker,
-    // which is the thread that outran the card; it is never the main thread
-    // today and must not become it -- an edit path reaching here would want to
-    // give up frame budget instead.
+    // which is the thread that outran the card. **The main thread never reaches
+    // it**, and that is now enforced by the caller passing SavePressure::Defer
+    // rather than by this comment: the tick system made the renderer an edit
+    // path, and a frame that stops for an SD write reads as a freeze.
     //
     // **This could not fire until it was measured.** `takeWriteLocked` takes
     // from `writeQueue_`, and nothing but `flush()` ever put anything on it --
@@ -391,6 +397,46 @@ bool ChunkCache::save(const ChunkColumn& column)
     // on an Old 3DS that is more heap than the whole world has to spend, and
     // what a player sees is generation stopping with nothing on the debug page
     // looking full. Queueing the oldest of them here is what closes it.
+    if (pressure == SavePressure::Defer && overCap) {
+        // Hand the oldest of what is owed to the I/O worker and go back to the
+        // frame. Sitting over the cap for a few frames costs nothing.
+        bool farOver = false;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            queueDirtyWritesLocked(dirtyCapLocked() / 2);
+            if (workerRunning_) {
+                wake_.notify_one();
+            }
+            farOver = dirtyBytes_ > deferCeilingLocked();
+        }
+
+        // **But deferring for ever is not an option, and this is the trap the
+        // generation worker's back-pressure was written to avoid.** A dirty
+        // column is the only copy of that world, so it cannot be evicted; if the
+        // card cannot keep up with what is being dirtied, the dirty set is a
+        // leak. It grew to 11.28 MB against a 4 MB cap once already, before
+        // anything queued the writes.
+        //
+        // The edit path made that reachable again from the main thread, and
+        // more so once relighting started marking a column dirty for every
+        // section whose light moved. So: below the ceiling the I/O thread does
+        // the work and the frame is free; above it, this thread pays for one
+        // column. A hitch is worse than a smooth frame and far better than
+        // running the console out of heap.
+        if (!farOver) {
+            return true;
+        }
+        Job job;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (!takeWriteLocked(&job)) {
+                return true;  // everything owed is already in somebody else's hands
+            }
+        }
+        runJob(job);
+        return true;
+    }
+
     while (overCap) {
         Job job;
         {
@@ -606,7 +652,25 @@ bool ChunkCache::takeHousekeepingLocked(Job* out)
 ChunkCache::Stats ChunkCache::stats() const
 {
     std::lock_guard<std::mutex> guard(mutex_);
-    return stats_;
+
+    // **Answered now, not as of the last pump.** The byte and column figures
+    // used to be published by `recountLocked` at the end of `pump()`, because
+    // producing the column counts meant walking the whole table and that was
+    // not something to do on every read. They are maintained incrementally now,
+    // so the lock this already holds is enough to answer with the truth --
+    // which matters for `close()`, whose save loop reads `dirtyColumns` to
+    // decide when the world is written out.
+    Stats out = stats_;
+    out.cleanBytes = cleanBytes_;
+    out.dirtyBytes = dirtyBytes_;
+    out.dirtyCapBytes = dirtyCap_;
+    out.cleanColumns = cleanColumns_;
+    out.dirtyColumns = dirtyColumns_;
+    out.readsQueued = u32(readQueue_.size());
+    out.writesQueued = u32(writeQueue_.size());
+    out.groupsQueued = u32(groupQueue_.size() + urgentGroups_.size());
+    out.workerRunning = workerRunning_;
+    return out;
 }
 
 void ChunkCache::pump()
@@ -626,8 +690,10 @@ void ChunkCache::pump()
         }
     }
 
-    std::lock_guard<std::mutex> guard(mutex_);
-    recountLocked();
+    // No recount here any more. Everything `stats()` reports is either
+    // maintained incrementally or read off a queue when asked, so the walk of
+    // the whole table this used to end with -- under the lock, once per frame,
+    // for two numbers on a debug page -- is gone.
 }
 
 // ------------------------------------------------------------ generation --
@@ -669,6 +735,7 @@ void ChunkCache::installColumn(i64 k, std::shared_ptr<const ChunkColumn> column,
     Entry& entry = entries_[k];
     if (entry.column != nullptr) {
         (entry.dirty ? dirtyBytes_ : cleanBytes_) -= entry.bytes;
+        --(entry.dirty ? dirtyColumns_ : cleanColumns_);
     }
     entry.bytes = column->memoryUsage();
     entry.column = std::move(column);
@@ -677,6 +744,7 @@ void ChunkCache::installColumn(i64 k, std::shared_ptr<const ChunkColumn> column,
     entry.dirty = dirty;
     entry.prefetched = prefetched;
     (dirty ? dirtyBytes_ : cleanBytes_) += entry.bytes;
+    ++(dirty ? dirtyColumns_ : cleanColumns_);
 }
 
 void ChunkCache::evictLocked()
@@ -705,6 +773,7 @@ void ChunkCache::evictLocked()
             continue;
         }
         cleanBytes_ -= it->second.bytes;
+        --cleanColumns_;
         entries_.erase(it);
         ++stats_.evicted;
     }
@@ -762,26 +831,34 @@ usize ChunkCache::dirtyCapLocked()
     return dirtyCap_;
 }
 
-void ChunkCache::recountLocked()
+// How far past the cap the deferred path will let the dirty set drift before it
+// starts paying for writes itself. Twice the cap: far enough that an ordinary
+// burst of edits never reaches it and the frame stays clean, near enough that
+// the set cannot quietly become the largest thing in the heap.
+usize ChunkCache::deferCeilingLocked()
 {
-    stats_.cleanBytes = cleanBytes_;
-    stats_.dirtyBytes = dirtyBytes_;
-    stats_.dirtyCapBytes = dirtyCap_;
-    stats_.readsQueued = u32(readQueue_.size());
-    stats_.writesQueued = u32(writeQueue_.size());
-    stats_.groupsQueued = u32(groupQueue_.size() + urgentGroups_.size());
-    stats_.workerRunning = workerRunning_;
+    const usize cap = dirtyCapLocked();
+    const usize ceiling = cap * 2;
+    return ceiling > config_.dirtyCapMaxBytes ? config_.dirtyCapMaxBytes : ceiling;
+}
 
-    u32 clean = 0;
-    u32 dirty = 0;
+void ChunkCache::debugCountColumns(u32* clean, u32* dirty)
+{
+    std::lock_guard<std::mutex> guard(mutex_);
+    countColumnsLocked(clean, dirty);
+}
+
+void ChunkCache::countColumnsLocked(u32* clean, u32* dirty) const
+{
+    *clean = 0;
+    *dirty = 0;
     for (const auto& [k, entry] : entries_) {
+        (void)k;
         if (entry.column == nullptr) {
             continue;
         }
-        (entry.dirty ? dirty : clean) += 1;
+        ++(entry.dirty ? *dirty : *clean);
     }
-    stats_.cleanColumns = clean;
-    stats_.dirtyColumns = dirty;
 }
 
 bool ChunkCache::takeWriteLocked(Job* out)
@@ -970,6 +1047,8 @@ void ChunkCache::runJob(const Job& job)
                 entry->dirty = false;
                 dirtyBytes_ -= entry->bytes;
                 cleanBytes_ += entry->bytes;
+                --dirtyColumns_;
+                ++cleanColumns_;
                 evictLocked();
             } else if (!entry->queuedWrite) {
                 // Saved again while this was in flight, or the write failed.

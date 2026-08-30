@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 
 namespace mc::render {
@@ -112,6 +113,12 @@ u16 VboPool::upload(const void* data, u32 owner, const mesh::MeshRanges& ranges)
         return kNoSlot;
     }
 
+    // Every rung of the ladder above refuses a block the GPU may still be
+    // reading, so by here this is guaranteed rather than hoped for. Stated as
+    // an assert because the failure it guards against is invisible on the host
+    // and intermittent on hardware.
+    assert(retired(slot) && "the ladder handed back a block still in flight");
+
     std::memcpy(slots_[slot].data, data, bytes);
 
     // The CPU wrote it and the GPU is about to read it, and on a console those
@@ -161,11 +168,23 @@ u16 VboPool::takeFree(int sizeClass)
 {
     // VRAM first, and only for a block that already exists: this is the step
     // that costs nothing, so it never has a reason to prefer the slower tier.
+    //
+    // **Oldest first, and never one the GPU may still be reading.** This used
+    // to take `list.back()`, which is the worst possible choice: the block a
+    // section gave up when it was invalidated is the newest on the list, so the
+    // very next upload of that size handed the section its own block back and
+    // memcpy'd over it -- while the frame that drew it was still in flight. The
+    // symptom on hardware is triangles stretched between two unrelated
+    // positions, intermittently, mostly while moving. See kRetireFrames.
     for (int tier = 0; tier < int(VboTier::kCount); ++tier) {
         std::vector<u16>& list = freeLists_[usize(freeListIndex(VboTier(tier), sizeClass))];
-        if (!list.empty()) {
-            const u16 slot = list.back();
-            list.pop_back();
+        for (usize i = 0; i < list.size(); ++i) {
+            if (!retired(list[i])) {
+                ++stats_.heldInFlight;
+                continue;
+            }
+            const u16 slot = list[i];
+            list.erase(list.begin() + static_cast<std::ptrdiff_t>(i));
             --stats_.freeBlocks;
             ++stats_.reused;
             return slot;
@@ -217,9 +236,18 @@ u16 VboPool::reclaimFree(int sizeClass)
     for (int cls = classes_.count() - 1; cls >= 0; --cls) {
         for (int tier = 0; tier < int(VboTier::kCount); ++tier) {
             std::vector<u16>& list = freeLists_[usize(freeListIndex(VboTier(tier), cls))];
-            while (!list.empty()) {
-                const u16 slot = list.back();
-                list.pop_back();
+            // Front to back, skipping anything still in flight: `linearFree` on
+            // a block the GPU is fetching from is the same bug as memcpy'ing
+            // over it, only louder -- the address can be handed straight back
+            // out for something else entirely.
+            for (usize i = 0; i < list.size();) {
+                if (!retired(list[i])) {
+                    ++stats_.heldInFlight;
+                    ++i;
+                    continue;
+                }
+                const u16 slot = list[i];
+                list.erase(list.begin() + static_cast<std::ptrdiff_t>(i));
                 --stats_.freeBlocks;
                 returnToAllocator(slot);
                 released = true;
@@ -247,8 +275,15 @@ u16 VboPool::evictOfClass(int sizeClass)
     // section coming into view can use as it stands -- no allocator traffic,
     // no fragmentation, one memcpy.
     for (u16 slot = lruHead_; slot != kNoSlot; slot = slots_[slot].next) {
-        if (slots_[slot].frame == frame_) {
-            break;  // the LRU order means everything past here is also current
+        if (!retired(slot)) {
+            // The LRU order means everything past here is at least as recent.
+            // This used to test `frame == frame_`, which protects only the
+            // frame being recorded -- and the frame the GPU is *executing* is
+            // the one before it. A section drawn last frame and dropped from
+            // this frame's draw list, which is exactly what turning the camera
+            // produces, was a legal eviction target mid-draw.
+            ++stats_.heldInFlight;
+            break;
         }
         if (slots_[slot].sizeClass == i16(sizeClass)) {
             evict(slot);
@@ -265,7 +300,7 @@ u16 VboPool::evictAnyThenAllocate(int sizeClass)
     // and allocator traffic. It is the path that runs while the pool is still
     // settling into a new view, and it should get rarer, not more common --
     // which is why `evictions` is cumulative in the stats.
-    while (lruHead_ != kNoSlot && slots_[lruHead_].frame != frame_) {
+    while (lruHead_ != kNoSlot && retired(lruHead_)) {
         evict(lruHead_);
         const u16 slot = reclaimFree(sizeClass);
         if (slot != kNoSlot) {
@@ -282,7 +317,9 @@ u16 VboPool::newSlot()
     if (!unusedSlots_.empty()) {
         const u16 slot = unusedSlots_.back();
         unusedSlots_.pop_back();
+        const u16 generation = slots_[slot].generation;
         slots_[slot] = Slot();
+        slots_[slot].generation = generation;
         return slot;
     }
     assert(slots_.size() < kNoSlot && "more pool slots than a u16 can address");
@@ -308,6 +345,11 @@ void VboPool::parkOnFreeList(u16 slot)
 
     record.resident = false;
     record.used = 0;
+    // The mesh this block held is no longer the mesh anyone recorded a slot
+    // index for. A draw list built earlier this frame still names it; bumping
+    // here is what lets the draw loop notice rather than render one chunk's
+    // geometry at another chunk's origin.
+    ++record.generation;
     freeLists_[usize(freeListIndex(record.tier, record.sizeClass))].push_back(slot);
     ++stats_.freeBlocks;
 }
@@ -316,10 +358,17 @@ void VboPool::returnToAllocator(u16 slot)
 {
     Slot& record = slots_[slot];
     assert(!record.resident && "a live mesh must be evicted before its block goes back");
+    assert(retired(slot) && "a block the GPU may still be reading must not be freed");
     allocator_->release(record.data, record.capacity, record.tier);
     stats_.reserved -= record.capacity;
     stats_.reservedByTier[int(record.tier)] -= record.capacity;
+
+    // The slot record is recycled but its generation is not: a draw list that
+    // named this index has to keep disagreeing with it, and resetting to zero
+    // would eventually let a stale index match again.
+    const u16 generation = record.generation;
     record = Slot();
+    record.generation = u16(generation + 1);
     unusedSlots_.push_back(slot);
 }
 
@@ -327,6 +376,7 @@ void VboPool::lruPushBack(u16 slot)
 {
     Slot& record = slots_[slot];
     record.frame = frame_;
+    record.everHeld = true;
     record.prev = lruTail_;
     record.next = kNoSlot;
     if (lruTail_ != kNoSlot) {

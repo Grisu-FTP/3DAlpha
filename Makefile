@@ -5,6 +5,7 @@
 #   make all-versions         build every manifest in versions/
 #   make cia                  also package a CIA (needs makerom on PATH)
 #   make host                 build for Linux (unit tests, fast iteration)
+#   make index                regenerate docs/code-map.md and docs/doc-index.md
 #   make run                  send the 3dsx to a console over Wi-Fi (3dslink)
 #   make clean
 
@@ -26,7 +27,7 @@ export DEVKITPRO
 export DEVKITARM
 CMAKE_3DS  := $(DEVKITPRO)/portlibs/3ds/bin/arm-none-eabi-cmake
 
-.PHONY: all cia host test all-versions run clean
+.PHONY: all cia host test all-versions run index clean
 
 all: $(BUILD_DIR)/CMakeCache.txt
 	@cmake --build $(BUILD_DIR)
@@ -51,6 +52,11 @@ $(HOST_DIR)/CMakeCache.txt:
 
 test: host
 	@ctest --test-dir $(HOST_DIR) --output-on-failure
+
+# The two generated indexes. Cheap enough to run on a whim; `--check` is the
+# form for CI, which fails rather than rewriting.
+index:
+	@python3 tools/gen_index.py
 
 run: all
 	@3dslink $(BUILD_DIR)/3DAlpha-$(VERSION).3dsx

@@ -65,6 +65,14 @@ jobs:
           install -m755 /tmp/project_ctr/makerom/bin/makerom /usr/local/bin/makerom
           makerom 2>&1 | head -2 || true
 
+      # 3ds-zlib comes with the image; the Vorbis decoder does not. Without it
+      # the build still succeeds and the console is simply silent -- audio is
+      # never a startup dependency, see docs/assets.md -- so this step exists to
+      # make sure the artifact CI publishes is the one with sound in it, not to
+      # unblock the compile. 3ds-libogg arrives as a dependency.
+      - name: Install the Vorbis decoder
+        run: dkp-pacman -Sy --noconfirm --needed 3ds-libvorbisidec
+
       # Not `make VERSION=...`: the Makefile builds into build/<version>/, and
       # that directory is committed to the repo with a CMakeCache.txt full of
       # absolute paths from a developer's machine. CMake would refuse it.

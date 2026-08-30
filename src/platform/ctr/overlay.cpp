@@ -427,12 +427,13 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
     accum_.submit += renderer.submitMs();
     accum_.walk += timing.walkMs;
     accum_.stream += timing.streamMs;
+    accum_.tick += timing.tickMs;
 
     const bool tick = ++samples_ >= kSamplesPerUpdate;
     if (tick) {
         const float n = float(samples_);
-        shown_ = {accum_.frame / n,  accum_.draw / n, accum_.process / n, accum_.blocked / n,
-                  accum_.submit / n, accum_.walk / n, accum_.stream / n};
+        shown_ = {accum_.frame / n,  accum_.draw / n,   accum_.process / n, accum_.blocked / n,
+                  accum_.submit / n, accum_.walk / n,    accum_.stream / n,  accum_.tick / n};
         accum_ = Accum{};
         samples_ = 0;
 
@@ -605,12 +606,38 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     // is at its refresh rate and there is nothing to fix; if `vsync` is near
     // zero the CPU is the thing missing frames, and the three numbers under it
     // say which part.
-    const float busy = shown_.walk + shown_.stream + shown_.submit;
+    const float busy = shown_.walk + shown_.stream + shown_.tick + shown_.submit;
     row(r++, "  CPU busy %2d.%d ms  vsync %2d.%d ms", int(busy), tenths(busy) % 10,
         int(shown_.blocked), tenths(shown_.blocked) % 10);
     row(r++, "  walk %d.%d  stream %2d.%d  submit %d.%d", int(shown_.walk),
         tenths(shown_.walk) % 10, int(shown_.stream), tenths(shown_.stream) % 10,
         int(shown_.submit), tenths(shown_.submit) % 10);
+    // **The tick, separately, with what the pool and the tick refused.** All
+    // four of these were invisible on a console and all four are things that
+    // cost a frame or lose behaviour when they are not zero: the tick catching
+    // up after a stall, the pool holding blocks the GPU is still reading, the
+    // scheduler's pool overflowing, and the notify cascade hitting its stack
+    // budget.
+    {
+        const tick::TickWorld* t = world.worldTick();
+        const i64 scheduleDrops = t != nullptr ? t->stats().scheduledDropped : 0;
+        const i64 cascade = t != nullptr ? t->stats().notifyDeferred + t->stats().notifyDropped
+                                             + t->stats().wireRefused
+                                         : 0;
+        row(r++, "  tick %2d.%d ms  held %u  drop %d/%d", int(shown_.tick),
+            tenths(shown_.tick) % 10, unsigned(renderer.chunks().pool().stats().heldInFlight),
+            int(scheduleDrops), int(cascade));
+
+        // The relighter: what it still owes, what it has settled, and what it
+        // had to throw away. `pend` sitting high means the per-frame budget is
+        // below what the world is producing; `drop` above zero means a queue
+        // overflowed and a patch of world is holding stale light.
+        const world::LightUpdater* light = world.lighting();
+        if (light != nullptr) {
+            row(r++, "  light pend %4u  lit %8u  drop %u", unsigned(light->pending()),
+                unsigned(light->stats().cellsSettled), unsigned(light->stats().dropped));
+        }
+    }
 
     blank(r++);
     row(r++, "drawn   %4d sections  %6lu quads", gpu.drawCalls,
@@ -690,10 +717,22 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
         } else if (streaming.generationGated) {
             std::snprintf(tail, sizeof(tail), " GATE");
         }
-        row(r++, "    %2d.%d ms live %3lu lost %2lu%s",
+        // `live` is the generator's high-water mark of columns it is still
+        // being written into, `ret` what it has let go of behind the player and
+        // `lost` what it dropped without meaning to. **`ret` rising is the
+        // healthy case and `lost` above zero is a corrupted world** -- see
+        // ChunkGenerator::retire. Both are clamped to the width they have; what
+        // matters is zero against not-zero.
+        row(r++, "  %2d.%dms live%3lu ret%4lu lost%2lu%s",
             int(streaming.generateMicros / 1000), int((streaming.generateMicros % 1000) / 100),
             static_cast<unsigned long>(streaming.generatorPeakLive),
-            static_cast<unsigned long>(streaming.generatorEvictedLive), tail);
+            static_cast<unsigned long>(streaming.generatorRetiredLive > 9999u
+                                           ? 9999u
+                                           : streaming.generatorRetiredLive),
+            static_cast<unsigned long>(streaming.generatorEvictedLive > 99u
+                                           ? 99u
+                                           : streaming.generatorEvictedLive),
+            tail);
     }
     row(r++, "  blocks %3lu.%lu MB in the heap",
         static_cast<unsigned long>(streaming.blockBytes / kMb),
@@ -814,6 +853,37 @@ int Overlay::drawStorage(const render::WorldStreamer& world)
 
     blank(r++);
     row(r++, "autosave %s", world.autosaveSeconds() > 0 ? "on" : "off");
+
+    // **Audio, and specifically the two numbers a host cannot answer.**
+    //
+    // The decode thread runs below the main thread, on core 0 on an Old 3DS
+    // because a 3DSX has nowhere else to put it, and the claim that a 186 ms
+    // ring makes that safe is the one thing in the subsystem that only hardware
+    // can settle. `under` is that claim being wrong, counted; `decode` is what a
+    // 23 ms buffer costs this console, which is the number the thread priority
+    // should be argued from rather than guessed at. See ctr/audio.hpp.
+    blank(r++);
+    if (audio_ == nullptr) {
+        row(r++, "audio  not built");
+    } else {
+        switch (audio_->status()) {
+        case AudioStatus::Ready:
+            row(r++, "audio  on   %s", audio_->musicPlaying() ? "playing" : "quiet");
+            row(r++, "  decode %4lu us / buffer",
+                static_cast<unsigned long>(audio_->decodeMicros()));
+            row(r++, "  under  %4lu", static_cast<unsigned long>(audio_->underruns()));
+            break;
+        case AudioStatus::NoFirmware:
+            row(r++, "audio  no dspfirm.cdc");
+            break;
+        case AudioStatus::Unavailable:
+            row(r++, "audio  DSP unavailable");
+            break;
+        case AudioStatus::Disabled:
+            row(r++, "audio  off");
+            break;
+        }
+    }
     return r;
 }
 

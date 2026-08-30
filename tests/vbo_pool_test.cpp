@@ -198,6 +198,13 @@ TEST(a_released_block_is_handed_to_the_next_mesh_of_its_size)
     CHECK_EQ(pool.stats().residents, 0);
     CHECK_EQ(pool.stats().freeBlocks, 1);
 
+    // **Two frames on, not one.** The block was drawn in frame 1, so frame 1's
+    // command list is still in flight for the whole of frame 2 and the pool
+    // refuses to write over it (VboPool::kRetireFrames). This test used to
+    // re-upload in the same frame it released, which is precisely the
+    // write-after-read that stretched geometry on hardware.
+    pool.beginFrame(3);
+
     // Same class, so it must reuse rather than allocate.
     const std::vector<u8> second = payload(band, 2);
     const u16 again = pool.upload(second.data(), 2, {second.size(), 0, 0});
@@ -282,8 +289,13 @@ TEST(the_least_recently_drawn_section_is_the_one_evicted)
         slots.push_back(pool.upload(mesh.data(), i, {mesh.size(), 0, 0}));
     }
 
-    // Frame 2 draws owners 1 and 2 but not 0, so 0 is the coldest.
+    // Frames 2 and 3 draw owners 1 and 2 but not 0, so 0 is the coldest -- and
+    // by frame 3 it is also two frames clear of the GPU, which is what the pool
+    // requires before it will take a block back. See VboPool::kRetireFrames.
     pool.beginFrame(2);
+    pool.touch(slots[1]);
+    pool.touch(slots[2]);
+    pool.beginFrame(3);
     pool.touch(slots[1]);
     pool.touch(slots[2]);
 
@@ -329,8 +341,14 @@ TEST(nothing_drawn_this_frame_is_ever_evicted_to_make_room)
     CHECK_EQ(pool.stats().evictions, u32(0));
     CHECK_EQ(pool.stats().residents, 2);
 
-    // Next frame nothing has been drawn yet, so the coldest gives way.
+    // Still refused a frame later: frame 1's list is in flight for the whole of
+    // frame 2, so its blocks are untouchable then too.
     pool.beginFrame(2);
+    CHECK_EQ(pool.upload(mesh.data(), 3, {mesh.size(), 0, 0}), VboPool::kNoSlot);
+    CHECK_EQ(pool.stats().evictions, u32(0));
+
+    // Two frames on, the coldest gives way.
+    pool.beginFrame(3);
     const u16 later = pool.upload(mesh.data(), 3, {mesh.size(), 0, 0});
     CHECK(later != VboPool::kNoSlot);
     CHECK_EQ(pool.stats().evictions, u32(1));
@@ -357,16 +375,17 @@ TEST(evictions_survive_a_frame_boundary_and_a_refused_upload)
     CHECK(pool.upload(small.data(), 1, {small.size(), 0, 0}) != VboPool::kNoSlot);
     CHECK(pool.upload(small.data(), 2, {small.size(), 0, 0}) != VboPool::kNoSlot);
 
-    // Frame 2: nothing has been drawn, so both are evictable -- but a 16k mesh
-    // cannot be placed even after giving both of them up.
+    // Frame 3: both are two frames clear of the GPU, so both are evictable --
+    // but a 16k mesh cannot be placed even after giving both of them up.
     pool.beginFrame(2);
+    pool.beginFrame(3);
     const std::vector<u8> big = payload(16000, 2);
     CHECK_EQ(pool.upload(big.data(), 3, {big.size(), 0, 0}), VboPool::kNoSlot);
     CHECK(pool.stats().evictions > 0);
     CHECK(pool.evicted().size() > 0);
 
     // The notification must still be there a frame later, unread.
-    pool.beginFrame(3);
+    pool.beginFrame(4);
     CHECK(pool.evicted().size() > 0);
 
     pool.clearEvicted();
@@ -400,6 +419,11 @@ TEST(a_mesh_of_a_different_size_reclaims_free_blocks_before_evicting)
     pool.release(other);
     CHECK_EQ(pool.stats().freeBlocks, 1);
 
+    // Two frames on, so the parked block is clear of the GPU and may be handed
+    // back to the allocator. Returning it while frame 1 was still fetching from
+    // it would free an address the GPU is reading.
+    pool.beginFrame(3);
+
     // A 4k mesh cannot use the parked 8k block, and the budget is full. The
     // pool must hand the 8k back and allocate a 4k, not evict the live mesh.
     const std::vector<u8> another = payload(4000, 3);
@@ -425,7 +449,13 @@ TEST(a_full_pool_settles_instead_of_thrashing)
     classes.build(4096, 4096, 2.0);
 
     constexpr int kCapacity = 16;
-    pool.reset(&allocator, {0, 4096 * kCapacity}, classes);
+
+    // **One block of headroom, and it is not slack -- it is the pipeline.** A
+    // block the departing section gave up cannot be written again until the
+    // frame that drew it has left the GPU (VboPool::kRetireFrames), so at any
+    // moment one block is in that limbo. A pool sized exactly to the drawn set
+    // would refuse an upload every frame and never settle.
+    pool.reset(&allocator, {0, 4096 * (kCapacity + 1)}, classes);
 
     const std::vector<u8> mesh = payload(4000, 13);
     std::map<u32, u16> resident;   // owner -> slot, as the field would hold it
@@ -438,15 +468,16 @@ TEST(a_full_pool_settles_instead_of_thrashing)
     const int afterFill = allocator.totalAllocations();
     CHECK_EQ(afterFill, kCapacity);
 
-    // Then walk: each frame drops the oldest owner and adds a new one.
+    // Then walk: each frame one more owner stops being drawn and a new one
+    // arrives. Owners are dropped from the draw list in order, so the coldest
+    // is always the one that left earliest -- which is what the LRU should pick.
     for (u32 step = 0; step < 200; ++step) {
         const u32 frame = 2 + step;
         pool.beginFrame(frame);
 
-        const u32 leaving = step;
         const u32 arriving = u32(kCapacity) + step;
         for (const auto& entry : resident) {
-            if (entry.first != leaving) {
+            if (entry.first > step) {
                 pool.touch(entry.second);
             }
         }
@@ -456,16 +487,18 @@ TEST(a_full_pool_settles_instead_of_thrashing)
         for (u32 owner : pool.evicted()) {
             resident.erase(owner);
         }
+        pool.clearEvicted();
         resident[arriving] = slot;
     }
 
     CHECK_EQ(pool.stats().failures, u32(0));
-    CHECK_EQ(pool.stats().residents, kCapacity);
-    // Not one allocator call after the initial fill: every step recycled the
+    CHECK_EQ(pool.stats().residents, kCapacity + 1);
+    // One allocator call past the initial fill -- the headroom block, taken on
+    // the first step -- and not one after that: every later step recycled the
     // block the departing section gave up.
-    CHECK_EQ(allocator.totalAllocations(), afterFill);
-    CHECK_EQ(pool.stats().evictions, u32(200));
-    CHECK_EQ(pool.stats().reused, u32(200));
+    CHECK_EQ(allocator.totalAllocations(), afterFill + 1);
+    CHECK_EQ(pool.stats().evictions, u32(199));
+    CHECK_EQ(pool.stats().reused, u32(199));
 
     pool.shutdown();
     CHECK(allocator.balanced());

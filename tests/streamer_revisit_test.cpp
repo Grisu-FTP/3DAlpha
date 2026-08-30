@@ -2,6 +2,7 @@
 
 #include "core/render/chunk_renderer.hpp"
 #include "core/render/world_streamer.hpp"
+#include "core/tick/tick_world.hpp"
 #include "core/util/frustum.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
@@ -427,4 +428,103 @@ TEST(flying_over_new_ground_never_takes_the_render_thread_to_the_card)
     // The flight really did cross into unwalked ground, or the assertion above
     // is about a world that was already in hand.
     CHECK(io.listings > 0);
+}
+
+// **A tick edit must survive the column leaving the render distance.**
+//
+// `dropCell` hands a departing column back to the cache with `give()`, which
+// installs what it is handed as *clean* -- and once the cell is gone,
+// `flushTickDirty` cannot find it, because it looks the column up in the grid.
+// So a column a tick wrote into and the player then walked away from was never
+// written to the card, and with autosave set to Off that was every edit of the
+// session. The column then sat in the cache, clean, as the authoritative answer
+// for that chunk, so the edit was not merely unsaved: it was gone.
+TEST(a_tick_edit_survives_the_column_leaving_the_grid)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("World");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 90210LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    constexpr int kDistance = 2;
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = kDistance;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    world::ChunkCache::Config cache;
+    cache.threaded = true;
+    streamer.setCacheConfig(cache);
+    // Autosave off, which is the configuration the loss was total in.
+    streamer.setAutosaveSeconds(0);
+    CHECK(streamer.open(dir.c_str(), kDistance, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 2;
+    budget.generatedPerFrame = 2;
+    budget.meshesPerFrame = 8;
+    u32 counter = 1;
+
+    // Negative coordinates, per CONTRIBUTING: chunk -1 is where block -1 lives.
+    constexpr i32 kEditChunkX = -3;
+    constexpr i32 kEditChunkZ = -2;
+    constexpr i32 kEditX = kEditChunkX * 16 + 5;
+    constexpr i32 kEditZ = kEditChunkZ * 16 + 9;
+    constexpr int kEditY = 70;
+
+    settle(streamer, renderer, kEditChunkX, kEditChunkZ, budget, &counter, 900);
+
+    tick::TickWorld* world = streamer.worldTick();
+    CHECK(world != nullptr);
+
+    // Write through the tick, so the edit takes exactly the path a fluid does.
+    //
+    // **Something the generator did not already put there.** `writeBlock`
+    // returns true and notifies nobody when the block is already what is being
+    // written, so a hard-coded id makes the test depend on what the terrain
+    // happens to be at that spot.
+    const block::BlockId before = world->blockAt(kEditX, kEditY, kEditZ);
+    const block::BlockId placed = before == block::BlockId(mcver::Block::Stone)
+                                      ? block::BlockId(mcver::Block::Cobblestone)
+                                      : block::BlockId(mcver::Block::Stone);
+    CHECK(world->setBlockWithNotify(kEditX, kEditY, kEditZ, placed));
+    CHECK_EQ(world->blockAt(kEditX, kEditY, kEditZ), placed);
+    CHECK(streamer.tickDirtyColumns() > 0);
+
+    // Walk far enough away that the edited column leaves the grid entirely.
+    settle(streamer, renderer, kEditChunkX + 12, kEditChunkZ + 12, budget, &counter, 900);
+    CHECK(!renderer.field().isLoaded(kEditChunkX, kEditChunkZ));
+
+    // And walk back. The block has to still be there -- from the cache or from
+    // the card, it does not matter which, only that it was not dropped.
+    settle(streamer, renderer, kEditChunkX, kEditChunkZ, budget, &counter, 900);
+    CHECK_EQ(world->blockAt(kEditX, kEditY, kEditZ), placed);
+
+    streamer.close(kNow);
+
+    // Reopened from the card, with nothing left in memory: the strongest form
+    // of the assertion, and the one autosave-off used to fail outright.
+    WorldStreamer reopened;
+    reopened.setGenerateMissing(true);
+    reopened.setCacheConfig(cache);
+    CHECK(reopened.open(dir.c_str(), kDistance, kNow));
+    ChunkRenderer renderer2;
+    renderer2.reset(&allocator, config);
+    u32 counter2 = 1;
+    settle(reopened, renderer2, kEditChunkX, kEditChunkZ, budget, &counter2, 900);
+    CHECK(reopened.worldTick() != nullptr);
+    CHECK_EQ(reopened.worldTick()->blockAt(kEditX, kEditY, kEditZ), placed);
+    reopened.close(kNow);
 }

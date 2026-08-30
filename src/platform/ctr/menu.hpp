@@ -303,6 +303,39 @@ private:
     void setScreen(Screen screen);
     void printConsoleHelp();
 
+    // The four facts that separate the four unrelated causes of silence. See
+    // the comment on the definition.
+    void printSoundDiagnostics();
+
+    // `GuiScreen.mouseClicked` in a1.1.2 plays `random.click` at volume 1 and
+    // pitch 1 for every press that lands on an enabled button -- sliders
+    // included, because `GuiSlider` is a `GuiButton` and the press is what is
+    // heard, not the drag. Verified in `bh.a(int,int,int)`; the volume table is
+    // in docs/audio-a1.1.2.md. Every A press in this file that does something
+    // goes through here.
+    //
+    // Escape is silent in the original and B and START are silent here, for the
+    // same reason: leaving a screen is not pressing a button on it.
+    void playClick();
+
+    // The cursor moved. **This one is a deviation and there is no original to
+    // be faithful to**: a1.1.2's menus are pointed at with a mouse and have no
+    // cursor to move, so there is nothing for a d-pad press to sound like.
+    //
+    // Rather than invent a tone, it plays the quieter, lower click a1.1.2 makes
+    // for itself -- `random.click` at volume 0.3 and pitch 0.5, which is what a
+    // button block plays when it pops back out (`no.class`) and a lever plays
+    // when it is thrown down (`hu.class`). So the pair a player hears is two
+    // settings of one sound the game already had: quiet and low for moving,
+    // full and open for choosing.
+    void playMoveClick();
+
+    // The cursor step every screen shares, wrapping at both ends -- and the one
+    // place the move click is played, so no screen can forget it and none can
+    // play it twice. The circle pad reports through the d-pad's mask, so both
+    // work everywhere without a second code path.
+    int step(u32 down, int cursor, int count);
+
     // Returns true when the choice is made and `run` should return.
     bool handleTitle(u32 down, MenuChoice* choice);
     bool handlePause(u32 down, PauseChoice* choice);

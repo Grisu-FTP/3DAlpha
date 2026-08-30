@@ -276,6 +276,17 @@ draw list. The dead end is left in the doc deliberately.
 > prediction, not a measurement**: decode cost per buffer, underruns and whether the Old 3DS thread
 > policy holds are all waiting on a console, and the debug Info page exists to answer them in one
 > launch. See §0p.
+>
+> **The menu click is measured on the host, because it can be.** `newsound/random/click.ogg` from the
+> real a1.1.2 resources folder decodes to **12,332 frames, 2 channels, 44,100 Hz -- 280 ms, about
+> 49 KB of PCM**, taken once at boot as a single `linearAlloc`. Gains are **0.250** for a choice
+> (`random.click` 1.0/1.0) and **0.075** for a cursor move (0.3/0.5). `--audio-list <resources>`
+> prints all four numbers.
+>
+> **Adding one-shot effects cost the binary 18.7 KB**: the `.3dsx` goes 960,224 -> 978,936 bytes
+> and the loader allocates 254 pages against 249. `.text` 809,852 -> 828,108, `.rodata` 120,540 ->
+> 122,344. That is the sample path, the four voices and the menu call sites; the samples themselves
+> are linear memory at runtime and not in the image.
 
 > **The reference world grew between M1 and the sixth launch, and the totals below are the 660-column
 > world.** It has been played in Java since: it is now **1,118 columns**, and a re-run gives
@@ -3178,7 +3189,10 @@ a1.1.2's behaviour and not a bug to fix.
 whatever an S3 bucket offered. The pool is whatever the player put in `sdmc:/3dalpha/resources/`.
 
 **The shape underneath.** `audio::Backend` is the `IAudio` architecture.md always listed -- narrow
-on purpose: start a stream, stop it, ask whether it is still playing. ndsp sits behind it on the
+on purpose: start a stream, stop it, ask whether it is still playing, take a decoded one-shot and
+fire it. The two halves have different shapes deliberately: music arrives as a `PcmSource` because it
+is minutes long and decoded as it plays, an effect arrives already decoded and is afterwards played
+by handle. ndsp sits behind it on the
 console, a `.wav` writer on the host. Music is channel 0 of 24, fed by eight 1024-frame wave buffers
 in linear memory -- 32 KB, taken once -- and decoded by a third `WorkerRole`, `Audio`, running
 Tremor. The ndsp callback signals an event and decodes nothing; starting a track hands over a path
@@ -3225,10 +3239,53 @@ the first time a `.3dsx` or `.cia` is handed to someone who does not**. The chea
 `const char[]` behind an About screen, not a RomFS. `CONTRIBUTING.md:77,79` still names
 `romfs/licenses.txt`, which does not exist; that wording is stale and was left alone deliberately.
 
-**Sound effects are deliberately absent.** Nothing in the port can emit one: no block placement, no
-player body, no entities, and `streaming/*.mus` is Mojang's own container. The reachable emitters
+**The menus click, and that is the only sound effect there is.** `of.a(String, float, float)` --
+playSoundFX -- is transcribed, including the `0.25f` interface factor and the clip-before-multiply
+that makes a volume above 1 mean full rather than more. `GuiScreen.mouseClicked` (`bh.a`) plays
+`random.click` at 1.0/1.0 for every press that lands on an *enabled* button, sliders included, and
+the port does the same on A; the greyed Multiplayer row stays silent because `fk.c` returns false for
+it, and B/START are Escape and are silent as Escape is. **The cursor-move click is the one
+deviation**: a1.1.2's menus are pointed at with a mouse and have no cursor, so rather than invent a
+tone it plays the quieter, lower setting the game already uses for its own button blocks and levers
+-- `random.click` at 0.3/0.5, out of `no.class` and `hu.class`. Both live in `Menu::step` and
+`Menu::playClick`, one site each.
+
+**Effects are preloaded, and that is CONTRIBUTING's rule rather than taste.** a1.1.2 hands paulscode
+a URL at the moment of the click; we cannot, because that is an SD read on the frame the button was
+pressed. So `SoundEngine::preloadSound("random.click")` decodes at boot and `playSoundFX` is
+afterwards a handle and two floats.
+
+**The preload runs on a borrowed worker, not on the main thread, and that is not a nicety.** A
+3DSX's main thread has 32 KB of stack and nothing in the binary can enlarge it; `kAudioStackBytes`
+is 32 KB for the decode thread *alone*, because Tremor's inverse MDCT is not a shallow call.
+Decoding inline in `runShell` would therefore overflow the main stack on exactly the consoles that
+have a resources folder to decode -- the ones where the feature works -- and the first cut did
+exactly that. It is spawned and joined immediately: not concurrency, just borrowing a stack. A sound that was never preloaded is
+silence and not an error, which makes the preload list an honest statement of what this port can
+make a noise about. When `dig.*` arrives with three hundred files that cannot all be resident, the
+answer is a decode request queued onto the audio worker behind the same `playSoundFX`, not a bigger
+`kMaxSamples`.
+
+**Measured, on the host, against the real a1.1.2 resources folder:** `newsound/random/click.ogg` is
+12,332 frames, 2 channels, 44,100 Hz -- **280 ms and about 49 KB of PCM**, one linear allocation for
+the life of the process. The gains are 0.250 for a choice and 0.075 for a cursor move.
+`--audio-list <resources>` prints all of it, so a player's folder can be checked before it goes near
+a card.
+
+On the console a sample gets its own `linearAlloc`, is flushed out of the data cache once, and plays
+on ndsp channels 1-4 round-robin. **The ring steals**, as a1.1.2's rotating `"sound_" + (id % 256)`
+steals -- a click that sometimes does not happen is worse than one that cuts another off. Channel 0
+stays the music voice and is touched only by the decode thread, so the two threads never name the
+same channel and neither needs a lock of ours. The one thing that is an assumption and not a fact is
+that libctru's per-channel state is not a structure two threads can tear -- its sources are not
+installed here, the music path has rested on the same assumption since it was written, and the
+decode thread is 3DS-only so ThreadSanitizer cannot reach it. `platform/ctr/audio.hpp` says so at
+the point where it matters.
+
+**Still absent**: positional attenuation (no listener -- no player body), records (no jukebox, and
+`streaming/*.mus` is Mojang's own container), and everything blocked on M3. The reachable emitters
 when M3 arrives are fizz, fire and the ambient cave counter; the seam is the pools and `Backend`, so
-each is a call site rather than a subsystem.
+each is a call site rather than a subsystem, as the menu click already was.
 
 **Both decoder branches compile and link.** `3ds-libvorbisidec` 1.2.1-3 is installed, so the 3DS
 build has `MC_HAVE_VORBIS=1 MC_VORBIS_TREMOR=1`, links `libvorbisidec.a` and `libogg.a`, and passes
@@ -3249,10 +3306,26 @@ confirmed against the installed headers rather than remembered.
 -> 960,224 bytes and the loader allocates 249 pages against 240. That is Tremor's own tables, and it
 is the price of audio being in the build at all -- a `MC_HAVE_VORBIS=0` build gets it back.
 
-**Still unverified, and only hardware can settle it:** that `ndspInit` succeeds with a real dumped
-firmware, that the ring does not underrun on an Old 3DS, and what a buffer actually costs. The
-decode thread is 3DS-only, so ThreadSanitizer cannot reach it either -- the host has no audio thread
-to race. The Info page reports decode microseconds and underruns for exactly this reason.
+**Confirmed on hardware: the menus click.** This is the first time any part of this subsystem has
+made a noise on a console, and it settles more than it looks like. `ndspInit` succeeds with a real
+dumped firmware -- the line above this one used to say that was unverified. The effect path works
+end to end: `linearAlloc` plus one `DSP_FlushDataCache`, channels 1-4 handed out round-robin,
+`ndspChnReset` -> interp -> rate -> format -> mix -> `ndspChnWaveBufAdd` in that order, and
+`interfaceGain`'s 0.250 audible through the console's own speakers. The preload on a borrowed worker
+runs and joins without incident.
+
+**What it does not settle** is anything about the *streaming* half: whether the ring underruns on an
+Old 3DS and what a buffer actually costs are still open, because a click is one wave buffer queued
+once and a track is eight of them refilled for three minutes. The Info page reports decode
+microseconds and underruns for exactly that. ThreadSanitizer still cannot reach any of it -- the
+decode thread is 3DS-only and the host has no audio thread to race.
+
+**What went wrong first, and it was mine.** The first cut decoded the sample inline in `runShell`,
+on a main thread with 32 KB of stack that nothing in the binary can enlarge, when the decode thread
+is given 32 KB *by itself* precisely because Tremor's inverse MDCT is not shallow. It reported no
+sound and did not crash, which was the tell: nothing had been decoded at all. The lesson is the
+older one restated -- **work moved to boot is not thereby moved somewhere it fits**, and "at boot"
+and "on the main thread" are two different claims that this file had been treating as one.
 
 
 ### 0q. Four hardware symptoms after the tick landed, and the three faults underneath them

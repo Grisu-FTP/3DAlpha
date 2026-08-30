@@ -150,6 +150,117 @@ freezes.
 `of.a()`, called when the options screen changes, stops `"BgMusic"` outright when
 `musicVolume` reaches zero and otherwise just resets its volume.
 
+## Interface sounds — `of.a(String, float, float)`
+
+The whole of "a button makes a noise", and it is nine lines. Transcribed from `of.class`:
+
+```java
+public void playSoundFX(String name, float volume, float pitch) {
+    if (!loaded || options.soundVolume == 0.0F) return;
+    SoundPoolEntry e = this.soundPool.getRandomSoundFromSoundPool(name);
+    if (e == null) return;
+    this.latestSoundID = (this.latestSoundID + 1) % 256;
+    String src = "sound_" + this.latestSoundID;
+    SoundSystem.newSource(false, src, e.url, e.name, false, 0,0,0, 0, 0);  // ATTENUATION_NONE
+    if (volume > 1.0F) volume = 1.0F;
+    volume = volume * 0.25F;
+    SoundSystem.setPitch(src, pitch);
+    SoundSystem.setVolume(src, volume * options.soundVolume);
+    SoundSystem.play(src);
+}
+```
+
+The bytecode for the two lines that matter:
+
+```
+of.a(Ljava/lang/String;FF)V
+     97: fload_2  98: fconst_1  99: fcmpl  100: ifle 105  103: fconst_1  104: fstore_2
+    105: fload_2  106: ldc #2 // float 0.25f  108: fmul  109: fstore_2
+```
+
+**The clip comes before the multiply**, so asking for more than full volume is asking for
+full and not for a quarter more than it. Positional sounds read a volume above 1 as a longer
+fade distance instead; the interface path simply clips. `interfaceGain` in
+`core/audio/sound_engine.hpp` is those two lines on their own, so they can be checked without
+a decoder, a file or a console.
+
+### Where the menu click comes from
+
+`bh.class` is GuiScreen, and `bh.a(int, int, int)` is `mouseClicked`:
+
+```
+ 45: invokevirtual #53  // fk.c(Minecraft, int, int) -- button hit test
+ 48: ifeq 77                                       -- missed: no sound, no action
+ 61: getfield  #34      // Minecraft.sndManager
+ 64: ldc       #6       // String random.click
+ 66: fconst_1  67: fconst_1
+ 68: invokevirtual #66  // of.a(String, float, float)
+```
+
+Three facts fall out of that, and this port depends on all three:
+
+* the sound is **`random.click` at volume 1.0 and pitch 1.0**, through the interface path,
+  so the final gain is `0.25 * soundVolume`;
+* it plays **only when the hit test passed**, and `fk.c` is false for a disabled button — a
+  greyed-out button is silent;
+* `fu` (GuiSlider) extends `fk`, so **clicking a slider clicks too**. The drag is silent; the
+  press is not.
+
+a1.1.2 also plays `random.click` for itself, quieter and lower, when a button block pops back
+out or a lever is thrown: `random.click` at **volume 0.3, pitch 0.5** (`no.class`, `hu.class`,
+`al.class`), with 0.6 for the on-state. Those are positional, but the (volume, pitch) pair is
+the game's own second setting of the same sound.
+
+### What this port does with it
+
+| Gesture | Sound | Source |
+|---|---|---|
+| A on an enabled row, or an arrow that changes a value | `random.click`, 1.0 / 1.0 | `bh.a`, unchanged |
+| The cursor moves to another row | `random.click`, 0.3 / 0.5 | **ours** — see below |
+| B or START (leave the screen) | silence | Escape is silent in `bh` |
+| A on a disabled row (Multiplayer) | silence | `fk.c` returned false |
+
+**The cursor-move click is a deviation and there is no original to be faithful to.** a1.1.2's
+menus are pointed at with a mouse and have no cursor to move, so nothing in the jar says what a
+d-pad press should sound like. Rather than invent a tone, it plays the quieter, lower setting
+the game already uses for its own buttons — so what a player hears is two settings of one
+sound: quiet and low for moving, full and open for choosing. It is played in exactly one place,
+`Menu::step` in `platform/ctr/menu.cpp`, and only when the cursor actually went somewhere.
+
+The Sound screen's own volume row is the one place the click is *also* a preview: the engine is
+told the new volume before the click is played, so the row is audible while it is being set.
+a1.1.2 gets that for free, because its slider is clicked and `bh.a` fires after the value has
+already been written.
+
+### Effects are loaded before they are asked for
+
+The one structural difference, and it is CONTRIBUTING's rule and not taste. a1.1.2 hands
+paulscode a `URL` at the moment of the click and lets the library go and read the file. We
+cannot: no filesystem access and no decompression in the per-frame path, and an SD read on the
+frame a button was pressed is exactly that. So `SoundEngine::preloadSound(key)` decodes the
+entries under a key at boot — `random/click.ogg` is a third of a second of audio, under 50 KB
+decoded — and `playSoundFX` is afterwards a handle and two floats.
+
+**A sound that was never preloaded is silence, deliberately, and not an error.** The preload
+list is therefore an honest statement of what this port can make a noise about. It is one key
+today because the menus are the only emitter; when `dig.*` needs three hundred files that
+cannot all be resident, the answer is a decode request queued onto the audio worker, behind the
+same `playSoundFX`.
+
+On the console the samples live in their own `linearAlloc`, flushed out of the data cache once,
+and play on ndsp channels 1–4 handed out round-robin. **The ring steals**, exactly as a1.1.2's
+rotating `"sound_" + (id % 256)` steals: a click that sometimes does not happen would be worse
+than one that cuts another off. Channel 0 stays the music voice and is touched only by the
+decode thread, so the two threads never name the same channel — see `platform/ctr/audio.hpp`,
+which also records the one thing that is an assumption rather than a fact: that libctru's
+per-channel state is not a single structure two threads can tear. Its sources are not installed
+here, and the decode thread is 3DS-only so ThreadSanitizer cannot reach it either.
+
+`--audio-list <resources>` decodes the click on the host exactly as the console does at boot and
+prints the two gains, so a player's folder can be checked before it is carried to a card. Against
+the real a1.1.2 resources folder: `random.click` is **12,332 frames, 2 ch, 44,100 Hz — 280 ms**,
+about 49 KB of PCM, and the gains are 0.250 for a choice and 0.075 for a move.
+
 ## Where the resources came from, and why they are not downloaded
 
 `bf` (ThreadDownloadResources) fetched an S3 bucket listing from
@@ -170,9 +281,9 @@ install works unchanged. See [assets.md](assets.md#sounds).
    being. `MusicTicker` and `SoundPool` take a seed; the game passes a clock, the tests
    pass a constant. Identical distribution, testable outcome. `TickWorld` makes the same
    trade for the same reason.
-3. **One music voice of ndsp's twenty-four.** a1.1.2's SoundSystem carries far more
-   sources than anything can use here. Channel 0 is music; the rest are free for the
-   effects and records that arrive with their first emitter.
+3. **Five voices of ndsp's twenty-four.** a1.1.2's SoundSystem carries far more sources
+   than anything can use here. Channel 0 is music, 1–4 are one-shot effects, and the rest
+   are free for the records and positional sounds that arrive with their first emitter.
 4. **The DSP resamples.** Files are 44.1 kHz and ndsp mixes at ~32,728 Hz.
    `ndspChnSetRate` is set to the file's rate with `NDSP_INTERP_LINEAR` and the hardware
    does the rest; a CPU resampler on top of Tremor would be the second-largest cost in the
@@ -194,6 +305,7 @@ an oversight:
 | Sound | Blocked on |
 |---|---|
 | `dig.*` (place and break), `random.click` in world | Block placement and breaking — M3 |
+| Everything not preloaded | A decode queue on the audio worker — see *Effects are loaded before they are asked for* |
 | `step.*` | A player body and collision, plus a `stepSound` column in `blocks.json` — M3 |
 | `random.fizz` | Reachable now; `core/tick/fluid.cpp:230` names the site |
 | `fire.fire`, `fire.ignite` | Reachable now; `core/tick/fire.hpp` ticks |
@@ -203,5 +315,5 @@ an oversight:
 | `mob.*` | No mobs — M6 |
 | Records | No jukebox, no items, and `.mus` is undecoded |
 
-The seam they will hang off is `audio::Backend` plus the pools above, so each arrives as a
-call site rather than as a subsystem.
+The seam they hang off is `audio::Backend` plus the pools above, so each arrives as a call
+site rather than as a subsystem — as the menu click already did.

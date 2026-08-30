@@ -1011,6 +1011,31 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
 // given back around each visit, so the 400x240 colour buffer and its depth
 // buffer are not sitting in VRAM while the atlas and the VBO pool are measured
 // against what is left.
+// The preload, on a thread that can hold Tremor. Joined immediately: this is
+// not concurrency, it is borrowing a stack. See the call site.
+void preloadOnWorker(void* arg)
+{
+    static_cast<mc::audio::SoundEngine*>(arg)->preloadSound("random.click");
+}
+
+void preloadInterfaceSounds(mc::audio::SoundEngine& sound)
+{
+    mc::WorkerSpawn spawn = mc::workerSpawn();
+    mc::WorkerJoin join = mc::workerJoin();
+    void* handle = spawn != nullptr ? spawn(&preloadOnWorker, &sound, mc::WorkerRole::Audio)
+                                    : nullptr;
+    if (handle == nullptr) {
+        // No thread to borrow. Decoding here anyway would risk the main stack,
+        // and silent menus are a degradation this subsystem already has a name
+        // for -- so the sounds simply do not load, and the Sound screen says
+        // the click was found but would not decode.
+        return;
+    }
+    if (join != nullptr) {
+        join(handle);
+    }
+}
+
 int runShell(bool isNew3DS, bool haveCstick)
 {
     C3D_Init(ctr::kCommandBufferBytes);
@@ -1046,6 +1071,34 @@ int runShell(bool isNew3DS, bool haveCstick)
     sound.loadResources();
     sound.setMusicVolume(boot.musicVolume < 0 ? 1.0f
                                               : float(boot.musicVolume) / 100.0f);
+    sound.setSoundVolume(boot.soundVolume < 0 ? 1.0f
+                                              : float(boot.soundVolume) / 100.0f);
+
+    // **The one place an effect is decoded, and it is neither on a frame nor on
+    // this thread.** `random.click` is what the menus press; it costs one card
+    // read and a few milliseconds of Tremor, once, while nothing is on screen
+    // yet. Doing it at the click would put an SD read on the frame the button
+    // was pressed, which CONTRIBUTING forbids outright -- but doing it *here*,
+    // inline, would be worse in a way that is easy to miss:
+    //
+    // **a 3DSX's main thread has 32 KB of stack and nothing in the binary can
+    // enlarge it.** `kAudioStackBytes` is 32 KB for the decode thread alone,
+    // and the comment on it says why: Tremor's inverse MDCT is not a shallow
+    // call. Running it on top of `runShell`'s own frames would be a stack
+    // overflow on exactly the consoles that have a resources folder to decode
+    // -- the ones where it works. So the preload is handed to a worker with a
+    // real stack and joined before the first menu is drawn. It is still boot
+    // work done once; it simply happens somewhere it fits.
+    //
+    // With no worker ops installed the seam falls back to `std::thread`, and on
+    // a platform with a megabyte of stack per thread the distinction does not
+    // arise -- which is why the host harness calls `preloadSound` directly.
+    //
+    // It loads nothing when the player has no resources folder, and the menus
+    // are silent -- the same degradation as a missing dspfirm.cdc, and the same
+    // code path. See core/audio/sound_engine.hpp.
+    preloadInterfaceSounds(sound);
+
     menu.setSound(&sound, &audio);
 
     while (aptMainLoop()) {

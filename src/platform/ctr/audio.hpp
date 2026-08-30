@@ -32,9 +32,16 @@
 // that cannot decode 23 ms of Vorbis in a third of a second has a bigger
 // problem than music.
 //
+// **The effect voices are the opposite arrangement, on purpose.** A one-shot is
+// already decoded when it gets here (see core/audio/sample.hpp), so it is
+// copied into linear memory once at boot and played straight out of it: no
+// decode, no wake, no lock, and nothing for the worker to do. The main thread
+// starts it and the DSP finishes it. That is what lets a menu click be audible
+// on the frame the button was pressed rather than a worker wake later.
+//
 // Everything the DSP reads lives in linear memory and is flushed out of the
-// data cache immediately before it is handed over. Both are allocated once, at
-// init, so nothing here allocates on a frame.
+// data cache immediately before it is handed over. All of it is allocated once,
+// at init or at boot, so nothing here allocates on a frame.
 
 #include "core/audio/backend.hpp"
 #include "core/audio/pcm_source.hpp"
@@ -59,6 +66,19 @@ inline constexpr int kRingBuffers = 8;
 // 1024 frames x 2 channels x 2 bytes x 8 = 32 KB of linear memory, taken once.
 inline constexpr usize kRingBytes =
     usize(kFramesPerBuffer) * 2 * sizeof(mc::i16) * usize(kRingBuffers);
+
+// Effect voices, one ndsp channel each, handed out round-robin. a1.1.2 rotates
+// 256 paulscode sources and overwrites the oldest without asking; four is the
+// same bargain sized for what can actually overlap here -- a menu click is a
+// tenth of a second and nothing in this port emits two sounds in a frame -- and
+// it leaves nineteen of ndsp's twenty-four channels free for what comes later.
+inline constexpr int kEffectVoices = 4;
+
+// How many distinct effects the backend will hold. The menus need one; the
+// headroom is for the next emitter, not for a resources folder, and the honest
+// answer for three hundred `dig.*` files is a decode queue rather than a bigger
+// number here. See core/audio/sound_engine.hpp.
+inline constexpr int kMaxSamples = 16;
 
 // Why ndsp did not come up. The distinction matters to the player: someone who
 // has already dumped their firmware must not be told to dump it again.
@@ -87,6 +107,8 @@ public:
     void stopMusic() override;
     bool musicPlaying() const override;
     void setMusicGain(float gain) override;
+    mc::audio::SampleId addSample(const mc::audio::Sample& sample) override;
+    void playSample(mc::audio::SampleId id, float gain, float pitch) override;
     void update() override;
 
     // For the debug overlay. Underruns are the number that says whether the
@@ -101,9 +123,25 @@ private:
     void fillBuffers();
     void applyGain();
 
-    // The music channel. Channel 0 of 24; the rest stay free for the effects
-    // and records that arrive with their first emitter.
+    // The music channel. Channel 0 of 24; 1..4 are the effect voices below and
+    // the rest stay free for the records and positional sounds that arrive with
+    // their own first emitter.
+    //
+    // **The split by channel is what makes the threading safe.** Channel 0 is
+    // touched only by the decode thread once a track is running; the effect
+    // channels are touched only by the main thread. So the two never name the
+    // same channel and neither needs a lock of ours -- which is the claim this
+    // rests on, and it is a claim about *our* code, checkable by reading it.
+    //
+    // It does assume libctru's per-channel state is not one shared structure
+    // two threads can tear. That is what its API implies and what the music
+    // path has assumed since it was written -- `ndspChnWaveBufAdd` already runs
+    // on the decode thread while the main thread calls `ndspChnWaveBufClear`
+    // from `stopMusic` -- but libctru's sources are not installed here and it
+    // has not been read. ThreadSanitizer cannot reach this either: the decode
+    // thread is 3DS-only. Recorded as an assumption, not as a measured fact.
     static constexpr int kMusicChannel = 0;
+    static constexpr int kFirstEffectChannel = 1;
 
     AudioStatus status_ = AudioStatus::Disabled;
 
@@ -113,6 +151,24 @@ private:
 
     ndspWaveBuf buffers_[kRingBuffers]{};
     mc::i16* ring_ = nullptr;
+
+    // One decoded effect, in memory the DSP can reach. `data` is its own
+    // linearAlloc rather than a slice of a pool: the samples are taken once at
+    // boot and freed once at shutdown, so a pool would be an allocator with two
+    // calls in its life.
+    struct LoadedSample {
+        mc::i16* data = nullptr;
+        mc::u32 frames = 0;
+        int channels = 1;
+        int sampleRate = 44100;
+    };
+
+    // Main thread only, all of it: written at boot by addSample, read on the
+    // frame that plays a sound, and never seen by the decode thread.
+    LoadedSample samples_[kMaxSamples]{};
+    int sampleCount_ = 0;
+    ndspWaveBuf voices_[kEffectVoices]{};
+    int nextVoice_ = 0;
 
     // Owned by the decode thread once `generation_` has been published. The
     // main thread only ever swaps it under `lock_`.

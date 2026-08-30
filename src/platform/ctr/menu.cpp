@@ -3,6 +3,7 @@
 #include "platform/ctr/overlay.hpp"
 #include "platform/ctr/renderer.hpp"
 
+#include "core/audio/vorbis_stream.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/background.hpp"
 #include "core/texture/jar_import.hpp"
@@ -688,6 +689,16 @@ void Menu::loadSettings()
                                                                          : saved.musicVolume);
     soundVolume_ = saved.soundVolume < 0 ? 100 : (saved.soundVolume > 100 ? 100
                                                                          : saved.soundVolume);
+
+    // The engine is handed the effect volume here rather than only when the
+    // row moves, because this runs on every visit to the menu and the shell's
+    // copy of the setting is the one that was read at boot. Music is not done
+    // here: `setMusicVolume` stops a playing track when it reaches zero, and
+    // re-applying the same value on every menu entry would be a stop nobody
+    // asked for.
+    if (sound_ != nullptr) {
+        sound_->setSoundVolume(float(soundVolume_) / 100.0f);
+    }
 }
 
 void Menu::saveSettings()
@@ -714,6 +725,57 @@ void Menu::setScreen(Screen screen)
 {
     screen_ = screen;
     consoleDirty_ = true;
+}
+
+// **The four facts that turn "there is no sound" into a diagnosis**, printed
+// where a player is already standing when they notice. Silence has four
+// unrelated causes here -- the DSP never came up, the card has no resources
+// folder, the folder has no `random/click.ogg`, or the volume is at zero -- and
+// every one of them looks identical from the outside. Guessing between them
+// from a console in someone else's hands is not a thing that works, so the
+// console says which.
+void Menu::printSoundDiagnostics()
+{
+    const char* state = "off";
+    if (audioEnabled_ && audioBackend_ != nullptr) {
+        switch (audioBackend_->status()) {
+            case ctr::AudioStatus::Ready:       state = "ready"; break;
+            case ctr::AudioStatus::NoFirmware:  state = "no DSP firmware"; break;
+            case ctr::AudioStatus::Unavailable: state = "DSP would not open"; break;
+            case ctr::AudioStatus::Disabled:    state = "off"; break;
+        }
+    }
+    std::printf("  audio      \x1b[33m%s\x1b[0m\n", state);
+
+    if (sound_ == nullptr) {
+        std::printf("  resources  no audio in this build\n\n");
+        return;
+    }
+
+    std::printf("  resources  %zu music, %zu sounds\n", sound_->resources().music.size(),
+                sound_->resources().sounds.size());
+
+    // Loaded, present but unloadable, or absent -- three different problems
+    // with three different fixes, and `loadedSamples() == 0` alone cannot tell
+    // them apart. `countFor` asks the pool without disturbing its Random.
+    const usize onCard = sound_->resources().sounds.countFor("random.click");
+    const char* click = "loaded";
+    if (sound_->loadedSamples() == 0) {
+        if (onCard == 0) {
+            click = "no random/click.ogg on the card";
+        } else if (!audio::vorbisAvailable()) {
+            click = "found, but no decoder in this build";
+        } else {
+            click = "found, but it would not decode";
+        }
+    }
+    std::printf("  menu click \x1b[33m%s\x1b[0m\n", click);
+
+    if (soundVolume_ == 0) {
+        std::printf("  \x1b[33mSound is OFF -- that alone silences the\n");
+        std::printf("  menus, whatever the rows above say.\x1b[0m\n");
+    }
+    std::printf("\n");
 }
 
 void Menu::printConsoleHelp()
@@ -811,20 +873,18 @@ void Menu::printConsoleHelp()
     case Screen::Sound:
         std::printf("Left/Right  change the value\n");
         std::printf("Up/Down     choose a row\n");
+        std::printf("A           on Sound: play a test click\n");
         std::printf("B           back\n\n");
-        std::printf("a1.1.2 shipped no sounds -- it\n");
+        printSoundDiagnostics();
+        std::printf("Sounds are not in the jar -- a1.1.2\n");
         std::printf("downloaded them from a server that\n");
         std::printf("is long gone. Copy a resources/\n");
-        std::printf("folder from any alpha- or beta-era\n");
+        std::printf("folder from an alpha- or beta-era\n");
         std::printf("install to:\n");
         std::printf("  \x1b[33m%s/\x1b[0m\n\n", audio::kResourcesDir);
         std::printf("Audio also needs a DSP firmware you\n");
-        std::printf("dump from your own console, with\n");
-        std::printf("Rosalina -> Miscellaneous options\n");
-        std::printf("-> Dump DSP firmware.\n\n");
-        std::printf("Music starts on a1.1.2's own timer:\n");
-        std::printf("once in the first ten minutes, then\n");
-        std::printf("every 20-40 minutes of quiet.\n");
+        std::printf("dump with Rosalina -> Miscellaneous\n");
+        std::printf("options -> Dump DSP firmware.\n");
         break;
     case Screen::TexturePacks:
         std::printf("Up/Down  choose\n");
@@ -1062,7 +1122,7 @@ constexpr u32 kDown = KEY_DDOWN | KEY_CPAD_DOWN;
 constexpr u32 kLeft = KEY_DLEFT | KEY_CPAD_LEFT;
 constexpr u32 kRight = KEY_DRIGHT | KEY_CPAD_RIGHT;
 
-int step(u32 down, int cursor, int count)
+int stepCursor(u32 down, int cursor, int count)
 {
     if (down & kUp) {
         cursor = cursor == 0 ? count - 1 : cursor - 1;
@@ -1073,11 +1133,44 @@ int step(u32 down, int cursor, int count)
     return cursor;
 }
 
+// `random/click.ogg` under `sound/` or `newsound/` -- both feed one pool -- keyed
+// the way `eb.a(String, File)` keys it. The one sound this port can currently
+// make, and the only one a menu needs. In a real resources folder it is usually
+// the `newsound/` copy that exists.
+constexpr char kClickSound[] = "random.click";
+
 }  // namespace
+
+void Menu::playClick()
+{
+    if (sound_ != nullptr) {
+        sound_->playSoundFX(kClickSound, 1.0f, 1.0f);
+    }
+}
+
+void Menu::playMoveClick()
+{
+    if (sound_ != nullptr) {
+        sound_->playSoundFX(kClickSound, 0.3f, 0.5f);
+    }
+}
+
+int Menu::step(u32 down, int cursor, int count)
+{
+    const int moved = stepCursor(down, cursor, count);
+    // Only a cursor that actually went somewhere. A one-row list and a press
+    // that wrapped onto itself are the same key with nothing to show for it,
+    // and clicking for them would be the menu talking back about nothing.
+    if (moved != cursor) {
+        playMoveClick();
+    }
+    return moved;
+}
 
 bool Menu::handleTitle(u32 down, MenuChoice* choice)
 {
     constexpr int kRows = 4;  // singleplayer, multiplayer, options, quit
+    constexpr int kTitleMultiplayer = 1;
     titleCursor_ = step(down, titleCursor_, kRows);
 
     if (down & KEY_START) {
@@ -1086,6 +1179,15 @@ bool Menu::handleTitle(u32 down, MenuChoice* choice)
     }
     if ((down & KEY_A) == 0) {
         return false;
+    }
+
+    // a1.1.2 clicks for a button that is *enabled*: `bh.a` plays the sound only
+    // once `fk.c` has said the press landed, and `fk.c` is false for a disabled
+    // button. Multiplayer is the one row here that is drawn and does nothing,
+    // so it is the one row that stays quiet -- a greyed button that clicks
+    // sounds like a button that worked.
+    if (titleCursor_ != kTitleMultiplayer) {
+        playClick();
     }
 
     switch (titleCursor_) {
@@ -1144,6 +1246,7 @@ bool Menu::handlePause(u32 down, PauseChoice* choice)
     if ((down & KEY_A) == 0) {
         return false;
     }
+    playClick();
 
     switch (pauseCursor_) {
     case 0:
@@ -1194,6 +1297,7 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
         const world::WorldEntry& entry = worlds_[usize(worldCursor_ - 1)];
         message_ = nullptr;
         worldSettingsCursor_ = 0;
+        playClick();
         openWorldSettings(entry.name, entry.path);
         setScreen(Screen::WorldSettings);
         return false;
@@ -1202,6 +1306,7 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
     if ((down & KEY_A) == 0) {
         return false;
     }
+    playClick();
 
     if (worldCursor_ == 0) {
         std::string name;
@@ -1244,6 +1349,7 @@ void Menu::handleOptions(u32 down)
             ++renderDistance_;
         }
         if (renderDistance_ != before) {
+            playClick();
             saveSettings();
         }
     }
@@ -1259,12 +1365,14 @@ void Menu::handleOptions(u32 down)
         }
         autosaveSeconds_ = kAutosaveSteps[index];
         if (autosaveSeconds_ != before) {
+            playClick();
             saveSettings();
         }
     }
 
     if ((down & KEY_A) != 0 && optionsCursor_ == 2) {
         message_ = nullptr;
+        playClick();
         refreshPacks();
         setScreen(Screen::TexturePacks);
         return;
@@ -1272,12 +1380,16 @@ void Menu::handleOptions(u32 down)
 
     if ((down & KEY_A) != 0 && optionsCursor_ == 3) {
         message_ = nullptr;
+        playClick();
         soundCursor_ = 0;
         setScreen(Screen::Sound);
         return;
     }
 
     if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 4)) {
+        if ((down & KEY_A) != 0) {
+            playClick();  // the Back button. B is Escape, and Escape is silent.
+        }
         setScreen(inGame_ ? Screen::Pause : Screen::Title);
     }
 }
@@ -1299,6 +1411,11 @@ void Menu::handleSound(u32 down)
 
     if (soundCursor_ == 0 && (down & (kLeft | kRight | KEY_A)) != 0) {
         audioEnabled_ = !audioEnabled_;
+        // The click still plays when the row is switched to OFF, and that is
+        // right rather than sloppy: the toggle takes effect on the next launch,
+        // so ndsp is still up and a silent press here would say the setting had
+        // already bitten when it has not.
+        playClick();
         saveSettings();
     }
 
@@ -1314,8 +1431,18 @@ void Menu::handleSound(u32 down)
             if (sound_ != nullptr) {
                 sound_->setMusicVolume(float(musicVolume_) / 100.0f);
             }
+            playClick();
             saveSettings();
         }
+    }
+
+    // A on the Sound row is a test press, and it is a1.1.2's behaviour rather
+    // than an addition: `fu` (GuiSlider) is a `fk` (GuiButton), so clicking a
+    // slider in the original plays the click even when the value does not move.
+    // Here it is also the one way to answer "is anything wrong with my card"
+    // without waiting twenty minutes for a music track.
+    if (soundCursor_ == 2 && (down & KEY_A) != 0) {
+        playClick();
     }
 
     if (soundCursor_ == 2) {
@@ -1327,11 +1454,24 @@ void Menu::handleSound(u32 down)
             soundVolume_ = soundVolume_ + kStep > 100 ? 100 : soundVolume_ + kStep;
         }
         if (soundVolume_ != before) {
+            // **In that order.** The engine is told first so the click below is
+            // played at the volume the row now shows, which is the only way a
+            // player can hear what they are setting -- the slider is otherwise
+            // a number with nothing attached to it. a1.1.2 gets this for free:
+            // its slider is clicked with a mouse, and `bh.a` plays the click
+            // after `fr.a` has already written the new value.
+            if (sound_ != nullptr) {
+                sound_->setSoundVolume(float(soundVolume_) / 100.0f);
+            }
+            playClick();
             saveSettings();
         }
     }
 
     if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && soundCursor_ == 3)) {
+        if ((down & KEY_A) != 0) {
+            playClick();
+        }
         setScreen(Screen::Options);
     }
 }
@@ -1425,6 +1565,7 @@ void Menu::handleWorldSettings(u32 down)
         if (gamemodeCursor_ != before
             && settings::gamemodeImplemented(kGamemodeOrder[gamemodeCursor_])) {
             worldSettings_.gamemode = kGamemodeOrder[gamemodeCursor_];
+            playClick();
             saveWorldSettings();
         }
     }
@@ -1434,16 +1575,19 @@ void Menu::handleWorldSettings(u32 down)
         case kRowFormat:
             // Left, Right and A all mean the same thing here, because there
             // are exactly two formats: whichever one this world is not.
+            playClick();
             beginConvert();
             return;
         case kRowCopy:
             if ((down & KEY_A) != 0) {
+                playClick();
                 copySelectedWorld();
                 return;
             }
             break;
         case kRowDelete:
             if ((down & KEY_A) != 0) {
+                playClick();
                 setScreen(Screen::ConfirmDelete);
                 return;
             }
@@ -1454,6 +1598,9 @@ void Menu::handleWorldSettings(u32 down)
     }
 
     if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && row == kRowBack)) {
+        if ((down & KEY_A) != 0) {
+            playClick();
+        }
         setScreen(inGame_ ? Screen::Pause : Screen::Worlds);
     }
 }
@@ -1553,6 +1700,7 @@ void Menu::handleConfirmConvert(u32 down)
         return;
     }
     if ((down & KEY_A) != 0) {
+        playClick();
         runConvert();
     }
 }
@@ -1593,6 +1741,7 @@ void Menu::handleConfirmDelete(u32 down)
     if ((down & KEY_A) == 0) {
         return;
     }
+    playClick();
 
     // The world this screen is about is the one the settings screen was opened
     // on, held by path rather than by list index: the list is re-read on every
@@ -1632,6 +1781,7 @@ void Menu::handleTexturePacks(u32 down)
     if ((down & KEY_A) == 0) {
         return;
     }
+    playClick();
 
     if (packCursor_ == 0) {
         message_ = nullptr;
@@ -1664,8 +1814,9 @@ void Menu::handlePickJar(u32 down)
         return;
     }
     if ((down & KEY_A) == 0 || jars_.empty()) {
-        return;
+        return;  // an empty list has no button to land on, so no click either
     }
+    playClick();
     extractJar(jarCursor_);
 }
 
@@ -1682,6 +1833,7 @@ void Menu::handleConfirmDeleteJar(u32 down)
     if ((down & KEY_A) == 0) {
         return;
     }
+    playClick();
 
     if (!importedJar_.empty()) {
         // The one file this project deletes that the player did not make here.
@@ -2433,7 +2585,16 @@ void Menu::drawSound()
         char found[64];
         std::snprintf(found, sizeof(found), "%zu music tracks, %zu sounds on the card",
                       sound_->resources().music.size(), sound_->resources().sounds.size());
-        drawLabelCentered(found, kScreenWidth * 0.5f, 200.0f, 0.42f, kInkDim, true);
+        drawLabelCentered(found, kScreenWidth * 0.5f, 194.0f, 0.42f, kInkDim, true);
+
+        // `random.click` is the only effect this port loads, and a resources
+        // folder without it gives silent menus with nothing on screen to say
+        // why -- which is the one failure here a player cannot diagnose by
+        // listening. So it is said, in the place they are already standing.
+        if (sound_->loadedSamples() == 0) {
+            drawLabelCentered("no random/click.ogg found -- the menus are silent",
+                              kScreenWidth * 0.5f, 208.0f, 0.42f, kInkWarn, true);
+        }
     }
 }
 

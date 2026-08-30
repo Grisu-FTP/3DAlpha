@@ -68,6 +68,23 @@ bool WavBackend::playMusic(std::unique_ptr<mc::audio::PcmSource> source, float g
     return true;
 }
 
+mc::audio::SampleId WavBackend::addSample(const mc::audio::Sample& sample)
+{
+    if (sample.empty()) {
+        return mc::audio::kNoSample;
+    }
+    samples_.push_back(sample);
+    return mc::audio::SampleId(samples_.size() - 1);
+}
+
+void WavBackend::playSample(mc::audio::SampleId id, float gain, float pitch)
+{
+    if (id < 0 || usize(id) >= samples_.size()) {
+        return;
+    }
+    samplePlays_.push_back(SamplePlay{id, gain, pitch});
+}
+
 void WavBackend::stopMusic()
 {
     source_.reset();

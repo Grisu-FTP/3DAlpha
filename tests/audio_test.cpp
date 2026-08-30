@@ -1,7 +1,10 @@
 #include "framework.hpp"
 
+#include "core/audio/backend.hpp"
 #include "core/audio/music_ticker.hpp"
 #include "core/audio/resource_index.hpp"
+#include "core/audio/sample.hpp"
+#include "core/audio/sound_engine.hpp"
 #include "core/audio/sound_pool.hpp"
 #include "core/audio/vorbis_stream.hpp"
 #include "core/io/posix_file_system.hpp"
@@ -417,6 +420,155 @@ TEST(creatingAStreamTouchesNoFileAndPrepareIsWhatFails)
 
     CHECK(stream != nullptr);
     CHECK(!stream->prepare());
+}
+
+// ---- interface sounds ----------------------------------------------
+
+// `of.a(String, float, float)`'s arithmetic, which is three lines and two of
+// them are easy to get backwards. The 0.25f is the interface factor: it is real,
+// it is audible, and neither music nor a positional sound has it.
+TEST(interfaceSoundsCarryTheQuarterFactor)
+{
+    CHECK_EQ(interfaceGain(1.0f, 1.0f), 0.25f);
+    CHECK_EQ(interfaceGain(0.5f, 1.0f), 0.125f);
+
+    // The button-block click a1.1.2 plays for itself -- `random.click` at 0.3 --
+    // which is what the cursor uses when it moves. See platform/ctr/menu.hpp.
+    CHECK_EQ(interfaceGain(0.3f, 1.0f), 0.075f);
+}
+
+// `if (volume > 1.0F) volume = 1.0F;` comes *before* the multiply, so asking
+// for more than full is asking for full and not for a quarter more than it.
+// Positional sounds read a volume above 1 as a bigger fade distance instead;
+// the interface path simply clips.
+TEST(anInterfaceVolumeAboveOneIsClipped)
+{
+    CHECK_EQ(interfaceGain(2.0f, 1.0f), 0.25f);
+    CHECK_EQ(interfaceGain(1000.0f, 1.0f), 0.25f);
+}
+
+TEST(theSoundVolumeScalesEveryEffect)
+{
+    CHECK_EQ(interfaceGain(1.0f, 0.5f), 0.125f);
+    CHECK_EQ(interfaceGain(1.0f, 0.0f), 0.0f);
+}
+
+// A backend that takes samples and writes down what it was asked to play. It is
+// the third implementation of the seam and exists for the same reason the
+// second one does: to keep `audio::Backend` from becoming the shape of ndsp.
+class RecordingBackend final : public Backend {
+public:
+    bool available() const override { return available_; }
+    bool playMusic(std::unique_ptr<PcmSource>, float) override { return false; }
+    void stopMusic() override {}
+    bool musicPlaying() const override { return false; }
+    void setMusicGain(float) override {}
+
+    SampleId addSample(const Sample& sample) override
+    {
+        samples.push_back(sample.frames());
+        return SampleId(samples.size() - 1);
+    }
+
+    void playSample(SampleId id, float gain, float pitch) override
+    {
+        plays.push_back(Play{id, gain, pitch});
+    }
+
+    void update() override {}
+
+    struct Play {
+        SampleId id;
+        float gain;
+        float pitch;
+    };
+
+    bool available_ = true;
+    std::vector<usize> samples;
+    std::vector<Play> plays;
+};
+
+// A sound the engine was never given is silence, not a failure and not a stall:
+// nothing here may go and read it on the frame that asked. It is the same
+// degradation as an absent resources folder, and this is the path the menus
+// take on a console with no `sound/` on the card.
+TEST(anEffectThatWasNeverPreloadedIsSilence)
+{
+    io::PosixFileSystem fs;
+    RecordingBackend backend;
+    SoundEngine engine(fs, backend, 1);
+
+    engine.playSoundFX("random.click", 1.0f, 1.0f);
+    CHECK_EQ(backend.plays.size(), usize(0));
+    CHECK_EQ(engine.loadedSamples(), usize(0));
+}
+
+// `of.a`'s first line -- `if (!loaded || options.soundVolume == 0.0F) return;`
+// -- tested from both halves. Neither is an error path and neither logs.
+TEST(anUnavailableBackendPlaysNoEffects)
+{
+    io::PosixFileSystem fs;
+    RecordingBackend backend;
+    backend.available_ = false;
+    SoundEngine engine(fs, backend, 1);
+
+    engine.playSoundFX("random.click", 1.0f, 1.0f);
+    CHECK_EQ(backend.plays.size(), usize(0));
+}
+
+TEST(aSoundVolumeOfZeroSuppressesEveryEffect)
+{
+    io::PosixFileSystem fs;
+    RecordingBackend backend;
+    SoundEngine engine(fs, backend, 1);
+    engine.setSoundVolume(0.0f);
+
+    engine.playSoundFX("random.click", 1.0f, 1.0f);
+    CHECK_EQ(backend.plays.size(), usize(0));
+}
+
+// The preload walks the sound pool by key, and a file it cannot decode is
+// skipped rather than reported. A card can hold anything; a `.txt` in `sound/`
+// is not a reason to refuse to start.
+TEST(preloadingSkipsWhatItCannotDecode)
+{
+    TempDir dir;
+    CHECK(dir.path[0] != '\0');
+
+    io::PosixFileSystem fs;
+    touch(fs, dir.at("sound/random/click.ogg"));  // one byte, not Ogg
+    touch(fs, dir.at("sound/random/bow.ogg"));
+
+    RecordingBackend backend;
+    SoundEngine engine(fs, backend, 1);
+    CHECK_EQ(engine.loadResources(dir.path), usize(2));
+
+    CHECK_EQ(engine.preloadSound("random.click"), usize(0));
+    CHECK_EQ(backend.samples.size(), usize(0));
+
+    engine.playSoundFX("random.click", 1.0f, 1.0f);
+    CHECK_EQ(backend.plays.size(), usize(0));
+}
+
+// Too long is refused rather than truncated -- a sound that cuts off halfway is
+// a bug that sounds like a decision. A one-byte file is not Ogg either, so this
+// also pins that a broken file leaves `out` alone.
+TEST(decodingASampleFailsWithoutTouchingTheOutput)
+{
+    TempDir dir;
+    CHECK(dir.path[0] != '\0');
+
+    io::PosixFileSystem fs;
+    const std::string path = dir.at("sound/random/click.ogg");
+    touch(fs, path);
+
+    Sample sample;
+    sample.channels = 2;
+    CHECK(!decodeSample(fs, path, &sample));
+    CHECK(sample.empty());
+    CHECK_EQ(sample.channels, 2);
+
+    CHECK(!decodeSample(fs, dir.at("no/such/file.ogg"), &sample));
 }
 
 }  // namespace

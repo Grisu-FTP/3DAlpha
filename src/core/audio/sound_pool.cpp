@@ -69,6 +69,16 @@ const std::string& SoundPool::add(std::string_view resourceName, std::string_vie
     return lastKey_;
 }
 
+usize SoundPool::countFor(std::string_view key) const
+{
+    for (const Bucket& bucket : buckets_) {
+        if (bucket.key == key) {
+            return bucket.indices.size();
+        }
+    }
+    return 0;
+}
+
 const SoundEntry* SoundPool::randomEntry()
 {
     if (entries_.empty()) {

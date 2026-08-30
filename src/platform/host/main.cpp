@@ -6,6 +6,7 @@
 // harness whose main job is to prove that core compiles and links away from
 // libctru, and to expose the world tools that do not need a console.
 
+#include "core/audio/sample.hpp"
 #include "core/audio/sound_engine.hpp"
 #include "core/audio/vorbis_stream.hpp"
 #include "core/io/posix_file_system.hpp"
@@ -1947,6 +1948,41 @@ int audioList(const char* resources)
         std::printf("  %-28s -> %s\n", entry.name.c_str(),
                     audio::poolKey(entry.name, true).c_str());
     }
+
+    // The interface sound, decoded here exactly as the console decodes it at
+    // boot. This is what says whether a player's resources folder will make the
+    // menus click before they carry it to a console -- the decode is the part
+    // that can fail, and a card with no `random/click.ogg` in `sound/` or
+    // `newsound/` on it is a
+    // silent menu with nothing on screen to explain why.
+    host::WavBackend sink("");
+    audio::SoundEngine engine(fs, sink, 0);
+    engine.loadResources(resources);
+    const usize clicks = engine.preloadSound("random.click");
+
+    std::printf("\ninterface sound (what the menus click with):\n");
+    if (clicks == 0) {
+        std::printf("  random.click   not loadable -- %s\n",
+                    audio::vorbisAvailable()
+                        ? "no random/click.ogg in sound/ or newsound/, or it would not decode"
+                        : "no Vorbis decoder in this build");
+        std::printf("  the menus would be silent; everything else still works.\n");
+        return 0;
+    }
+
+    std::printf("  random.click   %zu file(s) decoded\n", clicks);
+    for (const audio::Sample& sample : sink.samples()) {
+        std::printf("                 %zu frames, %d ch, %d Hz (%.0f ms)\n", sample.frames(),
+                    sample.channels, sample.sampleRate,
+                    1000.0 * double(sample.frames()) / double(sample.sampleRate));
+    }
+
+    // `of.a`'s arithmetic at the two settings the menus use, so the numbers can
+    // be read rather than trusted. See docs/audio-a1.1.2.md.
+    std::printf("  gain at sound volume 100%%: choose %.3f (1.0/1.0), "
+                "move %.3f (0.3/0.5)\n",
+                double(audio::interfaceGain(1.0f, 1.0f)),
+                double(audio::interfaceGain(0.3f, 1.0f)));
     return 0;
 }
 

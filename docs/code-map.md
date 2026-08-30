@@ -8,18 +8,19 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**19 directories, 121 modules, 48,326 lines.**
+**19 directories, 122 modules, 49,163 lines.**
 
 ## `src/core/audio/`
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `backend.hpp` | 87 | The audio output seam -- `IAudio` in docs/architecture.md's list of narrow platform interfaces, and the reason core never includes a DSP header. |
+| `backend.hpp` | 121 | The audio output seam -- `IAudio` in docs/architecture.md's list of narrow platform interfaces, and the reason core never includes a DSP header. |
 | `music_ticker.{hpp,cpp}` | 138 | The countdown that decides when background music starts. |
 | `pcm_source.hpp` | 63 | "Give me the next N frames." The one thing the platform's mixer needs from anything that makes sound, and the reason ndsp never learns what Vorbis is. |
 | `resource_index.{hpp,cpp}` | 237 | What the player dropped in `sdmc:/3dalpha/resources/`, sorted into the three pools a1.1.2 keeps. a1.1.2 never shipped its sounds. |
-| `sound_engine.{hpp,cpp}` | 169 | a1.1.2's SoundManager, above the output seam: it owns the pools, the music counter and the volumes, and it is the one thing the game's frame loop talks to about sound. |
-| `sound_pool.{hpp,cpp}` | 201 | a1.1.2's SoundPool: the name a resource file collapses to, and the uniform draw the music ticker makes from it. |
+| `sample.{hpp,cpp}` | 139 | A sound effect, decoded once and held whole in memory -- the other half of `PcmSource`, and deliberately not the same thing. |
+| `sound_engine.{hpp,cpp}` | 344 | a1.1.2's SoundManager, above the output seam: it owns the pools, the music counter and the volumes, and it is the one thing the game's frame loop talks to about sound. |
+| `sound_pool.{hpp,cpp}` | 217 | a1.1.2's SoundPool: the name a resource file collapses to, and the uniform draw the music ticker makes from it. |
 | `vorbis_stream.{hpp,cpp}` | 356 | Ogg Vorbis, decoded a packet at a time out of a file that is never fully read. a1.1.2's music is 44100 Hz stereo Vorbis, three to four minutes a track. |
 
 ## `src/core/block/` -- Block table and registry
@@ -205,14 +206,14 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `audio.{hpp,cpp}` | 470 | ndsp behind `audio::Backend`: one streamed voice, a ring of wave buffers in linear memory, and a missing DSP firmware that costs the player silence rather than a boot failure. |
+| `audio.{hpp,cpp}` | 620 | ndsp behind `audio::Backend`: one streamed voice, a ring of wave buffers in linear memory, and a missing DSP firmware that costs the player silence rather than a boot failure. |
 | `gpu_memory.{hpp,cpp}` | 115 | The two kinds of memory the PICA can fetch vertices from, behind the pool's allocator seam. |
 | `gui_art.{hpp,cpp}` | 383 | What the menu draws with once a pack supplies it: the dirt backdrop and the bitmap font. |
 | `heap.{hpp,cpp}` | 157 | What is left of the heap this file's .cpp carved out at startup. |
 | `hud.{hpp,cpp}` | 526 | The bottom screen's furniture: the tab strip along the top, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
-| `main.cpp` | 1137 | The 3DS entry point. |
+| `main.cpp` | 1190 | The 3DS entry point. |
 | `map_screen.{hpp,cpp}` | 559 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 3333 | The main menu: the title screen, the world list, and creating a world. |
+| `menu.{hpp,cpp}` | 3527 | The main menu: the title screen, the world list, and creating a world. |
 | `overlay.{hpp,cpp}` | 1340 | The bottom screen. |
 | `probe.{hpp,cpp}` | 760 | The M0 hardware probe, reachable by holding SELECT at boot. |
 | `progress_screen.{hpp,cpp}` | 551 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
@@ -223,6 +224,6 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `audio_wav.{hpp,cpp}` | 218 | A host `audio::Backend` that writes what it was handed to a .wav instead of to a speaker. |
-| `main.cpp` | 2239 | Host entry point. |
+| `audio_wav.{hpp,cpp}` | 258 | A host `audio::Backend` that writes what it was handed to a .wav instead of to a speaker. |
+| `main.cpp` | 2275 | Host entry point. |
 

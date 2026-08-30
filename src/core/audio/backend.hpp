@@ -9,12 +9,19 @@
 // something to inject. A recording backend is how the music schedule gets
 // asserted without a console.
 //
-// **It is deliberately narrow, and it is narrow because that is all there is to
-// drive yet.** a1.1.2's SoundManager also plays one-shot effects at a position
-// with an attenuation model; none of that is here, because nothing in this port
-// can emit a sound yet -- there is no block placement, no player body and no
-// entity system, so a `playSample` added now would be a virtual with no caller
-// and no test. It arrives with its first emitter. See docs/audio-a1.1.2.md.
+// **It is narrow because that is all there is to drive.** It grew once, and
+// only once: the menus click, so one-shot effects arrived with their first
+// emitter and not before. What is still absent is the *positional* half of
+// a1.1.2's SoundManager -- an attenuated source at a world coordinate -- which
+// needs a listener, and this port has no player body to put one on. It arrives
+// with its own first emitter, on the same terms. See docs/audio-a1.1.2.md.
+//
+// The two halves have deliberately different shapes. Music is handed over as a
+// `PcmSource` because it is minutes long and must be decoded as it plays; an
+// effect is handed over already decoded, once, and afterwards played by handle.
+// That is not a stylistic split: a click has to be audible on the frame the
+// button was pressed, and a card read on that frame is the one thing
+// CONTRIBUTING forbids outright. See core/audio/sample.hpp.
 //
 // The one rule for every implementation: **`available()` false means silence,
 // not failure.** A console without a dumped DSP firmware, a build without a
@@ -23,6 +30,7 @@
 // as something to report, retry or work around.
 
 #include "core/audio/pcm_source.hpp"
+#include "core/audio/sample.hpp"
 #include "core/util/types.hpp"
 
 #include <memory>
@@ -62,6 +70,30 @@ public:
     // which is again what the original does.
     virtual void setMusicGain(float gain) = 0;
 
+    // Takes a decoded effect and returns the handle it will be played by, or
+    // `kNoSample` if it would not take it -- which is not an error and never
+    // reported as one: a backend that plays nothing takes nothing, and every
+    // caller already treats a missing sample as silence.
+    //
+    // **Boot-time only.** It may copy, allocate and talk to hardware, none of
+    // which belongs on a frame, and the samples it holds live until shutdown.
+    // There is no matching `removeSample`: a handful of interface sounds are
+    // loaded once and the game never stops needing them, so a free list would
+    // be machinery with no caller.
+    virtual SampleId addSample(const Sample& sample) = 0;
+
+    // `of.a(name, vol, pitch)` below the seam -- one shot, fire and forget.
+    // `gain` is the final 0..1 number with a1.1.2's 0.25f interface factor and
+    // the player's sound volume already folded in, and `pitch` multiplies the
+    // sample's own rate, 1.0 being the file as recorded.
+    //
+    // There is no handle, no stop and no query, because there is nothing to ask:
+    // a1.1.2 rotates 256 source names and lets the oldest be overwritten
+    // without ever looking at them again, and a fixed ring of voices here is
+    // the same bargain in less memory. An unknown or `kNoSample` handle is
+    // silence.
+    virtual void playSample(SampleId id, float gain, float pitch) = 0;
+
     // Once a frame, from the main thread. Must not allocate, must not block and
     // must not touch the card -- everything expensive belongs on the decode
     // thread. Most frames it does nothing at all.
@@ -81,6 +113,8 @@ public:
     void stopMusic() override {}
     bool musicPlaying() const override { return false; }
     void setMusicGain(float) override {}
+    SampleId addSample(const Sample&) override { return kNoSample; }
+    void playSample(SampleId, float, float) override {}
     void update() override {}
 };
 

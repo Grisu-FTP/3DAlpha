@@ -71,7 +71,7 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/assets.md`
 
-431 lines, ~6,926 tokens.
+434 lines, ~6,977 tokens.
 
 - **7-27** What the player has to supply: nothing
 - **28-66** What "an a1.1.2 texture pack" actually is
@@ -80,19 +80,19 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 - **113-144** What a pack actually changes today
   - **145-159** Dev Art
 - **160-185** Where the code is
-- **186-215** Sounds
-- **216-245** SD card layout
-- **246-275** What the import pipeline turned out to be
-- **276-290** HD packs and the VRAM budget
-- **291-306** Tinting
-- **307-336** Fonts
-- **337-350** Audio and DSP firmware
-- **351-364** Licensing rules
-  - **365-431** Provenance of the generated tables
+- **186-218** Sounds
+- **219-248** SD card layout
+- **249-278** What the import pipeline turned out to be
+- **279-293** HD packs and the VRAM budget
+- **294-309** Tinting
+- **310-339** Fonts
+- **340-353** Audio and DSP firmware
+- **354-367** Licensing rules
+  - **368-434** Provenance of the generated tables
 
 ## `docs/audio-a1.1.2.md`
 
-208 lines, ~2,523 tokens.
+320 lines, ~4,070 tokens.
 
 - **22-58** The music ticker — `of.i`, `of.c()`
   - **59-71** The rule that is easy to get wrong
@@ -101,9 +101,13 @@ grep -n 'geometry shader' docs/*.md   # find which section first
   - **95-110** Key derivation — `eb.a(String, File)`
   - **111-134** The pool is the folder
 - **135-152** Volumes and attenuation
-- **153-163** Where the resources came from, and why they are not downloaded
-- **164-188** Where this port differs, and why
-- **189-208** Not yet ported
+- **153-186** Interface sounds — `of.a(String, float, float)`
+  - **187-213** Where the menu click comes from
+  - **214-234** What this port does with it
+  - **235-263** Effects are loaded before they are asked for
+- **264-274** Where the resources came from, and why they are not downloaded
+- **275-299** Where this port differs, and why
+- **300-320** Not yet ported
 
 ## `docs/build-versions.md`
 
@@ -211,83 +215,83 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/status.md`
 
-3,544 lines, ~65,546 tokens.
+3,617 lines, ~66,971 tokens.
 
 - **16-53** Milestones
 - **54-112** Environment facts worth not rediscovering
 - **113-154** What exists in the tree
 - **155-260** Decisions that are settled
   - **261-270** Reversed, and why (keep this — the reasoning matters)
-- **271-479** Measured numbers (do not re-derive)
-- **480-657** Facts recovered from the client jar
-- **658-659** Next steps, in order
-  - **660-678** 0. The chunk worker — built, and the world it makes is the same world
-    - **679-734** The world must not depend on the clock, and making that true was most of the work
-    - **735-795** What is not closed
-  - **796-894** 0b. The main menu — the game starts from it now
-  - **895-985** 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
-  - **986-1015** 0d. The pause menu — START stops the world instead of leaving it
-    - **1016-1061** The pause menu draws into the game's frame, not into one of its own
-    - **1062-1097** The finding: citro3d holds one target per screen output, and a menu takes it
-    - **1098-1123** Opening it costs a frame, not two seconds
-    - **1124-1140** "Saving level.." says how far along it is
-    - **1141-1155** Deviations from `ie.class`
-  - **1156-1206** 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
-    - **1207-1239** When anything is actually written — and one reversal
-    - **1240-1254** How it is held honest
-    - **1255-1275** What to read on the console
-  - **1276-1342** 0f. Revisited chunks not drawing — a stale `published` flag
-  - **1343-1374** 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
-    - **1375-1395** Why that is a correction rather than a deviation
-    - **1396-1428** What that costs, stated plainly
-    - **1429-1438** Considered and rejected: clamping the camera at the frontier
-    - **1439-1469** And the throughput cap it was hiding: one column per rendered frame
-  - **1470-1476** 0h. The freeze while moving — classification off the render thread, and the queue that went with it
-    - **1477-1496** The mechanism
-    - **1497-1527** Why deferring was said to be impossible, and why it is not
-    - **1528-1556** The ordering traps, all three found by the test that exists for them
-    - **1557-1578** And the queue is gone
-    - **1579-1609** Measured
-    - **1610-1627** The dirty cap follows the free heap
-    - **1628-1643** What holds it
-  - **1644-1664** 0i. Generation stopping, and "Saving level.." never going away
-    - **1665-1704** 1. Nothing bounded what was owed to the card
-    - **1705-1716** 2. A blocking flush could wait for ever
-    - **1717-1724** 3. …and it was waiting for the wrong thing anyway
-    - **1725-1734** 4. A sweep that cannot finish is now visible
-    - **1735-1748** What holds it
-  - **1749-1880** 0j. Packed worlds, per-world settings, and the world options screen
-  - **1881-1932** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
-    - **1933-1955** Modelling the console's card, so this class of bug stops needing hardware
-  - **1956-1968** 0l. A bottom screen per gamemode, and a map on the spectator one
-    - **1969-2000** The map
-    - **2001-2055** What it cost -- **and the hardware number that changed the design**
-  - **2056-2543** 1. Run it on a console
-  - **2544-2662** 2. The M2 gate — **half measured, and the baseline fails**
-  - **2663-2737** Deferred but not forgotten
-  - **2738-2829** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
-  - **2830-2871** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
-    - **2872-2896** The generation wait now covers the whole render distance
-    - **2897-2917** What holds it
-  - **2918-2992** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
-    - **2993-3024** The fluids, and the one thing about them that matters on this console
-    - **3025-3046** Fire, and three tables that are not one table
-    - **3047-3086** Redstone: the power model, the wire and the torch
-    - **3087-3156** What of redstone needs a player, and what turned out not to
-  - **3157-3257** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
-  - **3258-3266** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
-    - **3267-3304** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
-    - **3305-3331** The crash: the tick recursed with no bound, on a 32 KB stack
-    - **3332-3359** The frame drops: three costs, one of them quadratic
-    - **3360-3375** Found while looking: tick edits were silently lost
-    - **3376-3405** The lava: there was no runtime lighting at all
-    - **3406-3421** The flash: "needs remeshing" was encoded as "has no mesh"
-    - **3422-3452** Two follow-ups from the first hardware run, and one of them was mine
-    - **3453-3473** What the retirement rule costs, measured
-    - **3474-3487** What is measured and what is not
-- **3488-3491** Open questions
-  - **3492-3533** Answered
-- **3534-3544** Standing constraints
+- **271-490** Measured numbers (do not re-derive)
+- **491-668** Facts recovered from the client jar
+- **669-670** Next steps, in order
+  - **671-689** 0. The chunk worker — built, and the world it makes is the same world
+    - **690-745** The world must not depend on the clock, and making that true was most of the work
+    - **746-806** What is not closed
+  - **807-905** 0b. The main menu — the game starts from it now
+  - **906-996** 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
+  - **997-1026** 0d. The pause menu — START stops the world instead of leaving it
+    - **1027-1072** The pause menu draws into the game's frame, not into one of its own
+    - **1073-1108** The finding: citro3d holds one target per screen output, and a menu takes it
+    - **1109-1134** Opening it costs a frame, not two seconds
+    - **1135-1151** "Saving level.." says how far along it is
+    - **1152-1166** Deviations from `ie.class`
+  - **1167-1217** 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
+    - **1218-1250** When anything is actually written — and one reversal
+    - **1251-1265** How it is held honest
+    - **1266-1286** What to read on the console
+  - **1287-1353** 0f. Revisited chunks not drawing — a stale `published` flag
+  - **1354-1385** 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
+    - **1386-1406** Why that is a correction rather than a deviation
+    - **1407-1439** What that costs, stated plainly
+    - **1440-1449** Considered and rejected: clamping the camera at the frontier
+    - **1450-1480** And the throughput cap it was hiding: one column per rendered frame
+  - **1481-1487** 0h. The freeze while moving — classification off the render thread, and the queue that went with it
+    - **1488-1507** The mechanism
+    - **1508-1538** Why deferring was said to be impossible, and why it is not
+    - **1539-1567** The ordering traps, all three found by the test that exists for them
+    - **1568-1589** And the queue is gone
+    - **1590-1620** Measured
+    - **1621-1638** The dirty cap follows the free heap
+    - **1639-1654** What holds it
+  - **1655-1675** 0i. Generation stopping, and "Saving level.." never going away
+    - **1676-1715** 1. Nothing bounded what was owed to the card
+    - **1716-1727** 2. A blocking flush could wait for ever
+    - **1728-1735** 3. …and it was waiting for the wrong thing anyway
+    - **1736-1745** 4. A sweep that cannot finish is now visible
+    - **1746-1759** What holds it
+  - **1760-1891** 0j. Packed worlds, per-world settings, and the world options screen
+  - **1892-1943** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
+    - **1944-1966** Modelling the console's card, so this class of bug stops needing hardware
+  - **1967-1979** 0l. A bottom screen per gamemode, and a map on the spectator one
+    - **1980-2011** The map
+    - **2012-2066** What it cost -- **and the hardware number that changed the design**
+  - **2067-2554** 1. Run it on a console
+  - **2555-2673** 2. The M2 gate — **half measured, and the baseline fails**
+  - **2674-2748** Deferred but not forgotten
+  - **2749-2840** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
+  - **2841-2882** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
+    - **2883-2907** The generation wait now covers the whole render distance
+    - **2908-2928** What holds it
+  - **2929-3003** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
+    - **3004-3035** The fluids, and the one thing about them that matters on this console
+    - **3036-3057** Fire, and three tables that are not one table
+    - **3058-3097** Redstone: the power model, the wire and the torch
+    - **3098-3167** What of redstone needs a player, and what turned out not to
+  - **3168-3330** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
+  - **3331-3339** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
+    - **3340-3377** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
+    - **3378-3404** The crash: the tick recursed with no bound, on a 32 KB stack
+    - **3405-3432** The frame drops: three costs, one of them quadratic
+    - **3433-3448** Found while looking: tick edits were silently lost
+    - **3449-3478** The lava: there was no runtime lighting at all
+    - **3479-3494** The flash: "needs remeshing" was encoded as "has no mesh"
+    - **3495-3525** Two follow-ups from the first hardware run, and one of them was mine
+    - **3526-3546** What the retirement rule costs, measured
+    - **3547-3560** What is measured and what is not
+- **3561-3564** Open questions
+  - **3565-3606** Answered
+- **3607-3617** Standing constraints
 
 ## `docs/tick-a1.1.2.md`
 

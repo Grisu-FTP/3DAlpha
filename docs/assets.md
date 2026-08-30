@@ -186,17 +186,32 @@ Two host harnesses run the whole thing away from a console, under ASan/UBSan:
 ## Sounds
 
 Sounds are **not** in the alpha jar. a1.1.2 downloaded them at runtime into `.minecraft/resources/`
-from a Mojang server that no longer exists. The importer therefore accepts a user-supplied
-`resources/` folder with the original layout:
+from a Mojang server that no longer exists. The game therefore reads a user-supplied `resources/`
+folder in the original layout, unchanged, so a folder copied from any alpha- or beta-era install
+works as it is:
 
 ```
 sdmc:/3dalpha/resources/sound/<category>/<name>.ogg
 sdmc:/3dalpha/resources/newsound/...
+sdmc:/3dalpha/resources/streaming/...
 sdmc:/3dalpha/resources/music/...
+sdmc:/3dalpha/resources/newmusic/...
 ```
+
+Those five names are the whole of it — `Minecraft.installResource` splits the key at the first `/`
+and recognises exactly those, so a folder that also carries `pack.mcmeta`, `icons/`, `pe/` or
+`sound3/` is fine and the rest is ignored. `music/` and `newmusic/` feed the same pool, and that
+pool is what the background-music timer draws from. The walk is directory listings only — nothing is
+read or decoded until a track actually plays — and it is capped at six levels and 4,096 entries,
+because a card can have anything on it.
 
 If the folder is absent the game runs silently; audio is not a hard dependency. (Audio also needs a
 dumped DSP firmware — see below.)
+
+**Only music is played today.** The sound and streaming pools are indexed and counted, but nothing
+in the port can emit an effect yet — there is no block placement, no player body and no entities —
+and `streaming/*.mus` is Mojang's own container, which nothing here decodes. See
+[audio-a1.1.2.md](audio-a1.1.2.md).
 
 ## SD card layout
 
@@ -210,14 +225,16 @@ sdmc:/3dalpha/
 
   options.txt              not built -- a1.1.2's own options file, for when there
                            are gameplay options worth writing to it
-  resources/               not built -- user-supplied sounds, original layout
+  resources/               user-supplied sounds, in a1.1.2's own layout -- read, never written
+  cache/music/             not built, and not currently planned -- see audio-a1.1.2.md
   cache/<pack>.3dtex       not built -- see below
   cache/<world>.idx        not built, and not planned -- the chunk index is built lazily in
                            RAM instead, one leaf directory at a time, with no file to
                            invalidate. See core/world/chunk_cache.hpp
 ```
 
-`3ds.ini` holds `render_distance`, `texture_pack`, `autosave_seconds` and `chunk_cache_mb`, is
+`3ds.ini` holds `render_distance`, `texture_pack`, `autosave_seconds`, `chunk_cache_mb`, `audio`,
+`music_volume` and `sound_volume`, is
 `key=value` with `#` comments, and is
 **rewritten from the keys the running build knows** — so a key a later version adds is dropped by an
 older one. An absent file is the ordinary first-boot state, and it is written through
@@ -323,8 +340,13 @@ worth a cache format.
 Nintendo's copyright prevents shipping it. Users dump it from their own console — Luma3DS Rosalina
 menu → "Miscellaneous options" → "Dump DSP firmware".
 
-The game must **detect its absence and continue silently**, with a one-line explanation in the
-options screen. Audio is never a startup dependency.
+The game **detects its absence and continues silently**, with a one-line explanation in Options →
+Sound. Audio is never a startup dependency.
+
+The explanation distinguishes *why*, and that is the point of having one: a player who has already
+dumped their firmware and is told to dump it again will conclude the game is broken. `ndspInit`
+failing with the file present means something else on the console is holding the DSP, and the screen
+says so instead.
 
 ## Licensing rules
 
@@ -336,7 +358,7 @@ options screen. Audio is never a startup dependency.
 | craftus_reloaded code | MIT — reusable with attribution in `romfs/licenses.txt`. |
 | ViaLegacy | GPLv3 — **documentation only**. Protocol IDs and wire sizes are facts; its code is not copied. |
 | Data recovered from a client jar | Facts only — ids, hardness, light levels. Recovered by a maintainer, checked in, shipped compiled. Never code, never assets, never redistributed. See below. |
-| Third-party libs | zlib is the only one linked. **miniz and lodepng were not needed** — see [What the import pipeline turned out to be](#what-the-import-pipeline-turned-out-to-be). Any that are added later get their licences reproduced in `romfs/licenses.txt`. |
+| Third-party libs | zlib, and — optionally, for audio — Xiph's Tremor (`libvorbisidec`) with libogg on the console and `libvorbisfile` on the host. A build without a decoder produces a silent binary, not no binary. **miniz and lodepng were not needed** — see [What the import pipeline turned out to be](#what-the-import-pipeline-turned-out-to-be). Notices are in [licences.md](licences.md), which also records the open question of where they live in a shipped `.3dsx`. |
 
 `romfs/licenses.txt` is shipped in the build and viewable from the in-game about screen.
 

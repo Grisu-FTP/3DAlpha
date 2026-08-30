@@ -736,6 +736,20 @@ Two things about the driver are worth stating outright:
     the reach *stops*. The snow sweep is offset too, so it covers 64 of its own chunk's 256 columns
     and the other three quarters land in the neighbours.
 
+**Two consequences worth having written down, because both were reported from hardware as bugs and
+only one of them is.**
+
+  * **A tree with snow on half its leaves is a1.1.2 doing what it does.** Snow is the last thing a
+    pass does, over its own +8 square; a tree's canopy reaches two blocks past its trunk and can
+    cross into the next pass's square. Whether that half is snowed depends on whether the
+    neighbouring pass runs before the tree exists or after it, and `ft`'s trigger order follows where
+    the player walked. There is no order in which both halves are guaranteed, and nothing in the
+    original tries for one.
+  * **A tree with only half its blocks is not.** `changedColumns == 4` is the whole point: every
+    block a pass writes lands in its own 2×2 quadrant, so both halves of a tree on a chunk border
+    come out of one call. If half a tree is missing, the blocks were written and then lost — see
+    `docs/status.md` §0m, where they were.
+
 **Getting a before-and-after pair out of an eagerly-populating World took four wrong attempts, and
 each failure is worth recording because each looked plausible.**
 

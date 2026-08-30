@@ -74,12 +74,87 @@ else()
 	find_package(ZLIB REQUIRED)
 endif()
 
+# Ogg Vorbis, for the sounds and music the player supplies. Two libraries with
+# one API: the 3DS links Tremor (fixed point, because an ARM11 has no business
+# doing this in floating point), the host links the reference vorbisfile. See
+# core/audio/vorbis_stream.hpp for the one place they differ.
+#
+# **Optional on purpose.** A missing decoder is not a build failure -- it is a
+# build whose `Backend::available()` says no and whose game is silent, the same
+# degradation as a missing DSP firmware or a missing resources folder. Audio is
+# never allowed to stand between someone and a working binary.
+set(MC_HAVE_VORBIS 0)
+set(MC_VORBIS_TREMOR 0)
+if(NINTENDO_3DS)
+	# **A failed search must not be sticky.** find_library writes its answer to
+	# the cache including NOTFOUND, and a cached NOTFOUND is never retried -- so a
+	# tree configured before `3ds-libvorbisidec` was installed goes on producing a
+	# silent binary afterwards, with no warning, because the second configure never
+	# looks again. That is precisely the trap for an optional dependency somebody
+	# installs *because* the first build told them to. Clearing it on the way in
+	# costs one filesystem search per configure and makes the answer current.
+	if(NOT VORBISIDEC_LIB)
+		unset(VORBISIDEC_LIB CACHE)
+	endif()
+	if(NOT OGG_LIB)
+		unset(OGG_LIB CACHE)
+	endif()
+	find_library(VORBISIDEC_LIB vorbisidec HINTS "$ENV{DEVKITPRO}/portlibs/3ds/lib")
+	find_library(OGG_LIB ogg HINTS "$ENV{DEVKITPRO}/portlibs/3ds/lib")
+	if(VORBISIDEC_LIB AND OGG_LIB)
+		set(MC_HAVE_VORBIS 1)
+		set(MC_VORBIS_TREMOR 1)
+	else()
+		# A warning and not an error: docs/assets.md's rule is that audio is
+		# never a startup dependency, and a build that refuses to produce a
+		# binary because the console might not have sound would be a harsher
+		# version of the same mistake.
+		message(WARNING
+			"libvorbisidec not found -- this build will have no audio. Install it with:\n"
+			"    sudo dkp-pacman -S 3ds-libvorbisidec\n"
+			"or, where devkitPro came from the distribution's own packages:\n"
+			"    sudo pacman -S 3ds-libvorbisidec")
+	endif()
+else()
+	find_package(PkgConfig QUIET)
+	if(PkgConfig_FOUND)
+		# Same staleness as the 3DS branch above, same reason: pkg_check_modules
+		# short-circuits on this internal marker, so a tree configured before
+		# libvorbis was installed keeps reporting it missing. Clearing the marker
+		# makes the check run again.
+		if(NOT VORBISFILE_FOUND)
+			unset(__pkg_config_checked_VORBISFILE CACHE)
+		endif()
+		pkg_check_modules(VORBISFILE QUIET vorbisfile)
+		if(VORBISFILE_FOUND)
+			set(MC_HAVE_VORBIS 1)
+		endif()
+	endif()
+	if(NOT MC_HAVE_VORBIS)
+		message(WARNING "libvorbisfile not found -- host audio and its tests will be skipped.")
+	endif()
+endif()
+
 # Core is a library so the host test binary can link it without dragging in a
 # platform layer or a main().
 add_library(3dalpha_core STATIC ${CORE_SOURCES} ${SLOT_SOURCES})
 
 target_include_directories(3dalpha_core PUBLIC "${GEN_DIR}" "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(3dalpha_core PUBLIC ZLIB::ZLIB)
+
+target_compile_definitions(3dalpha_core PUBLIC
+	MC_HAVE_VORBIS=${MC_HAVE_VORBIS}
+	MC_VORBIS_TREMOR=${MC_VORBIS_TREMOR})
+if(MC_HAVE_VORBIS)
+	if(NINTENDO_3DS)
+		# Tremor's headers install under tremor/, and it needs libogg's framing.
+		target_include_directories(3dalpha_core PUBLIC "$ENV{DEVKITPRO}/portlibs/3ds/include")
+		target_link_libraries(3dalpha_core PUBLIC ${VORBISIDEC_LIB} ${OGG_LIB})
+	else()
+		target_include_directories(3dalpha_core PUBLIC ${VORBISFILE_INCLUDE_DIRS})
+		target_link_libraries(3dalpha_core PUBLIC ${VORBISFILE_LINK_LIBRARIES})
+	endif()
+endif()
 
 # A 3DSX gets a 32 KB main-thread stack and nothing in the binary can enlarge
 # it, so a frame the host shrugs off is a crash before the function's first

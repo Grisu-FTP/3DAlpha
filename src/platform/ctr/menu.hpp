@@ -42,7 +42,9 @@
 // points read and write them.
 
 #include "core/io/posix_file_system.hpp"
+#include "core/audio/sound_engine.hpp"
 #include "core/settings/settings_file.hpp"
+#include "platform/ctr/audio.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/font.hpp"
@@ -242,6 +244,15 @@ public:
     // the process, so it survives `shutdown()` and a world may read it.
     const std::vector<u8>& backgroundTile() const { return backgroundTile_; }
 
+    // Handed the process's audio before the first menu is drawn. Both pointers
+    // are borrowed and must outlive the menu; the shell owns them. Optional --
+    // a menu with neither still works and simply says there is no audio.
+    void setSound(mc::audio::SoundEngine* sound, ctr::NdspBackend* backend)
+    {
+        sound_ = sound;
+        audioBackend_ = backend;
+    }
+
 private:
     enum class Screen {
         Title,
@@ -266,6 +277,12 @@ private:
         // screen only, and its numbers are taken from the card rather than
         // guessed, which is why it is a screen and not a line of text.
         ConfirmConvert,
+        // Volumes and the audio toggle, plus the one line that explains a
+        // console that is silent. It is a sub-screen rather than three more
+        // rows on Options because 240 pixels does not stretch -- the same
+        // reason Texture Pack is one -- and because the explanation needs room
+        // that a value row does not have.
+        Sound,
     };
 
     // The shared half of init() and initOverlay(): citro2d, the text buffer,
@@ -291,6 +308,7 @@ private:
     bool handlePause(u32 down, PauseChoice* choice);
     bool handleWorlds(u32 down, MenuChoice* choice);
     void handleOptions(u32 down);
+    void handleSound(u32 down);
     void handleWorldSettings(u32 down);
     void handleConfirmConvert(u32 down);
     void handleConfirmDelete(u32 down);
@@ -414,6 +432,11 @@ private:
     void drawPause();
     void drawWorlds();
     void drawOptions();
+    void drawSound();
+
+    // What the Sound screen says about a console that is not making any. Never
+    // null: "audio works" is a case too.
+    const char* soundStatus() const;
     void drawWorldSettings();
     void drawConfirmConvert();
     void drawConfirmDelete();
@@ -475,6 +498,7 @@ private:
     int worldCursor_ = 0;  // 0 is "+ Create New World"
     int worldScroll_ = 0;
     int optionsCursor_ = 0;
+    int soundCursor_ = 0;
     int worldSettingsCursor_ = 0;
 
     // The world the World Settings screen is about, and everything it reads
@@ -562,6 +586,20 @@ private:
     int maxDistance_ = 0;
     int autosaveSeconds_ = 0;
     int chunkCacheMB_ = 0;
+
+    // 0..100, the original's own units. -1 from the settings file means "not
+    // chosen yet" and is resolved to 100 on the way in, so nothing downstream
+    // has to know about the sentinel.
+    int musicVolume_ = 100;
+    int soundVolume_ = 100;
+    bool audioEnabled_ = true;
+
+    // Borrowed, process-lifetime, and both null in the overlay's copy of this
+    // class -- the pause menu's Options screen reaches the same engine the
+    // shell made. Null means the Sound row is drawn but says audio is not
+    // available, which is exactly what it would say anyway.
+    mc::audio::SoundEngine* sound_ = nullptr;
+    ctr::NdspBackend* audioBackend_ = nullptr;
     bool isNew3DS_ = false;
 
     // True for as long as runPause owns the loop. The shared screens read it in

@@ -4,6 +4,7 @@
 #include "impl/worldgen/alpha_nobiome/dungeon.hpp"
 #include "impl/worldgen/alpha_nobiome/populate.hpp"
 
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 
@@ -143,23 +144,42 @@ bool ChunkGenerator::finalAt(i32 x, i32 z) const
 // on the caller's side and, by this class's contract, in the world's save; one
 // that has not is still being written into by its neighbours' population, and
 // dropping it would lose their work silently -- the column would come back as
-// bare terrain the next time it was reached. `evictedLive` counts the case
-// where there was nothing else to take, which is the cache being too small.
+// bare terrain the next time it was reached, missing its neighbours' trees and
+// their snow, and never final again.
+//
+// `evictedLive` counts the case where there was nothing else to take. **It is
+// not the cache being too small**, which is what it was read as for a long
+// time: the live set grows with the distance walked and no size is enough. It
+// is retire() not having been called. See the note on it.
+// An unused entry paired with a free slot, or null when there is neither. The
+// two are tracked apart -- an entry names its blocks by slot index rather than
+// by pointer, so the pool can be grown underneath it -- and they are only ever
+// balanced in count, never matched up.
+ChunkGenerator::Entry* ChunkGenerator::claimFreeSlot(i32 x, i32 z)
+{
+    if (freeSlots_.empty()) {
+        return nullptr;
+    }
+    for (Entry& e : entries_) {
+        if (e.used) {
+            continue;
+        }
+        e = Entry{};
+        e.slot = freeSlots_.back();
+        freeSlots_.pop_back();
+        e.used = true;
+        e.x = x;
+        e.z = z;
+        e.lastUse = ++clock_;
+        return &e;
+    }
+    return nullptr;
+}
+
 ChunkGenerator::Entry* ChunkGenerator::acquire(i32 x, i32 z)
 {
-    if (!freeSlots_.empty()) {
-        for (Entry& e : entries_) {
-            if (!e.used) {
-                e = Entry{};
-                e.slot = freeSlots_.back();
-                freeSlots_.pop_back();
-                e.used = true;
-                e.x = x;
-                e.z = z;
-                e.lastUse = ++clock_;
-                return &e;
-            }
-        }
+    if (Entry* fresh = claimFreeSlot(x, z)) {
+        return fresh;
     }
 
     Entry* victim = nullptr;
@@ -169,6 +189,34 @@ ChunkGenerator::Entry* ChunkGenerator::acquire(i32 x, i32 z)
         }
         if (victim == nullptr || e.lastUse < victim->lastUse) {
             victim = &e;
+        }
+    }
+    if (victim == nullptr) {
+        // **Nothing delivered to take, so let go of a region instead of a
+        // column.** Everything outside the sweep in progress goes at once --
+        // which is safe for the same reason retire() is, and taking a single
+        // live column is not. The sweep itself is (cx-3..cx+2) in both axes, so
+        // a radius of 3 keeps all 36 of them and the free list cannot come back
+        // empty: the smallest cache this class allows is 64.
+        //
+        // This should not be reachable. The streamer retires against the
+        // player's own position before every sweep and the cache is measured to
+        // sit at 80-89% of capacity with that running. It is here because the
+        // alternative -- silently taking a column its neighbours are still
+        // writing into -- is a corrupted world that only shows up hours later as
+        // a tree with one side missing, and because a last resort that cannot be
+        // reached costs nothing.
+        retire(sweepX_, sweepZ_, kSweepKeepRadius);
+        for (Entry& e : entries_) {
+            if (!e.delivered) {
+                continue;
+            }
+            if (victim == nullptr || e.lastUse < victim->lastUse) {
+                victim = &e;
+            }
+        }
+        if (Entry* fresh = claimFreeSlot(x, z)) {
+            return fresh;
         }
     }
     if (victim == nullptr) {
@@ -502,6 +550,46 @@ bool ChunkGenerator::finish(i32 chunkX, i32 chunkZ, world::ChunkColumn* out)
     return true;
 }
 
+u32 ChunkGenerator::liveColumns() const
+{
+    u32 live = 0;
+    for (const Entry& e : entries_) {
+        if (e.used && !e.delivered) {
+            ++live;
+        }
+    }
+    return live;
+}
+
+// See the note in the header: this is the only thing that ever shortens the
+// live set, and dropping a whole region rather than a column is what makes it
+// safe. Chebyshev distance, because that is the shape of every other radius in
+// the streamer and of the sweep itself.
+u32 ChunkGenerator::retire(i32 centreX, i32 centreZ, int radius)
+{
+    const int r = radius < 0 ? 0 : radius;
+    u32 freed = 0;
+    for (Entry& e : entries_) {
+        if (!e.used) {
+            continue;
+        }
+        if (std::abs(e.x - centreX) <= r && std::abs(e.z - centreZ) <= r) {
+            continue;
+        }
+        if (!e.delivered) {
+            ++stats_.retiredLive;
+        }
+        // The slot goes back on the free list and the entry is blanked; the two
+        // have to stay balanced, because acquire() takes an unused *entry* and
+        // an unrelated *slot* and pairs them. See the constructor.
+        freeSlots_.push_back(e.slot);
+        e = Entry{};
+        ++freed;
+    }
+    stats_.retired += freed;
+    return freed;
+}
+
 void ChunkGenerator::growCacheTo(int cacheColumns)
 {
     const usize wanted = usize(cacheColumns < 0 ? 0 : cacheColumns);
@@ -563,6 +651,11 @@ bool ChunkGenerator::provide(i32 chunkX, i32 chunkZ, world::ChunkColumn* out)
     // what a client produces whose chunk loads happen to arrive row-major. The
     // original's own order follows the player and is not reproducible from a
     // seed at all; see the note at the top of this file.
+
+    // What acquire() must not let go of if it runs out of slots mid-sweep.
+    sweepX_ = chunkX;
+    sweepZ_ = chunkZ;
+
     for (i32 x = chunkX - 3; x <= chunkX + 2; ++x) {
         for (i32 z = chunkZ - 3; z <= chunkZ + 2; ++z) {
             if (ensure(x, z) == nullptr) {
@@ -572,12 +665,7 @@ bool ChunkGenerator::provide(i32 chunkX, i32 chunkZ, world::ChunkColumn* out)
         }
     }
 
-    u32 live = 0;
-    for (const Entry& e : entries_) {
-        if (e.used && !e.delivered) {
-            ++live;
-        }
-    }
+    const u32 live = liveColumns();
     if (live > stats_.peakLive) {
         stats_.peakLive = live;
     }

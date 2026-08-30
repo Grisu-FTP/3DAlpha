@@ -51,6 +51,53 @@ enum class RenderType : u8 {
 
 const char* renderTypeName(RenderType type);
 
+// What a block *does* when the world ticks it -- the tick system's answer to
+// RenderType, and it exists for the same reason. The renderer references
+// render types and never block ids; the tick system references behaviours and
+// never block ids, so a version whose grass is not id 2 needs no code change.
+//
+// The numbering is ours, not the game's: a1.1.2 dispatches on the class of the
+// Block object and obfuscated class names are meaningless across versions.
+// What is taken from the jar is the *grouping* -- one entry per class that
+// overrides updateTick, onNeighborBlockChange or onBlockAdded, which is why
+// sand and gravel share `Falling` and the four flowers share `Plant`.
+enum class TickBehaviour : u8 {
+    None = 0,        // the great majority: stone does nothing when ticked
+    Grass,           // spreads onto dirt, dies under an opaque block
+    Sapling,         // grows into a tree on the second roll
+    Leaves,          // decays when no log is within four blocks
+    Plant,           // flowers: stays only on a valid ground block in light
+    Mushroom,        // as Plant, but wants darkness instead of light
+    Crops,           // wheat, growing on the moisture of the farmland below
+    Farmland,        // wets from nearby water, reverts to dirt when dry
+    Reed,            // sugar cane, growing up to three tall
+    Cactus,          // as Reed, and refuses a neighbour on any side
+    FluidFlowing,    // water and lava spreading
+    FluidStill,      // a source, which only wakes when a neighbour changes
+    Falling,         // sand and gravel
+    Fire,            // spread, burn-out, and what it sets alight
+    Ice,             // melts to water in light
+    SnowLayer,       // melts, and falls off an unsupporting block
+    SnowBlock,       // melts to nothing in light
+    Torch,           // drops when what it is attached to goes away
+    RedstoneTorch,
+    RedstoneWire,
+    RedstoneOre,
+    Button,
+    PressurePlate,
+    Lever,
+    Door,
+    Rail,
+    Ladder,
+    Sign,
+    Tnt,
+    Sponge,
+    Stairs,          // delegates to the block it is modelled on
+    Count,
+};
+
+const char* tickBehaviourName(TickBehaviour behaviour);
+
 struct BlockDef {
     const char* name;
 
@@ -143,6 +190,40 @@ struct BlockDef {
     // What consults it: a fluid's surface height, where a solid neighbour
     // leaves the height alone and a non-solid one pulls it down.
     bool solid;
+
+    // What the world tick does with this block, and how often.
+    //
+    // `tickRandomly` is `Block.tickOnLoad[id]`, the gate the random-tick loop
+    // consults 80 times per chunk per tick before it dispatches anything, so
+    // it is read far more than it is acted on -- hence a byte in the table
+    // rather than a call. `tickRate` is `Block.tickRate()`, the delay a
+    // scheduled update waits: 10 for almost everything, 5 for water, 30 for
+    // lava, 3 for sand, 2 for a redstone torch.
+    //
+    // Both are read out of a running jar rather than out of its bytecode, and
+    // that is not fussiness: three block ids get the wrong answer from the
+    // bytecode because their constructors branch. See tools/extract_ticks.java.
+    TickBehaviour tick;
+    u8 tickRate;
+    bool tickRandomly;
+
+    // Fire, and three questions that are not the same question.
+    //
+    // `burnEncourage` is `BlockFire.chanceToEncourageFire[id]`: non-zero is
+    // what "this can catch fire" means to a fire block beside it, and the
+    // value is how strongly it invites fire into the air nearby.
+    // `burnCatch` is `BlockFire.abilityToCatchFire[id]`, rolled against a
+    // per-direction chance to decide whether the block itself is consumed.
+    // Both are zero for all but six blocks in a1.1.2.
+    //
+    // `canBurn` is `Material.getCanBurn()`, and it is a **wider** set --
+    // fourteen blocks, including chests, signs, doors and fences, which have a
+    // burnable material and are in neither fire table. Lava's ignition search
+    // reads this one and the fire block reads the other two, so conflating
+    // them sets light to the wrong things.
+    u8 burnEncourage;
+    u8 burnCatch;
+    bool canBurn;
 
     // False for ids this version does not define. A world or a server can name
     // a block we have never heard of, and the mesher has to survive it rather

@@ -3,8 +3,13 @@
 The authoritative "where we are" document. Everything here is either a decision that has been made,
 a number that has been measured, or a task that is next. Estimates and guesses are labelled as such.
 
-Update this file when a milestone moves. It is the first thing to read when picking the project up
-cold.
+Update this file when a milestone moves.
+
+**It is no longer the first thing to read.** `CLAUDE.md` at the repo root is the entry point — it
+carries the commands, the layout, the review-blocking rules and the environment facts in about a
+fortieth of the length. This file is where you come once you know which question you have, and the
+way to read it is one section at a time: `docs/doc-index.md` lists every heading here with the line
+range it occupies, so `sed -n 'A,Bp' docs/status.md` beats opening the whole file.
 
 ---
 
@@ -23,12 +28,12 @@ hard oracle to check itself against.
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
 | **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world. **Plus a second on-disk format**, `Packed`: sector-allocated region containers, 9× smaller than the folder layout on a 16 KB-cluster card and 280× fewer file operations, converted losslessly in either direction and byte-exact on a real 1,119-chunk world. New worlds are created in it. See §0j and [packed-worlds.md](packed-worlds.md) |
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, and needs a seventh launch to say whether it closes the gap |
-| M3 Singleplayer gameplay | not started, **except the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now a tabbed HUD, and the debug pages are behind it rather than beside it.** The player's half is three pages switched by touching tabs along the top -- **Map**, **Items** and **Look** -- drawn as panels, slots and bevels in a1.1.2's own GUI colours over the pack's tiled dirt, while the three debug pages stay shared, unchanged and behind `SELECT + Y`. It is still libctru's text console underneath: the furniture is written straight into the RGB565 framebuffer and the console's glyphs are printed on top of it, on backgrounds set per row with `\x1b[48;2;R;G;Bm`, which is what stopped text punching black rectangles through the panels. **Map** is 208 by 200 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds -- **in every gamemode now, not only Spectator's** -- and it shows **coordinates and nothing else**: the chunk, the map tile, the chunk count and the redraw time were the maintainer's questions and have moved to the Info page, and the debug grids to the settings page. **There is no strip of button hints along the bottom**, because it was the same three lines on every page spending a twelfth of the screen to repeat itself; the debug pages keep theirs, which is where `SELECT + Y` is worth naming. Those 24 rows and 24 columns off the coordinate panel are what made the window a quarter bigger than the 192 by 176 it started at -- an estimated 790 us a redraw against 700, measured on the host as 16.9 us against 14.2. The marker is an **arrowhead rotated to a real yaw** rather than a diamond with a whole-block tick, which is what fixes both of the old one's faults at once -- it pointed eight ways and it was 41 % longer on a diagonal than on a straight. **Items** is the inventory frame, nine across with a hotbar, drawn empty until M3 fills it, and it is not offered in Spectator. **Look** is a pad that hands the drag to the camera, with a compass ribbon over it -- which exists because the bottom screen is both the UI and the only pointing device an old 3DS has, and dragging on a map used to turn the view. **Run on hardware, where a redraw read 5,000 us**; a per-chunk patch cache took that to a copy, and the number is on the Info page. **The HUD itself has not been seen on hardware.** See [map.md](map.md) |
+| M3 Singleplayer gameplay | not started as *gameplay*, **but its foundation is now built: the world ticks.** a1.1.2's 20 Hz clock (`ir.class`, accumulator, partial ticks, the ten-tick cap that drops rather than defers), its scheduled-update list with the original's ordering and both of its limits, its 80-samples-a-chunk random tick, and fifteen block behaviours -- grass, leaves, saplings, crops, farmland, flowers, mushrooms, sugar cane, cactus, ice, both snows, torches, sand and gravel. Blocks are dispatched by a **tick behaviour**, never by id, the way the renderer dispatches on render type. Redstone, fire and the fluids are named and not done; see §0o and [tick-a1.1.2.md](tick-a1.1.2.md). Also **the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now a tabbed HUD, and the debug pages are behind it rather than beside it.** The player's half is three pages switched by touching tabs along the top -- **Map**, **Items** and **Look** -- drawn as panels, slots and bevels in a1.1.2's own GUI colours over the pack's tiled dirt, while the three debug pages stay shared, unchanged and behind `SELECT + Y`. It is still libctru's text console underneath: the furniture is written straight into the RGB565 framebuffer and the console's glyphs are printed on top of it, on backgrounds set per row with `\x1b[48;2;R;G;Bm`, which is what stopped text punching black rectangles through the panels. **Map** is 208 by 200 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds -- **in every gamemode now, not only Spectator's** -- and it shows **coordinates and nothing else**: the chunk, the map tile, the chunk count and the redraw time were the maintainer's questions and have moved to the Info page, and the debug grids to the settings page. **There is no strip of button hints along the bottom**, because it was the same three lines on every page spending a twelfth of the screen to repeat itself; the debug pages keep theirs, which is where `SELECT + Y` is worth naming. Those 24 rows and 24 columns off the coordinate panel are what made the window a quarter bigger than the 192 by 176 it started at -- an estimated 790 us a redraw against 700, measured on the host as 16.9 us against 14.2. The marker is an **arrowhead rotated to a real yaw** rather than a diamond with a whole-block tick, which is what fixes both of the old one's faults at once -- it pointed eight ways and it was 41 % longer on a diagonal than on a straight. **Items** is the inventory frame, nine across with a hotbar, drawn empty until M3 fills it, and it is not offered in Spectator. **Look** is a pad that hands the drag to the camera, with a compass ribbon over it -- which exists because the bottom screen is both the UI and the only pointing device an old 3DS has, and dragging on a map used to turn the view. **Run on hardware, where a redraw read 5,000 us**; a per-chunk patch cache took that to a copy, and the number is on the Info page. **The HUD itself has not been seen on hardware.** See [map.md](map.md) |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
-| M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, ahead of the rest of M6**; audio, mobs and packaging not started. Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
+| M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, and background music is built but unheard**, both ahead of the rest of M6; mobs and packaging not started. **Music is a1.1.2's `of.c()` transcribed exactly** -- the counter seeded at `nextInt(12000)` and reset to `nextInt(24000)+24000`, and, the part that is easy to lose, *not decremented while a track is playing*, so the period is the track's own length plus 20-40 minutes. It runs on the same `elapsedTicks()` the world does, beside `stepTicks`. Underneath it: `audio::Backend` (the `IAudio` docs/architecture.md always named), an ndsp voice on channel 0 fed by a ring of eight 1024-frame wave buffers in linear memory, and a third `WorkerRole` -- `Audio` -- decoding Ogg Vorbis through Tremor. **On an Old 3DS that decode is on core 0**, because a 3DSX has no other core; it sits below the main thread and the 186 ms ring is what makes that safe, which is a claim only hardware can settle -- the overlay counts underruns and decode microseconds for exactly that reason. Options -> Sound carries the volumes and the one line that says why a console is silent, distinguishing a missing DSP firmware from a DSP something else is holding. **Sound effects are deliberately absent**: nothing in the port can emit one yet, so the machinery arrives with its first caller rather than as dead code. See [audio-a1.1.2.md](audio-a1.1.2.md). Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
 
-**537 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**644 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -264,6 +269,13 @@ draw list. The dead end is left in the doc deliberately.
 ---
 
 ## Measured numbers (do not re-derive)
+
+> **Audio costs about 99 KB of binary and nothing else measured yet.** Linking Tremor takes `.text`
+> from 762,772 to 809,852 and `.rodata` from 68,916 to 120,540 -- a1.1.2 Release build, `-O3`.
+> The `.3dsx` goes 861,252 -> 960,224 bytes. **Every other audio number in this document is a
+> prediction, not a measurement**: decode cost per buffer, underruns and whether the Old 3DS thread
+> policy holds are all waiting on a console, and the debug Info page exists to answer them in one
+> launch. See §0p.
 
 > **The reference world grew between M1 and the sixth launch, and the totals below are the 660-column
 > world.** It has been played in Java since: it is now **1,118 columns**, and a re-run gives
@@ -1120,6 +1132,9 @@ number forever; and unthreaded — the host harnesses — `pump()` is also what 
 same loop drains and terminates there too. **Nothing owed prints "already saved"**, which is the
 visible half of the rule above: a world the pause menu has just written owes nothing, and now says
 so instead of sitting on a still screen.
+
+**Superseded by 0n**, which keeps all of the above and puts the number on the *top* screen as a bar
+over the frozen world, rather than on the bottom one as text under it.
 
 **Unrun.** It builds, links, and `check3dsx.py` accepts the image; nothing here has been on hardware.
 
@@ -2720,7 +2735,755 @@ fragment-bound.
 - **Chests/furnaces/signs with contents** round-trip as opaque preserved blobs and have never been
   parsed. The richest chunk tested had 3 tile entities and 2 entities.
 
+### 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
+
+Reported from hardware together, which is why they were treated as one report: **the minimap stays
+blank on joining a world until you move around a bit, though chunks are generating the whole time;
+after a lot of chunks in one session generation stops until the world is reloaded; trees sometimes
+generate only half; and in a snow world the snow is sometimes missing, and sometimes covers only
+half a tree.** Two faults, and three of the four are the same one.
+
+The last of them was a fidelity question rather than a bug report — *does a1.1.2 do this?* — and it
+splits in two. **A half-snowed tree is the original's own behaviour.** Snow is the last thing a
+population pass does and it is offset by +8 like everything else, so a pass snows 64 columns of its
+own chunk and 192 of its neighbours'; a tree whose canopy crosses into the next pass's square gets
+snow on that half only if that pass runs *after* the tree was placed, and `ft`'s trigger order
+follows where the player walked. **A half tree is not.** Population writes land only in the 2×2
+quadrant east and south of the pass — asserted exactly against a real World, `changedColumns == 4` —
+so both halves of a tree on a chunk border are written by one call. Nothing in the original can
+place one of them and not the other. That made the tree the thing to chase, and it led to the same
+fault as the stopping.
+
+**What was wrong: the generator's live set grows with the distance walked, and nothing drained it.**
+A column `ChunkGenerator` has not handed over is *live* — its neighbours' population passes are
+written into it and nowhere else — and `acquire` refuses to evict one for exactly that reason. What
+finishes a live column is its four passes running, and a walk never finishes the ones at the sides
+of the corridor it sweeps: their eastern and southern neighbours are never asked for, so they stay
+live for the rest of the session. `cacheColumnsFor` was fitted to `--generate`, which fills a disc
+from a *fixed* centre and stops, and that measurement cannot see this at all.
+
+Measured under `--fly ... gen` at render distance 8 with the cache made effectively unbounded, peak
+live against distance walked:
+
+| chunks walked | 75 | 200 | 400 | 600 |
+|---|---|---|---|---|
+| peak live | 235 | 274 | 372 | **468** |
+
+against a cache of 240. Linear in distance travelled and bounded by nothing, so **no size is the
+right size** — which is why the counter that fires, `evictedLive`, had been read as "the cache is
+too small" and was not. Past that point `acquire` finds no delivered victim and takes a live column
+anyway; it comes back as bare terrain with its neighbours' work missing (**the half trees, and a
+chunk with no snow in it**), it is never final again, so `lightable` fails for it and its neighbours
+every frame for the rest of the session (**generation stopping**), and reloading the world is the
+only thing that clears it — which is exactly what was reported. On the host, 3,000 frames of walking
+gave `662 sweeps failed — 662 unlightable`, 223 columns still owed, and the world visibly
+un-generating as the player walked out of what was already made.
+
+**The fix is `ChunkGenerator::retire(centre, radius)`: forget everything further than `radius` from
+the player, live or delivered.** Dropping a *region* is what makes dropping a live column safe, and
+dropping one on its own is what is not — a lone live column comes back bare while the passes that
+wrote into it stay marked done, and its share of their work is lost silently. Everything outside the
+radius goes together, so the neighbourhood re-derives as a unit: the state a world reload leaves
+behind, which the design already accounts for (see `ChunkCache::save` on regenerating against
+populated neighbours, and the note that a1.1.2 has the same hazard in a worse form). `WorldStreamer`
+publishes the player's chunk under `queueLock_` and the generation thread retires against it before
+each sweep, at `loadRadius + 6` — three rings clear of the furthest a sweep can reach.
+
+The result, same runs: `evictedLive` 0, failed sweeps 0, and peak live flat in both distance and
+time — 196 at 6,000 frames of walking and 188 at 9,000, where it had been 372 and 468. Across render
+distances 3 to 11 it comes out at 128, 158, 192, 224 and 256, which is **`16 × loadRadius + 64`
+almost exactly** against `cacheColumnsFor`'s `16 × loadRadius + 96`: a flat 32 columns of headroom
+at every distance. So the old formula was right after all — it was only ever measuring the
+standing-still case, and retirement is what turns walking back into it.
+
+**And the generator no longer depends on being told.** `acquire` has a last resort of its own: with
+nothing delivered that it could take, it lets go of everything outside the sweep in progress — a
+region, so the same argument holds — rather than taking a live column. A caller that never retires
+(a probe, a test, a future one) then gets a few failed sweeps that clear on the retry the streamer
+already does, instead of a silently corrupted world. `evictedLive` is now genuinely unreachable, and
+it stays in place as the assertion it always was.
+
+`tests/generate_test.cpp` pins all of it: a forty-column walk with retirement produces the **same
+world block for block** as the same walk with a cache large enough never to need it, and the same
+walk in the same small cache with no retirement at all is checked to finish anyway, with
+`evictedLive` at zero and no column left unmade.
+
+**The blank minimap was its own fault, and a much smaller one.** The map samples chunks the game
+already holds, and it took **one a frame on an old 3DS and two on a New one**, scanned in raster
+order from the north-west corner of the window. A cold window is up to 196 chunks, so that is six
+seconds — and because the scan started north-west, the ground *under the marker* was not reached
+until halfway through it. It also asked `WorldStreamer::residentColumn`, which required the column
+to be `published`: that means the renderer has it, which needs all eight neighbours *and* the mesh
+distance to reach it. At world entry almost nothing is published yet, so there was nothing to sample
+however large the budget was; and below render distance 7 the map reaches further than the renderer
+does, so its outer ring was permanently unexplored ground.
+
+Three changes, all small: the scan runs in **square rings out from the player's chunk** (which is
+also the order the streamer brings columns in, so the budget is rarely spent on a chunk that has not
+arrived); the budget is **8 an old 3DS, 16 a New one** against a sample's ~50 µs, with a **cold-start
+burst of 64** that ends the first time a pass finds nothing left to take; and `residentColumn` now
+answers for any `Loaded` cell. A `Loaded` column came from the card or from the generator and both
+hand over finished, lit work — publishing is a *meshing* gate and was never the honest one here.
+
 ---
+
+### 0n. The two waits a player sits through — a bar, and a square of chunks arriving
+
+Two screens in this shell were a still picture while the console worked: **leaving a world**, which
+writes a file per dirty column, and **entering a world that was just created**, which generates one
+before it hands over. Both had a number on them — the save counter is 0d above, the generation
+screen printed the streamer's own counters — and both were the bottom screen's text console under a
+frozen top screen. A still top screen for tens of seconds is read as a crash, whatever the bottom
+one says.
+
+Both are now `ctr::ProgressScreen`: a green bar over the frozen world on the top screen, and on the
+bottom screen — while a world is being made — a square of the chunks around the player, one cell
+each, coloured by what that column is doing.
+
+**It draws into the renderer's frame, like the pause menu.** `Renderer::drawFrame(camera, this,
+entry)` — no render target of its own, both eyes, the same scrim `GuiScreen` draws over an open
+world. That is the arrangement 0d settled and the reason it is reused here without argument.
+
+**The bar's geometry is core's.** `gui::barFillWidth` decides how much of a track is filled, and
+both the top screen's citro2d bar and the bottom screen's software one ask it, so they cannot round
+differently and be visibly out of step at the ends. The green is the XP bar's own, RGB (128, 255,
+32). Nothing owed fills the bar rather than emptying it — a world the pause menu saved a moment ago
+owes nothing and has not failed to save, which the line under the bar says in words.
+
+**The square is a five-colour ramp, and the states are the streamer's.** `WorldStreamer::progressGrid`
+fills a `gui::ChunkState` per cell; black is a cell nothing has been asked about, red is owed, orange
+is the column the worker has in hand, yellow is loaded but not yet drawable, green is published. It
+emits the drawing enum rather than one of its own on purpose: the grid's `CellState` is private and
+must stay so — `Ungenerated` versus `Absent` is a meshing rule, not something a screen may act on —
+and the alternative was a second public enum existing only to be switched into the first.
+
+`Absent` is drawn as green rather than as a sixth colour. It is the edge of a finite world: nothing
+is owed there and nothing is coming, so a colour of its own would be a part of the square a player
+would watch, waiting.
+
+**It scales with the render distance.** `gui::fitChunkGrid` derives the cell pitch from the box
+rather than from a constant, so distance 2 is seven cells at 16 pixels (a ceiling, or five cells
+would fill a 176-pixel box) and distance 12 is twenty-five at 6 — and distance 24, the debug page's
+ceiling, still fits at 3. The pitch floors at one pixel and every draw clips, so no render distance
+can put a pixel off the screen. The whole bottom-screen layout is `static_assert`ed against 320 x 240
+at compile time: overlaps and overruns are arithmetic, and checking them on the target is cheaper
+than checking them on a console.
+
+#### The generation wait now covers the whole render distance
+
+It used to stop at "geometry exists, or nine columns are resident" — the smallest thing that is not
+an empty screen, and also exactly what a player then walks straight off the edge of. **The target is
+every column inside the render distance published**, which is the streamer's word for "the renderer
+has it and it can be drawn". That in turn forces the ring one chunk further out to be generated,
+because a section cannot be meshed until its eight neighbours are in memory — so the world handed
+over reaches the horizon in every direction and one chunk past it. At distance 12 that is 625
+columns; at distance 6, 169.
+
+The square and the bar both count at the render distance rather than at the load radius, and that is
+deliberate: the renderer's field is only as wide as the render distance, so the outer ring can never
+be published and a square drawn out to it would have a border that never turned green.
+`streamer_progress_test.cpp` asserts exactly that — the ring at the load radius settles on `Ready`
+and stays there.
+
+Three ways out, because "generating" must never become "hung":
+
+- the square fills;
+- the player presses START, which is why the hint is on both screens; or
+- nothing new becomes drawable for 45 seconds. That is a generator that has stopped rather than one
+  that is slow — the first published column is the slowest, since nothing can publish until a 3x3 of
+  columns exists and on an old 3DS the worker shares core 0 with this loop. The outer cap is six
+  minutes and exists only in case the stall detector is itself wrong.
+
+#### What holds it
+
+`tests/progress_test.cpp` covers the painter — the fill fraction (including the 64-bit multiply a
+column count off the cache needs), the two-tone edges, the pitch derivation at every distance from 2
+to 24, the gap coming out of the pitch rather than being added to it, and the square's row-major
+north-up orientation — all of it through both stride conventions, the row-major one and the
+console's own 240-down-a-column bottom-up.
+
+`tests/streamer_progress_test.cpp` covers the states against a real streamer rather than a mock: the
+square is black before a frame has run, fills to green out to the render distance and no further,
+holds every colour on the ramp part way through with generation inline, never counts backwards while
+the centre is still, and shows nothing as owed in a world that generates nothing.
+
+**559 tests pass, and TSan is clean.** `progressGrid` takes `queueLock_` once for a whole square to
+read which column the worker has in hand; everything else it reads is the main thread's grid, which
+is the same rule `residentColumn` follows.
+
+**Unrun.** It builds, links and `check3dsx.py` accepts the image; nothing here has been on hardware.
+The two numbers worth taking off a console are how long a distance-12 creation actually takes, and
+whether redrawing the square every frame is visible in the generation rate.
+
+### 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
+
+**M3's foundation, and the first thing in this project that makes the world change on its own.**
+Everything up to here made world and drew it; nothing in it ever moved. The tick is what grass
+spreading, ice melting, a crop growing and sand falling all hang off, and it is the same object a
+player's own edits will go through when there is a player. The whole derivation -- the clock, the
+scheduled-update list, the 80-samples-a-chunk random tick, the per-block tables and every deviation
+-- is in [tick-a1.1.2.md](tick-a1.1.2.md), which is where to read before touching any of it.
+
+**The clock was wrong and it did not look wrong.** `main.cpp` advanced `worldTicks += dt * 20.0` as
+a double, which is right for the sky and useless for anything else: a block update happens a whole
+number of times or not at all, and at 30 fps two thirds of a grass tick is not a thing that can run.
+`ir.class` is a1.1.2's own accumulator and it is now transcribed -- twenty ticks a second out of an
+accumulator, the whole part run and the fraction kept for the renderer's interpolation. Three
+details in it are load-bearing and all three are the original's: the raw delta is clamped to **one
+second** before it is scaled; the whole part is taken, subtracted, and only **then** capped at ten,
+so ticks past the tenth are **dropped** rather than deferred and the world falls behind instead of
+spiralling; and the fraction survives across frames, which is what keeps a day twenty minutes long
+at a frame rate that is not a divisor of 20. `TickTimer::droppedTicks()` counts what the cap threw
+away, which is not in the original and is how "the console is behind" stops being invisible.
+
+**The one thing not transcribed is the two-clock correction**, and that is a deviation with a
+reason rather than an omission: a1.1.2 corrects `System.nanoTime` against `System.currentTimeMillis`
+once a second and smooths the ratio, because those are two clocks on a 2010 PC and the fast one
+drifts. A 3DS has `svcGetSystemTick` off a fixed oscillator and nothing to correct it against, so
+the filter would be a ratio of exactly 1.0 for ever.
+
+**The tick dispatches on a behaviour, never on a block id**, which is the same rule the mesher
+follows with render types and it is there for the same reason. `BlockDef` grew three columns --
+`tick` (a `TickBehaviour`), `tickRate` and `tickRandomly` -- and 41 of a1.1.2's 70 blocks carry a
+behaviour. A version whose grass is not id 2 needs no code change.
+
+**Two of those columns are read out of a running JVM rather than out of the bytecode, and that
+caught three real errors.** `tools/extract_ticks.java` loads `Block`'s class initialiser and prints
+`tickOnLoad[]` and `tickRate()` per id. Reading the constructors statically gets **still water,
+still lava and the two redstone ores** wrong, because those constructors branch: `BlockStationary`
+sets `setTickRandomly(false)` and then `true` again only for lava, and `BlockRedstoneOre` is one
+class constructed twice with a flag, so the unlit ore does not tick randomly and the lit one does.
+Every one of the three is invisible until a world has been left running for a while.
+
+**What the tick actually costs, stated before anyone measures it.** a1.1.2 samples **80 positions
+per chunk per tick** over a 19x19 square of chunks around the player -- 28,880 samples a tick,
+577,600 a second -- and almost every one of them is `tickOnLoad[id]` coming back false. On a 3DS the
+square is `min(9, loadRadius)` instead, because a column that is not held cannot be ticked; at the
+render distances this console runs, ours is the smaller number and a world simulates a little less
+far out than the original. **Nothing here has been measured on hardware**, and the sampler is the
+one part of this module with a real chance of showing up in a frame -- the block read goes through
+palette-compressed sections rather than a1.1.2's flat byte array.
+
+**It is on the main thread on purpose.** The order of block updates is the world in the same way
+generation order is (§0g), so moving it is a decision to take with a measurement in hand rather than
+on the way past. What could go to core 2 later is the read-only half -- sampling the positions and
+filtering them against `tickRandomly` -- with the effects still applied in order on core 0, and the
+seam for that already exists: `tick::TickWorld` reaches chunks through a pair of function pointers
+and not through `WorldStreamer`, which is what lets the whole module be tested on a host with no
+renderer, no streamer and no card.
+
+**The scheduled-update list is the original's ordering in a structure the frame path is allowed to
+use.** a1.1.2 keeps a `TreeSet` and a `HashSet` side by side and checks their sizes against each
+other every tick; entries are equal on `(x, y, z, blockId)` and order on `(scheduledTime, insertion
+sequence)`. That insertion tie-break is not decoration -- it is what makes water spread in the same
+pattern twice. Ours is a fixed-capacity binary heap with an open-addressed membership set beside it,
+the same two answers in one object, with the original's consistency check kept as `consistent()`.
+Both of a1.1.2's numbers are kept: the **8-block residency box** around anything scheduled or run,
+and the **1,000-per-tick** cap. The pool refuses the newest entry when it is full and counts it,
+because refusing the newest is the failure that recovers.
+
+**Twenty-five behaviours are ported and the rest are named rather than quietly absent**: grass spread
+and death, leaf decay, sapling and crop growth, flower and mushroom placement, farmland wetting and
+reverting, sugar cane, cactus, ice, both snows, torch support, sand and gravel falling, **the fluids, fire,
+and all of redstone but its inputs** -- wire, torch, ore, lever, button, pressure plate and door.
+Not ported: **the inputs themselves** (pressing, flipping, an entity on a plate, opening a door by
+hand), **rails**, and **a sapling actually becoming a tree** (both generators exist but write through `PopulationView`, so it wants an adapter
+rather than a call), and TNT, sponge and the tile-entity ticks.
+
+#### The fluids, and the one thing about them that matters on this console
+
+Water and lava are the largest single behaviour in a1.1.2 -- three classes and a recursive search --
+and `core/tick/fluid.cpp` is their own file for the same reason `core/mesh/fluid.cpp` is. The whole
+transcription is in [tick-a1.1.2.md](tick-a1.1.2.md) §*The fluids*; what belongs here is the part
+with a cost.
+
+**A fluid is a pair of blocks, and that pair is the performance design.** The flowing form ticks;
+the still form does not. A flowing block that finds nothing left to change turns itself into the
+still block and stops being scheduled, and a still block that hears a neighbour change turns back
+and schedules itself. **An ocean therefore costs nothing per tick and a waterfall costs one
+scheduled update per block per five ticks** -- which is the difference between a1.1.2 being playable
+on a 268 MHz ARM11 and not. Neither transition notifies its neighbours, and that is load-bearing
+rather than an omission: notifying would wake the neighbours, which would set *them* not-static,
+which would notify back for ever.
+
+**Writing a block turned out to be three things, and only one of them was implemented.** The fluids
+found it: water spread exactly one block and stopped for ever. `Chunk.setBlockID` runs
+`onBlockRemoval` on what was there, **clears the metadata**, and runs **`onBlockAdded` on the new
+block** -- and that last one is not a neighbour notification, it is how a flowing fluid and a
+falling sand block schedule their own first update. Both were missing. Clearing the metadata matters
+on its own: without it a cell that held water at level 5 and is emptied and refilled inherits the 5,
+and a torch keeps the face it used to hang on. Seventeen block classes override `onBlockAdded`, so
+this was never only a fluid problem -- it was just the first behaviour big enough to notice.
+
+**Where a fluid spreads is a search, not a fan-out**, and it is the one thing here worth measuring
+on hardware. `getOptimalFlowDirections` looks up to four blocks along each of the four horizontal
+directions for somewhere the fluid could fall and spreads only along the directions tied for the
+shortest path -- recursive, depth-limited at 4, four-way. It is what makes water find a hole across
+the room instead of creeping outwards evenly, and it runs on every flowing block every five ticks.
+Nothing about it has been measured yet.
+
+#### Fire, and three tables that are not one table
+
+Fire's own file, and the thing worth carrying away from it: **a1.1.2 asks three different questions
+about burning and answers them from three different places.** `chanceToEncourageFire[id] > 0` is
+"there is fuel here" as a fire block sees it; `abilityToCatchFire[id]` is rolled to decide whether
+that block is actually consumed; and `Material.getCanBurn()` is what **lava** reads. The first two
+cover six blocks. The third covers fourteen -- chests, crafting tables, signs, doors, jukeboxes and
+fences as well -- so those catch from lava and are invisible to fire's own spread. Conflating them
+lights the wrong things in both directions, and it would have been the easy mistake: two of the
+three look interchangeable until you count them.
+
+All three now ride in `blocks.json`, read from a running jar. `tools/extract_ticks.java` finds
+BlockFire's tables **by shape** -- the only block carrying two *instance* `int[]` as long as the
+block table -- and tells the two apart by their contents rather than by a name that means nothing
+across versions. The first attempt matched every block instead of one, because `getDeclaredFields`
+hands back Block's own statics too.
+
+One rule reads backwards and is worth stating so nobody "fixes" it: the per-direction spread chance
+is the **bound** of a roll that has to land under the target's ability to catch, so a *lower* number
+is likelier -- and a1.1.2's numbers are 200 below, 250 above and 300 to the sides. **Fire spreads
+downward most eagerly.**
+
+#### Redstone: the power model, the wire and the torch
+
+**The line the whole system rests on is one branch in `World.isBlockIndirectlyProvidingPowerTo`:**
+an opaque cube answers with whatever is powering *it*. That is why a torch under a block powers what
+stands on top of it, and why the indirect query cannot be written as a wrapper round the direct one.
+There are four power queries, not one, and a1.1.2 uses all four.
+
+**Two things in the wire are easy to lose and each breaks something specific.**
+`wiresProvidePower` is a flag on the shared Block object that the wire turns *off* for the length of
+one `isBlockIndirectlyGettingPowered` call, so that a wire working out its own strength does not
+count itself and its neighbours as sources -- without it every wire in the world reads 15. And the
+strength is decremented a **second** time after being written, with the propagation comparing
+against that smaller value; comparing against the written one re-walks the whole net at every step.
+The flag lives on `TickWorld` here rather than beside the wire, because it is read through the power
+queries.
+
+**Fifteen blocks is not a rule anywhere in the code.** It is what falls out of starting at 15 and
+losing one per block. Likewise the wire's *shape* is stored nowhere: which sides a lit wire powers
+is worked out from what is around it every time it is asked, and a corner powers neither of its
+ends.
+
+**The torch is the only active element a1.1.2 has**, and it is a NOT gate: lit unless its support is
+powered, at a tick rate of 2. That delay is what every circuit in the game is timed by. Its burnout
+rule -- eight toggles at one position inside 100 ticks and it stays dark -- is the brake on a torch
+wired to itself, and it is asymmetric: going out records a toggle, coming back on only reads the
+count. a1.1.2 keeps that record in an unbounded static list; ours is a bounded ring on `TickWorld`
+that drops the oldest entry, which can only ever make a torch *less* likely to be called burnt out
+-- the safe direction, since a torch that goes dark for no visible reason is the worse failure.
+
+**One bound is ours.** `updateAndPropagateCurrentStrength` recurses through the wire net with no
+guard in the original, which is safe there because a signal dies after fifteen blocks and so does
+the wave of changes. A 3DSX main thread has 32 KB of stack, so the recursion is capped at 64 --
+four times the reachable depth, and a guard rather than behaviour.
+
+**The failing tests this round were the tests, again, and the reason is worth keeping.** Placing a
+block *raw* runs `onBlockAdded` but not the neighbour fan-out, and a torch's `onBlockAdded` notifies
+the six cells **around** it rather than the six cells **of** it -- so a wire laid beside a torch
+placed raw never hears about it. Nothing was wrong with the code; the test was placing blocks in a
+way the game never does.
+
+#### What of redstone needs a player, and what turned out not to
+
+The question worth answering was how much of the remaining redstone was really blocked on the player
+entity, and the answer is: **only the inputs**. Pressing a button, flipping a lever, an entity
+standing on a plate and opening a door by hand are inputs; every other part of those four blocks is
+reachable by writing the metadata the input would have written, which is what a test should be doing
+anyway. So they are built and tested now, and what is left is a player, not a design.
+
+| Block | Needs a player | Built and tested |
+|---|---|---|
+| Lever | flipping | which sides it powers, falling off a wall that goes |
+| Button | pressing | the same, plus letting itself back out 20 ticks later |
+| Pressure plate | an entity on it | which sides it powers under load, falling off |
+| Door | opening by hand | **opening and closing because a circuit said so**, both halves in step |
+
+**A lever powers what it is attached to, and a torch powers what is above it** -- and that
+difference is the one thing here a test caught. A floor lever's face 5 answers side 1, which is the
+query the block *below* makes; a torch answers side 0, which is the query the block *above* makes.
+The failing check was the assertion, not the code, for the fourth time in this module -- which is
+itself worth noting: every failure in the tick work so far has been a wrong expectation about
+a1.1.2, never a wrong transcription of it.
+
+**The door has one economy worth keeping**: `onNeighborBlockChange` returns early unless the block
+that changed can provide power, so a doorway in an ordinary wall costs nothing at all.
+
+**Rails are skipped deliberately.** A rail's only behaviour is recomputing its shape from its
+neighbours, and shape means nothing without a minecart to run on it. It is the one part of redstone
+whose payoff really does wait for entities.
+
+And one more thing that looks like a leak: **a fire that reaches age 15 stops scheduling itself.**
+The metadata write and the re-schedule are both inside `if (age < 15)`, so a fully aged fire that is
+still being fed leaves the scheduled list and is revisited only by a random tick. It is the
+original's behaviour, it is pinned by a test, and the test exists because the obvious "fix" is
+wrong.
+
+**Lava's ignition is wired now**, which was the one piece of the fluids left out while fire did not
+exist. Not wired: TNT primed by fire, which needs an entity to be primed into.
+
+**One bound that reads like an artefact and is not.** a1.1.2's leaf decay walks outward from a
+changed block and two adjacent leaves can each decide the other needs re-running, so the walk is
+bounded -- `iz.c`, a counter on the shared `Block` object capped at 100 and reset at the entry
+points. It was tempting to drop it as a Java artefact; it is copied exactly instead, because the
+3DSX main thread gets **32 KB of stack that nothing in the binary can enlarge** and an unbounded
+walk through a canopy is precisely the shape of the stack overflow §1's first launch already found
+once.
+
+**Two gaps worth knowing about before building on this.** Sand and gravel land in one tick, because
+`EntityFallingSand` has nowhere to live yet -- the resting place is the one the entity would have
+found, so the world ends up identical and only the fall is missing. And **block light is not
+repropagated when a tick changes a block**: `LightEngine` computes a whole column against a 3x3
+window and there is no incremental path, so a melted ice block leaves the light as it was until the
+column is next lit. The **height map** *is* maintained, because `canBlockSeeTheSky` is what decides
+whether a plant may stay. Incremental relighting is the largest open item in this module.
+
+**What holds it.** `tests/tick_test.cpp` covers the clock (including that the first call owes
+nothing, that 60 fps still yields exactly 20 ticks a second, and that a one-second stall drops ten
+ticks rather than deferring them), the scheduler's ordering, identity, tombstone sweep and overflow,
+and each ported behaviour driven directly rather than through a random tick -- waiting for a random
+tick to land on one nominated block is 1 in 32,768 an attempt, so a test that does that measures the
+sampler. Two tests cover the sampler itself. `--fly` runs one tick a frame over a real world under
+ASan and UBSan, which is the only place the tick meets real columns, the mesher and the saver.
+
+**Edits reach the card through the autosave rather than through the frame.** A block a tick changes
+invalidates its section -- and its neighbour's, per axis, only when it is on a boundary -- and its
+column is added to a small dirty set. That set is handed to the cache at the save boundary, so a
+fluid that touches one column a hundred times in a second costs one clone rather than a hundred.
+This is the coalescing §0e predicted the timer would be for.
+
+---
+
+### 0p. Audio -- the music timer, a decoder and a DSP that may not be there
+
+**a1.1.2's random background music, transcribed rather than approximated.** The whole feature is
+`of.c()` and one `int`, and the constants are out of the jar, not out of a wiki: the counter starts
+at `nextInt(12000)` -- 0 to 10 minutes -- and resets to `nextInt(24000) + 24000`, 20 to 40 minutes.
+[audio-a1.1.2.md](audio-a1.1.2.md) has the bytecode beside the transcription.
+
+**The rule that would have been lost.** Both `playing()` checks sit *before* the decrement, so the
+counter does not run while a track is on: the 20-40 minutes is silence *between* tracks and the
+real period is the track's own length plus that. A ticker that decremented unconditionally plays
+about one track an hour too many and looks perfectly correct while doing it.
+`--music-schedule` shows the difference (13 tracks in six hours against 12), and
+`counterDoesNotAdvanceWhileATrackIsPlaying` pins it.
+
+**Two random streams, not one.** `eb` keeps its own `Random` for picking a track, separate from the
+SoundManager's for the counter. Sharing one would make adding a file to the card silently shift the
+schedule. The pools also draw *uniformly over every entry*, keys ignored -- so nine files in
+`newmusic/` against three in `music/` really does make a calm track 3/12 likely, and that is
+a1.1.2's behaviour and not a bug to fix.
+
+**No track name is hardcoded, because the jar has none.** a1.1.2 shipped no audio at all and walked
+whatever an S3 bucket offered. The pool is whatever the player put in `sdmc:/3dalpha/resources/`.
+
+**The shape underneath.** `audio::Backend` is the `IAudio` architecture.md always listed -- narrow
+on purpose: start a stream, stop it, ask whether it is still playing. ndsp sits behind it on the
+console, a `.wav` writer on the host. Music is channel 0 of 24, fed by eight 1024-frame wave buffers
+in linear memory -- 32 KB, taken once -- and decoded by a third `WorkerRole`, `Audio`, running
+Tremor. The ndsp callback signals an event and decodes nothing; starting a track hands over a path
+and not an open file, so no card read lands on the frame.
+
+**Where the decode thread runs, and why depth beats priority.** On a New 3DS it takes core 2 at the
+main thread's own priority, **sharing with the generation worker rather than outranking it**. The
+first cut asked for one step above; that was wrong twice over. The kernel refuses a priority below
+what the process was granted and a refused `threadCreate` is silent, so it would have fallen through
+to the Old 3DS path and put the decoder on core 0 of a console with a spare core, with nothing on
+screen to say so -- and it buys nothing, because the decoder needs about 15% of a core against a
+third of a second of buffer and does not have to win a race to stay ahead. Equal priority on core 2
+is also the one arrangement already proven on this hardware: generation has used it since M4.
+
+**On an Old 3DS it is core 0**, because a 3DSX has no other core, so CONTRIBUTING's "no
+decompression on core 0" cannot be met literally. It is met in substance -- never the main thread,
+one buffer per wake, and a 186 ms ring. **That path is unexercised and likely to stay that way:
+there is no Old 3DS to hand.** Treat it as designed-but-unproven, not as tested.
+
+The claim is instrumented rather than asserted either way: the Info page reports microseconds per
+buffer and an underrun count. **This is going onto a console whose M2 gate currently fails by 3.2x**,
+though on a New 3DS the decoder is on a different core from the renderer, which is most of why that
+is survivable. If the numbers say no, the fallback is a one-time transcode to raw PCM in `cache/`,
+which turns playback into a `readAt` -- a `PcmSource` implementation, not a redesign. Do not build it
+before measuring.
+
+**One bug found before it ever ran, and worth remembering as a shape.** `gWorkerIsNew3DS` and
+`setWorkerThreadOps` were set inside `runGame`, which was fine while a world was the only thing that
+wanted a thread. Audio comes up in `runShell`, before any world exists, so it found `workerSpawn()`
+still null, failed to spawn, and reported itself `Unavailable` **on every console** -- an
+instrumented failure that would have looked exactly like a missing DSP firmware. Both are installed
+in `main` now. Process-wide state belongs where the process starts.
+
+**Silence is a first-class state.** No `dspfirm.cdc`, no `resources/` folder, no decoder in the
+build, or `audio=0`: all four reach `of.c()`'s own first line and return. Options -> Sound says
+which, and distinguishes a missing firmware from a DSP something else is holding -- telling someone
+to dump a firmware they already dumped is worse than saying nothing.
+
+**Licensing: the notice lives in [licences.md](licences.md) and nowhere else.** Tremor is Xiph
+BSD-3 and statically linked, so those 99 KB are inside the `.3dsx`, and BSD-3 asks for the notice to
+accompany a binary redistribution. The decision is that this repository carries it and the binary
+does not -- which is fine while builds stay among people who have the repo, and **has to be revisited
+the first time a `.3dsx` or `.cia` is handed to someone who does not**. The cheap route then is a
+`const char[]` behind an About screen, not a RomFS. `CONTRIBUTING.md:77,79` still names
+`romfs/licenses.txt`, which does not exist; that wording is stale and was left alone deliberately.
+
+**Sound effects are deliberately absent.** Nothing in the port can emit one: no block placement, no
+player body, no entities, and `streaming/*.mus` is Mojang's own container. The reachable emitters
+when M3 arrives are fizz, fire and the ambient cave counter; the seam is the pools and `Backend`, so
+each is a call site rather than a subsystem.
+
+**Both decoder branches compile and link.** `3ds-libvorbisidec` 1.2.1-3 is installed, so the 3DS
+build has `MC_HAVE_VORBIS=1 MC_VORBIS_TREMOR=1`, links `libvorbisidec.a` and `libogg.a`, and passes
+`tools/check3dsx.py`.
+
+**One trap, closed.** `find_library` caches NOTFOUND, and a cached NOTFOUND is never retried -- so a
+tree configured before the decoder was installed went on producing a silent binary afterwards, with
+no warning, because the second configure never looked again. That is exactly the case for a
+dependency somebody installs *because* the first build told them to. Both branches now clear the
+cache entry when it is empty before searching, so installing the package and running `make` is
+enough. It cost one real build to find. Tremor's header is `<tremor/ivorbisfile.h>`, its `ov_read` really is the
+four-argument form with no endian/word/signed arguments, `vorbis_info` really does carry
+`int channels` and `long rate`, and `OV_HOLE` is `-3` -- all four assumptions the `#if` rests on,
+confirmed against the installed headers rather than remembered.
+
+**What the decoder costs the binary: about 99 KB, one twelfth of the code budget.** `.text` goes
+762,772 -> 809,852 (+47.1 KB) and `.rodata` 68,916 -> 120,540 (+51.6 KB); the `.3dsx` goes 861,252
+-> 960,224 bytes and the loader allocates 249 pages against 240. That is Tremor's own tables, and it
+is the price of audio being in the build at all -- a `MC_HAVE_VORBIS=0` build gets it back.
+
+**Still unverified, and only hardware can settle it:** that `ndspInit` succeeds with a real dumped
+firmware, that the ring does not underrun on an Old 3DS, and what a buffer actually costs. The
+decode thread is 3DS-only, so ThreadSanitizer cannot reach it either -- the host has no audio thread
+to race. The Info page reports decode microseconds and underruns for exactly this reason.
+
+
+### 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
+
+Reported from a console once the tick system was in: **chunks being updated flash transparent for a
+frame**, one **hard crash** and one **freeze**, **severe intermittent frame drops**, and **lava that
+flows does not relight the world**. Four symptoms; the causes do not line up with them one to one.
+
+The tick system is the first thing in this project that mutates blocks *during* a frame. Three
+subsystems were written on the assumption that nothing does, and it reached all three.
+
+#### The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
+
+`C3D_FrameEnd(0)` only **enqueues**. The wait for the GPU queue to drain lives inside the next
+`C3D_FrameBegin` -- which `renderer.hpp` already said, and nothing acted on. So the CPU leaves
+`drawFrame` with the frame it just recorded still executing and runs the whole of the next frame's
+streaming and meshing against a pool the GPU is fetching vertices from. `GSPGPU_FlushDataCache`
+pushes CPU caches *toward* the GPU and waits for nothing; there was no fence anywhere on that path.
+
+Three ways a live block was clobbered:
+
+- **The free list was LIFO.** `takeFree` took `list.back()`, so the block a section gave up when it
+  was invalidated was the first one handed to the next upload of that size -- the section got its own
+  in-flight block back and `memcpy`'d over it.
+- **The eviction guard was one frame short.** It refused slots with `frame == frame_`, which protects
+  the frame being *recorded*; the frame being *executed* is the one before it. A section drawn last
+  frame and dropped from this frame's draw list -- which is what turning the camera produces -- was a
+  legal eviction target mid-draw.
+- **`rebuildChunks` and `setAtlas` freed everything with a frame in flight.** Both are reached from
+  the settings page while the loop is running.
+
+Fixed by retiring blocks over frames: `VboPool::kRetireFrames = 2`, tested against
+`slot.frame`, which `lruPushBack` already maintained -- no new state was needed. A slot last drawn in
+frame N is referenced by frame N's list, which is in flight for the whole of CPU frame N+1, and is
+free at N+2. `C3D_FrameSync()` covers the two wholesale teardowns. **The pool now needs one block of
+headroom over the drawn set**, because at any moment one block is in that limbo; that is a real cost
+and `tests/vbo_pool_test.cpp` states it.
+
+Two more edges found while doing it, both able to draw one chunk's geometry where another chunk is:
+
+- The draw list is snapshotted at `beginFrame` and `drainEvictions` never patched it, so a slot that
+  changed hands later in the frame was still drawn -- with the *old* section's model matrix. Slots
+  carry a generation now and `drawPass` skips a mismatch.
+- `kMaxQuadsPerSection` is derived from the checkerboard, which bounds a pass whose faces are culled
+  against their neighbours. **The detail pass has no such derivation** -- a torch is five quads
+  whatever is beside it -- and the only guard was an `assert`, compiled out in Release, which is the
+  only build where reading past the 144 KB index array does harm. The mesher stops emitting at the
+  bound now and `drawPass` clamps as well.
+
+#### The crash: the tick recursed with no bound, on a 32 KB stack
+
+`writeBlock` calls `blockAdded`/`blockRemoved`, behaviours call `notifyNeighbours`, and that
+dispatches `neighbourChanged` synchronously -- which can write another block. Nothing counted the
+depth. A fire field going out unwinds as one recursion as deep as the field is wide, and **lava
+starts fires**, which is the reported scenario. `crashlogs/001-rungame-stack-overflow` is what this
+class of failure looks like here.
+
+Redstone had a guard of its own, `kPropagateDepth = 64`, and it did not work: `wireNeighbourChanged`
+restarted the count at zero on every hop through `notifyNeighbours`, so 64 bounded one straight run
+of wire and not the cascade.
+
+The bound is global now, shared by every path that can recurse, and **counted in bytes of stack
+rather than in levels**, because the levels are not the same size. Measured with `-fstack-usage` on
+the devkitARM build at -O2:
+
+| Cycle | Frames | Bytes per level |
+|---|---|---|
+| Notify cascade | notifyNeighbours 32 + neighbourChanged 56 + behaviour ~24 + setBlockWithNotify 48 + writeBlock 72 + blockRemoved 8 | **240** |
+| Redstone wire | wirePropagate 16 + wirePropagateInner 72 | **88** |
+
+`TickWorld::kCascadeStackBudget` is 8 KB -- a quarter of the stack, leaving the rest for whatever the
+tick was called from. That allows 93 nested wire levels against the 16 the original's own comment
+calls reachable, and 34 nested notify levels, so nothing a real world does comes near it. Past the
+budget a notification is **deferred to a bounded queue and run before the tick ends**, not dropped,
+so the work still completes and only its order past that depth differs.
+
+#### The frame drops: three costs, one of them quadratic
+
+- **`tickDirty_` was unbounded and scanned linearly for every changed block.** Its comment said the
+  set was "what one frame's ticks touched"; it was only cleared at the autosave boundary, so it
+  accumulated every column touched since the last save -- and with autosave set to **Off** it was
+  never cleared at all. A flowing fluid changes hundreds of blocks a tick, so the scan got
+  monotonically worse the longer a session ran. It is a flag on the grid cell now: O(1), no
+  allocation, bounded by the grid.
+- **`pump()` walked the whole cache table under the lock, every frame,** for two numbers on a debug
+  page. The counters are maintained incrementally at the five places an entry gains, loses or changes
+  the dirtiness of its column, and `stats()` answers live rather than as of the last pump.
+  `ChunkCache::debugCountColumns` re-derives them the slow way and a host test keeps the two honest.
+- **The random tick decoded a palette entry at a random offset for every sample.** a1.1.2 does 80 per
+  chunk per tick over a 19x19 square, so at render distance 8 that is **28,880 reads a tick and
+  577,600 a second** -- and `TickTimer` allows ten whole ticks in one frame after any stall, which is
+  a hitch that causes the next hitch. `section.hpp` already recorded that this access path measured
+  at 46 % of the time to mesh a section. `Section::mayTickRandomly()` answers from the palette
+  without touching the index array, and the sample loop rejects whole sections against it. **The
+  random sequence is untouched** -- `nextLcg()` is still called exactly eighty times per column -- so
+  the tick's output is byte-identical and the existing vectors are the proof.
+
+Also on the frame path and now off it: `TickScheduler::indexRebuild` allocated and freed a 128 KB
+table inside `runScheduled`, roughly every 2,048 pops, which an active fluid reaches routinely.
+
+`FrameTiming` has a `tickMs` bucket now. It used to be inside `streamMs` along with `update()`,
+`sound.tick()` and `tickSaves()` -- four things under one number, and no way to tell from a console
+which of them a frame went into.
+
+#### Found while looking: tick edits were silently lost
+
+`dropCell` hands a departing column to `cache_.give()`, which installs it as **clean**, and once the
+cell is gone `flushTickDirty` cannot find it -- it looks the column up in the grid. So a column a
+tick wrote into and the player then walked away from was never written to the card, and with autosave
+Off that was every edit of the session. `give()` also keeps whatever the cache already holds on the
+grounds that it is "at least as fresh", which stops being true the moment the resident copy carries
+edits the cached one does not, so the edited column was discarded outright rather than merely
+unsaved. `dropCell` saves first now.
+
+Related, and the invariant this broke: `ChunkCache::save`'s over-cap back-pressure loop deflates and
+writes a column **on the calling thread**, and the comment above it said "it is never the main thread
+today and must not become it -- an edit path reaching here would want to give up frame budget
+instead." `flushTickDirty` was exactly that edit path. `SavePressure::Defer` makes the choice
+explicit rather than a comment, and the main thread now queues the work instead.
+
+#### The lava: there was no runtime lighting at all
+
+`LightEngine` solves a whole column against a 3x3 window and ran **once**, on the generation worker,
+when a column was first finalised. Nothing recomputed light after that. `TickWorld::refreshHeight`
+maintained the height map, which is why `canBlockSeeTheSky` stayed right while the light did not --
+and `TickWorld::lightValue`, which grass, crops, saplings, ice and the snow pass all read, kept
+answering with values that no longer described the world. It was not lava-specific; lava is just
+where it is obvious.
+
+`world::LightUpdater` is the incremental half: the standard removal-then-addition pair over the cells
+a change actually disturbed, budgeted per frame, with bounded queues. Re-running `LightEngine` per
+edit was the alternative and is not affordable -- 576 KB and 294,912 cells against a fluid that
+changes hundreds of blocks a second.
+
+**Why it is allowed to work differently from the engine**, and this is the whole argument:
+`lighting.hpp` already establishes that a1.1.2's update rule is a monotone operator with a strictly
+positive decrement, so it has exactly one fixed point and every algorithm that finds it finds the
+same numbers. `tests/light_update_test.cpp` does not take that on faith -- it lights a 3x3 with the
+engine, applies an edit, lets the updater settle, re-lights from scratch and compares all 32,768
+cells of each plane. It needs no JVM of its own, because `LightEngine::computeCentre` is already
+compared nibble by nibble against a real a1.1.2 `World` by `tests/light_test.cpp`.
+
+The two engines now share `clampedOpacity` and `emittedLight`, hoisted out of `LightEngine` into free
+functions, including the `def.known` carve-out: the block table gives unknown ids an opaque cube on
+purpose, and the jar's `lightOpacity` array leaves them transparent. Two engines disagreeing there
+would disagree everywhere an unknown id appears.
+
+**Light is baked into vertices**, so every cell whose stored light moves is a remesh. That is why the
+relighter had to land after the flash fix rather than before it.
+
+#### The flash: "needs remeshing" was encoded as "has no mesh"
+
+`invalidateSection` handed the section's VBO block back and set its slot to `kNoMesh`. The draw list
+is built at the top of the frame and the remesh runs after it, so the replacement geometry could not
+reach a draw list until the frame after next: one frame of hole at best, and while a fluid is flowing
+the 4-per-frame mesh budget never catches up, so it is a hole that stays. `main.cpp`'s comment
+claimed the tick was placed before the draw so a changed block reached the mesher in the same frame;
+it never did, and re-ordering could not have fixed it, because the draw list is fixed before any of
+it.
+
+A section is marked **dirty** now and keeps its slot. It goes into *both* lists -- drawn from
+one-tick-stale geometry, and queued to be replaced -- and `uploadSection` uploads before it releases,
+so a pool too full to place the replacement leaves the old mesh on screen instead of a hole. Falling
+behind costs latency rather than a hole. Re-meshes are also ordered ahead of first meshes in the
+queue, so an edit twenty metres away does not queue behind every unmeshed section nearer the camera.
+
+#### Two follow-ups from the first hardware run, and one of them was mine
+
+The console reported the flicker **still there** and lava pools causing "a loop of the chunk
+refreshing". The block tick and the relighter were both cleared by host repro first -- a still lava
+pool settles in one tick and a flowing one in under sixty, and a relight that lands on the values
+already stored reports no section at all (`tests/light_update_test.cpp`). The fault was on the render
+side, and it was introduced by the fix above.
+
+**The staleness guard put the flash back.** `drawPass` refuses to draw a section whose recorded slot
+generation no longer matches -- which is right, and stops one chunk being drawn with another's model
+matrix. But `uploadSection` gives the old block back the moment the replacement is in hand, and that
+bumps its generation. The draw list, built before the frame's meshing, still names the old block. So
+on *every* remesh the guard correctly refused to draw an entry it no longer recognised, and the
+section vanished for that frame: the same one-frame hole, arriving by a different route, and
+continuous wherever something ticks constantly.
+
+The fix is to repoint the list rather than skip it: a successful upload rewrites that section's entry
+to the new slot and generation. The section is then drawn *this* frame from the *new* geometry --
+a frame earlier than the stale-draw behaviour managed -- and the guard keeps doing its real job for
+slots that genuinely changed hands. `a_remesh_leaves_the_section_drawable_in_the_same_frame` fails
+without it and passes with it.
+
+**And a leak of my own making.** `SavePressure::Defer` took the main thread off the write path, which
+was the point -- but it removed the *only* back-pressure on the dirty set, and a dirty column cannot
+be evicted because it is the only copy of that world. Relighting then made columns dirty far more
+often, because every section whose light moves has to be saved. That is the same unbounded set the
+cache already had once (11.28 MB against a 4 MB cap), reintroduced from the other end. Past a ceiling
+of twice the cap the deferred path now writes one column itself: a hitch is worse than a clean frame
+and much better than running the console out of heap. See `ChunkCache::deferCeilingLocked` and
+`crashlogs/005-lava-flicker-session/NOTES.md`.
+
+#### What the retirement rule costs, measured
+
+The obvious worry about holding a block for two frames is that the pool loses capacity. It does not,
+in the case that matters. `--mesh` over a copy of the reference world, three full turns on the spot,
+after the change:
+
+| Configuration | Peak resident | Uploads | Recycled | Evictions | **Refused** |
+|---|---|---|---|---|---|
+| o3DS d6, 12 MB | 8.40 MB | 417 | 0 | 0 | **0** |
+| o3DS d8, 12 MB | 11.16 MB | 2,290 | 1,638 | 1,794 | **0** |
+| n3DS d8, 32 MB | 15.52 MB | 722 | 0 | 0 | **0** |
+| n3DS d10, 32 MB | 29.69 MB | 1,332 | 0 | 0 | **0** |
+
+The o3DS distance-8 row is the one to read: the pool is full, it is evicting hard, 71 % of uploads
+are served from a recycled block -- and nothing is refused. The two-frame hold costs one block, and
+the size-class slack already carries more than that.
+
+`--fly` over the same world at distance 6, 600 frames: settled at frame 122, 225 columns resident,
+550 sections meshed, 0 evictions, 0 refused, and **0 main-thread SD checks**. The tick and the
+relighter ran on every one of those frames.
+
+#### What is measured and what is not
+
+Everything above is derived from the source or measured on the host; **the ARM stack figures are
+measured, from `-fstack-usage` on the devkitARM build.** What is *not* measured yet, and needs a
+console:
+
+- `kLightBudgetPerFrame = 1024` is an estimate sized to sit under a millisecond at a pessimistic
+  microsecond per cell. The debug page carries `light pend / lit / drop` so the real figure replaces
+  it rather than being guessed at twice.
+- What the pool's one-block retirement headroom costs in refused uploads. `heldInFlight` is on the
+  Info page.
+- Whether the random-tick rejection is enough on its own, or whether the ten-tick catch-up burst
+  still needs spreading across frames. `tickMs` is the number that answers it.
 
 ## Open questions
 

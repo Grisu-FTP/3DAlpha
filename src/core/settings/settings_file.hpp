@@ -46,6 +46,23 @@ struct GameSettings {
     // 0 means "not chosen yet"; the menu picks per model, because what is
     // spare depends on the heap split and that depends on the console.
     int chunkCacheMB = 0;
+
+    // Whether the DSP is brought up at all. This is not the same thing as a
+    // volume of zero and the difference is the point of the row: off means
+    // `ndspInit` is never called and the decode thread is never spawned, which
+    // is what docs/3ds-performance.md's options contract promises. -1 is "not
+    // chosen yet" and the menu turns it on.
+    int audio = -1;
+
+    // 0..100, because that is what the original's own label prints --
+    // `"Music: " + (v > 0 ? (int)(v * 100) + "%" : "OFF")` -- and because
+    // parseInt is the only parser this file has. The conversion to the float
+    // the gain arithmetic wants happens once, at the seam.
+    //
+    // -1 is "not chosen yet", the convention autosaveSeconds already uses, and
+    // becomes 100: a1.1.2 defaults both volumes to 1.0F.
+    int musicVolume = -1;
+    int soundVolume = -1;
 };
 
 // **Ours, not the original's.** a1.1.2 has no timed autosave: it writes a chunk

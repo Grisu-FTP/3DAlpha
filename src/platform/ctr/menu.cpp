@@ -679,6 +679,15 @@ void Menu::loadSettings()
     packName_ = saved.texturePack;
     autosaveSeconds_ = saved.autosaveSeconds;
     chunkCacheMB_ = saved.chunkCacheMB;
+
+    // -1 is "not chosen yet"; the menu fills in a1.1.2's own default of 1.0F
+    // rather than the settings file inventing a number. Anything else is
+    // clamped, because the file can be hand-edited on a PC.
+    audioEnabled_ = saved.audio != 0;
+    musicVolume_ = saved.musicVolume < 0 ? 100 : (saved.musicVolume > 100 ? 100
+                                                                         : saved.musicVolume);
+    soundVolume_ = saved.soundVolume < 0 ? 100 : (saved.soundVolume > 100 ? 100
+                                                                         : saved.soundVolume);
 }
 
 void Menu::saveSettings()
@@ -688,6 +697,9 @@ void Menu::saveSettings()
     current.texturePack = packName_;
     current.autosaveSeconds = autosaveSeconds_;
     current.chunkCacheMB = chunkCacheMB_;
+    current.audio = audioEnabled_ ? 1 : 0;
+    current.musicVolume = musicVolume_;
+    current.soundVolume = soundVolume_;
 
     if (!fs_.makeDirectories(kRootDir)) {
         return;
@@ -785,7 +797,7 @@ void Menu::printConsoleHelp()
     case Screen::Options:
         std::printf("Left/Right  change the value\n");
         std::printf("Up/Down     choose a row\n");
-        std::printf("A           open Texture Pack\n");
+        std::printf("A           open Texture Pack or Sound\n");
         std::printf("B           back\n\n");
         std::printf("Render distance is what a player is\n");
         std::printf("offered; the debug page (SELECT+Y in\n");
@@ -795,6 +807,24 @@ void Menu::printConsoleHelp()
             std::printf("are standing in, as soon as you\n");
             std::printf("go back to it.\n");
         }
+        break;
+    case Screen::Sound:
+        std::printf("Left/Right  change the value\n");
+        std::printf("Up/Down     choose a row\n");
+        std::printf("B           back\n\n");
+        std::printf("a1.1.2 shipped no sounds -- it\n");
+        std::printf("downloaded them from a server that\n");
+        std::printf("is long gone. Copy a resources/\n");
+        std::printf("folder from any alpha- or beta-era\n");
+        std::printf("install to:\n");
+        std::printf("  \x1b[33m%s/\x1b[0m\n\n", audio::kResourcesDir);
+        std::printf("Audio also needs a DSP firmware you\n");
+        std::printf("dump from your own console, with\n");
+        std::printf("Rosalina -> Miscellaneous options\n");
+        std::printf("-> Dump DSP firmware.\n\n");
+        std::printf("Music starts on a1.1.2's own timer:\n");
+        std::printf("once in the first ten minutes, then\n");
+        std::printf("every 20-40 minutes of quiet.\n");
         break;
     case Screen::TexturePacks:
         std::printf("Up/Down  choose\n");
@@ -874,6 +904,9 @@ MenuChoice Menu::run()
             break;
         case Screen::Options:
             handleOptions(down);
+            break;
+        case Screen::Sound:
+            handleSound(down);
             break;
         case Screen::ConfirmDelete:
             handleConfirmDelete(down);
@@ -971,6 +1004,9 @@ PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int ren
             break;
         case Screen::Options:
             handleOptions(down);
+            break;
+        case Screen::Sound:
+            handleSound(down);
             break;
         case Screen::TexturePacks:
             handleTexturePacks(down);
@@ -1196,7 +1232,7 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
 
 void Menu::handleOptions(u32 down)
 {
-    constexpr int kRows = 4;  // render distance, autosave, texture pack, back
+    constexpr int kRows = 5;  // distance, autosave, texture pack, sound, back
     optionsCursor_ = step(down, optionsCursor_, kRows);
 
     if (optionsCursor_ == 0) {
@@ -1234,8 +1270,69 @@ void Menu::handleOptions(u32 down)
         return;
     }
 
-    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 3)) {
+    if ((down & KEY_A) != 0 && optionsCursor_ == 3) {
+        message_ = nullptr;
+        soundCursor_ = 0;
+        setScreen(Screen::Sound);
+        return;
+    }
+
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 4)) {
         setScreen(inGame_ ? Screen::Pause : Screen::Title);
+    }
+}
+
+// Volumes apply live, as `of.a()` does in the original: moving Music to OFF
+// stops the track that is playing rather than leaving it running silently, and
+// the engine is told on every change rather than on the way out. The `audio`
+// row is the exception -- ndsp is a process-scoped service and bringing it up
+// or down under a playing track is not worth the complication, so it takes
+// effect on the next launch and the screen says so.
+void Menu::handleSound(u32 down)
+{
+    constexpr int kRows = 4;  // audio, music, sound, back
+    soundCursor_ = step(down, soundCursor_, kRows);
+
+    // Ten points a press, which is one press per audible step and ten presses
+    // end to end. The original's slider is continuous; a d-pad is not.
+    constexpr int kStep = 10;
+
+    if (soundCursor_ == 0 && (down & (kLeft | kRight | KEY_A)) != 0) {
+        audioEnabled_ = !audioEnabled_;
+        saveSettings();
+    }
+
+    if (soundCursor_ == 1) {
+        const int before = musicVolume_;
+        if ((down & kLeft) != 0) {
+            musicVolume_ = musicVolume_ - kStep < 0 ? 0 : musicVolume_ - kStep;
+        }
+        if ((down & kRight) != 0) {
+            musicVolume_ = musicVolume_ + kStep > 100 ? 100 : musicVolume_ + kStep;
+        }
+        if (musicVolume_ != before) {
+            if (sound_ != nullptr) {
+                sound_->setMusicVolume(float(musicVolume_) / 100.0f);
+            }
+            saveSettings();
+        }
+    }
+
+    if (soundCursor_ == 2) {
+        const int before = soundVolume_;
+        if ((down & kLeft) != 0) {
+            soundVolume_ = soundVolume_ - kStep < 0 ? 0 : soundVolume_ - kStep;
+        }
+        if ((down & kRight) != 0) {
+            soundVolume_ = soundVolume_ + kStep > 100 ? 100 : soundVolume_ + kStep;
+        }
+        if (soundVolume_ != before) {
+            saveSettings();
+        }
+    }
+
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && soundCursor_ == 3)) {
+        setScreen(Screen::Options);
     }
 }
 
@@ -1873,6 +1970,9 @@ void Menu::drawScreen()
     case Screen::Options:
         drawOptions();
         break;
+    case Screen::Sound:
+        drawSound();
+        break;
     case Screen::ConfirmDelete:
         drawConfirmDelete();
         break;
@@ -2217,27 +2317,124 @@ void Menu::drawOptions()
     // is a button with a clipped label on it rather than a centred one that
     // would draw off both edges of the screen.
     //
-    // Four rows now rather than three, so they start higher and the heading
-    // moved up with them: 240 pixels does not stretch, and the alternative was
-    // a scrolling options screen for four items.
+    // **Five rows now**, which is what a 34-pixel pitch from y=44 buys: 240
+    // pixels still does not stretch, and the alternative -- a scrolling options
+    // screen -- would be a second list idiom for the sake of one more row.
+    // Sound is a sub-screen for the same reason Texture Pack is: it has a
+    // sentence to say as well as values to edit.
+    constexpr float kRowTop = 44.0f;
+    constexpr float kRowPitch = 34.0f;
     const float x = (kScreenWidth - kButtonWidth) * 0.5f;
-    drawButton(Rect{x, 54.0f, kButtonWidth, kButtonHeight}, distance, optionsCursor_ == 0,
+    const auto rowY = [](int row) { return kRowTop + float(row) * kRowPitch; };
+
+    drawButton(Rect{x, rowY(0), kButtonWidth, kButtonHeight}, distance, optionsCursor_ == 0,
                true);
-    drawButton(Rect{x, 90.0f, kButtonWidth, kButtonHeight}, autosave, optionsCursor_ == 1,
+    drawButton(Rect{x, rowY(1), kButtonWidth, kButtonHeight}, autosave, optionsCursor_ == 1,
                true);
 
-    const Rect packRow{x, 126.0f, kButtonWidth, kButtonHeight};
+    const Rect packRow{x, rowY(2), kButtonWidth, kButtonHeight};
     drawButton(packRow, "", optionsCursor_ == 2, true);
     drawLabel("Texture Pack:", packRow.x + 8.0f, packRow.y + 6.0f, 0.5f, kInkDim,
               C2D_AlignLeft, true);
     drawLabelClipped(packLabel(), packRow.x + 96.0f, packRow.y + 5.0f, 0.5f, kInk,
                      packRow.w - 104.0f);
 
-    drawButton(Rect{x, 162.0f, kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 3,
+    // The row says what the screen behind it is set to, so the common case --
+    // "is the music on?" -- is answered without opening it.
+    char soundRow[48];
+    if (!audioEnabled_) {
+        std::snprintf(soundRow, sizeof(soundRow), "Sound...  OFF");
+    } else {
+        std::snprintf(soundRow, sizeof(soundRow), "Sound...  music %d%%", musicVolume_);
+    }
+    drawButton(Rect{x, rowY(3), kButtonWidth, kButtonHeight}, soundRow, optionsCursor_ == 3,
                true);
 
-    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 206.0f, 0.45f,
+    drawButton(Rect{x, rowY(4), kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 4,
+               true);
+
+    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 218.0f, 0.45f,
                       kInkDim, true);
+}
+
+// Why this console is silent, in one line, which docs/assets.md has asked for
+// since before anything called ndsp.
+//
+// The distinction between the first two cases is the whole point of having a
+// line at all: a player who has already dumped their DSP firmware and is being
+// told to dump it again will conclude the game is broken. So the backend
+// reports *which* failure it had and this reads it, rather than assuming the
+// common one.
+const char* Menu::soundStatus() const
+{
+    if (!audioEnabled_) {
+        return "Audio is off. The DSP is never started.";
+    }
+    if (audioBackend_ == nullptr) {
+        return "No audio in this build.";
+    }
+
+    switch (audioBackend_->status()) {
+        case ctr::AudioStatus::NoFirmware:
+            return "No DSP firmware. Dump it from Rosalina:\n"
+                   "Miscellaneous options -> Dump DSP firmware.";
+        case ctr::AudioStatus::Unavailable:
+            return "The DSP could not be opened -- something else\n"
+                   "on the console is holding it.";
+        case ctr::AudioStatus::Disabled:
+            return "Audio is off. The DSP is never started.";
+        case ctr::AudioStatus::Ready:
+            break;
+    }
+
+    if (sound_ == nullptr || sound_->resources().music.empty()) {
+        return "No music on the card. Copy a resources/ folder\n"
+               "to sdmc:/3dalpha/ -- see the README.";
+    }
+    return nullptr;
+}
+
+void Menu::drawSound()
+{
+    drawLabelCentered("Sound", kScreenWidth * 0.5f, 16.0f, 0.8f, kInk, true);
+
+    char audioRow[48];
+    std::snprintf(audioRow, sizeof(audioRow), "Audio: %s%s", audioEnabled_ ? "On" : "Off",
+                  audioEnabled_ ? "" : "  (takes effect on restart)");
+
+    // a1.1.2's own label: a percentage, or the word OFF. Worth copying exactly
+    // -- "0%" and "OFF" are the same number and different sentences.
+    char musicRow[48];
+    if (musicVolume_ > 0) {
+        std::snprintf(musicRow, sizeof(musicRow), "Music: %d%%", musicVolume_);
+    } else {
+        std::snprintf(musicRow, sizeof(musicRow), "Music: OFF");
+    }
+
+    char effectRow[48];
+    if (soundVolume_ > 0) {
+        std::snprintf(effectRow, sizeof(effectRow), "Sound: %d%%", soundVolume_);
+    } else {
+        std::snprintf(effectRow, sizeof(effectRow), "Sound: OFF");
+    }
+
+    const float x = (kScreenWidth - kButtonWidth) * 0.5f;
+    drawButton(Rect{x, 48.0f, kButtonWidth, kButtonHeight}, audioRow, soundCursor_ == 0, true);
+    drawButton(Rect{x, 84.0f, kButtonWidth, kButtonHeight}, musicRow, soundCursor_ == 1, true);
+    drawButton(Rect{x, 120.0f, kButtonWidth, kButtonHeight}, effectRow, soundCursor_ == 2,
+               true);
+    drawButton(Rect{x, 156.0f, kButtonWidth, kButtonHeight}, "Back", soundCursor_ == 3, true);
+
+    // Either the explanation, or what was found. Both are one line and both are
+    // more use than an empty strip.
+    if (const char* status = soundStatus()) {
+        drawLabelCentered(status, kScreenWidth * 0.5f, 196.0f, 0.42f, kInkDim, true);
+    } else if (sound_ != nullptr) {
+        char found[64];
+        std::snprintf(found, sizeof(found), "%zu music tracks, %zu sounds on the card",
+                      sound_->resources().music.size(), sound_->resources().sounds.size());
+        drawLabelCentered(found, kScreenWidth * 0.5f, 200.0f, 0.42f, kInkDim, true);
+    }
 }
 
 const char* Menu::packLabel() const

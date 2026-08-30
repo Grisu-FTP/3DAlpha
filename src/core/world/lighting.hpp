@@ -71,6 +71,39 @@ inline constexpr int kColumnHeight = 128;
 // the chunk file stores, so it is kept.
 void computeHeightMap(const u8* blocks, u8* heightMap);
 
+// **The two rules every light calculation in the project must agree on.** Free
+// functions rather than private statics because there are now two engines --
+// this one, which solves a whole column at generation time, and
+// core/world/light_update.hpp, which repairs a few cells after a block change.
+// If those two disagree anywhere, they disagree everywhere the disagreement
+// occurs, and the symptom is a patch of the world that is lit differently
+// depending on when it was last touched.
+
+// Clamped to [1, 15]: the original substitutes 1 for an opacity of 0, and any
+// opacity of 15 or more extinguishes light completely, so nothing above 15 is
+// distinguishable. Storing the clamped value means the hot loop does no
+// clamping at all.
+inline u8 clampedOpacity(u8 blockId)
+{
+    const block::BlockDef& def = block::def(blockId);
+    // **An id this version does not define has opacity 0, not 255.** The block
+    // table gives unknown ids a solid opaque cube on purpose -- a visible wrong
+    // block is a bug report -- but `Block.lightOpacity` in the jar is a plain
+    // 256-entry array that was simply never written for those ids, so the
+    // original lets light straight through. Faithful lighting has to agree with
+    // the array, not with our fallback.
+    const u16 opacity = def.known ? def.opacity : 0;
+    return opacity < 1 ? u8(1) : (opacity > 15 ? u8(15) : u8(opacity));
+}
+
+// What the block itself gives off, on the same "unknown means the jar's array
+// was never written" rule.
+inline u8 emittedLight(u8 blockId)
+{
+    const block::BlockDef& def = block::def(blockId);
+    return def.known ? def.light : u8(0);
+}
+
 class LightEngine {
 public:
     // Columns per side of the window, and blocks per side.
@@ -129,28 +162,6 @@ private:
         buckets_[level].push_back(u32(cell));
     }
 
-    // Clamped to [1, 15]: the original substitutes 1 for an opacity of 0, and
-    // any opacity of 15 or more extinguishes light completely, so nothing above
-    // 15 is distinguishable. Storing the clamped value means the hot loop does
-    // no clamping at all.
-    static u8 clampedOpacity(u8 blockId)
-    {
-        const block::BlockDef& def = block::def(blockId);
-        // **An id this version does not define has opacity 0, not 255.** The
-        // block table gives unknown ids a solid opaque cube on purpose -- a
-        // visible wrong block is a bug report -- but `Block.lightOpacity` in
-        // the jar is a plain 256-entry array that was simply never written for
-        // those ids, so the original lets light straight through. Faithful
-        // lighting has to agree with the array, not with our fallback.
-        const u16 opacity = def.known ? def.opacity : 0;
-        return opacity < 1 ? u8(1) : (opacity > 15 ? u8(15) : u8(opacity));
-    }
-
-    static u8 emitted(u8 blockId)
-    {
-        const block::BlockDef& def = block::def(blockId);
-        return def.known ? def.light : u8(0);
-    }
 
     std::vector<u8> opacity_;  // kWindowCells
     std::vector<u8> light_;    // kWindowCells, reused between the two passes

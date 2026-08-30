@@ -19,6 +19,16 @@ void MeshBuilder::addQuad(int x, int y, int z, int face, u16 texture, u8 light)
 {
     assert(face >= 0 && face < kFaceCount);
 
+    // Every pass draws through one shared index buffer sized for
+    // kMaxQuadsPerSection, so a stream that runs past it would have the GPU
+    // read indices that do not exist. Dropping the quad loses a face; not
+    // dropping it fetches vertices from outside the bound buffer. See the
+    // clamp in Renderer::drawPass for the other half of this.
+    if (quadCount() >= usize(kMaxQuadsPerSection)) {
+        ++dropped_;
+        return;
+    }
+
     // A texture index outside the atlas can only come from a table we generated
     // wrong, but a world can name a block we do not know and the unknown entry
     // has to land somewhere real rather than sample past the atlas.
@@ -80,6 +90,15 @@ void MeshBuilder::addDetailQuad(const i16 corner[4][3], const i16 uv[4][2], u8 s
                                 int face, DetailPass pass)
 {
     std::vector<DetailVertex>& out = pass == DetailPass::Translucent ? translucent_ : details_;
+
+    // The same bound, and this is the stream that can actually reach it: detail
+    // faces are not culled against their neighbours, so a section packed with
+    // torches (five quads each) or fire is not bounded by the checkerboard
+    // argument that sizes kMaxQuadsPerSection.
+    if (out.size() / 4 >= usize(kMaxQuadsPerSection)) {
+        ++dropped_;
+        return;
+    }
 
     for (int c = 0; c < 4; ++c) {
         DetailVertex v;
@@ -263,7 +282,11 @@ void meshSection(const MeshScratch& scratch, MeshBuilder& out)
     }
 
     // Both streams draw through the same index buffer, one draw call each, so
-    // each has to fit it -- not their sum.
+    // each has to fit it -- not their sum. Enforced in addQuad and
+    // addDetailQuad rather than here, because an assert is not enforcement:
+    // NDEBUG is on for the console, which is the only build where reading past
+    // the index array does any harm. These stay as a statement of the invariant
+    // the emitters now uphold.
     assert(out.quadCount() <= static_cast<usize>(kMaxQuadsPerSection)
            && "the shared index buffer is sized for kMaxQuadsPerSection");
     assert(out.detailQuadCount() <= static_cast<usize>(kMaxQuadsPerSection)

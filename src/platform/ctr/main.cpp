@@ -33,12 +33,17 @@
 // that makes it survivable is measurable, and moving it to core1 without a
 // frame time to measure against would be building on a guess.
 
+#include "platform/ctr/audio.hpp"
 #include "platform/ctr/heap.hpp"
 #include "platform/ctr/menu.hpp"
 #include "platform/ctr/overlay.hpp"
 #include "platform/ctr/probe.hpp"
+#include "platform/ctr/progress_screen.hpp"
 #include "platform/ctr/renderer.hpp"
+#include "core/audio/sound_engine.hpp"
+#include "core/io/posix_file_system.hpp"
 #include "core/io/volume_info.hpp"
+#include "core/tick/tick_timer.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/util/memory.hpp"
 #include "core/util/worker.hpp"
@@ -59,6 +64,17 @@ using namespace mc;
 
 constexpr float kPi = 3.14159265358979f;
 
+// **The square the generation screen draws, in .bss rather than on the stack.**
+//
+// A 3DSX gets a 32 KB main-thread stack that nothing in the binary can enlarge,
+// and this is one byte per column of a square that is two rings wider than the
+// debug page's ceiling -- 2,601 of them. It is written once a frame while a
+// world is being made and never read again, which is exactly what a static
+// scratch buffer is for. See the same argument on `world` and `overlay` below.
+constexpr int kMaxProgressRadius = ctr::kDebugMaxDistance + 1;
+constexpr int kMaxProgressEdge = kMaxProgressRadius * 2 + 1;
+gui::ChunkState gProgressCells[kMaxProgressEdge * kMaxProgressEdge];
+
 // What the pause menu draws over, and the shape citro3d wants to be handed.
 //
 // The renderer owns the frame -- it opens it, draws the world on every eye and
@@ -78,40 +94,33 @@ void drawPausedWorld(void* context, void* overlayContext,
     paused.renderer->drawFrame(*paused.camera, overlayContext, overlay);
 }
 
-// The "Saving level.." screen's counter.
+// The "Saving level.." screen, and what close() reports into it.
 //
-// It is the bottom-screen console rather than the top, because the top screen
-// still holds the last frame of the world and the console is where every other
-// word this shell says to the player goes. `owed` is 0 when there was nothing
-// to write, which is worth its own line: it is the answer to "did pressing
-// START a moment ago already do this", and the answer is yes.
+// **It used to be four lines of console text on the bottom screen while the top
+// one held a frozen frame of the world.** The number was there, which was the
+// hard part, but a still top screen for the length of a few hundred chunk
+// writes is the thing a player reads as a crash. The bar is drawn over that
+// same frozen world -- ProgressScreen borrows the renderer's frame the way the
+// pause menu does -- so the screen is now visibly doing something.
+//
+// `owed` is 0 when there was nothing to write, and that is not a degenerate
+// case: it is the answer to "did pressing START a moment ago already do this",
+// and the answer is yes. The bar reads full and the line under it says so.
 struct SaveScreen {
-    // **Redrawn on the number, not on the poll.** close() reports every 16 ms
-    // and consoleInit turns double buffering off, so each print is a clear and
-    // a redraw of the bottom screen straight into the framebuffer -- sixty a
-    // second of that, to show the same figure, is work taken off the thread
-    // that is trying to write the world.
-    int lastPercent = -1;
+    ctr::ProgressScreen* screen;
+    ctr::Renderer* renderer;
+    const ctr::Camera* camera;
 };
 
-void printSaveProgress(void* context, u32 written, u32 owed)
+void drawSaveProgress(void* context, u32 written, u32 owed)
 {
-    SaveScreen& screen = *static_cast<SaveScreen*>(context);
-    const int percent = owed == 0 ? 100 : int((written * 100u) / owed);
-    if (percent == screen.lastPercent) {
-        return;
-    }
-    screen.lastPercent = percent;
-
-    std::printf("\x1b[2J\x1b[1;1H\x1b[32mSaving level..\x1b[0m ");
-    if (owed == 0) {
-        std::printf("already saved\n");
-        return;
-    }
-    // `u32` is `unsigned long` on this toolchain, hence the casts rather than
-    // %u on the value itself.
-    std::printf("%3d%%\n\n", percent);
-    std::printf("%lu of %lu columns\n", (unsigned long)written, (unsigned long)owed);
+    SaveScreen& save = *static_cast<SaveScreen*>(context);
+    save.screen->setCounts(written, owed);
+    // One frame per call, and close() calls this about every 16 ms. The frame
+    // blocks on VBlank inside drawFrame, so the drain is polled at the refresh
+    // rate rather than at whatever the loop would otherwise spin at -- and the
+    // writes themselves are on the I/O thread, so nothing here slows them.
+    save.screen->present(*save.renderer, *save.camera);
 }
 
 // An analogue axis as -1..1, with the deadzone taken out.
@@ -299,6 +308,12 @@ constexpr size_t kWorkerStackBytes = 64 * 1024;
 // are two of these threads now rather than one.
 constexpr size_t kIoStackBytes = 16 * 1024;
 
+// 32 KB for the audio decoder. Twice the I/O thread's, because Tremor's inverse
+// MDCT is not a shallow call and the 3DS build's `-Werror=stack-usage=8192`
+// bounds a single frame rather than a stack of them -- and half the generation
+// worker's, because it does not recurse.
+constexpr size_t kAudioStackBytes = 32 * 1024;
+
 void* spawnWorker(void (*entry)(void*), void* arg, mc::WorkerRole role)
 {
     // Read on the main thread, which is where this runs. The kernel refuses a
@@ -306,6 +321,53 @@ void* spawnWorker(void (*entry)(void*), void* arg, mc::WorkerRole role)
     // thread's value is the highest this may ask for.
     s32 mainPriority = 0x30;
     svcGetThreadPriority(&mainPriority, CUR_THREAD_HANDLE);
+
+    if (role == mc::WorkerRole::Audio) {
+        // **Deadline-bound, and the only thread here that is.** A wave buffer
+        // emptying is a deadline measured in tens of milliseconds; missing it
+        // is audible immediately, where a late chunk is merely a late chunk.
+        //
+        // On a New 3DS it goes to core 2 and sits one step *above* the
+        // generation worker already there, because a 40 ms population pass
+        // would otherwise starve it and core 2 has nobody else to be polite to.
+        // The generation worker loses a few percent of a core it is not
+        // frame-coupled to.
+        if (gWorkerIsNew3DS) {
+            // **Core 2 at the main thread's own priority, sharing with the
+            // generation worker** -- deliberately *not* a step above it.
+            //
+            // Preempting generation was the first instinct, and it is the wrong
+            // trade. The kernel refuses a priority numerically below what the
+            // process was granted, and a refused `threadCreate` here is silent:
+            // it would fall through to the Old 3DS path and put the decoder on
+            // core 0 on a console that has a spare core, with nothing to say so.
+            // Paying that risk buys almost nothing, because the decoder does not
+            // need to win a race it is not in -- it needs ~15% of a core against
+            // a third of a second of buffer, and at equal priority the scheduler
+            // round-robins it against generation, which is far more than enough.
+            //
+            // This is also the one priority known to work on this hardware:
+            // the generation worker has used exactly it on core 2 since M4.
+            // **Depth is what covers the deadline here, not priority.**
+            Thread thread =
+                threadCreate(entry, arg, kAudioStackBytes, mainPriority, 2, false);
+            if (thread != nullptr) {
+                return thread;
+            }
+            // A New 3DS whose exheader did not grant core 2 falls through to
+            // the Old 3DS policy, exactly as generation does.
+        }
+
+        // **Old 3DS: core 0, one step below the main thread**, which is the I/O
+        // thread's slot and for a related reason -- it runs in the slack the
+        // main thread leaves while blocked on VBlank, so it cannot cost a
+        // frame. A 3DSX has no other core to move it to, so CONTRIBUTING's
+        // "no decompression on core 0" is met in substance rather than
+        // literally: never on the main thread, one buffer per wake, and a ring
+        // deep enough that a missed frame is inaudible. See ctr/audio.hpp.
+        const s32 priority = mainPriority + 1 > 0x3F ? 0x3F : mainPriority + 1;
+        return threadCreate(entry, arg, kAudioStackBytes, priority, 0, false);
+    }
 
     if (role == mc::WorkerRole::Io) {
         // **Core 0, one step below the main thread, and that is the right
@@ -362,7 +424,8 @@ void joinWorker(void* handle)
 // thing that chose this world -- that was `choice`, which is a copy -- but it
 // is where the render distance, the pack list and the live atlas live, and the
 // pause menu edits all three.
-int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool haveCstick)
+int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngine& sound,
+            ctr::NdspBackend& audio, bool isNew3DS, bool haveCstick)
 {
     ctr::Renderer::Config config;
     // What the options screen last settled on, which starts at the two
@@ -420,9 +483,17 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // On an old 3DS there is no such core. The fallback is what the code did
     // before, said explicitly rather than inherited from the shim: core 0, the
     // bottom priority, living on the main thread's idle time.
-    gWorkerIsNew3DS = isNew3DS;
+    // **The model and the spawn hooks are installed in `main`, not here.** They
+    // used to be set on this line, and that was a bug the moment something
+    // other than a world wanted a thread: audio comes up in `runShell`, before
+    // any world exists, so it found `workerSpawn()` still null and reported
+    // itself unavailable on every console. Process-wide state belongs where the
+    // process starts.
+    //
+    // `gWorkerOnCore2` stays: it is a diagnostic that `spawnWorker` fills in,
+    // and it is per-world because the answer can differ between two worlds on
+    // the same console -- a thread that failed to start on core 2 falls back.
     gWorkerOnCore2 = false;
-    mc::setWorkerThreadOps(&spawnWorker, &joinWorker);
 
     // How much newlib heap is left, for the one thing that can usefully spend
     // it: the cache's cap on world owed to the card. See heap.hpp.
@@ -482,10 +553,13 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // autosave does, the remainder is the wrong thing to keep: saving it would
     // reset the world to day zero every time.
     //
-    // Double rather than i64 because a frame is a fraction of a tick and the
-    // sky needs the fraction; a world would have to run for millions of days
-    // before the mantissa stopped naming individual ticks.
-    double worldTicks = double(world.level().time);
+    // **The world clock is the tick system's now, not this loop's.** It used
+    // to be a double advanced by `dt * 20` here, which was right for the sky
+    // and wrong for everything else: a block update has to happen a whole
+    // number of times or not at all, and at 30 fps `0.667` of a grass tick is
+    // not a thing that can be run. `TickTimer` is a1.1.2's own accumulator and
+    // hands out whole ticks plus the fraction the sky still wants.
+    mc::tick::TickTimer tickTimer;
 
     // **Static for the same reason `world` above is**, and now with a second
     // reason: the overlay carries the spectator screen's map, whose colour
@@ -497,6 +571,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // which card their worlds are on. `choice` outlives this call, which is why
     // the overlay may keep the pointer.
     overlay.begin(choice.worldName.c_str(), isNew3DS ? "New 3DS" : "Old 3DS");
+    overlay.setAudio(&audio);
     // **The bottom screen is the world's gamemode's**, which is why this is read
     // off the choice rather than assumed: Spectator gets the map, and the modes
     // that will have a hotbar get the screens it is going in.
@@ -549,17 +624,56 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // The original shows a progress screen and generates the spawn area before
     // it hands over. This is the same idea with the same frame loop the game
     // uses, which is what keeps it honest: the world is streamed, not
-    // pre-generated by a second code path, and the wait ends when there is
-    // something on the screen rather than at a fixed column count.
+    // pre-generated by a second code path.
     //
-    // Three ways out, because "generating" must never become "hung": geometry
-    // exists, or nine columns are resident and the spawn is genuinely open sky
-    // and air, or the player presses START. The cap is 30 seconds at the
-    // refresh rate -- long enough for a New 3DS worker to make the nine columns
-    // a section needs before it can be meshed, short enough that a console that
-    // cannot is still usable.
+    // **It waits for the whole render distance now, not for the first quad.**
+    // It used to stop at "geometry exists, or nine columns are resident", which
+    // is the smallest thing that is not an empty screen -- and it is also
+    // exactly what a player then walks straight off the edge of. The target is
+    // every column inside the render distance *published*, which is the
+    // streamer's own word for "the renderer has it and it can be drawn"; that
+    // in turn requires the ring one chunk further out to be generated too,
+    // because a section cannot be meshed until its eight neighbours are in
+    // memory. So the world the player is handed reaches the horizon in every
+    // direction, and one chunk past it.
+    //
+    // Three ways out, because "generating" must never become "hung":
+    //
+    //   * the square fills -- every column in range is drawable;
+    //   * the player presses START, which is the reason the hint is on both
+    //     screens; or
+    //   * nothing new becomes drawable for 45 seconds, which is a generator
+    //     that has stopped rather than one that is slow. The outer cap is six
+    //     minutes and exists only so a console cannot sit here forever if even
+    //     the stall detector is wrong.
+    //
+    // 45 seconds rather than something tighter because the first published
+    // column is the slowest: nothing can be published until a 3x3 of columns
+    // exists, and on an old 3DS the worker shares core 0 with this loop.
     if (choice.created) {
-        constexpr int kMaxWaitFrames = 1800;
+        constexpr int kMaxWaitFrames = 60 * 60 * 6;
+        constexpr int kStallFrames = 60 * 45;
+
+        // The square is drawn at the same radius the wait is counted over, so
+        // it is full exactly when the bar is -- a ring that could never turn
+        // green would read as a stall rather than as an outer ring.
+        int radius = renderer.config().meshDistance;
+        if (radius > kMaxProgressRadius) {
+            radius = kMaxProgressRadius;
+        }
+        if (radius > ctr::ProgressScreen::maxGridRadius()) {
+            radius = ctr::ProgressScreen::maxGridRadius();
+        }
+
+        ctr::ProgressScreen progress;
+        const bool haveScreen = progress.init();
+        if (haveScreen) {
+            progress.begin(ctr::ProgressScreen::Kind::Generating, choice.worldName.c_str());
+            progress.setNote("START to go in anyway");
+        }
+
+        int mostDone = -1;
+        int sinceProgress = 0;
         for (int waited = 0; waited < kMaxWaitFrames && aptMainLoop(); ++waited) {
             hidScanInput();
             if (hidKeysDown() & KEY_START) {
@@ -570,29 +684,42 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
             renderer.chunks().beginFrame(++frameCounter, frustum, camera.chunkX(),
                                          camera.sectionY(), camera.chunkZ());
             world.update(renderer.chunks(), camera.chunkX(), camera.chunkZ(), budget);
-            renderer.drawFrame(camera);
 
-            if (renderer.frameStats().quads > 0 || world.stats().columnsResident >= 9) {
+            const render::WorldStreamer::ProgressCount made =
+                world.progressWithin(camera.chunkX(), camera.chunkZ(), radius);
+            if (made.done > mostDone) {
+                mostDone = made.done;
+                sinceProgress = 0;
+            } else if (++sinceProgress > kStallFrames) {
                 break;
             }
 
-            // Once a second, and the numbers are the streamer's own: `owed` is
-            // columns in range that do not exist yet, `asking` how many cells
-            // are still waiting to be told whether the world already has them.
-            // Owed falling is progress; owed high with nothing being asked is
-            // the stall the debug page was built to name.
-            if (waited % 60 == 0) {
-                const render::WorldStreamer::Stats& stats = world.stats();
-                std::printf("\x1b[2J\x1b[1;1H");
-                std::printf("\x1b[32mGenerating %s\x1b[0m\n\n", choice.worldName.c_str());
-                std::printf("seed  %lld\n", (long long)world.level().randomSeed);
-                std::printf("owed  %d\n", stats.pendingGeneration);
-                std::printf("asking %d cells\n", stats.unclassified);
-                std::printf("here  %d columns\n\n", stats.columnsResident);
-                std::printf("worker %s\n\n", stats.workerRunning ? "running" : "\x1b[31mnot running\x1b[0m");
-                std::printf("START to go in anyway.\n");
+            if (haveScreen) {
+                world.progressGrid(camera.chunkX(), camera.chunkZ(), radius, gProgressCells);
+                progress.setGrid(gProgressCells, radius * 2 + 1);
+                progress.setCounts(u32(made.done), u32(made.total));
+                progress.present(renderer, camera);
+            } else {
+                // No citro2d, so no bar -- but the world still gets made and
+                // the frame still gets drawn, which is what this loop did
+                // before the screen existed.
+                renderer.drawFrame(camera);
+            }
+
+            if (made.finished()) {
+                break;
             }
         }
+
+        if (haveScreen) {
+            progress.shutdown();
+        }
+        // The bottom screen is the progress screen's, and the clock has not
+        // been read since before a minute of generation. Both are the same two
+        // things the pause menu hands back -- see the note where runPause
+        // returns.
+        overlay.invalidate();
+        lastTick = svcGetSystemTick();
     }
 
     while (aptMainLoop()) {
@@ -752,18 +879,20 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
         }
         tuneStereo(renderer);
 
-        // Day and night advance at the original's rate and touch nothing but
-        // the lightmap: 20 ticks per second out of 24000 in a day.
-        worldTicks += double(dt) * 20.0;
+        // **The world's clock.** `svcGetSystemTick` off the ARM11's fixed
+        // oscillator is the one clock this console has, which is why the
+        // original's two-clock correction is not reproduced; see
+        // core/tick/tick_timer.hpp.
+        tickTimer.advance(double(tick) / double(SYSCLOCK_ARM11));
 
         // Alpha's own curve, from the jar. It holds full brightness for the
         // first half of the day rather than peaking at noon, which is the
         // difference between a world that looks like Alpha and one that looks
         // permanently overcast.
-        const double dayTicks = worldTicks - std::floor(worldTicks / 24000.0) * 24000.0;
-        const float timeOfDay = float(dayTicks / 24000.0);
-        renderer.setSkyDarken(
-            world::skyLightSubtracted(i64(dayTicks), float(dayTicks - std::floor(dayTicks))));
+        const i64 worldTicks = world.level().time;
+        const i64 dayTicks = worldTicks - (worldTicks / 24000) * 24000;
+        const float timeOfDay = float(double(dayTicks) / 24000.0);
+        renderer.setSkyDarken(world::skyLightSubtracted(dayTicks, tickTimer.partialTicks()));
 
         // **Where the player is and what time it is, for whatever saves next.**
         // Four stores a frame; the autosave timer below, the flush when the
@@ -771,7 +900,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
         // a world always reopened where it was first entered and at the time it
         // was created.
         world.setPlayerState(camera.x, camera.y, camera.z, camera.yaw * 180.0f / kPi,
-                             camera.pitch * 180.0f / kPi, i64(worldTicks));
+                             camera.pitch * 180.0f / kPi, worldTicks);
 
         // Each phase timed on its own. The frame period alone cannot tell a
         // console that is at its refresh rate from one that is struggling --
@@ -786,6 +915,44 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
 
         const u64 beforeStream = svcGetSystemTick();
         world.update(renderer.chunks(), camera.chunkX(), camera.chunkZ(), budget);
+
+        // **The world tick, after the streamer and before the draw.** After,
+        // because a tick may only touch columns the grid has settled for this
+        // frame. Zero ticks is the common case at 30 fps and costs a compare.
+        //
+        // **A block it changes is drawn one frame stale, and that is now the
+        // design rather than an accident.** This comment used to claim the tick
+        // was placed before the draw so a changed block reached the mesher in
+        // the same frame. It does not: `beginFrame` above built this frame's
+        // draw list, `world.update` already spent this frame's mesh budget, and
+        // the tick runs after both -- so a remesh cannot land before the frame
+        // after next. Moving the tick earlier would not fix that either, since
+        // the draw list is fixed before any of it.
+        //
+        // What fixes it is not re-ordering but keeping the old mesh drawable:
+        // an invalidated section holds its geometry and is drawn one tick out of
+        // date until its replacement is uploaded. See
+        // SectionField::sectionDirty. Before that, a block change took the
+        // section out of the draw list a frame before its replacement existed,
+        // which is what made edited chunks flash transparent.
+        const int ticksDue = tickTimer.elapsedTicks();
+        const u64 beforeTick = svcGetSystemTick();
+        world.stepTicks(renderer.chunks(), ticksDue);
+        timing.tickMs = ctr::millisFromTicks(svcGetSystemTick() - beforeTick);
+        timing.ticksRun = ticksDue;
+
+        // **The music counter, on the same ticks the world ran.** a1.1.2 calls
+        // `of.c()` from the last statement of `PlayerControllerSP.onUpdate`,
+        // which `Minecraft.i()` runs once per tick with a world open and the
+        // game unpaused -- so this belongs here, beside `stepTicks`, and takes
+        // the same `elapsedTicks()`. The pause menu is its own loop and does
+        // not reach this line, which is the gate `Minecraft.m` was.
+        //
+        // Zero ticks is the common case at 30 fps and costs a compare. When it
+        // is not zero this is a counter decrement and, a few times an hour, a
+        // file open handed to the decode thread -- never a decode.
+        sound.tick(ticksDue);
+        sound.update();
         // The autosave timer. It writes level.dat and refreshes session.lock,
         // neither of which had any trigger but close() before, and hands
         // anything still dirty to the I/O thread. Generated columns do not wait
@@ -814,8 +981,21 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, bool isNew3DS, bool 
     // exactly the case a number answers and a word does not -- and because a
     // world saved a moment ago by the pause menu owes nothing at all, which
     // this now says rather than sitting on the same still screen.
-    SaveScreen saveScreen;
-    world.close(ctr::nowMillis(), &saveScreen, printSaveProgress);
+    //
+    // citro2d is free here on every path out of the loop: the pause menu gives
+    // it back the moment runPause returns, and the shell gives it back before
+    // runGame is called at all. If it cannot be had, the world is still saved
+    // -- close() is told to report to nobody, which is what it did before this
+    // screen existed.
+    ctr::ProgressScreen saving;
+    if (saving.init()) {
+        saving.begin(ctr::ProgressScreen::Kind::Saving, choice.worldName.c_str());
+        SaveScreen saveScreen{&saving, &renderer, &camera};
+        world.close(ctr::nowMillis(), &saveScreen, drawSaveProgress);
+        saving.shutdown();
+    } else {
+        world.close(ctr::nowMillis());
+    }
     renderer.shutdown();
     return 0;
 }
@@ -840,6 +1020,34 @@ int runShell(bool isNew3DS, bool haveCstick)
     ctr::Menu menu;
     int result = 0;
 
+    // **Audio is process-lifetime and comes up before the first menu.**
+    //
+    // Two reasons it is not per-world. ndsp is a process-scoped service, so
+    // bringing it up and down around each world would hand the DSP back and
+    // take it again for nothing; and a track that starts near the end of a
+    // session keeps playing while the player is on the title screen, which is
+    // what the original does -- `of.c()` stops being *called* when the world
+    // closes, but nothing stops the track.
+    //
+    // The settings are read here rather than borrowed from the menu because
+    // the `audio` key decides whether ndsp is initialised at all, and that has
+    // to be answered before anything else happens.
+    mc::io::PosixFileSystem fs;
+    mc::settings::GameSettings boot;
+    mc::settings::loadSettings(fs, mc::settings::kSettingsPath, &boot);
+
+    ctr::NdspBackend audio;
+    audio.init(boot.audio != 0);
+
+    // a1.1.2 seeds the music counter from `new Random()`. The console's clock
+    // is the same idea and the same lack of reproducibility; the tests pass a
+    // constant instead. See core/audio/music_ticker.hpp.
+    mc::audio::SoundEngine sound(fs, audio, i64(ctr::nowMillis()));
+    sound.loadResources();
+    sound.setMusicVolume(boot.musicVolume < 0 ? 1.0f
+                                              : float(boot.musicVolume) / 100.0f);
+    menu.setSound(&sound, &audio);
+
     while (aptMainLoop()) {
         if (!menu.init(isNew3DS)) {
             std::printf("\x1b[31mmenu init failed\x1b[0m\n");
@@ -853,11 +1061,15 @@ int runShell(bool isNew3DS, bool haveCstick)
             break;
         }
 
-        result = runGame(choice, menu, isNew3DS, haveCstick);
+        result = runGame(choice, menu, sound, audio, isNew3DS, haveCstick);
         if (result != 0) {
             break;
         }
     }
+
+    // Before C3D_Fini and before main() tears the rest down: the decode thread
+    // has to be joined while the heap it reads from is still there.
+    audio.shutdown();
 
     C3D_Fini();
     return result;
@@ -903,6 +1115,13 @@ int main()
     // dereferences ir:rst's shared memory unconditionally, so a failed init has
     // to be remembered rather than shrugged off.
     const bool haveCstick = R_SUCCEEDED(irrstInit());
+
+    // **Before anything asks for a thread.** Both are process-wide and neither
+    // depends on a world: the audio decode thread starts with the shell, long
+    // before the first world is opened, and it needs the model to pick a core.
+    // See the comment in runGame where these used to live.
+    gWorkerIsNew3DS = isNew3DS;
+    mc::setWorkerThreadOps(&spawnWorker, &joinWorker);
 
     // The M0 probe is still the only way to re-derive the hardware numbers the
     // design rests on, so it stays one button away rather than one git tag away.

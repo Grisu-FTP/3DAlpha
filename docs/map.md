@@ -177,6 +177,24 @@ of the map and the sixteen framebuffer halfwords it lands on run the same direct
 path when the surface's z stride is exactly −1 and walks pixel by pixel otherwise, so a host test
 reading a row-major buffer gets the same picture — which `tests/map_test.cpp` checks both ways.
 
+**What the map samples, and when — the second thing hardware had to say.** A chunk is sampled once,
+ever, and the sampling is done from the chunks the game already holds, so the only question is how
+many to take per frame. It was one on an old 3DS and two on a New one, scanned in raster order from
+the north-west corner of the window, and both halves of that were wrong. A cold window is up to 196
+chunks: at one a frame that is six seconds, and because the scan ran from the north-west corner, the
+ground *under the marker* — the only part anyone looks at — was not reached until halfway through
+it. What the player
+saw was a map that stayed blank on entering a world and filled in only after they had walked about
+for a while.
+
+The scan now runs in **square rings out from the player's own chunk**, which is both the order the
+picture is read in and the order the streamer brings the columns in, so a spent budget is rarely
+spent on a chunk that has not arrived. And the budget is **sixteen a frame on a New 3DS, eight on an
+old one**, against a sample's ~50 µs — under a millisecond either way — with a **cold-start burst of
+64** that runs until a whole pass finds nothing left to take. The burst ends on "nothing to take"
+rather than on "window full", because at render distances below 7 the map reaches further than the
+renderer does and the window never fills.
+
 What still costs the old price is a **texture pack change or a grid toggle**: every patch in the
 window is stale at once, which is at most 196 of them, about 5.9 ms on that console — once, at a moment the
 screen is already expected to stop and think. That is deliberately not budgeted: spreading it over

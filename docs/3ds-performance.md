@@ -933,7 +933,8 @@ what stops executing.
 | `fancy_leaves` | leaves become opaque cubes ⇒ interior faces culled ⇒ far fewer quads |
 | `fancy_water` | translucent pass skipped; water becomes alpha-tested |
 | `fps_cap` (30 / 60) | frame pacing halves GPU and CPU work |
-| `audio` | ndsp never initialised, mixing thread never spawned |
+| `audio` | ndsp never initialised, decode thread never spawned, no linear memory taken. Off is the whole subsystem absent, not a volume of zero |
+| `music_volume` | 0 stops the playing track outright and frees its voice, as a1.1.2's `of.a()` does — it does not play silently |
 | `texture_quality` | atlas downscaled ⇒ less VRAM, better texture-cache hit rate |
 | `worker_threads`, `n3ds_clock` | scheduling and clock policy |
 

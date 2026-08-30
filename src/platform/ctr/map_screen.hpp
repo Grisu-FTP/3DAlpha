@@ -203,9 +203,33 @@ private:
     i32 touchedOriginZ_ = 0;
     bool touched_ = false;
 
-    // Chunks sampled per frame. One on an old 3DS, two on a New one -- the same
-    // split the streamer's own column budget uses, and for the same reason.
-    int sampleBudget_ = 1;
+    // Chunks sampled per frame once the window is full. Eight on an old 3DS,
+    // sixteen on a New one.
+    //
+    // **This was one and two, and it is why the map came up blank.** Sampling
+    // is 1.3 us on the host against the window copy's 16.9, which scales to
+    // roughly 50 us on the console -- so one a frame was not a budget, it was
+    // an accident: a cold window is up to 196 chunks, which at one a frame is
+    // six seconds of a mostly empty picture, and because the scan ran in raster
+    // order from the north-west corner, the ground under the marker was not
+    // reached until halfway through it. What the player saw was a map that
+    // stayed blank until they had walked about for a while. Sixteen a frame is
+    // under a millisecond, and the steady case is a handful of chunks arriving
+    // from the streamer rather than a full window.
+    int sampleBudget_ = 8;
+
+    // **The cold-start budget**, spent until the map has caught up with the
+    // streamer for the first time.
+    //
+    // At world entry the store is empty and the streamer has published almost
+    // nothing, so there is nothing to sample yet and this costs a hash lookup
+    // per chunk. Columns then arrive over the next second or two and this takes
+    // them as fast as they come. 64 chunks is about 3 ms on the console -- a
+    // frame's worth of hitch at most, at the one moment the game is already
+    // known to be catching up. It ends the first time a whole pass finds
+    // nothing left to take.
+    static constexpr int kPrimeBudget = 64;
+    bool primed_ = false;
 };
 
 }  // namespace mc::ctr

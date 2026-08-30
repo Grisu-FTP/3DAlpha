@@ -342,6 +342,16 @@ bool Renderer::init(const Config& config, bool isNew3DS)
 
 void Renderer::rebuildChunks()
 {
+    // **Wait for the GPU before giving any of it back.** C3D_FrameEnd only
+    // enqueues; the frame recorded a moment ago is still fetching vertices out
+    // of exactly the blocks shutdown() is about to linearFree. VboPool's
+    // per-block retirement (see VboPool::kRetireFrames) handles the steady
+    // state, but a wholesale teardown outruns it by definition -- it frees
+    // everything, including what is in flight. This is a settings change that
+    // happens once when the player moves a slider, so a full drain costs
+    // nothing worth counting.
+    C3D_FrameSync();
+
     render::ChunkRendererConfig chunkConfig = chunks_.config();
     chunkConfig.meshDistance = config_.meshDistance;
 
@@ -399,6 +409,11 @@ void Renderer::reclaimScreen()
 
 bool Renderer::setAtlas(const texture::AtlasImage& image)
 {
+    // The in-flight frame is sampling the texture this is about to free, for
+    // the same reason rebuildChunks has to wait: FrameEnd enqueued the list and
+    // did not wait for it. Once, on a texture-pack change.
+    C3D_FrameSync();
+
     // The old texture is handed back *first*. Atlas::init asks for VRAM before
     // it will settle for linear, and holding 256 KB of the old one while the
     // new one asks would quietly demote the new one to linear on a console
@@ -643,6 +658,19 @@ void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 orig
     for (int i = 0; i < count; ++i) {
         const render::VisibleSection& section = list[reversed ? count - 1 - i : i];
 
+        // **The list is a snapshot; the pool is not.** This frame's meshing ran
+        // after buildVisibleSet, and an upload or an eviction can have handed
+        // this slot to a different section since. Drawing it anyway renders
+        // that section's vertices through this section's model matrix -- a
+        // chunk of world standing somewhere it does not belong. The generation
+        // was recorded when the list was built; a mismatch means the slot
+        // changed hands and there is nothing here to draw.
+        if (!pool.resident(section.slot)
+            || pool.generation(section.slot) != section.slotGeneration) {
+            ++frameStats_.staleSkipped;
+            continue;
+        }
+
         const mesh::MeshRanges& ranges = pool.ranges(section.slot);
         const bool geoQuads = pass == Pass::Cube && ranges.cubeFormat == mesh::CubeFormat::Quads;
         const usize stride = pass == Pass::Cube
@@ -651,9 +679,29 @@ void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 orig
         const usize bytes = pass == Pass::Cube          ? ranges.cubeBytes
                             : pass == Pass::Detail      ? ranges.detailBytes
                                                         : ranges.translucentBytes;
-        const int quads = pass == Pass::Cube ? int(ranges.cubeQuads()) : int(bytes / (4 * stride));
+        int quads = pass == Pass::Cube ? int(ranges.cubeQuads()) : int(bytes / (4 * stride));
         if (quads == 0) {
             continue;
+        }
+
+        // **The shared index buffer is a hard bound, and only the cube pass has
+        // a proof it fits.** kMaxQuadsPerSection is derived from the
+        // checkerboard -- half the cells solid, each showing all six faces --
+        // which bounds a pass whose faces are culled against their neighbours.
+        // The detail pass has no such derivation: a torch emits five quads and
+        // a plant four whatever is beside them, so a dense enough section can
+        // ask for more indices than exist. C3D_DrawElements would then read
+        // past the 144 KB array into whatever linear memory follows it, and
+        // garbage indices fetch vertices from outside the bound buffer --
+        // polygons stretched to nothing, or a GPU fault.
+        //
+        // The mesher stops emitting at the bound (see mesh::kMaxQuadsPerSection)
+        // so this should never fire; it is here because the mesher's guard was
+        // an assert, asserts are compiled out in Release, and the console is
+        // the only build that matters for this failure.
+        if (quads > mesh::kMaxQuadsPerSection) {
+            quads = mesh::kMaxQuadsPerSection;
+            ++frameStats_.clampedDraws;
         }
 
         if (splitIfCommandBufferIsFull()) {

@@ -108,6 +108,19 @@ public:
         // corrupted linear memory before the split guard existed, so this is
         // the number that says whether that crash is what was happening.
         int commandSplits = 0;
+
+        // Sections dropped from a draw because the pool slot the visible set
+        // recorded had since changed hands. Small and non-zero is the guard
+        // doing its job while chunks are being edited; large means the pool is
+        // churning hard enough that the draw list is stale by the time it runs.
+        int staleSkipped = 0;
+
+        // Draws whose quad count was clipped to the shared index buffer's
+        // capacity. Above zero means a section asked to draw more quads than
+        // there are indices, which before the clamp read past the array and
+        // fetched vertices from outside the bound buffer. It should be zero;
+        // if it is not, the mesher is emitting past its own bound.
+        int clampedDraws = 0;
     };
 
     bool init(const Config& config, bool isNew3DS);

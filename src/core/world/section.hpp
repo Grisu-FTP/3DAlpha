@@ -90,6 +90,23 @@ public:
     void setBlock(int i, BlockId id);
     void setBlock(int x, int y, int z, BlockId id) { setBlock(index(x, y, z), id); }
 
+    // Whether any block id present here ticks randomly.
+    //
+    // **Answered from the palette, without touching the index array**, which is
+    // the whole point: the random tick reads 80 positions per chunk per tick
+    // and a1.1.2 ticks a 19x19 square, so at render distance 8 that is 28,880
+    // reads a tick and 577,600 a second -- the largest single cost in the tick,
+    // and every one of them a random offset into a 32 KB column, i.e. a cache
+    // miss on a 268 MHz ARM11 followed by the encoding switch and a palette
+    // load. Asking this once per section instead lets almost all of them be
+    // rejected against a handful of hot bytes: most of a column above ground is
+    // uniform air, and nothing underground ticks either.
+    //
+    // Conservative for Direct16 -- it answers true rather than scanning 4,096
+    // entries -- which costs nothing in practice, because a section with more
+    // than 256 distinct ids does not occur in an Alpha world.
+    bool mayTickRandomly() const;
+
     // Copies `count` blocks from flat index `start`.
     //
     // The point is what does *not* happen per block: the encoding switch, the

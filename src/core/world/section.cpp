@@ -1,5 +1,7 @@
 #include "core/world/section.hpp"
 
+#include "core/block/registry.hpp"
+
 #include <cstring>
 
 namespace mc::world {
@@ -428,6 +430,25 @@ void Section::compact()
     }
 
     adoptFlat(flat.get(), distinct, overflow ? kPalette8Max + 1 : distinctCount);
+}
+
+bool Section::mayTickRandomly() const
+{
+    switch (encoding_) {
+    case SectionEncoding::Uniform:
+        return block::def(uniform_).tickRandomly;
+    case SectionEncoding::Palette4:
+    case SectionEncoding::Palette8:
+        for (BlockId id : palette_) {
+            if (block::def(id).tickRandomly) {
+                return true;
+            }
+        }
+        return false;
+    case SectionEncoding::Direct16:
+        return true;
+    }
+    return true;
 }
 
 usize Section::memoryUsage() const

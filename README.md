@@ -148,13 +148,20 @@ make host && ./build-host/3dalpha --mesh <world>   # mesh a real world, print th
 | M3 | Singleplayer gameplay | not started — **except the main menu and the pause menu**: title, world list, create-with-seed, delete, options; START pauses to Resume / Options / Exit World. The game starts from it |
 | M4 | a1.1.2 world generation, seed-exact | **done** — terrain, caves, the Far Lands, the whole population pass and lighting match a real a1.1.2 world byte for byte under a real JVM's own output, and generation runs on a worker thread (core 2 on a New 3DS) |
 | M5 | Multiplayer (protocol 2) | not started |
-| M6 | Audio, mobs, texture-pack browser, packaging | **texture-pack browser done**, ahead of the rest of M6 — pack selection, jar import, HD downscaling, settings persistence. Audio, mobs and packaging not started |
+| M6 | Audio, mobs, texture-pack browser, packaging | **texture-pack browser done**; **background music done, built for both targets, not yet heard on hardware** — a1.1.2's own music timer over an ndsp voice fed by a Tremor decode thread, with an Options → Sound screen and silent degradation when the DSP firmware, the resources folder or the decoder is absent. Sound effects wait on M3: nothing in the port can emit one yet. Mobs and packaging not started |
 
 ## Documentation
 
+Two of these are **generated** — `make index` rewrites them, and `python3 tools/gen_index.py --check`
+fails when they are stale. They exist so a section can be found and read on its own: `status.md` is
+over 200 KB, and almost every question it answers lives in one of its sections.
+
 | Doc | What's in it |
 |---|---|
-| [docs/status.md](docs/status.md) | **Start here.** Milestone state, measured numbers, next steps, open questions |
+| [CLAUDE.md](CLAUDE.md) | **Start here.** Commands, layout, review-blocking rules, environment facts, and where everything else is |
+| [docs/doc-index.md](docs/doc-index.md) | *Generated.* Every heading in `docs/`, with the line range it occupies |
+| [docs/code-map.md](docs/code-map.md) | *Generated.* Every module, one sentence each, from the file's own header comment |
+| [docs/status.md](docs/status.md) | The authoritative handoff: milestone state, measured numbers, next steps, open questions. Read a section, not the file |
 | [docs/architecture.md](docs/architecture.md) | Module map, threading model, memory budget |
 | [docs/worldgen-a1.1.2.md](docs/worldgen-a1.1.2.md) | The original's generator, recovered from the jar: classes, seed derivation, hazards |
 | [docs/build-versions.md](docs/build-versions.md) | One binary per MC version: slots, codegen, title IDs |
@@ -175,9 +182,15 @@ the box with nothing to dump, copy or configure.
 
 **Textures and sounds are the only things a player may supply, and both are optional.** Drop a
 `minecraft.jar` or a texture-pack zip in `sdmc:/3dalpha/packs` for authentic visuals and pick it
-from Options → Texture Pack; drop an original `resources/` folder in for sound, which a1.1.2
-downloaded at runtime and never shipped. Without either, the game is complete and playable —
-placeholder textures, no audio.
+from Options → Texture Pack; drop an original `resources/` folder in `sdmc:/3dalpha/` for sound,
+which a1.1.2 downloaded at runtime and never shipped. Without either, the game is complete and
+playable — placeholder textures, no audio.
+
+Music also needs a DSP firmware, which Nintendo's copyright means no homebrew can ship: dump your
+own console's with Luma3DS's Rosalina menu → Miscellaneous options → Dump DSP firmware. Without it
+the game runs silently and Options → Sound says why. With both, background music starts on a1.1.2's
+own timer — once in the first ten minutes, then after every 20–40 minutes of quiet. See
+[docs/audio-a1.1.2.md](docs/audio-a1.1.2.md).
 
 The jar importer moves files you already own from one file on your own card to another. Nothing is
 downloaded, nothing is sent anywhere, and no extracted asset enters this repository or its build.

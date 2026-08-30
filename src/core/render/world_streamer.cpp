@@ -21,6 +21,13 @@ int floorMod(i32 value, int modulus)
 
 bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
 {
+    // Before anything can fail: a tick left over from a previous world holds
+    // that world's clock and a dirty set pointing at columns this one does not
+    // have, and an open that fails half way would otherwise leave it in place.
+    tick_.reset();
+    light_.reset();
+    tickDirtyCells_ = 0;
+
     cache_.configure(cacheConfig_);
     if (cache_.open(worldDir, nowMillis) != world::OpenResult::Ok) {
         return false;
@@ -61,8 +68,162 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
         }
     }
 
+    // The tick's own random sources are seeded from the world seed. a1.1.2
+    // seeds them from the wall clock, so its random ticks are not reproducible
+    // between two runs of the same world and nothing depends on them being;
+    // seeding from the seed costs no fidelity and makes a test able to assert.
+    tick::TickAccess tickAccess;
+    tickAccess.ctx = this;
+    tickAccess.column = &WorldStreamer::tickColumn;
+    tickAccess.changed = &WorldStreamer::tickBlockChanged;
+    tick_ = std::make_unique<tick::TickWorld>(tickAccess, level_.randomSeed);
+    tick_->setTime(level_.time);
+    tick_->setSnowCovered(level_.snowCovered);
+    tickDirtyCells_ = 0;
+
+    // The relighter reaches columns through the same hook the tick does -- both
+    // want "the resident column or nothing", and neither may generate.
+    world::LightAccess lightAccess;
+    lightAccess.ctx = this;
+    lightAccess.column = &WorldStreamer::tickColumn;
+    lightAccess.sectionLit = &WorldStreamer::lightSectionLit;
+    light_ = std::make_unique<world::LightUpdater>(lightAccess);
+
     builder_.reserveQuads(4096);
     return true;
+}
+
+world::ChunkColumn* WorldStreamer::tickColumn(void* ctx, i32 chunkX, i32 chunkZ)
+{
+    auto* self = static_cast<WorldStreamer*>(ctx);
+    Cell* cell = self->find(chunkX, chunkZ);
+    if (cell == nullptr || cell->state != CellState::Loaded) {
+        return nullptr;
+    }
+    return cell->column.get();
+}
+
+// A section's stored light moved, so its mesh -- which bakes light into every
+// vertex -- is wrong. Same path a block change takes, because the renderer does
+// not care *why* a section changed.
+void WorldStreamer::lightSectionLit(void* ctx, i32 chunkX, int sectionY, i32 chunkZ)
+{
+    auto* self = static_cast<WorldStreamer*>(ctx);
+    if (self->tickRenderer_ != nullptr) {
+        self->tickRenderer_->invalidateSection(chunkX, sectionY, chunkZ);
+    }
+    // The column's stored light changed, so what is on the card is out of date
+    // just as surely as if a block had changed in it.
+    if (Cell* cell = self->find(chunkX, chunkZ)) {
+        if (!cell->tickDirty) {
+            cell->tickDirty = true;
+            ++self->tickDirtyCells_;
+        }
+    }
+}
+
+void WorldStreamer::tickBlockChanged(void* ctx, i32 x, int y, i32 z)
+{
+    auto* self = static_cast<WorldStreamer*>(ctx);
+    const i32 cx = x >> 4;
+    const i32 cz = z >> 4;
+
+    // **Light first, because it needs the height map the tick has just moved
+    // and the block it has just written.** This only enqueues; the propagation
+    // is budgeted and happens at the end of stepTicks.
+    if (self->light_ != nullptr) {
+        self->light_->blockChanged(x, y, z);
+    }
+
+    if (self->tickRenderer_ != nullptr) {
+        const int sy = y / world::Section::kSize;
+        self->tickRenderer_->invalidateSection(cx, sy, cz);
+
+        // A face on the boundary of a section is culled against its
+        // neighbour, so a block on the edge changes two meshes and a block in
+        // a corner changes four. Invalidating unconditionally would quadruple
+        // the mesh work for the common case, so it is asked per axis.
+        const int lx = int(x & 15);
+        const int lz = int(z & 15);
+        const int ly = y % world::Section::kSize;
+        if (lx == 0) self->tickRenderer_->invalidateSection(cx - 1, sy, cz);
+        if (lx == 15) self->tickRenderer_->invalidateSection(cx + 1, sy, cz);
+        if (lz == 0) self->tickRenderer_->invalidateSection(cx, sy, cz - 1);
+        if (lz == 15) self->tickRenderer_->invalidateSection(cx, sy, cz + 1);
+        if (ly == 0 && sy > 0) self->tickRenderer_->invalidateSection(cx, sy - 1, cz);
+        if (ly == world::Section::kSize - 1 &&
+            sy + 1 < world::ChunkColumn::kSectionCount) {
+            self->tickRenderer_->invalidateSection(cx, sy + 1, cz);
+        }
+    }
+
+    // O(1), on the cell itself. See Cell::tickDirty for what this replaced and
+    // why the old linear scan got slower the longer a session ran.
+    if (Cell* cell = self->find(cx, cz)) {
+        if (!cell->tickDirty) {
+            cell->tickDirty = true;
+            ++self->tickDirtyCells_;
+        }
+    }
+}
+
+void WorldStreamer::stepTicks(ChunkRenderer& renderer, int ticks)
+{
+    if (!open_ || tick_ == nullptr || ticks <= 0 || !centreSet_) {
+        return;
+    }
+
+    // a1.1.2 ticks a 19x19 square of chunks around the player regardless of
+    // render distance. We cannot tick a column we do not hold, so the radius
+    // is the smaller of the two -- and at the render distances this console
+    // runs, ours is the smaller one. The consequence is stated rather than
+    // hidden: at render distance 6 a world simulates 13x13 chunks where the
+    // original simulates 19x19, so crops at the edge of view grow while the
+    // original's grow a little further out still.
+    int radius = loadRadius_;
+    if (radius > tick::TickWorld::kChunkTickRadius) {
+        radius = tick::TickWorld::kChunkTickRadius;
+    }
+
+    const tick::TickWorld::Centre centre{centreX_, centreZ_};
+
+    tickRenderer_ = &renderer;
+    for (int i = 0; i < ticks; ++i) {
+        tick_->tick(&centre, 1, radius);
+    }
+
+    // **Settle what the ticks disturbed, with the renderer still in hand.** The
+    // relighter reports the sections whose stored light moved, and those need
+    // remeshing exactly as a block change does -- light is baked into vertices.
+    // Budgeted, so a roof coming off costs latency rather than a frame; what is
+    // left stays queued for the next one.
+    if (light_ != nullptr) {
+        light_->drain(kLightBudgetPerFrame);
+    }
+    tickRenderer_ = nullptr;
+
+    level_.time = tick_->time();
+}
+
+void WorldStreamer::flushTickDirty()
+{
+    // One clone and one queued write per column that changed, however many
+    // blocks in it changed -- which is the whole reason this is deferred to
+    // the save boundary instead of being done in the callback.
+    //
+    // A pass over the grid rather than over a list of coordinates: the grid is
+    // at most 729 cells, this runs on the autosave timer rather than per frame,
+    // and it cannot miss a column the way a coordinate list could once the
+    // centre had moved past it.
+    for (Cell& cell : cells_) {
+        if (!cell.tickDirty) continue;
+        if (cell.state == CellState::Loaded && cell.column != nullptr) {
+            // Main thread: queue the write, never perform it here.
+            cache_.save(*cell.column, world::ChunkCache::SavePressure::Defer);
+        }
+        cell.tickDirty = false;
+    }
+    tickDirtyCells_ = 0;
 }
 
 // ChunkGenerator::Store. The generator asks the world what is already there and
@@ -237,6 +398,7 @@ void WorldStreamer::workerMain()
         workerEvictedLive_ = generator_->stats().evictedLive;
         workerUnlightable_ = generator_->stats().sweepUnlightable;
         workerIncomplete_ = generator_->stats().sweepIncomplete;
+        workerRetiredLive_ = generator_->stats().retiredLive;
         // The coordinate goes back to the main thread, which keeps it off the
         // slate until drainGenerated has put the column in the grid. A list
         // rather than a single slot, because more than one column can finish
@@ -291,6 +453,7 @@ void WorldStreamer::drainGenerated(ChunkRenderer& renderer)
         stats_.generationFailures = generationFailures_;
         stats_.generationUnlightable = workerUnlightable_;
         stats_.generationIncomplete = workerIncomplete_;
+        stats_.generatorRetiredLive = workerRetiredLive_;
     }
     if (batch.empty()) {
         return;
@@ -330,6 +493,14 @@ void WorldStreamer::drainGenerated(ChunkRenderer& renderer)
 
 void WorldStreamer::buildGrid()
 {
+    // Every cell is about to be rebuilt, so anything the relighter still owes
+    // names columns that are about to move. Dropping it costs a little stale
+    // light where the queue was, which the next block change in that column
+    // repairs; keeping it would be work against a grid that no longer exists.
+    if (light_ != nullptr) {
+        light_->reset();
+    }
+
     // Three rings wider than the load radius, which is a sweep's reach -- but
     // only when there is something that sweeps. With generation off the extra
     // ring would be cells that are classified and never used, and the harnesses
@@ -406,6 +577,11 @@ void WorldStreamer::setMeshDistance(int meshDistance, ChunkRenderer& renderer)
             std::lock_guard<std::mutex> guard(queueLock_);
             slate_.clear();
         }
+        // The radius the generator retires against is derived from loadRadius_,
+        // which has just moved. Republishing it here rather than waiting for the
+        // centre to move keeps a step *up* from retiring ground the wider sweep
+        // is about to want back.
+        publishRetireCentre();
         // The wait paused the worker so it could not hand itself another job
         // while the generator's table was being moved under it. Let it go.
         resumeGeneration();
@@ -483,6 +659,13 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     // single-threaded again.
     stopWorker();
 
+    // Anything a tick changed and the autosave has not picked up yet. This has
+    // to happen before the grid is torn down, because the columns it reads are
+    // the grid's.
+    flushTickDirty();
+    tick_.reset();
+    light_.reset();
+
     // Anything the generator finished and has not handed over yet goes to the
     // card now. Dropping it would mean regenerating it next session, and
     // regenerating is not the same as reloading: the population order would be
@@ -501,10 +684,15 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     // screen for several seconds. So the writes are queued here, and the
     // counters are read as the I/O thread works through them.
     //
-    // **`pump()` is what makes the count move.** The cache recounts its
-    // columns there and nowhere else, so polling `stats()` without it would
-    // report the same number forever -- and unthreaded, where there is no I/O
-    // thread at all, pump() is also what runs the writes.
+    // **`pump()` is what does the work.** Threaded, the I/O thread is what
+    // drains the queue and pump() only keeps the harness honest; unthreaded,
+    // where there is no I/O thread at all, pump() is what runs the writes and
+    // the loop would spin for ever without it.
+    //
+    // It used to also be what made the *count* move -- the cache recounted its
+    // columns there and nowhere else, so polling `stats()` without it reported
+    // the same number for ever. `stats()` answers live now, so that is no
+    // longer a reason to call it here; the writes are.
     if (progress != nullptr) {
         cache_.flush(false);
         cache_.pump();
@@ -676,12 +864,61 @@ void WorldStreamer::adoptColumn(Cell& cell, std::unique_ptr<world::ChunkColumn> 
     for (int sy = 0; sy < world::ChunkColumn::kSectionCount; ++sy) {
         cell.masks[sy] = mesh::computeVisibility(column->section(sy), visScratch_);
     }
+    // **The tick's column cache holds a raw pointer at whatever was here.**
+    // Replacing the cell's column leaves that pointer at a freed object, and
+    // TickWorld's contract says whoever moves a column has to say so. It was
+    // only ever safe because `update()` happens to run before `stepTicks()`
+    // every frame and `tick()` invalidates on the way in -- an ordering nothing
+    // enforced, and one that anything reading the tick outside a tick breaks.
+    // Caught by AddressSanitizer as a heap-use-after-free.
+    if (tick_ != nullptr) {
+        tick_->invalidateColumnCache();
+    }
+
     cell.column = std::move(column);
     cell.chunkX = chunkX;
     cell.chunkZ = chunkZ;
     cell.state = CellState::Loaded;
     cell.published = false;
     cell.freshlyAdopted = true;
+}
+
+// **How much world the generator is allowed to remember**, as a radius around
+// the player, in chunks beyond the load radius.
+//
+// The floor is 3: provide() sweeps (cx-3..cx+2) and the streamer asks for
+// columns out to loadRadius_, so anything nearer than loadRadius_ + 3 is
+// something a sweep can still reach. The rest is slack, and it is not
+// decoration -- retiring a column the next sweep wants back means re-deriving
+// it, and a column re-derived beside a neighbour that has already been handed
+// out is the one case where a pass does not re-run and its work is lost. So the
+// radius is set well clear of the working set and retirement only ever fires on
+// ground the player has genuinely left.
+//
+// Measured at render distance 7, whose cache is 224 columns, over a 4,500-frame
+// `--fly ... gen` -- peak live against the slack:
+//
+//     4 -> 176      5 -> 178      6 -> 192      8 -> 208
+//
+// Six is the balance: three rings clear of anything a sweep can reach, and 14%
+// of the cache still spare. Across render distances 3 to 11 the peak comes out
+// at 128, 158, 192, 224 and 256 -- **`16 * loadRadius + 64` almost exactly,
+// against `cacheColumnsFor`'s `16 * loadRadius + 96`**, so the headroom is a
+// flat 32 columns at every distance rather than a fraction that thins out. And
+// it is flat in *time* as well: 196 at 6,000 frames of walking and 188 at
+// 9,000. `evictedLive` and the failed sweeps are zero throughout.
+//
+// Without retirement at all the same walk peaks at 468 against a cache of 240,
+// and the world stops generating for the rest of the session.
+constexpr int kRetireSlackChunks = 6;
+
+void WorldStreamer::publishRetireCentre()
+{
+    std::lock_guard<std::mutex> guard(queueLock_);
+    retireCentreX_ = centreX_;
+    retireCentreZ_ = centreZ_;
+    retireRadius_ = loadRadius_ + kRetireSlackChunks;
+    retireCentreSet_ = centreSet_;
 }
 
 bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
@@ -718,6 +955,36 @@ bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
             std::lock_guard<std::mutex> guard(queueLock_);
             finished_.push_back(std::move(stored));
             return true;
+        }
+    }
+
+    // **Let go of everything the player has walked away from, first.**
+    //
+    // A column the generator has not handed over cannot be evicted -- its
+    // neighbours' populations live in it and nowhere else -- and nothing ever
+    // finishes the ones a moving centre abandons at the sides of the corridor
+    // it sweeps. Left alone that set grows with the distance walked until it
+    // fills the cache, at which point acquire() takes a live column anyway and
+    // the world starts coming back with half its trees. Retiring by distance
+    // turns the walking case back into the standing-still case the cache is
+    // sized for. See ChunkGenerator::retire.
+    //
+    // Here rather than on the main thread because the generator belongs to
+    // whichever thread is inside it, and this is that thread.
+    {
+        i32 rx = 0;
+        i32 rz = 0;
+        int rr = 0;
+        bool set = false;
+        {
+            std::lock_guard<std::mutex> guard(queueLock_);
+            rx = retireCentreX_;
+            rz = retireCentreZ_;
+            rr = retireRadius_;
+            set = retireCentreSet_;
+        }
+        if (set) {
+            generator_->retire(rx, rz, rr);
         }
     }
 
@@ -891,6 +1158,25 @@ void WorldStreamer::dropCell(Cell& cell, ChunkRenderer& renderer)
         renderer.dropColumn(cell.chunkX, cell.chunkZ);
     }
 
+    // **A column with tick edits is saved before it is let go.** `give()`
+    // installs what it is handed as *clean*, and once the cell is gone
+    // flushTickDirty cannot find it -- so a column edited by a tick and then
+    // walked away from before the next autosave was never written to the card,
+    // and with autosave set to Off that was every edit of the session. Worse,
+    // `give()` keeps whatever the cache already holds under those coordinates
+    // on the grounds that it is "at least as fresh", which stops being true the
+    // moment the resident copy carries edits the cached one does not.
+    //
+    // Saving here costs one clone and one queued write, on a path that already
+    // runs only when the render distance moves past a column.
+    if (cell.tickDirty && cell.column != nullptr) {
+        cache_.save(*cell.column, world::ChunkCache::SavePressure::Defer);
+    }
+    if (cell.tickDirty) {
+        cell.tickDirty = false;
+        if (tickDirtyCells_ > 0) --tickDirtyCells_;
+    }
+
     // **Given back rather than freed.** A column that leaves the grid is one
     // the player may walk straight back into, and re-reading it costs an open,
     // a read and an inflate. The cache keeps it until its byte cap says
@@ -902,6 +1188,12 @@ void WorldStreamer::dropCell(Cell& cell, ChunkRenderer& renderer)
     cell.column.reset();
     cell.state = CellState::Empty;
     cell.published = false;
+
+    // Same contract as adoptColumn: the column this cell held may have just
+    // been freed, and the tick caches a raw pointer to it.
+    if (tick_ != nullptr) {
+        tick_->invalidateColumnCache();
+    }
 }
 
 bool WorldStreamer::neighboursReady(i32 chunkX, i32 chunkZ) const
@@ -1063,6 +1355,7 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
         centreX_ = cameraChunkX;
         centreZ_ = cameraChunkZ;
         renderer.setCentre(cameraChunkX, cameraChunkZ);
+        publishRetireCentre();
 
         for (Cell& cell : cells_) {
             if (cell.state == CellState::Empty) {
@@ -1206,6 +1499,7 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
         stats_.generatorEvictedLive = generator_->stats().evictedLive;
         stats_.generationUnlightable = generator_->stats().sweepUnlightable;
         stats_.generationIncomplete = generator_->stats().sweepIncomplete;
+        stats_.generatorRetiredLive = generator_->stats().retiredLive;
     }
     stats_.workerRunning = workerRunning_;
 
@@ -1220,10 +1514,12 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     // Last, so the counters describe the frame that just happened. Unthreaded
     // this also does one unit of queued I/O, which is how the host harnesses
     // make progress without a thread.
-    const world::ChunkCache::Stats before = cache_.stats();
+    // One lock and one struct copy, not two. `prefetchHits` is cumulative, and
+    // `stats_.io` still holds last frame's, so the delta needs no second read.
+    const u32 prefetchHitsBefore = stats_.io.prefetchHits;
     cache_.pump();
     stats_.io = cache_.stats();
-    stats_.prefetched = int(stats_.io.prefetchHits - before.prefetchHits);
+    stats_.prefetched = int(stats_.io.prefetchHits - prefetchHitsBefore);
 
     countResidency();
 }
@@ -1299,6 +1595,10 @@ void WorldStreamer::saveNow(i64 nowMillis)
     }
     lastSaveMillis_ = nowMillis;
 
+    // Whatever the tick changed since the last save becomes the cache's answer
+    // for those columns now, so the flush below has something to write.
+    flushTickDirty();
+
     // level.dat and session.lock have no other trigger during a session --
     // close() is the only thing that rewrites either today, so a console that
     // loses power mid-session comes back with a LastPlayed from whenever the
@@ -1334,17 +1634,121 @@ void WorldStreamer::flushSaves(bool blocking)
 const world::ChunkColumn* WorldStreamer::residentColumn(i32 chunkX, i32 chunkZ) const
 {
     const Cell* cell = find(chunkX, chunkZ);
-    if (cell == nullptr || cell->state != CellState::Loaded || !cell->published) {
+    if (cell == nullptr || cell->state != CellState::Loaded) {
         return nullptr;
     }
     return cell->column.get();
 }
 
+gui::ChunkState WorldStreamer::progressAt(i32 chunkX, i32 chunkZ,
+                                          const std::pair<i32, i32>* job) const
+{
+    if (cells_.empty() || !centreSet_) {
+        return gui::ChunkState::Unstarted;
+    }
+    if (std::abs(chunkX - centreX_) > gridRadius_ || std::abs(chunkZ - centreZ_) > gridRadius_) {
+        return gui::ChunkState::Unstarted;
+    }
+    const Cell& cell = cells_[cellIndex(chunkX, chunkZ)];
+    // The grid wraps modulo its own edge, so a cell reached by coordinate may
+    // still be holding the column from the other side of the world. Same check
+    // find() makes, and for the same reason.
+    if (cell.chunkX != chunkX || cell.chunkZ != chunkZ) {
+        return gui::ChunkState::Unstarted;
+    }
+    switch (cell.state) {
+        case CellState::Empty:
+            return gui::ChunkState::Unstarted;
+        case CellState::Ungenerated:
+            if (job != nullptr && job->first == chunkX && job->second == chunkZ) {
+                return gui::ChunkState::Working;
+            }
+            return gui::ChunkState::Owed;
+        case CellState::OnDisk:
+            // The world already has it and it is on its way off the card.
+            // Not a generation state, but it is the same thing to a player:
+            // something is owed here and it is not here yet.
+            return gui::ChunkState::Owed;
+        case CellState::Loaded:
+            // **Published is the honest end of the ramp.** A loaded column
+            // with a missing neighbour has no geometry and is not on the
+            // screen, so calling it done would fill the square a ring before
+            // the world the player is looking at filled in.
+            return cell.published ? gui::ChunkState::Done : gui::ChunkState::Ready;
+        case CellState::Absent:
+            // The edge of a finite world: nothing is owed here and nothing is
+            // coming. See the note on ChunkState.
+            return gui::ChunkState::Done;
+    }
+    return gui::ChunkState::Unstarted;
+}
+
+void WorldStreamer::progressGrid(i32 centreX, i32 centreZ, int radius, gui::ChunkState* out) const
+{
+    if (out == nullptr || radius < 0) {
+        return;
+    }
+    const int edge = radius * 2 + 1;
+
+    // One lock for the whole square. `inFlight_` is only meaningful while a job
+    // is active -- it keeps its last value otherwise -- so both are read
+    // together and the pair is passed down rather than the members.
+    std::pair<i32, i32> job{0, 0};
+    bool haveJob = false;
+    {
+        std::lock_guard<std::mutex> guard(queueLock_);
+        haveJob = jobActive_;
+        job = inFlight_;
+    }
+
+    for (int row = 0; row < edge; ++row) {
+        const i32 chunkZ = centreZ - radius + row;
+        gui::ChunkState* line = out + usize(row) * usize(edge);
+        for (int column = 0; column < edge; ++column) {
+            line[column] = progressAt(centreX - radius + column, chunkZ, haveJob ? &job : nullptr);
+        }
+    }
+}
+
+WorldStreamer::ProgressCount WorldStreamer::progressWithin(i32 centreX, i32 centreZ,
+                                                           int radius) const
+{
+    ProgressCount count;
+    if (radius < 0) {
+        return count;
+    }
+    const int edge = radius * 2 + 1;
+    count.total = edge * edge;
+    for (int dz = -radius; dz <= radius; ++dz) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+            // No job pointer: `Working` and `Owed` are both unfinished, so the
+            // count does not need the lock the picture does.
+            if (progressAt(centreX + dx, centreZ + dz, nullptr) == gui::ChunkState::Done) {
+                ++count.done;
+            }
+        }
+    }
+    return count;
+}
+
 void WorldStreamer::countResidency()
 {
+    // **The counts every frame; the byte total occasionally.** The walk itself
+    // is 729 integer comparisons and is not worth avoiding -- and the counts are
+    // read by tests and by anything that wants to know whether the world around
+    // the player is complete, so they must not lag. `memoryUsage()` is the
+    // expensive part: it walks a column's eight sections *and* its preserved NBT
+    // tags, once per resident column, and it feeds a number on the debug page
+    // and nothing else. A byte total that updates twice a second is as useful as
+    // one that updates thirty times a second.
+    const bool withBytes = ++residencyStride_ >= kResidencyStride;
+    if (withBytes) {
+        residencyStride_ = 0;
+        stats_.blockBytes = 0;
+    }
+
     stats_.columnsResident = 0;
     stats_.columnsMissing = 0;
-    stats_.blockBytes = 0;
     for (const Cell& cell : cells_) {
         if (centreSet_
             && (std::abs(cell.chunkX - centreX_) > loadRadius_
@@ -1353,7 +1757,9 @@ void WorldStreamer::countResidency()
         }
         if (cell.state == CellState::Loaded) {
             ++stats_.columnsResident;
-            stats_.blockBytes += cell.column->memoryUsage();
+            if (withBytes) {
+                stats_.blockBytes += cell.column->memoryUsage();
+            }
         } else if (cell.state == CellState::Absent || cell.state == CellState::Ungenerated) {
             // Both are "not in memory". Which one it is says whether anything
             // is going to change that, and pendingGeneration is the count that

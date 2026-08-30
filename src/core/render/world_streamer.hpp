@@ -21,15 +21,18 @@
 // back from the renderer until its neighbourhood is complete, which is why
 // columns are kept one ring wider than the render distance.
 
+#include "core/gui/progress.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/scratch.hpp"
 #include "core/mesh/visibility.hpp"
 #include "core/render/chunk_renderer.hpp"
+#include "core/tick/tick_world.hpp"
 #include "core/util/worker.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
 #include "core/world/level_data.hpp"
+#include "core/world/light_update.hpp"
 #include "version_slots.hpp"
 
 #include <condition_variable>
@@ -37,6 +40,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace mc::render {
@@ -100,6 +104,12 @@ public:
         i64 generateMicros = 0;       // main-thread cost only: 0 while the worker runs
         u32 generatorPeakLive = 0;    // the generator's own high-water mark
         u32 generatorEvictedLive = 0; // must stay zero; see ChunkGenerator
+
+        // Live columns retired because the player walked away from them. Not a
+        // fault -- it is the thing that keeps `generatorEvictedLive` at zero --
+        // but it grows with the distance walked, so it is worth seeing next to
+        // it. See ChunkGenerator::retire.
+        u32 generatorRetiredLive = 0;
         bool workerRunning = false;   // false means generation is on this thread
 
         // What the card is doing, copied out of the cache once a frame. The
@@ -308,12 +318,92 @@ public:
     // worker's finished columns are adopted in there. Nothing may hold it
     // across a frame.
     //
-    // Published rather than merely loaded: an unpublished column is one whose
-    // neighbours have not all arrived, which for meshing means "not yet" and
-    // for a map means nothing at all -- but publishing is also the moment the
-    // column is known to be complete and lit, so it is the honest gate for
-    // both.
+    // **Loaded, not published**, and the difference is the whole reason the map
+    // came up blank. `published` means the renderer has the column, which needs
+    // its eight neighbours to have arrived *and* the column to be inside the
+    // mesh distance. Neither is anything to do with a map: a sample reads one
+    // column's surface, heights and depths and asks nothing of its neighbours,
+    // and the map window reaches seven chunks where the mesh distance can be as
+    // little as two. Gating on it meant that at world entry -- when almost
+    // nothing has been published yet -- there was nothing to sample however
+    // large the budget was, and that at the smaller render distances the
+    // outermost ring of the map was permanently unexplored ground.
+    //
+    // A `Loaded` cell is a complete, lit column: it came either from the card
+    // or from the generator, and both hand over finished work. That is the
+    // honest gate.
     const world::ChunkColumn* residentColumn(i32 chunkX, i32 chunkZ) const;
+
+    // ---- the world tick ------------------------------------------------
+    //
+    // **Why the tick lives here and not beside the camera.** It needs the
+    // loaded columns, it has to invalidate the sections it changes, and it has
+    // to tell the saver what it dirtied -- and this object is the only one
+    // holding all three. The tick logic itself is in `core/tick/` and knows
+    // nothing about streaming; this is the wiring.
+    //
+    // Runs `ticks` whole 20 Hz steps, which is what `TickTimer::elapsedTicks`
+    // returned for the frame. Zero is the common case at 30 fps and costs a
+    // compare. **On the main thread, deliberately**: the order of block
+    // updates is the world, the same way generation order is, and moving the
+    // tick to another core is a decision to be taken with a measurement in
+    // hand rather than on the way past. What could go to core 2 later is the
+    // read-only half -- sampling the 80 positions per chunk -- and the seam
+    // for it is `tick::TickWorld`, which reads chunks through a pair of
+    // function pointers for exactly that reason.
+    void stepTicks(ChunkRenderer& renderer, int ticks);
+
+    // The incremental relighter, for the debug page. Null before a world opens.
+    const world::LightUpdater* lighting() const { return light_.get(); }
+
+    tick::TickWorld* worldTick() { return tick_.get(); }
+    const tick::TickWorld* worldTick() const { return tick_.get(); }
+
+    // Columns a tick has changed and the saver has not been told about yet.
+    // Flushed on the autosave boundary rather than per frame, because a
+    // spreading fluid touches one column hundreds of times in a second and
+    // each hand-over is an 18 KB clone.
+    u32 tickDirtyColumns() const { return tickDirtyCells_; }
+
+    // **The world coming into being, as a picture.** One `gui::ChunkState` per
+    // cell of a square centred on `centreX`/`centreZ`, row-major from the
+    // north-west corner, so the caller can draw it with
+    // `gui::drawChunkGrid` and north is up.
+    //
+    // It emits the drawing enum rather than one of its own, and that is the
+    // deliberate half of this. The grid's `CellState` is private and has to
+    // stay that way -- `Ungenerated` versus `Absent` is a meshing rule, not
+    // something a screen may act on -- so the alternative was a second public
+    // enum that exists only to be switched over into the first, in every caller
+    // that draws one. Two enums to keep in step, for no information neither of
+    // them carries. See core/gui/progress.hpp for what the five states mean.
+    //
+    // Main thread only, and it takes the generation lock once for the whole
+    // square rather than once per cell: which column the worker has in hand is
+    // the one thing here that another thread writes.
+    //
+    // Cells outside the grid come back `Unstarted`, which is the truth about
+    // them from this streamer's point of view -- nothing has been asked and
+    // nothing is owed.
+    void progressGrid(i32 centreX, i32 centreZ, int radius, gui::ChunkState* out) const;
+
+    // **How much of the square is finished**, counted the same way and over the
+    // same cells. `total` is every cell in the square; `done` is the ones a
+    // player can see. Its own call because the bar wants the numbers without
+    // the picture -- the top screen has no framebuffer to draw a square into.
+    struct ProgressCount {
+        int done = 0;
+        int total = 0;
+        bool finished() const { return total > 0 && done >= total; }
+    };
+    ProgressCount progressWithin(i32 centreX, i32 centreZ, int radius) const;
+
+    // The radius columns are actually held out to: one ring wider than the
+    // render distance, because a section cannot be meshed until its eight
+    // neighbours are in memory. **It is the ceiling on anything that waits for
+    // the world to fill in** -- a cell further out than this is classified and
+    // never read, so waiting for it would never end.
+    int loadRadius() const { return loadRadius_; }
 
 private:
     enum class CellState : u8 {
@@ -392,6 +482,20 @@ private:
         // as "the same column", keeps slots that now belong to other sections,
         // and draws whatever is in them.
         bool freshlyAdopted = false;
+
+        // **A tick has written into this column since it was last handed to the
+        // cache.** Replaces a `std::vector` of coordinates that the block-change
+        // callback scanned linearly for every changed block: the comment on it
+        // said the set was "what one frame's ticks touched", but it was only
+        // cleared at the autosave boundary, so it accumulated every column
+        // touched since the last save -- and with autosave set to Off it was
+        // never cleared at all. A flowing fluid changes hundreds of blocks a
+        // tick, so the scan was quadratic and got worse the longer a session
+        // ran. A flag on the cell is O(1), allocates nothing, and cannot grow.
+        //
+        // It also gives dropCell somewhere to look: a column that leaves the
+        // grid with this set has edits the card has never seen.
+        bool tickDirty = false;
     };
 
     // Sizes cells_ and spiral_ to loadRadius_. Shared by open() and
@@ -405,6 +509,12 @@ private:
     int cellIndex(i32 chunkX, i32 chunkZ) const;
     Cell* find(i32 chunkX, i32 chunkZ);
     const Cell* find(i32 chunkX, i32 chunkZ) const;
+
+    // One cell of progressGrid/progressWithin, with the worker's job already
+    // read out under the lock -- `job` is the column it has in hand, or null.
+    // Not `find()`, because `find` folds "no such cell" and "cell never asked
+    // about" into one null and the square has to tell them apart.
+    gui::ChunkState progressAt(i32 chunkX, i32 chunkZ, const std::pair<i32, i32>* job) const;
 
     // Asks the world whether it has this chunk, and records the answer. One
     // cheap existence check; the column itself is read later and only inside
@@ -440,6 +550,10 @@ private:
     // finishes on the way. **Runs on the worker thread** when there is one, and
     // on the caller's when there is not.
     bool generateColumn(i32 chunkX, i32 chunkZ);
+
+    // Tells the generation thread where the player is, so it can let go of the
+    // world behind them. Main thread, under queueLock_.
+    void publishRetireCentre();
 
     // Makes the columns on the slate, if there is no worker to make them.
     void pumpGeneration(const Budget& budget);
@@ -602,6 +716,21 @@ private:
     u32 workerEvictedLive_ = 0;
     u32 workerUnlightable_ = 0;
     u32 workerIncomplete_ = 0;
+    u32 workerRetiredLive_ = 0;
+
+    // **Where the player is, for the generator's benefit**, published under
+    // queueLock_ because the generator is the worker's and centreX_ is the main
+    // thread's. generateColumn reads it and retires everything the player has
+    // walked away from; without that the generator's live set grows with the
+    // distance walked until it corrupts the world. See ChunkGenerator::retire.
+    //
+    // The radius travels with the centre rather than being read off
+    // loadRadius_, for the same reason: the render distance is a live setting
+    // and the worker must not read a number the main thread is changing.
+    i32 retireCentreX_ = 0;
+    i32 retireCentreZ_ = 0;
+    int retireRadius_ = 0;
+    bool retireCentreSet_ = false;
 
     world::LevelData level_;
     std::string path_;
@@ -614,6 +743,42 @@ private:
     i64 lastSaveMillis_ = 0;
 
     int meshDistance_ = 0;
+
+    // The world tick, created with the world and destroyed with it.
+    std::unique_ptr<tick::TickWorld> tick_;
+
+    // **Light after a block changes.** The tick writes blocks; nothing
+    // recomputed light for them, so lava flowed through a world that stayed
+    // dark. See core/world/light_update.hpp. Budgeted per frame rather than run
+    // to completion, because a roof coming off relights a lot of cells at once
+    // and a frame is 16.7 ms.
+    std::unique_ptr<world::LightUpdater> light_;
+
+    // Cells of light settled per frame.
+    //
+    // **A first estimate, and it is meant to be measured.** Each cell visits
+    // six neighbours, and each of those is a column lookup, a palette decode
+    // and a nibble read -- so this is the number that decides whether relighting
+    // costs a frame. 1,024 is chosen to sit under a millisecond at a pessimistic
+    // microsecond per cell on the ARM11; the debug page carries `light` so the
+    // real figure replaces this one rather than being guessed at twice.
+    static constexpr u32 kLightBudgetPerFrame = 1024;
+    // Set during stepTicks so the block-changed callback can reach the
+    // renderer. Null at every other moment, and asserted on.
+    ChunkRenderer* tickRenderer_ = nullptr;
+    // How many cells are carrying tick edits. Maintained alongside
+    // Cell::tickDirty so the debug page costs nothing to draw.
+    u32 tickDirtyCells_ = 0;
+
+    // How often countResidency() adds up per-column memory usage, which is the
+    // expensive half of it; see countResidency().
+    static constexpr u32 kResidencyStride = 16;
+    u32 residencyStride_ = 0;
+
+    static world::ChunkColumn* tickColumn(void* ctx, i32 chunkX, i32 chunkZ);
+    static void tickBlockChanged(void* ctx, i32 x, int y, i32 z);
+    static void lightSectionLit(void* ctx, i32 chunkX, int sectionY, i32 chunkZ);
+    void flushTickDirty();
     int loadRadius_ = 0;
 
     // The cell grid, three rings wider than the load radius: that is a sweep's

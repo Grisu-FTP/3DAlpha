@@ -188,7 +188,8 @@ def write_blocks(out: Path, m: dict) -> bool:
     def definition(entry) -> str:
         if entry is None:
             return ('{"unknown", 0.0f, 0.0f, 0, {0, 0, 0, 0, 0, 0}, '
-                    "RenderType::Cube, 0, 0, 255, true, true, true, false, true, false}")
+                    "RenderType::Cube, 0, 0, 255, true, true, true, false, true, "
+                    "TickBehaviour::None, 10, false, 0, 0, false, false}")
         # repr keeps the decimal point: "100f" is not a float literal, "100.0f"
         # is, and %g drops the point for integral values.
         hardness = repr(float(entry["hardness"]))
@@ -202,7 +203,12 @@ def write_blocks(out: Path, m: dict) -> bool:
             f'{c_bool(entry["opaque"])}, {c_bool(entry["fullCube"])}, '
             f'{c_bool(entry.get("opaqueCube", entry["opaque"]))}, '
             f'{c_bool(entry.get("translucent", False))}, '
-            f'{c_bool(entry.get("solid", False))}, true}}'
+            f'{c_bool(entry.get("solid", False))}, '
+            f'TickBehaviour::{pascal(entry.get("tick", "none"))}, '
+            f'{entry.get("tickRate", 10)}, '
+            f'{c_bool(entry.get("tickRandomly", False))}, '
+            f'{entry.get("burnEncourage", 0)}, {entry.get("burnCatch", 0)}, '
+            f'{c_bool(entry.get("canBurn", False))}, true}}'
         )
 
     # Air's material is the jar's too -- every block that uses it is the same
@@ -219,6 +225,7 @@ def write_blocks(out: Path, m: dict) -> bool:
         "\nnamespace mcver {\n",
         "\nusing mc::block::BlockDef;\n",
         "using mc::block::RenderType;\n",
+        "using mc::block::TickBehaviour;\n",
         "\n// Named ids, so no literal block number appears anywhere else.\n",
         "enum class Block : mc::block::BlockId {\n",
         "    Air = 0,\n",

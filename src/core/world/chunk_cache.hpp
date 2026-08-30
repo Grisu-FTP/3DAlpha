@@ -360,10 +360,34 @@ public:
     // a low-priority I/O thread on another core would be worse than the read.
     const ChunkColumn* load(i32 x, i32 z, ChunkColumn* scratch);
 
+    // Who pays the back-pressure when a save pushes the dirty set past its cap.
+    //
+    // **The main thread must never pay it.** Over the cap, `save` has the
+    // calling thread deflate and write a column itself, which is right for the
+    // generation worker -- it is the thread that outran the card -- and is
+    // hundreds of milliseconds of frozen frame for the renderer. The tick
+    // system made the render thread an edit path for the first time, so the
+    // choice has to be explicit rather than a comment saying it cannot happen.
+    enum class SavePressure : u8 {
+        // Write a column here when over the cap. For worker threads.
+        PayHere,
+        // Never write on this thread: queue the work and let the I/O worker
+        // take it. The dirty set may sit over its cap until it does.
+        Defer,
+    };
+
+    // **The slow re-derivation of the column counts `stats()` reports.** Those
+    // counts used to be produced by walking every entry, under the lock, once
+    // per frame; they are maintained incrementally now, and maintaining a
+    // counter by hand across five call sites is only safe if something checks
+    // it. This is what tests/chunk_cache_test.cpp checks it with. Takes the
+    // lock and walks the table -- not for the frame path.
+    void debugCountColumns(u32* clean, u32* dirty);
+
     // A finished column. Clones it in as dirty, records that the world now has
     // this chunk, and queues the write. **The caller keeps its own column** --
     // the generator reuses it, and the grid wants it.
-    bool save(const ChunkColumn& column);
+    bool save(const ChunkColumn& column, SavePressure pressure = SavePressure::PayHere);
 
 private:
     // Chunk coordinates as one key. Packed rather than a pair so the map node is
@@ -437,8 +461,17 @@ private:
     // Recomputes and caches `dirtyCap_`; call it from the thread that dirtied
     // the column, not from the frame.
     usize dirtyCapLocked();
+
+    // The point past which even SavePressure::Defer writes a column itself; see
+    // save().
+    usize deferCeilingLocked();
     void evictLocked();
-    void recountLocked();
+
+    // The slow re-derivation of what cleanColumns_/dirtyColumns_ track. Not
+    // used by the game -- it is the oracle the host test compares the
+    // incremental counters against, which is the only thing that makes
+    // maintaining them by hand safe.
+    void countColumnsLocked(u32* clean, u32* dirty) const;
     bool takeJobLocked(Job* out);
 
     // The single exit for a finished job: counters down, and the flush waiter
@@ -540,6 +573,13 @@ private:
     u64 clock_ = 0;      // the LRU stamp source
     usize cleanBytes_ = 0;
     usize dirtyBytes_ = 0;
+
+    // Columns held, by dirtiness. Maintained wherever an entry gains, loses or
+    // changes the dirtiness of its column, because the alternative -- counting
+    // them up -- was a walk of the whole table under `mutex_` on every frame.
+    // See stats().
+    u32 cleanColumns_ = 0;
+    u32 dirtyColumns_ = 0;
 
     // The last answer dirtyCapLocked computed, which is what the stats publish.
     // A member rather than a call on the stats path because the call reaches

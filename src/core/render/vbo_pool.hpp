@@ -135,6 +135,29 @@ public:
     // are only ever a few thousand.
     static constexpr u16 kNoSlot = 0xFFFF;
 
+    // **How many frames a block must sit idle before it may be written or
+    // handed back.** This is the one rule that keeps the pool from corrupting
+    // geometry the GPU is still fetching, and it is not obvious, so:
+    //
+    // `C3D_FrameEnd` only *enqueues* the command list -- the wait for the GPU
+    // queue to drain lives inside the next `C3D_FrameBegin`. So the CPU leaves
+    // drawFrame with the frame it just recorded still executing, and runs the
+    // whole of the next frame's streaming and meshing -- `upload`'s memcpy and
+    // `returnToAllocator`'s free -- against a pool the GPU is reading from.
+    // There is no fence anywhere on that path: the allocator's flush pushes CPU
+    // caches *toward* the GPU and waits for nothing.
+    //
+    // A slot last drawn in frame N is referenced by frame N's list, which is in
+    // flight for the whole of CPU frame N+1. It is free at CPU frame N+2. So
+    // the block is untouchable while `frame_ - slot.frame < 2`, and `slot.frame`
+    // -- maintained by `lruPushBack` on every upload and every touch -- is
+    // already exactly the number this needs. Nothing else has to be recorded.
+    //
+    // Two is the value for `C3D_FRAME_SYNCDRAW`, where at most one frame is
+    // ever in flight. It is a count of frames, not a guess at a duration; a
+    // deeper pipeline would raise it.
+    static constexpr u32 kRetireFrames = 2;
+
     struct Budget {
         usize vram = 0;
         usize linear = 0;
@@ -156,6 +179,13 @@ public:
         u32 reused = 0;       // uploads served from a free list, no allocator call
         u32 allocations = 0;  // calls that reached the allocator
         u32 failures = 0;     // uploads the pool could not place at all
+
+        // Blocks the ladder walked past because the GPU may still be reading
+        // them. A few per frame is the policy working; a lot means the pool is
+        // too small for the churn and uploads are being refused for it, which
+        // is a different problem from being out of memory and has to look
+        // different on the debug page.
+        u32 heldInFlight = 0;
     };
 
     // Hands everything back. The allocator must outlive the pool, which on
@@ -221,6 +251,15 @@ public:
     VboTier tier(u16 slot) const { return slots_[slot].tier; }
     u32 owner(u16 slot) const { return slots_[slot].owner; }
 
+    // Bumped every time a block stops holding the mesh it held, so a draw list
+    // built earlier in the frame can tell that the slot it recorded has since
+    // changed hands. `beginFrame` snapshots the visible set, and an upload or an
+    // eviction later in the same frame can hand that slot to another section --
+    // which would otherwise be drawn with the *old* section's model matrix, i.e.
+    // one chunk's geometry rendered where a different chunk is.
+    u16 generation(u16 slot) const { return slots_[slot].generation; }
+    bool resident(u16 slot) const { return slots_[slot].resident; }
+
     const Stats& stats() const { return stats_; }
 
     // Bytes the pool would have to hold to keep every resident at its exact
@@ -240,8 +279,24 @@ private:
         i16 sizeClass = -1;
         u16 prev = kNoSlot;   // least-recently-drawn list
         u16 next = kNoSlot;
+        u16 generation = 0;   // bumped whenever the block changes hands
         bool resident = false;
+
+        // Whether this block has ever held a mesh. `frame` is only meaningful
+        // once it has: a block straight from the allocator has never been named
+        // by any command list, so it is safe to write immediately, and frame
+        // zero is a real frame number rather than a sentinel.
+        bool everHeld = false;
     };
+
+    // Whether the GPU can possibly still be fetching from this block. See
+    // kRetireFrames. Written as a subtraction on unsigned frame numbers so it
+    // stays correct across the counter wrapping.
+    bool retired(u16 slot) const
+    {
+        const Slot& record = slots_[slot];
+        return !record.everHeld || u32(frame_ - record.frame) >= kRetireFrames;
+    }
 
     int freeListIndex(VboTier tier, int sizeClass) const
     {

@@ -1,0 +1,422 @@
+#include "framework.hpp"
+
+#include "core/audio/music_ticker.hpp"
+#include "core/audio/resource_index.hpp"
+#include "core/audio/sound_pool.hpp"
+#include "core/audio/vorbis_stream.hpp"
+#include "core/io/posix_file_system.hpp"
+#include "core/util/java_random.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <string>
+#include <vector>
+
+using namespace mc;
+using namespace mc::audio;
+
+namespace {
+
+// The three-step derivation in eb.a(String, File), which is where every
+// mis-keyed sound comes from.
+TEST(poolKeyStripsExtensionAndSlashes)
+{
+    CHECK_EQ(poolKey("random/click.ogg", true), std::string("random.click"));
+    CHECK_EQ(poolKey("mob/cow.ogg", true), std::string("mob.cow"));
+    CHECK_EQ(poolKey("step/grass1.ogg", true), std::string("step.grass"));
+}
+
+// The digit strip is what makes calm1/2/3 one key, and it is conditional on the
+// pool. The streaming pool keeps its digits because a record is asked for by
+// name -- get this backwards and `mellohi` becomes unaddressable.
+TEST(poolKeyStripsDigitsOnlyForRandomPools)
+{
+    CHECK_EQ(poolKey("calm1.ogg", true), std::string("calm"));
+    CHECK_EQ(poolKey("hal4.ogg", true), std::string("hal"));
+    CHECK_EQ(poolKey("calm1.ogg", false), std::string("calm1"));
+    CHECK_EQ(poolKey("13.ogg", false), std::string("13"));
+}
+
+// a1.1.2 indexes an empty string here and crashes. A card can hold a file
+// called "1.ogg" and a player is not owed a hang for it.
+TEST(poolKeySurvivesAnAllDigitName)
+{
+    CHECK_EQ(poolKey("1.ogg", true), std::string(""));
+}
+
+TEST(poolKeyKeepsANameWithNoExtension)
+{
+    CHECK_EQ(poolKey("music/calm", true), std::string("music.calm"));
+}
+
+TEST(soundPoolGroupsByKeyAndKeepsAFlatList)
+{
+    SoundPool pool(true);
+    CHECK_EQ(pool.add("music/calm1.ogg", "/r/music/calm1.ogg"), std::string("music.calm"));
+    pool.add("music/calm2.ogg", "/r/music/calm2.ogg");
+    pool.add("music/calm3.ogg", "/r/music/calm3.ogg");
+    pool.add("newmusic/hal1.ogg", "/r/newmusic/hal1.ogg");
+
+    // Four entries, two keys.
+    CHECK_EQ(pool.size(), usize(4));
+
+    const SoundEntry* keyed = pool.randomEntry("newmusic.hal");
+    CHECK(keyed != nullptr);
+    CHECK_EQ(keyed->name, std::string("newmusic/hal1.ogg"));
+
+    CHECK(pool.randomEntry("nothing.here") == nullptr);
+}
+
+// getRandomSound() ignores keys entirely -- it is uniform over every entry in
+// the pool. The music ticker is its only caller and this is why `calm` and
+// `hal` are not equally likely: `newmusic` simply has more files in it.
+TEST(soundPoolRandomEntryIsUniformOverTheFlatList)
+{
+    SoundPool pool(true, 12345);
+    pool.add("music/calm1.ogg", "a");
+    pool.add("music/calm2.ogg", "b");
+    pool.add("music/calm3.ogg", "c");
+
+    int seen[3] = {0, 0, 0};
+    for (int i = 0; i < 3000; ++i) {
+        const SoundEntry* entry = pool.randomEntry();
+        CHECK(entry != nullptr);
+        seen[entry->path[0] - 'a']++;
+    }
+    for (int i = 0; i < 3; ++i) {
+        CHECK(seen[i] > 800 && seen[i] < 1200);
+    }
+}
+
+TEST(emptyPoolReturnsNothingRatherThanCrashing)
+{
+    SoundPool pool(true);
+    CHECK(pool.randomEntry() == nullptr);
+    CHECK(pool.randomEntry("anything") == nullptr);
+}
+
+// ---- the ticker ------------------------------------------------------
+
+SoundPool threeTracks()
+{
+    SoundPool pool(true);
+    pool.add("music/calm1.ogg", "calm1");
+    pool.add("music/calm2.ogg", "calm2");
+    pool.add("music/calm3.ogg", "calm3");
+    return pool;
+}
+
+MusicState ready()
+{
+    MusicState state;
+    state.available = true;
+    state.musicVolume = 1.0f;
+    state.musicPlaying = false;
+    state.recordPlaying = false;
+    return state;
+}
+
+// The counter is seeded in the constructor with nextInt(12000), so the first
+// track lands in the first ten minutes. Drawn once per SoundManager, not once
+// per world.
+TEST(firstTrackLandsInTheFirstTenMinutes)
+{
+    for (i64 seed = 0; seed < 64; ++seed) {
+        MusicTicker ticker(seed);
+        CHECK(ticker.ticksRemaining() >= 0);
+        CHECK(ticker.ticksRemaining() < 12000);
+    }
+}
+
+// The exact schedule, against JavaRandom driven by hand. This is the whole
+// feature: if these instants are wrong the game plays music at the wrong rate
+// and nothing else will say so.
+TEST(scheduleMatchesTheOriginalsArithmetic)
+{
+    const i64 seed = 0x5EED;
+    SoundPool pool = threeTracks();
+
+    // The ticker's generator draws nothing but the gaps -- the pool picks
+    // tracks from its own, exactly as `eb.c` is separate from `of.h`. So the
+    // oracle is two lines, and the schedule does not move when the player adds
+    // a file to the card. The trailing +1 is the tick the counter spends at
+    // zero, on which the track actually starts.
+    JavaRandom oracle(seed);
+    std::vector<i32> expected;
+    i32 at = oracle.nextInt(12000);
+    for (int i = 0; i < 6; ++i) {
+        expected.push_back(at);
+        at += oracle.nextInt(24000) + 24000 + 1;
+    }
+
+    MusicTicker ticker(seed);
+    MusicState state = ready();
+    std::vector<i32> actual;
+    for (i32 tick = 0; tick < 400000 && actual.size() < expected.size(); ++tick) {
+        if (ticker.tick(pool, state) != nullptr) {
+            actual.push_back(tick);
+        }
+    }
+
+    CHECK_EQ(actual.size(), expected.size());
+    for (usize i = 0; i < actual.size(); ++i) {
+        CHECK_EQ(actual[i], expected[i]);
+    }
+}
+
+// The gap between two tracks is 20-40 minutes, so between 24000 and 48000
+// ticks apart -- plus the one tick the counter spends at zero.
+TEST(gapsBetweenTracksAreTwentyToFortyMinutes)
+{
+    SoundPool pool = threeTracks();
+    MusicTicker ticker(99);
+    MusicState state = ready();
+
+    i32 last = -1;
+    int gaps = 0;
+    for (i32 tick = 0; tick < 500000; ++tick) {
+        if (ticker.tick(pool, state) != nullptr) {
+            if (last >= 0) {
+                const i32 gap = tick - last;
+                CHECK(gap >= 24000);
+                CHECK(gap <= 48001);
+                ++gaps;
+            }
+            last = tick;
+        }
+    }
+    CHECK(gaps > 5);
+}
+
+// **The rule most likely to be broken by a refactor.** The two playing() checks
+// come before the decrement in of.c(), so a playing track freezes the counter
+// -- the silence between tracks is a full 20-40 minutes and the wall-clock
+// period is the track's own length plus that. A ticker that decremented
+// unconditionally would play music roughly twice as often as the real game.
+TEST(counterDoesNotAdvanceWhileATrackIsPlaying)
+{
+    SoundPool pool = threeTracks();
+    MusicTicker ticker(4242);
+    MusicState state = ready();
+
+    // Run to just before the first track.
+    while (ticker.ticksRemaining() > 0) {
+        CHECK(ticker.tick(pool, state) == nullptr);
+    }
+    CHECK(ticker.tick(pool, state) != nullptr);
+
+    const i32 afterStart = ticker.ticksRemaining();
+    CHECK(afterStart >= 24000);
+
+    // Now a track is playing. Ten thousand ticks -- over eight minutes -- must
+    // not move the counter by one.
+    state.musicPlaying = true;
+    for (int i = 0; i < 10000; ++i) {
+        CHECK(ticker.tick(pool, state) == nullptr);
+    }
+    CHECK_EQ(ticker.ticksRemaining(), afterStart);
+
+    // And it resumes the moment the track ends.
+    state.musicPlaying = false;
+    ticker.tick(pool, state);
+    CHECK_EQ(ticker.ticksRemaining(), afterStart - 1);
+}
+
+// A record on a jukebox suppresses music exactly as a playing track does, and
+// for the same reason: the check precedes the decrement.
+TEST(aRecordFreezesTheCounterToo)
+{
+    SoundPool pool = threeTracks();
+    MusicTicker ticker(31337);
+    MusicState state = ready();
+    state.recordPlaying = true;
+
+    const i32 before = ticker.ticksRemaining();
+    for (int i = 0; i < 5000; ++i) {
+        CHECK(ticker.tick(pool, state) == nullptr);
+    }
+    CHECK_EQ(ticker.ticksRemaining(), before);
+}
+
+TEST(musicVolumeZeroSuppressesEverything)
+{
+    SoundPool pool = threeTracks();
+    MusicTicker ticker(5);
+    MusicState state = ready();
+    state.musicVolume = 0.0f;
+
+    const i32 before = ticker.ticksRemaining();
+    for (int i = 0; i < 100000; ++i) {
+        CHECK(ticker.tick(pool, state) == nullptr);
+    }
+    CHECK_EQ(ticker.ticksRemaining(), before);
+}
+
+TEST(anUnavailableBackendSuppressesEverything)
+{
+    SoundPool pool = threeTracks();
+    MusicTicker ticker(6);
+    MusicState state = ready();
+    state.available = false;
+
+    for (int i = 0; i < 100000; ++i) {
+        CHECK(ticker.tick(pool, state) == nullptr);
+    }
+}
+
+// No resources folder is the ordinary state of a fresh install. The counter
+// runs down to zero and stays there, so the moment files appear a track starts
+// rather than the player waiting out a fresh twenty minutes.
+TEST(anEmptyPoolPlaysNothingAndLeavesTheCounterAtZero)
+{
+    SoundPool empty(true);
+    MusicTicker ticker(8);
+    MusicState state = ready();
+
+    for (int i = 0; i < 20000; ++i) {
+        CHECK(ticker.tick(empty, state) == nullptr);
+    }
+    CHECK_EQ(ticker.ticksRemaining(), 0);
+
+    SoundPool pool = threeTracks();
+    CHECK(ticker.tick(pool, state) != nullptr);
+}
+
+// ---- the resource walk ---------------------------------------------
+
+struct TempDir {
+    char path[64] = {};
+
+    TempDir()
+    {
+        std::snprintf(path, sizeof(path), "/tmp/3dalpha_audio_XXXXXX");
+        if (::mkdtemp(path) == nullptr) {
+            path[0] = '\0';
+        }
+    }
+
+    ~TempDir()
+    {
+        if (path[0] != '\0') {
+            char command[128];
+            std::snprintf(command, sizeof(command), "rm -rf '%s'", path);
+            if (std::system(command) != 0) {
+                std::fprintf(stderr, "warning: could not clean up %s\n", path);
+            }
+        }
+    }
+
+    std::string at(const char* name) const { return std::string(path) + "/" + name; }
+};
+
+// Writes a one-byte file, making its parents. The walk lists directories and
+// never opens a file, so the content is irrelevant -- which is also what keeps
+// any Mojang audio out of this repository. One byte rather than zero because a
+// null pointer handed to the write path is a sanitizer report about the test
+// rather than about the code.
+void touch(io::FileSystem& fs, const std::string& path)
+{
+    const usize slash = path.rfind('/');
+    if (slash != std::string::npos) {
+        fs.makeDirectories(path.substr(0, slash).c_str());
+    }
+    const u8 byte = 0;
+    fs.writeFileAtomic(path.c_str(), ConstByteSpan(&byte, 1));
+}
+
+// The five category names Minecraft.installResource recognises, and the
+// requirement that nothing else is picked up -- a resources/ folder copied off
+// a modern install also carries pack.mcmeta, icons/, pe/ and sound3/, and none
+// of those are ours to interpret.
+TEST(theWalkRoutesTheFiveCategoriesAndIgnoresTheRest)
+{
+    TempDir dir;
+    CHECK(dir.path[0] != '\0');
+    io::PosixFileSystem fs;
+
+    touch(fs, dir.at("music/calm1.ogg"));
+    touch(fs, dir.at("newmusic/hal1.ogg"));
+    touch(fs, dir.at("sound/random/click.ogg"));
+    touch(fs, dir.at("newsound/step/grass1.ogg"));
+    touch(fs, dir.at("streaming/13.mus"));
+
+    // None of these belong to any pool.
+    touch(fs, dir.at("pack.mcmeta"));
+    touch(fs, dir.at("icons/icon_16x16.png"));
+    touch(fs, dir.at("pe/humble.png"));
+    touch(fs, dir.at("sound3/ambient/weather/rain1.ogg"));
+
+    ResourceIndex index;
+    CHECK(indexResources(fs, dir.path, &index));
+
+    CHECK_EQ(index.music.size(), usize(2));
+    CHECK_EQ(index.sounds.size(), usize(2));
+    CHECK_EQ(index.streaming.size(), usize(1));
+    CHECK_EQ(index.total(), usize(5));
+}
+
+// **The category is consumed.** installResource splits the key at the first
+// slash and registers the remainder, so the pool key is `random.bow` and not
+// `sound.random.bow` -- which is the name the game actually asks for, and the
+// difference between every effect lookup hitting and every one missing.
+TEST(theWalkStripsTheCategoryBeforeKeying)
+{
+    TempDir dir;
+    CHECK(dir.path[0] != '\0');
+    io::PosixFileSystem fs;
+
+    touch(fs, dir.at("sound/random/bow.ogg"));
+    touch(fs, dir.at("newsound/step/grass1.ogg"));
+    touch(fs, dir.at("music/calm1.ogg"));
+    touch(fs, dir.at("streaming/mellohi.mus"));
+
+    ResourceIndex index;
+    CHECK(indexResources(fs, dir.path, &index));
+
+    CHECK(index.sounds.randomEntry("random.bow") != nullptr);
+    CHECK(index.sounds.randomEntry("step.grass") != nullptr);
+    CHECK(index.music.randomEntry("calm") != nullptr);
+    // The streaming pool keeps its digits and its exact name.
+    CHECK(index.streaming.randomEntry("mellohi") != nullptr);
+
+    // The bug this test exists for.
+    CHECK(index.sounds.randomEntry("sound.random.bow") == nullptr);
+    CHECK(index.music.randomEntry("music.calm") == nullptr);
+}
+
+// A fresh install has no resources folder. That is the ordinary state, not an
+// error, and it must not be reported as one anywhere up the stack.
+TEST(anAbsentResourcesFolderIsEmptyRatherThanBroken)
+{
+    io::PosixFileSystem fs;
+    ResourceIndex index;
+    CHECK(!indexResources(fs, "/tmp/3dalpha_audio_definitely_not_here", &index));
+    CHECK(index.empty());
+    CHECK(index.music.randomEntry() == nullptr);
+}
+
+// ---- the deferred open ---------------------------------------------
+
+// Creating a source must touch nothing: it happens on the frame loop, and
+// reading an SD card there is what CONTRIBUTING forbids on core 0. The failure
+// for a file that is not there therefore arrives from prepare(), on the decode
+// thread, and not from create().
+TEST(creatingAStreamTouchesNoFileAndPrepareIsWhatFails)
+{
+    io::PosixFileSystem fs;
+    std::unique_ptr<VorbisStream> stream =
+        VorbisStream::create(fs, "/tmp/3dalpha_audio_no_such_track.ogg");
+
+    if (!vorbisAvailable()) {
+        // A build with no decoder refuses at create, which the engine treats
+        // the same way -- silence.
+        CHECK(stream == nullptr);
+        return;
+    }
+
+    CHECK(stream != nullptr);
+    CHECK(!stream->prepare());
+}
+
+}  // namespace

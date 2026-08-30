@@ -69,7 +69,9 @@
         3,
         3
       ],
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tickRandomly": true,
+      "tick": "grass"
     },
     {
       "id": 3,
@@ -114,7 +116,10 @@
       "light": 0,
       "opacity": 255,
       "texture": 4,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "burnEncourage": 5,
+      "burnCatch": 20,
+      "canBurn": true
     },
     {
       "id": 6,
@@ -129,7 +134,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 15,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "sapling"
     },
     {
       "id": 7,
@@ -168,7 +175,10 @@
         206,
         206
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tickRate": 5,
+      "tick": "fluid_flowing"
     },
     {
       "id": 9,
@@ -192,7 +202,9 @@
         206,
         206
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRate": 5,
+      "tick": "fluid_still"
     },
     {
       "id": 10,
@@ -215,7 +227,10 @@
         238,
         238
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tickRate": 30,
+      "tick": "fluid_flowing"
     },
     {
       "id": 11,
@@ -238,7 +253,10 @@
         238,
         238
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tickRate": 30,
+      "tick": "fluid_still"
     },
     {
       "id": 12,
@@ -253,7 +271,9 @@
       "light": 0,
       "opacity": 255,
       "texture": 18,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tickRate": 3,
+      "tick": "falling"
     },
     {
       "id": 13,
@@ -268,7 +288,9 @@
       "light": 0,
       "opacity": 255,
       "texture": 19,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tickRate": 3,
+      "tick": "falling"
     },
     {
       "id": 14,
@@ -336,7 +358,10 @@
         20,
         20
       ],
-      "opaqueCube": true
+      "opaqueCube": true,
+      "burnEncourage": 5,
+      "burnCatch": 5,
+      "canBurn": true
     },
     {
       "id": 18,
@@ -351,7 +376,12 @@
       "light": 0,
       "opacity": 1,
       "texture": 52,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tickRandomly": true,
+      "tick": "leaves",
+      "burnEncourage": 30,
+      "burnCatch": 60,
+      "canBurn": true
     },
     {
       "id": 19,
@@ -366,7 +396,8 @@
       "light": 0,
       "opacity": 255,
       "texture": 48,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tick": "sponge"
     },
     {
       "id": 20,
@@ -396,7 +427,10 @@
       "light": 0,
       "opacity": 255,
       "texture": 64,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "burnEncourage": 30,
+      "burnCatch": 60,
+      "canBurn": true
     },
     {
       "id": 37,
@@ -411,7 +445,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 13,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "plant"
     },
     {
       "id": 38,
@@ -426,7 +462,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 12,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "plant"
     },
     {
       "id": 39,
@@ -441,7 +479,9 @@
       "light": 1,
       "opacity": 0,
       "texture": 29,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "mushroom"
     },
     {
       "id": 40,
@@ -456,7 +496,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 28,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "mushroom"
     },
     {
       "id": 41,
@@ -587,7 +629,11 @@
         8,
         8
       ],
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tick": "tnt",
+      "burnEncourage": 15,
+      "burnCatch": 100,
+      "canBurn": true
     },
     {
       "id": 47,
@@ -610,7 +656,10 @@
         35,
         35
       ],
-      "opaqueCube": true
+      "opaqueCube": true,
+      "burnEncourage": 30,
+      "burnCatch": 20,
+      "canBurn": true
     },
     {
       "id": 48,
@@ -655,7 +704,9 @@
       "light": 14,
       "opacity": 0,
       "texture": 80,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "torch"
     },
     {
       "id": 51,
@@ -670,7 +721,9 @@
       "light": 15,
       "opacity": 0,
       "texture": 31,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "fire"
     },
     {
       "id": 52,
@@ -700,7 +753,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 4,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "stairs",
+      "canBurn": true
     },
     {
       "id": 54,
@@ -723,7 +778,8 @@
         26,
         26
       ],
-      "opaqueCube": true
+      "opaqueCube": true,
+      "canBurn": true
     },
     {
       "id": 55,
@@ -738,7 +794,8 @@
       "light": 0,
       "opacity": 0,
       "texture": 84,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "redstone_wire"
     },
     {
       "id": 56,
@@ -799,7 +856,8 @@
         60,
         59
       ],
-      "opaqueCube": true
+      "opaqueCube": true,
+      "canBurn": true
     },
     {
       "id": 59,
@@ -814,7 +872,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 88,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "crops"
     },
     {
       "id": 60,
@@ -837,7 +897,9 @@
         2,
         2
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "farmland"
     },
     {
       "id": 61,
@@ -898,7 +960,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 4,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "sign",
+      "canBurn": true
     },
     {
       "id": 64,
@@ -921,7 +985,9 @@
         97,
         -97
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "door",
+      "canBurn": true
     },
     {
       "id": 65,
@@ -936,7 +1002,8 @@
       "light": 0,
       "opacity": 0,
       "texture": 83,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "ladder"
     },
     {
       "id": 66,
@@ -951,7 +1018,8 @@
       "light": 0,
       "opacity": 0,
       "texture": 128,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "rail"
     },
     {
       "id": 67,
@@ -966,7 +1034,8 @@
       "light": 0,
       "opacity": 0,
       "texture": 16,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "stairs"
     },
     {
       "id": 68,
@@ -981,7 +1050,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 4,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "sign",
+      "canBurn": true
     },
     {
       "id": 69,
@@ -996,7 +1067,8 @@
       "light": 0,
       "opacity": 0,
       "texture": 96,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "lever"
     },
     {
       "id": 70,
@@ -1011,7 +1083,10 @@
       "light": 0,
       "opacity": 0,
       "texture": 1,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tickRate": 20,
+      "tick": "pressure_plate"
     },
     {
       "id": 71,
@@ -1034,7 +1109,8 @@
         98,
         -98
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tick": "door"
     },
     {
       "id": 72,
@@ -1049,7 +1125,10 @@
       "light": 0,
       "opacity": 0,
       "texture": 4,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tickRate": 20,
+      "tick": "pressure_plate"
     },
     {
       "id": 73,
@@ -1064,7 +1143,9 @@
       "light": 0,
       "opacity": 255,
       "texture": 51,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tickRate": 30,
+      "tick": "redstone_ore"
     },
     {
       "id": 74,
@@ -1079,7 +1160,10 @@
       "light": 9,
       "opacity": 255,
       "texture": 51,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tickRandomly": true,
+      "tickRate": 30,
+      "tick": "redstone_ore"
     },
     {
       "id": 75,
@@ -1102,7 +1186,10 @@
         115,
         115
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tickRate": 2,
+      "tick": "redstone_torch"
     },
     {
       "id": 76,
@@ -1125,7 +1212,10 @@
         99,
         99
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tickRate": 2,
+      "tick": "redstone_torch"
     },
     {
       "id": 77,
@@ -1140,7 +1230,10 @@
       "light": 0,
       "opacity": 0,
       "texture": 1,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tickRate": 20,
+      "tick": "button"
     },
     {
       "id": 78,
@@ -1155,7 +1248,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 66,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "snow_layer"
     },
     {
       "id": 79,
@@ -1171,7 +1266,9 @@
       "light": 0,
       "opacity": 3,
       "texture": 67,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "ice"
     },
     {
       "id": 80,
@@ -1186,7 +1283,9 @@
       "light": 0,
       "opacity": 255,
       "texture": 66,
-      "opaqueCube": true
+      "opaqueCube": true,
+      "tickRandomly": true,
+      "tick": "snow_block"
     },
     {
       "id": 81,
@@ -1209,7 +1308,9 @@
         70,
         70
       ],
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "cactus"
     },
     {
       "id": 82,
@@ -1239,7 +1340,9 @@
       "light": 0,
       "opacity": 0,
       "texture": 73,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "tickRandomly": true,
+      "tick": "reed"
     },
     {
       "id": 84,
@@ -1262,7 +1365,8 @@
         74,
         74
       ],
-      "opaqueCube": true
+      "opaqueCube": true,
+      "canBurn": true
     },
     {
       "id": 85,
@@ -1277,7 +1381,8 @@
       "light": 0,
       "opacity": 0,
       "texture": 4,
-      "opaqueCube": false
+      "opaqueCube": false,
+      "canBurn": true
     }
   ]
 }

@@ -45,6 +45,14 @@ to remove.
 - [ ] Changes that touch the renderer or mesher report before/after numbers from **hardware**,
       not from Azahar.
 
+### Documentation that others navigate by
+
+- [ ] Every new file opens with a header comment saying what it is and **why it is that way**. Its
+      first sentence is a real summary — `docs/code-map.md` is generated from it.
+- [ ] Adding, removing or renaming a file, or editing a heading under `docs/`, is followed by
+      `make index`. CI-style check: `python3 tools/gen_index.py --check`.
+- [ ] A milestone that moves updates `docs/status.md`, which is the handoff.
+
 ### Correctness of formats
 
 - [ ] World writes preserve unknown NBT tags verbatim.

@@ -6,6 +6,8 @@
 // harness whose main job is to prove that core compiles and links away from
 // libctru, and to expose the world tools that do not need a console.
 
+#include "core/audio/sound_engine.hpp"
+#include "core/audio/vorbis_stream.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/io/volume_info.hpp"
 #include "core/block/registry.hpp"
@@ -29,6 +31,7 @@
 #include "core/world/format/converter.hpp"
 #include "core/world/world_format.hpp"
 #include "core/world/world_list.hpp"
+#include "platform/host/audio_wav.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_generator.hpp"
 #include "version_config.hpp"
 #include "version_slots.hpp"
@@ -843,6 +846,15 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
         renderer.beginFrame(u32(frame), frustum, cameraChunkX, cameraSectionY, cameraChunkZ);
         streamer.update(renderer, cameraChunkX, cameraChunkZ, budget);
 
+        // **The world tick, under sanitizers, over a real world.** The harness
+        // has no clock worth pacing to -- `MC_FLY_FRAME_MS` is a millisecond by
+        // default -- so it runs one tick per frame rather than reading a timer.
+        // That is not the console's rate and is not meant to be: what this
+        // exercises is the tick reaching real columns, changing real blocks and
+        // reporting them to the mesher and the saver, which is the part that
+        // cannot be tested without a world.
+        streamer.stepTicks(renderer, 1);
+
         const render::ChunkRenderer::FrameStats& stats = renderer.frameStats();
         const render::WorldStreamer::Stats& streaming = streamer.stats();
 
@@ -929,6 +941,17 @@ void fly(const char* worldDir, int distance, int frames, int switchTo,
                         streamer.stats().generationUnlightable,
                         streamer.stats().generationIncomplete);
         }
+        // **The generator cache's high-water mark, next to its size.** A live
+        // column is one still being written into by its neighbours' passes; it
+        // cannot be evicted without losing that work, so peak live approaching
+        // the capacity is the run about to start losing blocks -- and
+        // `evictedLive` is it having lost them. Both are session totals from
+        // the worker, and both belong in the same report as the failed sweeps,
+        // because peak live is the *cause* the failures are the symptom of.
+        std::printf("generator cache %u columns, peak live %u, retiredLive %u, evictedLive %u\n",
+                    u32(worldgen::ChunkGenerator::cacheColumnsFor(config.meshDistance + 1)),
+                    streamer.stats().generatorPeakLive, streamer.stats().generatorRetiredLive,
+                    streamer.stats().generatorEvictedLive);
         std::printf("classification  %d cells still to ask about, %s\n",
                     streamer.stats().unclassified,
                     streamer.stats().generationGated
@@ -1895,6 +1918,154 @@ bool queryVolume(const char* path, io::VolumeInfo* out)
     return true;
 }
 
+int audioList(const char* resources)
+{
+    io::PosixFileSystem fs;
+    audio::ResourceIndex index;
+    if (!indexResources(fs, resources, &index)) {
+        std::printf("no resources folder at %s\n", resources);
+        std::printf("a1.1.2 downloaded these at runtime from a server that no longer\n");
+        std::printf("exists; copy a resources/ folder from any alpha- or beta-era\n");
+        std::printf("install. See docs/assets.md.\n");
+        return 1;
+    }
+
+    std::printf("%s\n", resources);
+    std::printf("  music      %4zu  (music/ and newmusic/ -- what the ticker draws from)\n",
+                index.music.size());
+    std::printf("  sounds     %4zu  (sound/ and newsound/)\n", index.sounds.size());
+    std::printf("  streaming  %4zu  (records; .mus is Mojang's own container and is not\n",
+                index.streaming.size());
+    std::printf("                    decoded -- see docs/audio-a1.1.2.md)\n");
+
+    // The keys, because the digit strip and the category strip are both easy
+    // to get wrong and this is the cheapest way to look at what they did. The
+    // name is what `installResource` registers -- the path *after* the category
+    // -- so `music/calm1.ogg` is `calm1.ogg` here and keys as `calm`.
+    std::printf("\nmusic pool, as registered and keyed:\n");
+    for (const audio::SoundEntry& entry : index.music.entries()) {
+        std::printf("  %-28s -> %s\n", entry.name.c_str(),
+                    audio::poolKey(entry.name, true).c_str());
+    }
+    return 0;
+}
+
+// The feature, without a console and without a decoder: run the ticker for a
+// stretch of simulated time and print when a1.1.2 would have started a track.
+int musicSchedule(const char* resources, i64 seed, int hours)
+{
+    io::PosixFileSystem fs;
+    audio::NullBackend silent;
+    audio::SoundEngine engine(fs, silent, seed);
+    const usize found = engine.loadResources(resources);
+
+    // The NullBackend reports unavailable, which is the one thing that would
+    // stop the ticker. So the schedule is run against the ticker directly.
+    audio::MusicTicker ticker(seed);
+    audio::MusicState state;
+    state.available = true;
+    state.musicVolume = 1.0f;
+
+    audio::ResourceIndex index;
+    indexResources(fs, resources, &index);
+
+    std::printf("seed %lld, %d hours of simulated play, %zu resources (%zu music)\n",
+                (long long)seed, hours, found, index.music.size());
+    std::printf("first gap is nextInt(12000) ticks; every later gap is\n");
+    std::printf("nextInt(24000)+24000 -- and the counter does not run while a track\n");
+    std::printf("plays, so the spacing below is the gap plus the track's own length.\n\n");
+
+    // How long each track runs, in ticks. Taken from the Ogg page headers via
+    // ov_pcm_total, which costs a seek to the end of the file and no decoding
+    // at all -- and it has to be known, because a1.1.2's counter is frozen for
+    // exactly this long after every track starts. Without it the schedule below
+    // would be roughly a track-length too dense, which is the whole subtlety of
+    // `of.c()` and would make this mode confirm the wrong thing.
+    std::vector<i32> durations(index.music.size(), 0);
+    bool haveDurations = audio::vorbisAvailable();
+    if (haveDurations) {
+        for (usize i = 0; i < index.music.entries().size(); ++i) {
+            const audio::SoundEntry& entry = index.music.entries()[i];
+            std::unique_ptr<audio::VorbisStream> stream =
+                audio::VorbisStream::create(fs, entry.path);
+            if (stream && stream->prepare() && stream->sampleRate() > 0) {
+                durations[i] = i32(stream->totalFrames() * 20 / u64(stream->sampleRate()));
+            }
+        }
+    } else {
+        std::printf("(no Vorbis decoder in this build -- track lengths unknown, so the\n");
+        std::printf(" spacing shown is the counter gap alone)\n\n");
+    }
+
+    const i32 ticks = i32(hours) * 20 * 60 * 60;
+    i32 previous = -1;
+    i32 playingUntil = -1;
+    int played = 0;
+    for (i32 tick = 0; tick < ticks; ++tick) {
+        state.musicPlaying = tick < playingUntil;
+
+        const audio::SoundEntry* entry = ticker.tick(index.music, state);
+        if (entry == nullptr) {
+            continue;
+        }
+
+        // Which entry it was, so its length can be looked up. The pool hands
+        // back a pointer into its own storage, so this is pointer arithmetic
+        // rather than a search.
+        const usize which = usize(entry - index.music.entries().data());
+        const i32 length = which < durations.size() ? durations[which] : 0;
+        playingUntil = tick + length;
+
+        const int minutes = int(tick / (20 * 60));
+        const int seconds = int((tick / 20) % 60);
+        std::printf("  %3d:%02d  %-28s", minutes, seconds, entry->name.c_str());
+        if (length > 0) {
+            std::printf(" %3ds", int(length / 20));
+        } else {
+            std::printf("     ");
+        }
+        if (previous >= 0) {
+            std::printf("  (+%d min)", int((tick - previous) / (20 * 60)));
+        }
+        std::printf("\n");
+        previous = tick;
+        ++played;
+    }
+    std::printf("\n%d tracks in %d hours\n", played, hours);
+    return 0;
+}
+
+// What the console would actually have played, as a listenable file. Silence
+// between tracks is written too, so the gaps in the .wav are the game's gaps.
+int audioDump(const char* resources, const char* outPath, i64 seed, int minutes)
+{
+    io::PosixFileSystem fs;
+    host::WavBackend wav(outPath);
+    audio::SoundEngine engine(fs, wav, seed);
+    const usize found = engine.loadResources(resources);
+    if (found == 0) {
+        std::printf("no resources at %s -- nothing to render\n", resources);
+        return 1;
+    }
+    if (!audio::vorbisAvailable()) {
+        std::printf("this build has no Vorbis decoder; install libvorbisfile and\n");
+        std::printf("reconfigure. --music-schedule works without one.\n");
+        return 1;
+    }
+
+    const int ticks = minutes * 20 * 60;
+    for (int tick = 0; tick < ticks; ++tick) {
+        engine.tick(1);
+        wav.advance(1);
+    }
+    wav.finish();
+
+    std::printf("%s: %d tracks, %.1f s of audio from %zu resources\n", outPath,
+                wav.tracksPlayed(), double(wav.framesWritten()) / 44100.0, found);
+    return 0;
+}
+
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -1971,6 +2142,22 @@ int main(int argc, char** argv)
         return convertWorldCommand(argv[2], argv[3]);
     }
 
+    if (argc > 2 && std::strcmp(argv[1], "--audio-list") == 0) {
+        return audioList(argv[2]);
+    }
+
+    if (argc > 2 && std::strcmp(argv[1], "--music-schedule") == 0) {
+        const i64 seed = argc > 3 ? i64(std::atoll(argv[3])) : 0;
+        const int hours = argc > 4 ? std::atoi(argv[4]) : 8;
+        return musicSchedule(argv[2], seed, hours);
+    }
+
+    if (argc > 3 && std::strcmp(argv[1], "--audio-dump") == 0) {
+        const i64 seed = argc > 4 ? i64(std::atoll(argv[4])) : 0;
+        const int minutes = argc > 5 ? std::atoi(argv[5]) : 15;
+        return audioDump(argv[2], argv[3], seed, minutes);
+    }
+
     if (argc > 2 && std::strcmp(argv[1], "--world-info") == 0) {
         return worldInfo(argv[2]);
     }
@@ -2020,6 +2207,14 @@ int main(int argc, char** argv)
     std::printf("        whole world, one pixel per block, and report what its surface is\n");
     std::printf("        made of; writes map.pam to look at. `grid` draws the chunk and\n");
     std::printf("        128-block map-tile lines the spectator screen draws\n");
+    std::printf("  --audio-list <resources-dir>         what the sound pools ended up holding,\n");
+    std::printf("        and the key a1.1.2 would have filed each music file under\n");
+    std::printf("  --music-schedule <resources-dir> [seed] [hours]\n");
+    std::printf("        when a1.1.2 would start background music over a stretch of play.\n");
+    std::printf("        Needs no decoder and no console -- this is the feature itself\n");
+    std::printf("  --audio-dump <resources-dir> <out.wav> [seed] [minutes]\n");
+    std::printf("        render that schedule to a .wav, silence between tracks included,\n");
+    std::printf("        so the music can be listened to without a 3DS\n");
     std::printf("  --world-info <world-dir>             format, seed and what it occupies;\n");
     std::printf("        the gap between content and on-disk is cluster slack\n");
     std::printf("  --fly <world-dir> [distance] [frames] [switch-to] [quads|flip]\n");

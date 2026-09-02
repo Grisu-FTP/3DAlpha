@@ -40,6 +40,10 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
 
     meshDistance_ = meshDistance;
     loadRadius_ = meshDistance + 1;
+    // The budget starts wide at every distance change; an over-budget pass is
+    // what narrows it again, and a radius chosen against the old distance says
+    // nothing about the new one.
+    memoryRadius_ = loadRadius_;
     buildGrid();
 
     if (generateMissing_) {
@@ -466,8 +470,11 @@ void WorldStreamer::drainGenerated(ChunkRenderer& renderer)
         }
         const i32 cx = column->x;
         const i32 cz = column->z;
-        if (!centreSet_ || std::abs(cx - centreX_) > loadRadius_
-            || std::abs(cz - centreZ_) > loadRadius_) {
+        // **admitRadius(), not loadRadius_**: a column the budget has just
+        // pushed out of range must not be adopted straight back in, or the
+        // generator and the eviction chase each other for ever.
+        if (!centreSet_ || std::abs(cx - centreX_) > admitRadius()
+            || std::abs(cz - centreZ_) > admitRadius()) {
             continue;
         }
         Cell& cell = cells_[cellIndex(cx, cz)];
@@ -556,6 +563,10 @@ void WorldStreamer::setMeshDistance(int meshDistance, ChunkRenderer& renderer)
 
     meshDistance_ = meshDistance;
     loadRadius_ = meshDistance + 1;
+    // The budget starts wide at every distance change; an over-budget pass is
+    // what narrows it again, and a radius chosen against the old distance says
+    // nothing about the new one.
+    memoryRadius_ = loadRadius_;
     buildGrid();
 
     // The generator's working set scales with the radius being filled, so a
@@ -1043,7 +1054,7 @@ void WorldStreamer::refreshSlate()
         if (slate_.size() >= kSlateDepth) {
             break;
         }
-        if (std::abs(offset.dx) > loadRadius_ || std::abs(offset.dz) > loadRadius_) {
+        if (std::abs(offset.dx) > admitRadius() || std::abs(offset.dz) > admitRadius()) {
             continue;
         }
         const i32 cx = centreX_ + offset.dx;
@@ -1432,8 +1443,8 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     for (const Offset& offset : spiral_) {
         const i32 cx = centreX_ + offset.dx;
         const i32 cz = centreZ_ + offset.dz;
-        if (std::abs(offset.dx) > loadRadius_ || std::abs(offset.dz) > loadRadius_) {
-            continue;  // classification only out here
+        if (std::abs(offset.dx) > admitRadius() || std::abs(offset.dz) > admitRadius()) {
+            continue;  // classification only out here, or squeezed out by the budget
         }
         Cell& cell = cells_[cellIndex(cx, cz)];
 
@@ -1522,6 +1533,12 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     stats_.prefetched = int(stats_.io.prefetchHits - prefetchHitsBefore);
 
     countResidency();
+
+    // **After the count, because it spends the number the count just made.**
+    // Dropping columns here rather than before it also means the figure the
+    // debug page reads is the one left standing, not the one that triggered
+    // the eviction.
+    enforceMemoryBudget(renderer);
 }
 
 // Lists the directory groups the classification is about to ask about, and
@@ -1731,6 +1748,67 @@ WorldStreamer::ProgressCount WorldStreamer::progressWithin(i32 centreX, i32 cent
     return count;
 }
 
+void WorldStreamer::setMemoryBudget(usize bytes)
+{
+    memoryBudget_ = bytes;
+    // Starts wide open. The first over-budget pass is what narrows it, which
+    // means a world that fits is never charged anything for this existing.
+    memoryRadius_ = loadRadius_;
+    // **Published here, not left to the next residency pass.** `admitRadius` is
+    // a cached figure refreshed once every kResidencyStride frames, so a caller
+    // that turned the budget off and then read the stat would be told the world
+    // was still narrowed for another sixteen frames -- a debug page and the
+    // thing it describes disagreeing, which is the one way this goes wrong
+    // silently.
+    stats_.admitRadius = admitRadius();
+}
+
+void WorldStreamer::enforceMemoryBudget(ChunkRenderer& renderer)
+{
+    if (memoryBudget_ == 0 || !centreSet_) {
+        return;
+    }
+
+    // Only on a pass that actually re-added the bytes; see blockBytesFresh_.
+    if (!blockBytesFresh_) {
+        return;
+    }
+
+    if (stats_.blockBytes > memoryBudget_) {
+        // One ring per pass. The drop below is what frees the memory; shrinking
+        // the radius is what stops it being read straight back in.
+        if (memoryRadius_ > kMinAdmitRadius) {
+            --memoryRadius_;
+        }
+    } else if (stats_.blockBytes < lowWater(memoryBudget_) && memoryRadius_ < loadRadius_) {
+        ++memoryRadius_;
+        stats_.admitRadius = admitRadius();
+        return;  // nothing to drop when the radius just grew
+    } else {
+        return;
+    }
+
+    stats_.admitRadius = admitRadius();
+
+    // Everything outside the new radius goes, and its bytes come off the total
+    // so the page and the next pass both see what is actually resident rather
+    // than a figure sixteen frames stale.
+    const int keep = admitRadius();
+    for (Cell& cell : cells_) {
+        if (cell.state != CellState::Loaded) {
+            continue;
+        }
+        if (std::abs(cell.chunkX - centreX_) <= keep && std::abs(cell.chunkZ - centreZ_) <= keep) {
+            continue;
+        }
+        const usize freed = cell.column != nullptr ? cell.column->memoryUsage() : 0;
+        dropCell(cell, renderer);
+        stats_.blockBytes = stats_.blockBytes > freed ? stats_.blockBytes - freed : 0;
+        ++stats_.evictedForMemory;
+        --stats_.columnsResident;
+    }
+}
+
 void WorldStreamer::countResidency()
 {
     // **The counts every frame; the byte total occasionally.** The walk itself
@@ -1742,10 +1820,12 @@ void WorldStreamer::countResidency()
     // and nothing else. A byte total that updates twice a second is as useful as
     // one that updates thirty times a second.
     const bool withBytes = ++residencyStride_ >= kResidencyStride;
+    blockBytesFresh_ = withBytes;
     if (withBytes) {
         residencyStride_ = 0;
         stats_.blockBytes = 0;
     }
+    stats_.admitRadius = admitRadius();
 
     stats_.columnsResident = 0;
     stats_.columnsMissing = 0;

@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**19 directories, 122 modules, 49,163 lines.**
+**19 directories, 122 modules, 51,401 lines.**
 
 ## `src/core/audio/`
 
@@ -56,7 +56,7 @@ weight is, not what is important.
 | Module | Lines | What it is |
 |---|--:|---|
 | `map_palette.{hpp,cpp}` | 191 | What colour a block is on the map, and the three brightnesses every one of them comes in. |
-| `map_render.{hpp,cpp}` | 456 | Turning stored samples into pixels. |
+| `map_render.{hpp,cpp}` | 810 | Turning stored samples into pixels. |
 | `map_sample.{hpp,cpp}` | 211 | One chunk, reduced to what a map draws: the block you would see looking straight down, how high it is, and how deep the water over it goes. |
 | `map_store.{hpp,cpp}` | 410 | The map's memory: every chunk that has been sampled, and the patch of pixels it was last drawn as. |
 
@@ -65,10 +65,10 @@ weight is, not what is important.
 | Module | Lines | What it is |
 |---|--:|---|
 | `fluid.{hpp,cpp}` | 501 | Water and lava. 2.73 % of the blocks in the measured 660-chunk world and 99.8 % of everything that is not a cube, so this is the one non-cube render type a world visibly misses. |
-| `mesher.{hpp,cpp}` | 483 | Turning a section into quads. |
+| `mesher.{hpp,cpp}` | 496 | Turning a section into quads. |
 | `scratch.{hpp,cpp}` | 186 | The read window a section is meshed through. |
 | `torch.{hpp,cpp}` | 266 | Torches, and the two redstone torches that share their shape. |
-| `vertex.hpp` | 415 | The world vertex format, the face numbering, and the cube geometry every render type builds on. |
+| `vertex.hpp` | 450 | The world vertex format, the face numbering, and the cube geometry every render type builds on. |
 | `visibility.{hpp,cpp}` | 190 | Per-section "can you see from face A through to face B" masks. |
 
 ## `src/core/nbt/` -- NBT reader, writer and tag preservation
@@ -86,8 +86,8 @@ weight is, not what is important.
 |---|--:|---|
 | `chunk_renderer.{hpp,cpp}` | 467 | One frame of the world renderer, with no GPU in it. |
 | `vbo_pool.{hpp,cpp}` | 742 | The bounded pool of vertex memory that section meshes live in. |
-| `visible_set.{hpp,cpp}` | 510 | Deciding what to draw, and -- the part the measurement forced -- what to mesh. |
-| `world_streamer.{hpp,cpp}` | 2595 | The loaded world around the camera: which columns are in memory, which are meshed, and the budget that keeps both off the frame time. |
+| `visible_set.{hpp,cpp}` | 648 | Deciding what to draw, and -- the part the measurement forced -- what to mesh. |
+| `world_streamer.{hpp,cpp}` | 2757 | The loaded world around the camera: which columns are in memory, which are meshed, and the budget that keeps both off the frame time. |
 
 ## `src/core/settings/` -- INI settings, console-wide and per-world
 
@@ -209,15 +209,15 @@ weight is, not what is important.
 | `audio.{hpp,cpp}` | 620 | ndsp behind `audio::Backend`: one streamed voice, a ring of wave buffers in linear memory, and a missing DSP firmware that costs the player silence rather than a boot failure. |
 | `gpu_memory.{hpp,cpp}` | 115 | The two kinds of memory the PICA can fetch vertices from, behind the pool's allocator seam. |
 | `gui_art.{hpp,cpp}` | 383 | What the menu draws with once a pack supplies it: the dirt backdrop and the bitmap font. |
-| `heap.{hpp,cpp}` | 157 | What is left of the heap this file's .cpp carved out at startup. |
+| `heap.{hpp,cpp}` | 376 | What is left of the heap this file's .cpp carved out at startup. |
 | `hud.{hpp,cpp}` | 526 | The bottom screen's furniture: the tab strip along the top, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
-| `main.cpp` | 1190 | The 3DS entry point. |
-| `map_screen.{hpp,cpp}` | 559 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 3527 | The main menu: the title screen, the world list, and creating a world. |
-| `overlay.{hpp,cpp}` | 1340 | The bottom screen. |
-| `probe.{hpp,cpp}` | 760 | The M0 hardware probe, reachable by holding SELECT at boot. |
+| `main.cpp` | 1274 | The 3DS entry point. |
+| `map_screen.{hpp,cpp}` | 736 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
+| `menu.{hpp,cpp}` | 3542 | The main menu: the title screen, the world list, and creating a world. |
+| `overlay.{hpp,cpp}` | 1447 | The bottom screen. |
+| `probe.{hpp,cpp}` | 932 | The M0 hardware probe, reachable by holding SELECT at boot. |
 | `progress_screen.{hpp,cpp}` | 551 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
-| `renderer.{hpp,cpp}` | 1367 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
+| `renderer.{hpp,cpp}` | 2063 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
 | `textures.{hpp,cpp}` | 358 | The three things the world shader samples: the block atlas, the lightmap, and the fog LUT. |
 
 ## `src/platform/host/` -- Linux/SDL2 harness
@@ -225,5 +225,5 @@ weight is, not what is important.
 | Module | Lines | What it is |
 |---|--:|---|
 | `audio_wav.{hpp,cpp}` | 258 | A host `audio::Backend` that writes what it was handed to a .wav instead of to a speaker. |
-| `main.cpp` | 2275 | Host entry point. |
+| `main.cpp` | 2341 | Host entry point. |
 

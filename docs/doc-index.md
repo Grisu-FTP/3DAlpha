@@ -14,7 +14,7 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/3ds-performance.md`
 
-1,043 lines, ~14,805 tokens.
+1,565 lines, ~23,767 tokens.
 
 - **6-35** The hardware you are actually targeting
 - **36-70** 1. Vertex format: 12 bytes, 4 vertices per quad
@@ -23,40 +23,46 @@ grep -n 'geometry shader' docs/*.md   # find which section first
   - **118-140** Measured: the lightmap is free (M0b, decided)
   - **141-160** What this trades away, and the rule that was used to judge it
   - **161-167** Validated on hardware (M0)
-- **168-181** 2. Geometry-shader quad expansion — **built; the CPU-side half is measured**
-  - **182-200** What is in the 8 bytes
-  - **201-218** How the corners are rebuilt, and why it cannot drift
-  - **219-233** Two things picasso will not let you write
-  - **234-246** Instruction counts, out of the assembled shbin
-  - **247-282** Measured on the host, over the 1,118-column world
-  - **283-300** What is still unknown, and it is the part that matters
-- **301-342** 2b. Take control of the heap split (implemented)
-- **343-394** 3. Put hot VBOs in VRAM
-  - **395-430** The size-class ratio, measured rather than picked
-  - **431-466** What the pool does through a full turn
-  - **467-482** One sharp edge, found by fuzzing rather than by reading
-- **483-511** 4. Visibility: flood-fill graph culling, front-to-back
-  - **512-549** Measured: the search has to drive meshing, not just drawing (M2)
-  - **550-568** Measured again: reachability is not the fix, and the first conclusion here was wrong
-  - **569-609** What actually bounds it: a budgeted pool, with the walk supplying priority
-- **610-681** 5. Hardware fog does the distance fade for free — **reversed, it cannot do this one**
-- **682-707** 6. Fill-rate knobs
-- **708-718** 7. Storage: palette sections and taming the Alpha file layout
-  - **719-761** Storage I/O: what the devoptab actually costs
-  - **762-788** What was built: core/world/chunk_cache.hpp
-  - **789-819** Packed worlds: the operation count, measured
-- **820-830** 8. Faster inflate
-- **831-846** 9. Texture memory
-- **847-872** 10. Stereo 3D done cheaply
-- **873-883** 11. Two screens means zero HUD overdraw
-- **884-902** 12. New 3DS
-- **903-915** 13. Build flags
-- **916-940** Options contract
-- **941-966** Debug overlay
-- **967-984** Performance gates
-- **985-988** Measurements
-  - **989-1005** Hardware readings (M0 probe, New 3DS, 3DSX via Homebrew Launcher)
-  - **1006-1043** Fragment pipeline (M0b overdraw pass, New 3DS, two textures bound)
+- **168-197** 2. Geometry-shader quad expansion — **built, drawing, and the default**
+  - **198-216** What is in the 8 bytes
+  - **217-234** How the corners are rebuilt, and why it cannot drift
+  - **235-249** Two things picasso will not let you write
+  - **250-262** Instruction counts, out of the assembled shbin
+  - **263-298** Measured on the host, over the 1,118-column world
+  - **299-427** The first hardware run, and the hang
+  - **428-484** The second hardware failure: an exception, not a hang
+  - **485-551** The third hardware failure: the watchdog was watching the wrong frame
+  - **552-633** The fourth hardware failure: three ways the third fix stopped one call short
+  - **634-746** The heap split, and the bound under the render distance
+  - **747-766** What is still unknown, and it is the part that matters
+- **767-808** 2b. Take control of the heap split (implemented)
+- **809-860** 3. Put hot VBOs in VRAM
+  - **861-896** The size-class ratio, measured rather than picked
+  - **897-932** What the pool does through a full turn
+  - **933-948** One sharp edge, found by fuzzing rather than by reading
+- **949-977** 4. Visibility: flood-fill graph culling, front-to-back
+  - **978-1015** Measured: the search has to drive meshing, not just drawing (M2)
+  - **1016-1034** Measured again: reachability is not the fix, and the first conclusion here was wrong
+  - **1035-1075** What actually bounds it: a budgeted pool, with the walk supplying priority
+  - **1076-1131** The walk's constant factor: ARMv6k cannot divide (measured, fixed)
+- **1132-1203** 5. Hardware fog does the distance fade for free — **reversed, it cannot do this one**
+- **1204-1229** 6. Fill-rate knobs
+- **1230-1240** 7. Storage: palette sections and taming the Alpha file layout
+  - **1241-1283** Storage I/O: what the devoptab actually costs
+  - **1284-1310** What was built: core/world/chunk_cache.hpp
+  - **1311-1341** Packed worlds: the operation count, measured
+- **1342-1352** 8. Faster inflate
+- **1353-1368** 9. Texture memory
+- **1369-1394** 10. Stereo 3D done cheaply
+- **1395-1405** 11. Two screens means zero HUD overdraw
+- **1406-1424** 12. New 3DS
+- **1425-1437** 13. Build flags
+- **1438-1462** Options contract
+- **1463-1488** Debug overlay
+- **1489-1506** Performance gates
+- **1507-1510** Measurements
+  - **1511-1527** Hardware readings (M0 probe, New 3DS, 3DSX via Homebrew Launcher)
+  - **1528-1565** Fragment pipeline (M0b overdraw pass, New 3DS, two textures bound)
 
 ## `docs/architecture.md`
 
@@ -139,18 +145,20 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/map.md`
 
-306 lines, ~5,163 tokens.
+383 lines, ~6,419 tokens.
 
 - **3-20** What this is
 - **21-42** The picture
   - **43-75** The marker, and the two faults it used to have
 - **76-111** Where the colours come from
 - **112-140** The shading
-- **141-228** What it costs — and the hardware number that changed the design
-- **229-258** The bottom screen it lives on
-  - **259-279** Coordinates, and nothing else — in 96 pixels
-  - **280-291** Who owns a touch
-- **292-306** Where it is
+- **141-230** What it costs — and the hardware number that changed the design
+- **231-260** The bottom screen it lives on
+  - **261-284** Coordinates, and nothing else — in 96 pixels
+- **285-322** Zoom, four levels of it
+  - **323-356** What zoom cost, and the thing it uncovered
+  - **357-368** Who owns a touch
+- **369-383** Where it is
 
 ## `docs/packed-worlds.md`
 
@@ -215,83 +223,89 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/status.md`
 
-3,617 lines, ~66,971 tokens.
+3,913 lines, ~72,441 tokens.
 
 - **16-53** Milestones
 - **54-112** Environment facts worth not rediscovering
 - **113-154** What exists in the tree
 - **155-260** Decisions that are settled
   - **261-270** Reversed, and why (keep this — the reasoning matters)
-- **271-490** Measured numbers (do not re-derive)
-- **491-668** Facts recovered from the client jar
-- **669-670** Next steps, in order
-  - **671-689** 0. The chunk worker — built, and the world it makes is the same world
-    - **690-745** The world must not depend on the clock, and making that true was most of the work
-    - **746-806** What is not closed
-  - **807-905** 0b. The main menu — the game starts from it now
-  - **906-996** 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
-  - **997-1026** 0d. The pause menu — START stops the world instead of leaving it
-    - **1027-1072** The pause menu draws into the game's frame, not into one of its own
-    - **1073-1108** The finding: citro3d holds one target per screen output, and a menu takes it
-    - **1109-1134** Opening it costs a frame, not two seconds
-    - **1135-1151** "Saving level.." says how far along it is
-    - **1152-1166** Deviations from `ie.class`
-  - **1167-1217** 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
-    - **1218-1250** When anything is actually written — and one reversal
-    - **1251-1265** How it is held honest
-    - **1266-1286** What to read on the console
-  - **1287-1353** 0f. Revisited chunks not drawing — a stale `published` flag
-  - **1354-1385** 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
-    - **1386-1406** Why that is a correction rather than a deviation
-    - **1407-1439** What that costs, stated plainly
-    - **1440-1449** Considered and rejected: clamping the camera at the frontier
-    - **1450-1480** And the throughput cap it was hiding: one column per rendered frame
-  - **1481-1487** 0h. The freeze while moving — classification off the render thread, and the queue that went with it
-    - **1488-1507** The mechanism
-    - **1508-1538** Why deferring was said to be impossible, and why it is not
-    - **1539-1567** The ordering traps, all three found by the test that exists for them
-    - **1568-1589** And the queue is gone
-    - **1590-1620** Measured
-    - **1621-1638** The dirty cap follows the free heap
-    - **1639-1654** What holds it
-  - **1655-1675** 0i. Generation stopping, and "Saving level.." never going away
-    - **1676-1715** 1. Nothing bounded what was owed to the card
-    - **1716-1727** 2. A blocking flush could wait for ever
-    - **1728-1735** 3. …and it was waiting for the wrong thing anyway
-    - **1736-1745** 4. A sweep that cannot finish is now visible
-    - **1746-1759** What holds it
-  - **1760-1891** 0j. Packed worlds, per-world settings, and the world options screen
-  - **1892-1943** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
-    - **1944-1966** Modelling the console's card, so this class of bug stops needing hardware
-  - **1967-1979** 0l. A bottom screen per gamemode, and a map on the spectator one
-    - **1980-2011** The map
-    - **2012-2066** What it cost -- **and the hardware number that changed the design**
-  - **2067-2554** 1. Run it on a console
-  - **2555-2673** 2. The M2 gate — **half measured, and the baseline fails**
-  - **2674-2748** Deferred but not forgotten
-  - **2749-2840** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
-  - **2841-2882** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
-    - **2883-2907** The generation wait now covers the whole render distance
-    - **2908-2928** What holds it
-  - **2929-3003** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
-    - **3004-3035** The fluids, and the one thing about them that matters on this console
-    - **3036-3057** Fire, and three tables that are not one table
-    - **3058-3097** Redstone: the power model, the wire and the torch
-    - **3098-3167** What of redstone needs a player, and what turned out not to
-  - **3168-3330** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
-  - **3331-3339** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
-    - **3340-3377** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
-    - **3378-3404** The crash: the tick recursed with no bound, on a 32 KB stack
-    - **3405-3432** The frame drops: three costs, one of them quadratic
-    - **3433-3448** Found while looking: tick edits were silently lost
-    - **3449-3478** The lava: there was no runtime lighting at all
-    - **3479-3494** The flash: "needs remeshing" was encoded as "has no mesh"
-    - **3495-3525** Two follow-ups from the first hardware run, and one of them was mine
-    - **3526-3546** What the retirement rule costs, measured
-    - **3547-3560** What is measured and what is not
-- **3561-3564** Open questions
-  - **3565-3606** Answered
-- **3607-3617** Standing constraints
+- **271-548** Measured numbers (do not re-derive)
+- **549-726** Facts recovered from the client jar
+- **727-728** Next steps, in order
+  - **729-747** 0. The chunk worker — built, and the world it makes is the same world
+    - **748-803** The world must not depend on the clock, and making that true was most of the work
+    - **804-864** What is not closed
+  - **865-963** 0b. The main menu — the game starts from it now
+  - **964-1054** 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
+  - **1055-1084** 0d. The pause menu — START stops the world instead of leaving it
+    - **1085-1130** The pause menu draws into the game's frame, not into one of its own
+    - **1131-1166** The finding: citro3d holds one target per screen output, and a menu takes it
+    - **1167-1192** Opening it costs a frame, not two seconds
+    - **1193-1209** "Saving level.." says how far along it is
+    - **1210-1224** Deviations from `ie.class`
+  - **1225-1275** 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
+    - **1276-1308** When anything is actually written — and one reversal
+    - **1309-1323** How it is held honest
+    - **1324-1344** What to read on the console
+  - **1345-1411** 0f. Revisited chunks not drawing — a stale `published` flag
+  - **1412-1443** 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
+    - **1444-1464** Why that is a correction rather than a deviation
+    - **1465-1497** What that costs, stated plainly
+    - **1498-1507** Considered and rejected: clamping the camera at the frontier
+    - **1508-1538** And the throughput cap it was hiding: one column per rendered frame
+  - **1539-1545** 0h. The freeze while moving — classification off the render thread, and the queue that went with it
+    - **1546-1565** The mechanism
+    - **1566-1596** Why deferring was said to be impossible, and why it is not
+    - **1597-1625** The ordering traps, all three found by the test that exists for them
+    - **1626-1647** And the queue is gone
+    - **1648-1678** Measured
+    - **1679-1696** The dirty cap follows the free heap
+    - **1697-1712** What holds it
+  - **1713-1733** 0i. Generation stopping, and "Saving level.." never going away
+    - **1734-1773** 1. Nothing bounded what was owed to the card
+    - **1774-1785** 2. A blocking flush could wait for ever
+    - **1786-1793** 3. …and it was waiting for the wrong thing anyway
+    - **1794-1803** 4. A sweep that cannot finish is now visible
+    - **1804-1817** What holds it
+  - **1818-1949** 0j. Packed worlds, per-world settings, and the world options screen
+  - **1950-2001** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
+    - **2002-2024** Modelling the console's card, so this class of bug stops needing hardware
+  - **2025-2037** 0l. A bottom screen per gamemode, and a map on the spectator one
+    - **2038-2069** The map
+    - **2070-2131** What it cost -- **and the hardware number that changed the design**
+  - **2132-2708** 1. Run it on a console
+  - **2709-2775** 2. The M2 gate — **half measured, and the baseline fails**
+    - **2776-2858** Why it is the default before the gate is measured
+  - **2859-2934** Deferred but not forgotten
+  - **2935-3026** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
+  - **3027-3068** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
+    - **3069-3093** The generation wait now covers the whole render distance
+    - **3094-3114** What holds it
+  - **3115-3189** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
+    - **3190-3221** The fluids, and the one thing about them that matters on this console
+    - **3222-3243** Fire, and three tables that are not one table
+    - **3244-3283** Redstone: the power model, the wire and the torch
+    - **3284-3353** What of redstone needs a player, and what turned out not to
+  - **3354-3516** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
+  - **3517-3525** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
+    - **3526-3563** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
+    - **3564-3590** The crash: the tick recursed with no bound, on a 32 KB stack
+    - **3591-3618** The frame drops: three costs, one of them quadratic
+    - **3619-3634** Found while looking: tick edits were silently lost
+    - **3635-3664** The lava: there was no runtime lighting at all
+    - **3665-3680** The flash: "needs remeshing" was encoded as "has no mesh"
+    - **3681-3711** Two follow-ups from the first hardware run, and one of them was mine
+    - **3712-3732** What the retirement rule costs, measured
+    - **3733-3746** What is measured and what is not
+  - **3747-3752** 0r. The map's d-pad — a zoom, and the grids taken off the debug page
+    - **3753-3764** The grids moved because the reasoning that put them on the debug page was half right
+    - **3765-3794** The zoom is four levels, and the range is asymmetric on purpose
+    - **3795-3847** What it costs to draw — **and the 3,283 µs that found a much older bug**
+    - **3848-3856** Where it is checked
+- **3857-3860** Open questions
+  - **3861-3902** Answered
+- **3903-3913** Standing constraints
 
 ## `docs/tick-a1.1.2.md`
 

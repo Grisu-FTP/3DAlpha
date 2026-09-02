@@ -73,6 +73,17 @@ public:
         usize blockBytes = 0;     // what the columns cost in the newlib heap
         int pendingColumns = 0;   // still to load inside the radius
 
+        // **The radius columns are actually being admitted to**, which is
+        // loadRadius() until the memory budget starts biting and less after
+        // that. Equal to loadRadius() is the healthy reading; below it means
+        // the world in view is shorter than the render distance asks for, and
+        // that the alternative was running the heap out. See setMemoryBudget.
+        int admitRadius = 0;
+
+        // Columns dropped to get back under the memory budget, cumulative.
+        // **Zero is not luck**: below the budget this cannot fire at all.
+        u32 evictedForMemory = 0;
+
         int generatedThisFrame = 0;   // columns the worker finished and handed back
         int adoptedThisFrame = 0;     // ...of which this many landed in the grid
         int pendingGeneration = 0;    // in range, not on the card, not made yet
@@ -404,6 +415,31 @@ public:
     // the world to fill in** -- a cell further out than this is classified and
     // never read, so waiting for it would never end.
     int loadRadius() const { return loadRadius_; }
+
+    // **A ceiling in bytes on what the resident columns may cost**, and the
+    // backstop under the render distance.
+    //
+    // Residency is otherwise purely geometric: a cell is held if it is inside
+    // the radius and dropped when it leaves, and nothing anywhere asks what
+    // that costs. That is fine over ordinary ground and it is not fine
+    // everywhere -- measured through the generator, a column costs 14.0 KB over
+    // ordinary terrain and 21.7 KB at the Far Lands, so the same grid that fits
+    // in 33 MB at render distance 24 needs 51 MB out there. The heap does not
+    // grow to match, `operator new` fails, and with -fno-exceptions that is
+    // `abort()` and a console dropped to the HOME menu with nothing to say for
+    // itself. See crashlogs/006 and 007.
+    //
+    // So the render distance becomes a request rather than a promise. When the
+    // resident bytes go over this, the admission radius shrinks a ring at a
+    // time and everything outside it is dropped, furthest first; when they fall
+    // comfortably under, it grows back. **The player gets a shorter view at the
+    // Far Lands instead of a dead console**, and `Stats::admitRadius` says so
+    // rather than leaving it to be guessed at.
+    //
+    // Zero disables it, which is the default and what every host measurement
+    // runs with: a budget that bit mid-run would move numbers that documented
+    // tables are written against.
+    void setMemoryBudget(usize bytes);
 
 private:
     enum class CellState : u8 {
@@ -774,6 +810,52 @@ private:
     // expensive half of it; see countResidency().
     static constexpr u32 kResidencyStride = 16;
     u32 residencyStride_ = 0;
+
+    // **The budget is enforced on the strided pass and only there.** Adding up
+    // `memoryUsage()` over every resident column is the expensive half of
+    // countResidency(), which is why it already runs twice a second rather than
+    // per frame -- and twice a second is far quicker than a player can walk
+    // into tens of megabytes. Set when that pass ran, so enforcement never acts
+    // on a figure from sixteen frames ago.
+    bool blockBytesFresh_ = false;
+
+    usize memoryBudget_ = 0;  // 0 disables; see setMemoryBudget
+
+    // The radius columns are admitted to, clamped to [kMinAdmitRadius,
+    // loadRadius_]. Shrinks a ring per over-budget pass rather than jumping, so
+    // one heavy pass cannot collapse the view, and grows back only under the
+    // low-water mark below -- **without which this thrashes**: evicting the
+    // outer ring and immediately reading it back in is an eviction treadmill
+    // that costs SD I/O for ever and frees nothing.
+    int memoryRadius_ = 0;
+
+    // Never shrink below this. A player must have ground under them and their
+    // immediate neighbours whatever the accounting says; if the budget cannot
+    // hold even this, no radius can help and the heap was mis-sized.
+    static constexpr int kMinAdmitRadius = 3;
+
+    // Grow back only under seven eighths, so a view sitting exactly on the
+    // budget does not oscillate a ring every pass.
+    static usize lowWater(usize budget) { return budget - budget / 8; }
+
+    // loadRadius_, or less when the budget is biting. **Clamped on read rather
+    // than trusted**: setMemoryBudget can be called before open(), when
+    // loadRadius_ is still zero, and setMeshDistance moves loadRadius_ under a
+    // radius that was chosen against the old one. Neither may be allowed to
+    // admit nothing.
+    int admitRadius() const
+    {
+        if (memoryBudget_ == 0) {
+            return loadRadius_;
+        }
+        const int floor = kMinAdmitRadius;
+        const int wanted = memoryRadius_ < floor ? floor : memoryRadius_;
+        return wanted < loadRadius_ ? wanted : loadRadius_;
+    }
+
+    // Drops what is outside admitRadius(), furthest first, when the resident
+    // bytes are over budget. Called from update() after countResidency().
+    void enforceMemoryBudget(ChunkRenderer& renderer);
 
     static world::ChunkColumn* tickColumn(void* ctx, i32 chunkX, i32 chunkZ);
     static void tickBlockChanged(void* ctx, i32 x, int y, i32 z);

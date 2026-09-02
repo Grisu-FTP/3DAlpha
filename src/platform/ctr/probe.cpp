@@ -41,7 +41,15 @@
 #include "version_config.hpp"
 #include "version_slots.hpp"
 
+#include <quad_shader_shbin.h>
 #include <world_shader_shbin.h>
+
+// The one thing the probe borrows from the game rather than restating: the face
+// basis the geometry shader rebuilds its corners from. A second copy of those
+// numbers here would be a second thing that can drift out of step with
+// kFaceCorner, and the static_assert in that header is what stops the first one
+// from drifting.
+#include "core/mesh/vertex.hpp"
 
 extern "C" {
 // libctru commits *all* remaining application memory at startup and splits it
@@ -295,6 +303,51 @@ void buildStressQuad(WorldVertex* out)
     }
 }
 
+// ---------------------------------------------------------------------------
+// The same cube in the geometry-shader format: six 8-byte quads, no indices
+// ---------------------------------------------------------------------------
+// **Why this is in the probe.** The quad path's first hardware run hung the GPU
+// outright, and the game's draw loop offers a dozen explanations at once --
+// hundreds of sections, a command-list split, a second eye, two more passes
+// behind it. Six quads in one draw on a still screen offers none of them. If
+// this hangs, the pipeline or the shader is the fault and nothing in the game
+// loop needs looking at; if it draws, the fault is something the game loop
+// accumulates. One reboot, and most of the search space is gone either way.
+//
+// **The texture will not match the 12-byte cube, and that is expected.**
+// quad.v.pica divides tile coordinates by 16 because the game's atlas is 16
+// tiles to a side; the probe's is four. So a tile index here selects a
+// *sixteenth* of the probe's atlas rather than a quarter of it, and no value
+// can make this cube wear the same texels as the other one. That is a
+// coordinate-space mismatch between two atlases, not a rendering fault.
+//
+// **Which is why tileX steps by two rather than sitting at zero.** With every
+// face on tile 0 the whole cube comes out one flat green, and a flat green cube
+// cannot tell "tileX and tileY reached the shader" from "they were ignored".
+// Stepping by two walks 0/16 .. 10/16 across the probe's four tiles, so the six
+// faces come out green, green, brown, brown, grey, grey -- readable at a glance
+// and a second thing this draw proves beyond the one it was built for.
+constexpr int kQuadCubeQuads = 6;
+
+void buildQuadCube(mc::mesh::QuadVertex* out)
+{
+    for (int face = 0; face < kQuadCubeQuads; ++face) {
+        mc::mesh::QuadVertex& q = out[face];
+        // One cell at the section's origin. The corners are the geometry
+        // shader's business -- that is the whole point of the format.
+        q.x = 0;
+        q.y = 0;
+        q.z = 0;
+        q.face = u8(face);
+        q.tileX = u8(face * 2);
+        q.tileY = 0;
+        // The same per-face light the 12-byte cube carries, so the two look
+        // like the same object under the same lightmap.
+        q.light = packLight(kCubeFaces[face].sky, kCubeFaces[face].block);
+        q.ao = 0;
+    }
+}
+
 // One immutable index buffer, shared by every draw for the lifetime of the
 // process. Chunk meshes therefore carry no index memory at all.
 u16* buildSharedIndices()
@@ -469,7 +522,8 @@ void printMeasurement(bool lightmap, bool stress, int layers, float drawMs, floa
 void printControls()
 {
     std::printf("\x1b[23;1HA cull  B tex  X lightmap  Y overdraw\n");
-    std::printf("L/R layers  UP/DOWN time  START exit");
+    std::printf("L/R layers  UP/DOWN time  LEFT geoshader\n");
+    std::printf("START exit");
 }
 
 }  // namespace
@@ -511,12 +565,58 @@ int runProbe(bool isNew3DS)
     AttrInfo_AddLoader(&attrs, 2, GPU_UNSIGNED_BYTE, 4);  // rgb+light offset 8
     C3D_SetAttrInfo(&attrs);
 
+    // The geometry-shader program, built exactly the way Renderer does it --
+    // two DVLEs out of one shbin, an input stride of 6 registers because
+    // quad.v.pica has six outputs, and two byte attributes. See
+    // Renderer::buildQuadPipeline; if these two ever disagree, this probe stops
+    // being evidence about the game.
+    DVLB_s* quadDvlb = DVLB_ParseFile(reinterpret_cast<u32*>(const_cast<void*>(
+                                          static_cast<const void*>(quad_shader_shbin))),
+                                      quad_shader_shbin_size);
+    shaderProgram_s quadProgram;
+    int uLocQuadMvp = -1;
+    int uLocQuadFog = -1;
+    int uLocQuadFaceBasis = -1;
+    C3D_AttrInfo quadAttrs;
+    // Tracked apart from quadReady: a program that was initialised has to be
+    // freed even if a uniform lookup afterwards said it is not usable, and one
+    // that was never initialised must not be.
+    const bool quadProgramInited = quadDvlb != nullptr && quadDvlb->numDVLE >= 2;
+    bool quadReady = quadProgramInited;
+    if (quadReady) {
+        shaderProgramInit(&quadProgram);
+        shaderProgramSetVsh(&quadProgram, &quadDvlb->DVLE[0]);
+        shaderProgramSetGsh(&quadProgram, &quadDvlb->DVLE[1], 6);
+        uLocQuadMvp = shaderInstanceGetUniformLocation(quadProgram.vertexShader, "mvp");
+        uLocQuadFog = shaderInstanceGetUniformLocation(quadProgram.vertexShader, "fogparam");
+        uLocQuadFaceBasis =
+            shaderInstanceGetUniformLocation(quadProgram.vertexShader, "faceBasis");
+        quadReady = uLocQuadMvp >= 0 && uLocQuadFog >= 0 && uLocQuadFaceBasis >= 0;
+
+        AttrInfo_Init(&quadAttrs);
+        AttrInfo_AddLoader(&quadAttrs, 0, GPU_UNSIGNED_BYTE, 4);  // x,y,z,face
+        AttrInfo_AddLoader(&quadAttrs, 1, GPU_UNSIGNED_BYTE, 4);  // tileX,tileY,light,ao
+    }
+
     // Geometry
     WorldVertex* verts = static_cast<WorldVertex*>(linearAlloc(24 * sizeof(WorldVertex)));
     WorldVertex* stressVerts = static_cast<WorldVertex*>(linearAlloc(4 * sizeof(WorldVertex)));
+    mc::mesh::QuadVertex* quadVerts = static_cast<mc::mesh::QuadVertex*>(
+        linearAlloc(kQuadCubeQuads * sizeof(mc::mesh::QuadVertex)));
     u16* indices = buildSharedIndices();
-    if (!verts || !stressVerts || !indices) {
+    if (!verts || !stressVerts || !quadVerts || !indices) {
         std::printf("\x1b[31mout of linear memory\x1b[0m\n");
+    }
+    if (quadVerts != nullptr) {
+        buildQuadCube(quadVerts);
+        GSPGPU_FlushDataCache(quadVerts, kQuadCubeQuads * sizeof(mc::mesh::QuadVertex));
+    } else {
+        quadReady = false;
+    }
+    if (!quadReady) {
+        // Said out loud, because otherwise LEFT does nothing and the probe
+        // looks like it disagrees with its own control legend.
+        std::printf("\x1b[33mgeoshader cube unavailable\x1b[0m\n");
     }
     const int vertexCount = buildCube(verts);
     const int quadCount = vertexCount / 4;
@@ -567,6 +667,11 @@ int runProbe(bool isNew3DS)
     AbResult ab[2];
     bool autoAb = true;
 
+    // The geometry-shader cube, off until asked for: what boots is the path
+    // that is known to draw. See buildQuadCube.
+    bool geoCube = false;
+    bool boundQuadProgram = false;
+
     printControls();
 
     while (aptMainLoop()) {
@@ -600,6 +705,9 @@ int runProbe(bool isNew3DS)
             layers = layers > 1 ? layers / 2 : 1;
             ab[0].reset();
             ab[1].reset();
+        }
+        if ((down & KEY_DLEFT) && quadReady) {
+            geoCube = !geoCube;
         }
         const u32 held = hidKeysHeld();
         if (held & (KEY_UP | KEY_DOWN)) {
@@ -670,10 +778,53 @@ int runProbe(bool isNew3DS)
         // rejected before shading and there would be nothing to measure.
         C3D_DepthTest(!stress, GPU_GREATER, GPU_WRITE_ALL);
 
+        // The geometry-shader cube replaces the 12-byte one; the overdraw pass
+        // is a fill-rate measurement in the 12-byte format and stays that way.
+        const bool drawGeoCube = geoCube && !stress;
+
+        // Bound on the frames the mode changes rather than every frame, so the
+        // draw timings either side of a toggle are comparable.
+        if (drawGeoCube != boundQuadProgram) {
+            boundQuadProgram = drawGeoCube;
+            if (drawGeoCube) {
+                C3D_BindProgram(&quadProgram);
+                C3D_SetAttrInfo(&quadAttrs);
+            } else {
+                C3D_BindProgram(&program);
+                C3D_SetAttrInfo(&attrs);
+            }
+        }
+
         C3D_BufInfo bufInfo;
         BufInfo_Init(&bufInfo);
-        BufInfo_Add(&bufInfo, stress ? stressVerts : verts, sizeof(WorldVertex), 3, 0x210);
+        if (drawGeoCube) {
+            BufInfo_Add(&bufInfo, quadVerts, sizeof(mc::mesh::QuadVertex), 2, 0x10);
+        } else {
+            BufInfo_Add(&bufInfo, stress ? stressVerts : verts, sizeof(WorldVertex), 3, 0x210);
+        }
         C3D_SetBufInfo(&bufInfo);
+
+        if (drawGeoCube) {
+            // The corner basis, from the table core meshes against. Written per
+            // frame rather than once, because binding a program reloads its own
+            // constant table over whatever the other one left in those
+            // registers -- the same reason Renderer::bindPipeline does it.
+            for (int face = 0; face < mc::mesh::kFaceCount; ++face) {
+                const mc::mesh::FaceBasis& b = mc::mesh::kFaceBasis[face];
+                const int slot = uLocQuadFaceBasis + face * 3;
+                C3D_FVUnifSet(GPU_VERTEX_SHADER, slot + 0, float(b.base[0]), float(b.base[1]),
+                              float(b.base[2]), mc::mesh::kFaceShadeFloat[face]);
+                C3D_FVUnifSet(GPU_VERTEX_SHADER, slot + 1, float(b.e1[0]), float(b.e1[1]),
+                              float(b.e1[2]), float(b.uvSign));
+                C3D_FVUnifSet(GPU_VERTEX_SHADER, slot + 2, float(b.e2[0]), float(b.e2[1]),
+                              float(b.e2[2]), 0.0f);
+            }
+            // The shader puts the fog amount in the colour's alpha and the
+            // probe has no fog stage, so this is set to a constant 1: an alpha
+            // of zero would be indistinguishable from a cube that did not draw,
+            // which is the one thing this probe has to be able to tell apart.
+            C3D_FVUnifSet(GPU_VERTEX_SHADER, uLocQuadFog, 0.0f, 1.0f, 0.0f, 0.0f);
+        }
 
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
         for (int i = 0; i < (stereoOn ? 2 : 1); ++i) {
@@ -702,8 +853,22 @@ int runProbe(bool isNew3DS)
                 Mtx_Translate(&model, -8.0f, -8.0f, -8.0f, true);  // centre the 0..16 cube
                 Mtx_Multiply(&mvp, &proj, &model);
 
-                C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLocMvp, &mvp);
-                C3D_DrawElements(GPU_TRIANGLES, quadCount * 6, C3D_UNSIGNED_SHORT, indices);
+                if (drawGeoCube) {
+                    // The quad format's positions are block *cells*, so this
+                    // cube is one block across where the other is sixteen.
+                    // Scaling by 16 on the right of the centring translate puts
+                    // it at the same size and the same place on screen, which is
+                    // what makes the two comparable by eye.
+                    Mtx_Scale(&model, float(S), float(S), float(S));
+                    Mtx_Multiply(&mvp, &proj, &model);
+                    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLocQuadMvp, &mvp);
+                    // No index buffer: one input vertex per quad, and the
+                    // geometry shader emits the two triangles.
+                    C3D_DrawArrays(GPU_GEOMETRY_PRIM, 0, kQuadCubeQuads);
+                } else {
+                    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLocMvp, &mvp);
+                    C3D_DrawElements(GPU_TRIANGLES, quadCount * 6, C3D_UNSIGNED_SHORT, indices);
+                }
             }
         }
         C3D_FrameEnd(0);
@@ -729,8 +894,15 @@ int runProbe(bool isNew3DS)
     C3D_TexDelete(&lightmap);
     C3D_TexDelete(&atlas);
     linearFree(indices);
+    linearFree(quadVerts);
     linearFree(stressVerts);
     linearFree(verts);
+    if (quadProgramInited) {
+        shaderProgramFree(&quadProgram);
+    }
+    if (quadDvlb != nullptr) {
+        DVLB_Free(quadDvlb);
+    }
     shaderProgramFree(&program);
     DVLB_Free(dvlb);
     C3D_RenderTargetDelete(eye[1]);

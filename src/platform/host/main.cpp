@@ -26,6 +26,7 @@
 #include "core/texture/jar_import.hpp"
 #include "core/texture/pack_list.hpp"
 #include "core/texture/zip_archive.hpp"
+#include "core/util/math.hpp"
 #include "core/world/any_storage.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
@@ -1515,7 +1516,7 @@ int inspectPack(const char* path)
 //
 // **It writes to the directory it is given**, like every other harness here:
 // opening a world writes session.lock. Point it at a copy.
-int mapWorld(const char* worldDir, const char* packPath, bool grid)
+int mapWorld(const char* worldDir, const char* packPath, bool grid, int zoom)
 {
     io::PosixFileSystem fs;
     world::AnyStorage storage(fs);
@@ -1578,22 +1579,43 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
         }
     }
 
+    // The map page's own zoom, so the scaled blit can be looked at as a picture
+    // rather than only as a test's assertion. Clamped to what the console
+    // offers rather than accepted as given: a level outside the range is one
+    // the console can never be in, so a harness that drew it would be answering
+    // a question nobody can ask.
+    if (zoom < map::kZoomMin) {
+        zoom = map::kZoomMin;
+    }
+    if (zoom > map::kZoomMax) {
+        zoom = map::kZoomMax;
+    }
+    const int pixelsPerBlock = map::mapPixelsPerBlock(zoom);
+    const int blocksPerPixel = map::mapBlocksPerPixel(zoom);
+
     map::MapWindow window;
+    window.zoom = zoom;
     window.originBlockX = minChunkX * map::kChunkPixels;
     window.originBlockZ = minChunkZ * map::kChunkPixels;
-    window.width = (maxChunkX - minChunkX + 1) * map::kChunkPixels;
-    window.height = (maxChunkZ - minChunkZ + 1) * map::kChunkPixels;
+    window.width =
+        (maxChunkX - minChunkX + 1) * map::kChunkPixels * pixelsPerBlock / blocksPerPixel;
+    window.height =
+        (maxChunkZ - minChunkZ + 1) * map::kChunkPixels * pixelsPerBlock / blocksPerPixel;
 
     // A world spread thinly over a huge area would otherwise ask for a
-    // gigabyte of picture. 4,096 blocks across is more than any world this has
-    // been pointed at and small enough to open.
+    // gigabyte of picture. 4,096 pixels across is more than any world this has
+    // been pointed at and small enough to open. Trimmed from the middle, and
+    // the trim is rounded to whole sampling steps so the lattice the shrunk
+    // window samples on does not shift with the world's extent.
     constexpr int kMaxEdge = 4096;
     if (window.width > kMaxEdge) {
-        window.originBlockX += (window.width - kMaxEdge) / 2;
+        const int trim = map::mapWindowBlocks(window.width - kMaxEdge, zoom) / 2;
+        window.originBlockX += trim - (trim % blocksPerPixel);
         window.width = kMaxEdge;
     }
     if (window.height > kMaxEdge) {
-        window.originBlockZ += (window.height - kMaxEdge) / 2;
+        const int trim = map::mapWindowBlocks(window.height - kMaxEdge, zoom) / 2;
+        window.originBlockZ += trim - (trim % blocksPerPixel);
         window.height = kMaxEdge;
     }
 
@@ -1634,8 +1656,9 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
     std::printf("%s\n", worldDir);
     std::printf("  %d of %zu chunks sampled\n", sampled, coords.size());
     std::printf("  chunks x %d..%d  z %d..%d\n", minChunkX, maxChunkX, minChunkZ, maxChunkZ);
-    std::printf("  picture %d x %d blocks from (%d, %d)\n", window.width, window.height,
-                window.originBlockX, window.originBlockZ);
+    std::printf("  picture %d x %d pixels from (%d, %d), zoom %d (%d px/block, %d block/px)\n",
+                window.width, window.height, window.originBlockX, window.originBlockZ, zoom,
+                pixelsPerBlock, blocksPerPixel);
     if (player.present) {
         std::printf("  player at (%.1f, %.1f) facing %s (yaw %.1f)\n", player.pos[0],
                     player.pos[2], map::kCompass[map::facingFromYaw(player.rotation[0])],
@@ -1670,8 +1693,21 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
         map::MapWindow screen;
         screen.width = kMapWidth;
         screen.height = kMapHeight;
-        screen.originBlockX = window.originBlockX + window.width / 2 - kMapWidth / 2;
-        screen.originBlockZ = window.originBlockZ + window.height / 2 - kMapHeight / 2;
+        // **At the zoom the run asked for**, because the copy is the one cost
+        // zoom changes: the 1:1 blit is a `memcpy` per chunk column and nothing
+        // else is. Centred on the same ground whatever the level, and the
+        // origin snapped to the sampling step exactly as MapScreen snaps it.
+        screen.zoom = zoom;
+        const i32 centreBlockX =
+            window.originBlockX + map::mapWindowBlocks(window.width, zoom) / 2;
+        const i32 centreBlockZ =
+            window.originBlockZ + map::mapWindowBlocks(window.height, zoom) / 2;
+        screen.originBlockX =
+            floorDiv(centreBlockX - map::mapWindowBlocks(kMapWidth, zoom) / 2, blocksPerPixel)
+            * blocksPerPixel;
+        screen.originBlockZ =
+            floorDiv(centreBlockZ - map::mapWindowBlocks(kMapHeight, zoom) / 2, blocksPerPixel)
+            * blocksPerPixel;
 
         std::vector<map::MapPixel> framebuffer(usize(kScreenWidth) * usize(kScreenHeight), 0);
         map::MapSurface screenSurface;
@@ -1687,6 +1723,18 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
             map::renderMapWindow(store, screen, style, screenSurface);
         }
         const auto afterCopy = std::chrono::steady_clock::now();
+
+        // **The scan on its own, with nothing stale**, which is what a redraw
+        // pays when the player has only turned. Same stamp every time, so every
+        // patch is current and the whole call is `patchStale` over the window's
+        // chunks -- one hash lookup each. It is the number that says whether
+        // skipping the scan is worth the state it costs to know it can be
+        // skipped. See MapScreen::drawPixels.
+        const auto beforeScan = std::chrono::steady_clock::now();
+        for (int i = 0; i < kRepeats; ++i) {
+            map::refreshMapWindow(store, palette, screen, style, 1);
+        }
+        const auto afterScan = std::chrono::steady_clock::now();
 
         // Every patch in the window, drawn again from scratch: a fresh stamp
         // each time is what a texture-pack change costs.
@@ -1712,11 +1760,14 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid)
             std::chrono::duration<double, std::micro>(afterCopy - beforeCopy).count() / kRepeats;
         const double drawUs =
             std::chrono::duration<double, std::micro>(afterDraw - beforeDraw).count() / kRepeats;
+        const double scanUs =
+            std::chrono::duration<double, std::micro>(afterScan - beforeScan).count() / kRepeats;
         const double sampleUs =
             std::chrono::duration<double, std::micro>(afterSample - beforeSample).count()
             / kRepeats;
         std::printf("  host cost: %.1f us to copy a %dx%d window\n", copyUs, kMapWidth,
                     kMapHeight);
+        std::printf("             %.1f us to scan it with nothing stale\n", scanUs);
         std::printf("             %.1f us to draw its %d patches (%.1f us each)\n", drawUs,
                     patches, patches > 0 ? drawUs / patches : 0.0);
         std::printf("             %.1f us to sample a chunk\n", haveProbe ? sampleUs : 0.0);
@@ -2199,11 +2250,24 @@ int main(int argc, char** argv)
     }
 
     if (argc > 2 && std::strcmp(argv[1], "--map") == 0) {
-        // `grid` is this command's own trailing word rather than the shared
-        // one above, which only ever means something to --fly and --mesh.
-        const bool grid = argc > 3 && std::strcmp(argv[argc - 1], "grid") == 0;
-        const char* pack = (argc > 3 && !(grid && argc == 4)) ? argv[3] : nullptr;
-        return mapWorld(argv[2], pack, grid);
+        // `grid` and `zoom=<n>` are this command's own words rather than the
+        // shared ones above, which only ever mean something to --fly and
+        // --mesh. Both are recognised by name wherever they appear after the
+        // world, which is what lets the pack -- the one argument that cannot be
+        // recognised by name -- be whatever is left over.
+        bool grid = false;
+        int zoom = 0;
+        const char* pack = nullptr;
+        for (int i = 3; i < argc; ++i) {
+            if (std::strcmp(argv[i], "grid") == 0) {
+                grid = true;
+            } else if (std::strncmp(argv[i], "zoom=", 5) == 0) {
+                zoom = std::atoi(argv[i] + 5);
+            } else if (pack == nullptr) {
+                pack = argv[i];
+            }
+        }
+        return mapWorld(argv[2], pack, grid, zoom);
     }
 
     // The console's own loop, without the console. Everything between reading
@@ -2239,10 +2303,12 @@ int main(int argc, char** argv)
     std::printf("  --convert <world-dir> pack|unpack    move a world between the two on-disk\n");
     std::printf("        shapes, in place. Pack it, unpack it, and `diff -r` against the\n");
     std::printf("        original must be empty -- that is what \"loses no data\" means\n");
-    std::printf("  --map <world-dir> [pack] [grid]      draw the bottom screen's map of a\n");
-    std::printf("        whole world, one pixel per block, and report what its surface is\n");
-    std::printf("        made of; writes map.pam to look at. `grid` draws the chunk and\n");
-    std::printf("        128-block map-tile lines the spectator screen draws\n");
+    std::printf("  --map <world-dir> [pack] [grid] [zoom=<n>]\n");
+    std::printf("                                       draw the bottom screen's map of a\n");
+    std::printf("        whole world and report what its surface is made of; writes map.pam\n");
+    std::printf("        to look at. `grid` draws the chunk and 128-block map-tile lines the\n");
+    std::printf("        map page draws. `zoom=` is that page's own zoom, -1 to 2, where 0 is\n");
+    std::printf("        one pixel per block\n");
     std::printf("  --audio-list <resources-dir>         what the sound pools ended up holding,\n");
     std::printf("        and the key a1.1.2 would have filed each music file under\n");
     std::printf("  --music-schedule <resources-dir> [seed] [hours]\n");

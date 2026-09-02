@@ -27,13 +27,13 @@ gone and the coordinate column has been cut from 120 pixels to 96. That is 41,60
 36,864 the hardware number was measured on, so the copy costs about a fifth of a millisecond more —
 see [what it costs](#what-it-costs--and-the-hardware-number-that-changed-the-design).) Three things follow, and the first two are the point:
 
-* **It lines up with the chunks.** Sixteen pixels to a chunk, always, because the window's origin is
-  a whole block and a chunk is sixteen blocks. The debug settings page draws the chunk lines so you
-  can see it rather than take it on trust.
+* **It lines up with the chunks.** Sixteen pixels to a chunk at 1:1, always, because the window's
+  origin is a whole block and a chunk is sixteen blocks. D-pad left and right draw the chunk lines
+  so you can see it rather than take it on trust.
 * **It lines up with the maps of later versions.** A map at scale 0 covers the 128 blocks starting
   at `tile * 128 - 64` (`ItemMap`'s centre arithmetic, `MathHelper.floor((x + 64) / 128)`). Our
-  pixel at a given block is that map's pixel at the same block, and the red grid the debug settings
-  page can turn on is that 128-block boundary. Every tile edge is also
+  pixel at a given block is that map's pixel at the same block, and the red grid the same d-pad
+  cycle turns on is that 128-block boundary. Every tile edge is also
   a chunk edge, which is what lets both claims be true at once — 64 is a multiple of 16.
 * **The player is an indicator on it, not the centre of a compass.** An arrowhead at their position,
   pointing where they are looking. `map::drawMarker` takes a position, a yaw and a colour, so
@@ -223,8 +223,10 @@ things stand between it and a map on the SD card, and both are real:
   `3dalpha.ini` has (see [packed-worlds.md](packed-worlds.md)). Getting that wrong is data loss on a
   conversion, which is the one class of bug this project does not trade for a feature.
 
-So the map lives for as long as the world is open: 512 chunks on an old 3DS and 1,536 on a New one,
-which is a remembered area of roughly 512 and 780 blocks square.
+So the map lives for as long as the world is open: **768 chunks on an old 3DS and 1,536 on a New
+one**, 1.13 MB and 2.25 MB. Those numbers are set by the widest zoom rather than by the default one
+— see [zoom](#zoom-four-levels-of-it) — and they are a remembered area of roughly 640 and 780 blocks
+square at 1:1.
 
 ## The bottom screen it lives on
 
@@ -272,10 +274,85 @@ answers them is a debug page with a picture on it. The redraw time in particular
 and still worth having, and it is on the **Info** page now, beside every other number that exists to
 be watched.
 
-The 128-block and 16-block grids went the same way. They are claims this project makes about the map
-— that it lines up with the chunks and with the maps of later versions — and being able to check
-them on the hardware is worth keeping, so the switch is a row on the **debug settings** page. It is
-off by default, because neither is anything a player wants drawn over their world.
+The 128-block and 16-block grids **went the same way and came back.** They are claims this project
+makes about the map — that it lines up with the chunks and with the maps of later versions — so for
+a while the switch was a row on the **debug settings** page, on the reasoning that checking a claim
+is a maintainer's job. That reasoning was half right. A chunk grid over a map is also the most
+useful overlay a Minecraft player has ever been handed, and a page behind a `SELECT` chord is not
+where it belongs. It is d-pad left and right on the map's own page now, still off by default, with
+the state named in the panel so it is not something you have to press a button to find out.
+
+## Zoom, four levels of it
+
+The map is one pixel per block by default and can be **magnified twice or shrunk once** — d-pad up
+and down, clamped rather than wrapped, because a zoom is a line with two ends and coming out of the
+far end of a magnified map into the widest one is a jump you have to undo rather than one you meant.
+
+| Zoom | | Ground shown | Chunks the window touches |
+|---|---|---|---|
+| −1 | two blocks a pixel | 416 × 400 blocks | ~702 |
+| **0** | one to one | 208 × 200 | ~196 |
+| +1 | two pixels a block | 104 × 100 | ~64 |
+| +2 | four pixels a block | 52 × 50 | ~25 |
+
+**Zoom is a property of the window, not of the stored pixels.** A chunk's patch is always drawn at
+one pixel per block, so a zoom step invalidates nothing: the stamp does not move, every patch stays
+current, and the step costs one ordinary redraw rather than a whole window re-shaded. That is what
+makes magnifying free — there is no larger patch to hold — and it is the reason the range is
+lopsided. Shrinking is what costs, because the window covers four times the ground per level, and a
+second level out would be ~2,600 chunks and 4 MB of patches on a console whose newlib heap has
+already been measured running out. One level out is what the store is sized for.
+
+Sizing it for the widest level rather than the default one matters more than it sounds. A store that
+cannot hold the whole window does not degrade gently, it thrashes — and it thrashes *backwards*: the
+sampling scan runs in rings from the player outward, so the least-recently-touched entry is the
+ground under the marker, and eviction would take exactly what is being looked at.
+
+Two alignment rules keep the picture still:
+
+* **Powers of two only**, so a chunk is a whole number of pixels at every level — 64, 32, 16, 8 —
+  and the grids, which sit on chunk and tile origins, always land on the sampling lattice.
+* **The origin is snapped to the sampling step.** Unsnapped, a shrunk window would flip between the
+  even and the odd blocks as the player walked: the whole picture would change colour on alternate
+  steps and shimmer rather than scroll.
+
+Shrinking **point-samples** rather than averaging. Later versions average; averaging four
+already-shaded RGB565 pixels 41,600 times a redraw is arithmetic an ARM11 does not have spare. A
+one-block feature therefore has an even chance of falling between samples, which is the honest cost.
+
+### What zoom cost, and the thing it uncovered
+
+The first hardware redraw with zoom in it came back at **3,283 µs, zoomed out one level** — four
+times what the 1:1 blit was believed to cost, which is too much to be explained by moving the same
+41,600 pixels a different way. It was not the pixels.
+
+**The walk was buying its patch pointers by the pixel column.** `renderMapWindow` asked
+`MapStore::patch` for a pointer every time it crossed a chunk edge going south: 208 columns × 13
+chunk rows = **2,704 hash lookups to obtain 182 distinct answers**, each a probe into an index in
+front of 2.25 MB of entries that no 3DS cache holds. Sixteen output columns share a chunk column, so
+the pointers are gathered once per chunk column now, into an array of 64 on the stack.
+
+**And the redraw was re-scanning for staleness on frames where nothing could be stale.** A patch goes
+stale exactly two ways — a chunk is stored, or the stamp is bumped by a pack or grid change — and a
+stale patch only comes *into view* when the window moves or its zoom changes. A redraw that matches
+all of those cannot find anything, so `refreshMapWindow` is skipped outright. That is the common
+redraw: turning moves the yaw step and nothing else.
+
+Measured on the host over the reference world, one 208 × 200 window, sanitised build:
+
+| | zoom −1 | zoom 0 | zoom +1 | zoom +2 |
+|---|---|---|---|---|
+| copy, before the pointer hoist | 1,052 µs | 389 µs | 280 µs | 130 µs |
+| copy, after | **397** | **86** | **187** | **78** |
+| stale scan, skipped on a turn | 89 | 24 | — | — |
+
+So the 1:1 copy is **4.5× faster than it was**, and it was never the copy that was slow — the same
+change is most of what shrinking cost. It is also why magnifying measures *cheaper* than 1:1: it
+reads a quarter of the source columns and block-moves three quarters of what it writes.
+
+**The console figures that replace 3,283 have not been taken**, and all four levels are worth
+having: the host is thirty to forty times faster here and cannot answer for an ARM11's cache, which
+is the thing this whole episode turned on. The Info page's map redraw row is where they land.
 
 ### Who owns a touch
 

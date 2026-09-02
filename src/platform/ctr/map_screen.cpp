@@ -47,6 +47,13 @@ constexpr int kFieldH = 24;
 constexpr int kFieldY[3] = {48, 104, 160};
 // The console row each one's text sits on: the middle of its box.
 constexpr int kFieldRow[3] = {8, 15, 22};
+// The two d-pad settings, in the gap between the z box (which ends at pixel
+// 184, so row 23) and the wordmark. Plain text on the panel rather than boxed
+// readouts: they are what the map is showing itself as, not measurements of the
+// world, and a bevelled slot around each would have made the column read as six
+// numbers instead of three.
+constexpr int kZoomRow = 24;
+constexpr int kGridRow = 25;
 constexpr int kWordmarkRow = 27;
 
 // The axis letter, as pixels. **It is five wide where a character cell is
@@ -61,16 +68,21 @@ constexpr int kLetterX = kFieldX + 4;
 constexpr int kValueColumn = 3;
 constexpr int kValueColumns = 9;
 
+// ...and the two d-pad rows under them: column 2 to column 11, pixels 8 to 88.
+constexpr int kSettingColumn = 2;
+constexpr int kSettingColumns = 10;
+
 }  // namespace
 
 void MapScreen::configure(bool isNew3DS)
 {
-    store_.setCapacity(isNew3DS ? 1280 : 512);
+    store_.setCapacity(isNew3DS ? 1536 : 768);
     sampleBudget_ = isNew3DS ? 16 : 8;
     // A new world, so the store knows nothing about it: burst until the window
     // has caught up with what the streamer can give. See kPrimeBudget.
     primed_ = false;
     shown_ = Signature{};
+    refreshed_ = Refreshed{};
 }
 
 void MapScreen::cycleGrid(int delta)
@@ -89,10 +101,39 @@ const char* MapScreen::gridName() const
     return grid_ == Grid::None ? "off" : (grid_ == Grid::Tiles ? "128" : "16/128");
 }
 
+void MapScreen::cycleZoom(int delta)
+{
+    const int wanted = zoom_ + (delta > 0 ? 1 : -1);
+    if (wanted < map::kZoomMin || wanted > map::kZoomMax) {
+        return;
+    }
+    zoom_ = wanted;
+    // **No stamp bump, unlike the grid.** A patch is drawn at one pixel per
+    // block whatever the zoom is, so every one of them is still current; what
+    // changed is which of their pixels the window asks for. The signature
+    // carries the zoom, so the next draw is one ordinary redraw.
+}
+
+const char* MapScreen::zoomName() const
+{
+    switch (zoom_) {
+    case -1:
+        return "1/2";
+    case 1:
+        return "x2";
+    case 2:
+        return "x4";
+    default:
+        break;
+    }
+    return "1:1";
+}
+
 void MapScreen::reset()
 {
     store_.clear();
     shown_ = Signature{};
+    refreshed_ = Refreshed{};
 }
 
 void MapScreen::setPalette(const texture::AtlasImage& atlas)
@@ -102,6 +143,7 @@ void MapScreen::setPalette(const texture::AtlasImage& atlas)
     // the player has moved to say so.
     ++stamp_;
     shown_ = Signature{};
+    refreshed_ = Refreshed{};
 }
 
 map::MapWindow MapScreen::windowFor(const Camera& camera) const
@@ -109,12 +151,27 @@ map::MapWindow MapScreen::windowFor(const Camera& camera) const
     map::MapWindow window;
     window.width = kMapWidth;
     window.height = kMapHeight;
+    window.zoom = zoom_;
+
+    // How much ground the picture covers, which is what the centring is in
+    // terms of -- 208 by 200 blocks at 1:1, a quarter of that magnified twice,
+    // four times it shrunk once.
+    const i32 blocksWide = map::mapWindowBlocks(kMapWidth, zoom_);
+    const i32 blocksHigh = map::mapWindowBlocks(kMapHeight, zoom_);
+
     // Centred on the block the player is standing in, so the marker sits in the
     // middle and the ground scrolls under it. The origin is a whole block,
     // which is what keeps the pixel grid on the block grid however far the
     // player is from the origin.
-    window.originBlockX = i32(std::floor(camera.x)) - kMapWidth / 2;
-    window.originBlockZ = i32(std::floor(camera.z)) - kMapHeight / 2;
+    //
+    // **Shrunk, it is snapped to the sampling step as well.** At two blocks per
+    // pixel an unsnapped origin would flip between the even and the odd blocks
+    // as the player walked, so every pixel of the map would change colour on
+    // alternate steps -- the picture would shimmer rather than scroll. Snapping
+    // costs half a pixel of centring and buys a lattice that never moves.
+    const i32 step = map::mapBlocksPerPixel(zoom_);
+    window.originBlockX = floorDiv(i32(std::floor(camera.x)) - blocksWide / 2, step) * step;
+    window.originBlockZ = floorDiv(i32(std::floor(camera.z)) - blocksHigh / 2, step) * step;
     return window;
 }
 
@@ -155,8 +212,10 @@ void MapScreen::update(const render::WorldStreamer& world, const Camera& camera)
     // The centre is derived from the window rather than from the camera a
     // second time, so the rings are centred on exactly the block the marker is
     // drawn on however far from the origin the player is. See windowFor.
-    const i32 centreChunkX = floorDiv(window.originBlockX + kMapWidth / 2, map::kChunkPixels);
-    const i32 centreChunkZ = floorDiv(window.originBlockZ + kMapHeight / 2, map::kChunkPixels);
+    const i32 centreChunkX = floorDiv(
+        window.originBlockX + map::mapWindowBlocks(kMapWidth, window.zoom) / 2, map::kChunkPixels);
+    const i32 centreChunkZ = floorDiv(
+        window.originBlockZ + map::mapWindowBlocks(kMapHeight, window.zoom) / 2, map::kChunkPixels);
     const i32 reach = std::max(std::max(centreChunkX - minChunkX, maxChunkX - centreChunkX),
                                std::max(centreChunkZ - minChunkZ, maxChunkZ - centreChunkZ));
 
@@ -224,6 +283,7 @@ void MapScreen::draw(const gui::Surface& surface, const Camera& camera, bool for
     now.yawStep = map::yawStep(yawDegrees);
     now.stored = store_.stats().stored;
     now.grid = grid_;
+    now.zoom = zoom_;
     now.valid = true;
 
     if (!force && now == shown_) {
@@ -277,6 +337,21 @@ void MapScreen::drawText(const Camera& camera)
         hud::text(kFieldRow[i], kValueColumn, kValueColumns, hud::kReadoutText, hud::kReadoutFace,
                   "%*ld", kValueColumns, values[i]);
     }
+
+    // What the d-pad is set to. Printed over the panel's own face rather than a
+    // readout's, so they read as labels on the panel and not as two more
+    // instruments. `hud::text` pads to the columns it is given, which is what
+    // stops "16/128" leaving a tail behind when it cycles back to "off".
+    //
+    // **Ten columns from column 2**, which is pixels 8 to 88: the same span the
+    // coordinate numbers use, and clear of the panel's own bevel at either
+    // edge. It is also the whole reason the widest state prints as `grid16/128`
+    // with no gap -- four cells of label and six of value is exactly what there
+    // is, and losing the space is better than losing a digit.
+    hud::text(kZoomRow, kSettingColumn, kSettingColumns, hud::kPanelText, hud::kPanelFace,
+              "%-4s%6s", "zoom", zoomName());
+    hud::text(kGridRow, kSettingColumn, kSettingColumns, hud::kPanelText, hud::kPanelFace,
+              "%-4s%6s", "grid", gridName());
 }
 
 void MapScreen::drawPixels(const gui::Surface& surface, const Camera& camera,
@@ -297,12 +372,28 @@ void MapScreen::drawPixels(const gui::Surface& surface, const Camera& camera,
     style.tileGrid = grid_ != Grid::None;
     style.tileGridColour = kTileGrid;
 
-    // **Two steps, and only the second one runs most frames.** Refreshing draws
+    // **Two steps, and most redraws take only the second.** Refreshing draws
     // the patches that went stale -- the chunk sampled this frame, the one
     // south of it, or every patch in the window after a pack change -- and the
     // copy is what a redraw costs the rest of the time.
+    //
+    // The refresh is skipped outright when nothing can have gone stale and the
+    // window has not moved onto anything that already was; see `Refreshed`. On
+    // a redraw driven by the player turning, which is the common one, that is
+    // the whole of the first step gone rather than a scan that finds nothing.
     const u64 before = svcGetSystemTick();
-    map::refreshMapWindow(store_, palette_, window, style, stamp_);
+    const u32 stored = store_.stats().stored;
+    if (!refreshed_.valid || refreshed_.originX != window.originBlockX
+        || refreshed_.originZ != window.originBlockZ || refreshed_.zoom != window.zoom
+        || refreshed_.stored != stored || refreshed_.stamp != stamp_) {
+        map::refreshMapWindow(store_, palette_, window, style, stamp_);
+        refreshed_.originX = window.originBlockX;
+        refreshed_.originZ = window.originBlockZ;
+        refreshed_.zoom = window.zoom;
+        refreshed_.stored = stored;
+        refreshed_.stamp = stamp_;
+        refreshed_.valid = true;
+    }
     map::renderMapWindow(store_, window, style, target);
 
     // The player. **Every other player in a multiplayer session is this call

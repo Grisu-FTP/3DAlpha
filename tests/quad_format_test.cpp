@@ -3,6 +3,7 @@
 #include "core/block/registry.hpp"
 #include "core/mesh/mesher.hpp"
 
+#include <cstring>
 #include <vector>
 
 // The geometry-shader cube format, checked against the one it is meant to
@@ -262,8 +263,89 @@ TEST(copying_out_writes_the_quads_the_builder_holds)
     }
 
     // The detail ranges still follow the cube range, at the offset the smaller
-    // cube encoding puts them at rather than the one the larger did.
-    CHECK_EQ(quads.ranges().detailOffset(), quads.ranges().cubeBytes);
+    // cube encoding puts them at rather than the one the larger did -- rounded
+    // up to the range alignment, which for an even quad count is a no-op.
+    CHECK_EQ(quads.ranges().detailOffset(), mesh::MeshRanges::alignUp(quads.ranges().cubeBytes));
+    CHECK(quads.ranges().detailOffset() - quads.ranges().cubeBytes < 16);
+}
+
+TEST(every_range_starts_on_a_sixteen_byte_boundary_in_both_formats)
+{
+    // **The reason this test exists.** A vertex buffer's base is an address the
+    // GPU is given, and the detail ranges start where the cube range ends. With
+    // 48 bytes a quad that end is a multiple of 16 whatever the quad count; with
+    // 8 bytes a quad it is not, and an odd quad count would put the detail
+    // buffer's base at 8 mod 16 -- an alignment nothing in the 12-byte path can
+    // produce, so nothing in the 12-byte path proves it is safe.
+    //
+    // Driven off a quad count made odd on purpose, because the natural meshes
+    // in this file happen to be even and would pass without the padding.
+    for (const CubeFormat format : {CubeFormat::Vertices, CubeFormat::Quads}) {
+        for (usize quadCount = 0; quadCount < 4; ++quadCount) {
+            mesh::MeshRanges ranges;
+            ranges.cubeFormat = format;
+            ranges.cubeBytes = quadCount * mesh::cubeBytesPerQuad(format);
+            ranges.detailBytes = 3 * sizeof(mesh::DetailVertex);
+            ranges.translucentBytes = 5 * sizeof(mesh::DetailVertex);
+
+            CHECK_EQ(ranges.detailOffset() % 16, usize(0));
+            CHECK_EQ(ranges.translucentOffset() % 16, usize(0));
+
+            // The pad is layout, never geometry: the quad count still comes off
+            // the unpadded length.
+            CHECK_EQ(ranges.cubeQuads(), quadCount);
+
+            // And total() covers the last range, pad included, so the staging
+            // buffer meshSection sizes from it is big enough for copyTo.
+            CHECK_EQ(ranges.total(), ranges.translucentOffset() + ranges.translucentBytes);
+            CHECK(ranges.total() >= ranges.cubeBytes + ranges.detailBytes
+                                        + ranges.translucentBytes);
+
+            // A cube-only section -- most of a world -- is charged nothing for
+            // a boundary nothing sits on, so the pool copies exactly what
+            // copyTo wrote and not eight bytes more.
+            mesh::MeshRanges cubesOnly = ranges;
+            cubesOnly.detailBytes = 0;
+            cubesOnly.translucentBytes = 0;
+            CHECK_EQ(cubesOnly.total(), cubesOnly.cubeBytes);
+
+            // Detail but no translucent still aligns the one range that exists.
+            mesh::MeshRanges noTranslucent = ranges;
+            noTranslucent.translucentBytes = 0;
+            CHECK_EQ(noTranslucent.total(), noTranslucent.detailOffset() + ranges.detailBytes);
+            CHECK_EQ(noTranslucent.detailOffset() % 16, usize(0));
+        }
+    }
+}
+
+TEST(copy_to_places_the_detail_ranges_at_the_padded_offsets)
+{
+    // The odd-quad case end to end: a single cube face is one quad, 8 bytes, so
+    // the detail range is the one that has to move to 16.
+    const ChunkColumn column = varied();
+    const MeshBuilder quads = meshOf(column, 0, CubeFormat::Quads);
+    const mesh::MeshRanges ranges = quads.ranges();
+
+    std::vector<u8> buffer(quads.byteSize(), u8(0xCD));
+    quads.copyTo(buffer.data());
+
+    CHECK_EQ(buffer.size(), ranges.total());
+    if (ranges.detailBytes != 0) {
+        CHECK_EQ(std::memcmp(buffer.data() + ranges.detailOffset(), quads.detailVertices(),
+                             ranges.detailBytes),
+                 0);
+    }
+    if (ranges.translucentBytes != 0) {
+        CHECK_EQ(std::memcmp(buffer.data() + ranges.translucentOffset(),
+                             quads.translucentVertices(), ranges.translucentBytes),
+                 0);
+    }
+
+    // The pad is written, not left as whatever the buffer held: the staging
+    // buffer is reused between sections and all of it is uploaded.
+    for (usize i = ranges.cubeBytes; i < ranges.detailOffset(); ++i) {
+        CHECK_EQ(int(buffer[i]), 0);
+    }
 }
 
 TEST(a_quad_never_addresses_a_cell_outside_the_section)

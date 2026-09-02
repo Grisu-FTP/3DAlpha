@@ -626,3 +626,205 @@ TEST(a_worker_thread_produces_the_same_world_as_inline_while_it_keeps_up)
     compareWorlds(threaded, inl);
     compareWorlds(threaded, cached);
 }
+
+// ---------------------------------------------------------------------------
+// The memory budget
+// ---------------------------------------------------------------------------
+// Residency was purely geometric: a cell is held if it is inside the radius,
+// and nothing asked what that cost. Measured through the generator a column is
+// 14.0 KB over ordinary terrain and 21.7 KB at the Far Lands, so the same grid
+// that fits in 33 MB at render distance 24 needs 51 MB out there -- past a heap
+// that does not grow, into a failed `operator new`, into `abort()`. See
+// crashlogs/007 and WorldStreamer::setMemoryBudget.
+//
+// These run the budget deliberately tight so the mechanism is exercised at a
+// render distance a test can settle in, rather than needing the Far Lands.
+
+TEST(a_memory_budget_shrinks_the_admission_radius_and_evicts)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("Budget");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 1234567890LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 4;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 4, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    // Fill first, with no budget, and record what the full grid costs.
+    CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 20000) < 20000);
+    const usize full = streamer.stats().blockBytes;
+    const int fullColumns = streamer.stats().columnsResident;
+    CHECK(full > 0);
+    CHECK_EQ(streamer.stats().admitRadius, streamer.loadRadius());
+    CHECK_EQ(int(streamer.stats().evictedForMemory), 0);
+
+    // Now ask for half of it. The radius has to come in, and columns have to go.
+    streamer.setMemoryBudget(full / 2);
+    for (u32 n = 0; n < 4000; ++n) {
+        frame(streamer, renderer, n + 100000, 0, 0, budget);
+        if (streamer.stats().blockBytes <= full / 2
+            && streamer.stats().admitRadius < streamer.loadRadius()) {
+            break;
+        }
+    }
+
+    const WorldStreamer::Stats& tight = streamer.stats();
+    CHECK(tight.admitRadius < streamer.loadRadius());
+    CHECK(tight.admitRadius >= 3);          // never below the floor
+    CHECK(tight.evictedForMemory > 0);
+    CHECK(tight.columnsResident < fullColumns);
+
+    // **Under the budget, not merely smaller.** The point is the bound.
+    CHECK(tight.blockBytes <= full / 2);
+
+    // And the grid it kept is the one around the player, so the count matches
+    // the radius rather than being whatever eviction happened to leave.
+    const int edge = tight.admitRadius * 2 + 1;
+    CHECK(tight.columnsResident <= edge * edge);
+
+    streamer.close(kNow);
+}
+
+TEST(lifting_the_budget_lets_the_radius_grow_back)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("Regrow");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 1234567890LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 4;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 4, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 20000) < 20000);
+    const usize full = streamer.stats().blockBytes;
+    const int fullColumns = streamer.stats().columnsResident;
+
+    streamer.setMemoryBudget(full / 2);
+    for (u32 n = 0; n < 4000 && streamer.stats().admitRadius >= streamer.loadRadius(); ++n) {
+        frame(streamer, renderer, n + 100000, 0, 0, budget);
+    }
+    CHECK(streamer.stats().admitRadius < streamer.loadRadius());
+
+    // A budget nothing can exceed. The radius must come back, and it must come
+    // back *gradually* -- a ring per strided pass, not in one jump.
+    streamer.setMemoryBudget(0);
+    CHECK_EQ(streamer.stats().admitRadius, streamer.loadRadius());
+
+    // With the budget off entirely admitRadius() is loadRadius_ immediately;
+    // the interesting case is a budget that is merely generous, which must also
+    // come back to the full radius rather than sitting narrowed.
+    //
+    // **Frames, not runUntilSettled.** The radius grows one ring per strided
+    // residency pass, and between passes there is nothing pending -- so a
+    // settle-based loop stops at the first narrow radius that is fully loaded
+    // and never sees the regrowth at all. That was this test's first failure
+    // and it was the test that was wrong, not the code.
+    streamer.setMemoryBudget(full * 4);
+    int grew = 0;
+    for (; grew < 8000; ++grew) {
+        frame(streamer, renderer, u32(grew) + 300000, 0, 0, budget);
+        if (streamer.stats().admitRadius >= streamer.loadRadius()) {
+            break;
+        }
+    }
+    CHECK(grew < 8000);
+    CHECK_EQ(streamer.stats().admitRadius, streamer.loadRadius());
+
+    // And the world it dropped comes back, which is what "grow back" has to
+    // mean for a player: the far ring is readable again, not merely permitted.
+    // `columnsResident` is the check, because it is recounted every frame --
+    // `blockBytes` is the strided half of countResidency() and settling can
+    // land on a frame that did not refresh it.
+    CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 20000) < 20000);
+    CHECK_EQ(streamer.stats().columnsResident, fullColumns);
+
+    // Then far enough past a strided pass that the byte total is this grid's
+    // and not the narrowed one's.
+    for (u32 n = 0; n < 64; ++n) {
+        frame(streamer, renderer, n + 400000, 0, 0, budget);
+    }
+    CHECK(streamer.stats().blockBytes >= full);
+
+    streamer.close(kNow);
+}
+
+TEST(no_budget_changes_nothing)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("NoBudget");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 1234567890LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 2;
+    config.budget = {0, 4 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 20000) < 20000);
+
+    // The same 49 the older test asserts, and nothing evicted. This is the
+    // guard on every documented --fly number: the budget ships off.
+    CHECK_EQ(streamer.stats().columnsResident, 49);
+    CHECK_EQ(int(streamer.stats().evictedForMemory), 0);
+    CHECK_EQ(streamer.stats().admitRadius, streamer.loadRadius());
+
+    streamer.close(kNow);
+}

@@ -459,3 +459,199 @@ TEST(a_field_that_was_never_sized_produces_nothing_rather_than_reading_memory)
     CHECK_EQ(set.draw.size(), usize(0));
     CHECK_EQ(set.toMesh.size(), usize(0));
 }
+
+// ---------------------------------------------------------------------------
+// The division-free cell index.
+//
+// SectionField::cellIndex used to be two floorMods. ARMv6k has no divide
+// instruction, so each was an __aeabi_idivmod call, and the walk made about
+// twenty of them per section it visited. It is now a conditional add against a
+// base cached at setCentre time, which is only the same answer because every
+// caller has checked inRange first. These pin that identity rather than the
+// walk's behaviour, because the walk cannot tell the difference until it is
+// wrong.
+
+TEST(the_cell_index_still_agrees_with_a_modulo_at_negative_coordinates)
+{
+    // Negative coordinates are where a plain % would differ from floorMod, and
+    // where an off-by-one in the wrap would hide: the project's rule is that
+    // chunk paths are tested with negative coordinates.
+    for (int radius : {1, 3, 6, 8, 12}) {
+        const int edge = radius * 2 + 1;
+        for (i32 centre : {i32(-33), i32(-1), i32(0), i32(1), i32(40)}) {
+            SectionField field;
+            field.reset(radius);
+            field.setCentre(centre, centre);
+
+            for (i32 dz = -radius; dz <= radius; ++dz) {
+                for (i32 dx = -radius; dx <= radius; ++dx) {
+                    const i32 cx = centre + dx;
+                    const i32 cz = centre + dz;
+
+                    const int wantX = int(((cx % edge) + edge) % edge);
+                    const int wantZ = int(((cz % edge) + edge) % edge);
+                    CHECK_EQ(field.cellOf(cx, cz), wantZ * edge + wantX);
+                }
+            }
+        }
+    }
+}
+
+TEST(the_cell_index_still_agrees_with_a_modulo_at_far_lands_magnitudes)
+{
+    // The crash report in crashlogs/008 was taken at chunk -63 -2000007, so the
+    // wrap has to hold where the coordinate is millions from the origin and the
+    // offset from the centre is still small.
+    const int radius = 8;
+    const int edge = radius * 2 + 1;
+    const i32 centreX = -2000007;
+    const i32 centreZ = 1999998;
+
+    SectionField field;
+    field.reset(radius);
+    field.setCentre(centreX, centreZ);
+
+    for (i32 dz = -radius; dz <= radius; ++dz) {
+        for (i32 dx = -radius; dx <= radius; ++dx) {
+            const i32 cx = centreX + dx;
+            const i32 cz = centreZ + dz;
+
+            const int wantX = int(((cx % edge) + edge) % edge);
+            const int wantZ = int(((cz % edge) + edge) % edge);
+            CHECK_EQ(field.cellOf(cx, cz), wantZ * edge + wantX);
+        }
+    }
+}
+
+TEST(the_cell_index_follows_the_centre_as_it_moves)
+{
+    // The base is cached at setCentre time, so a centre that moves without a
+    // reset is exactly the case a stale base would break -- and cellOf is a
+    // token the VBO pool hands back an unknown number of frames later, so it
+    // has to keep meaning the same thing.
+    const int radius = 6;
+    const int edge = radius * 2 + 1;
+
+    SectionField field;
+    field.reset(radius);
+
+    for (i32 centre = -20; centre <= 20; ++centre) {
+        field.setCentre(centre, -centre);
+        for (i32 dz = -radius; dz <= radius; ++dz) {
+            for (i32 dx = -radius; dx <= radius; ++dx) {
+                const i32 cx = centre + dx;
+                const i32 cz = -centre + dz;
+
+                const int wantX = int(((cx % edge) + edge) % edge);
+                const int wantZ = int(((cz % edge) + edge) % edge);
+                CHECK_EQ(field.cellOf(cx, cz), wantZ * edge + wantX);
+            }
+        }
+    }
+}
+
+TEST(a_centre_set_before_the_field_is_sized_does_not_divide_by_zero)
+{
+    // setCentre used to be two assignments with no preconditions, and
+    // ChunkRenderer::setCentre forwards to it without knowing whether reset()
+    // has run. Sizing afterwards must still produce a correct base.
+    SectionField field;
+    field.setCentre(5, -9);
+    CHECK_EQ(field.cellOf(5, -9), -1);  // nothing is in range of an unsized field
+
+    field.reset(4);
+    const int edge = 9;
+    CHECK_EQ(field.cellOf(5, -9), int(((-9 % edge) + edge) % edge) * edge + (5 % edge));
+}
+
+// ---------------------------------------------------------------------------
+// The stamped visited array.
+//
+// The walk marked visited sections with 1 and cleared the whole array every
+// frame -- a memset of edge^2 * 8 bytes, on a console whose old model has no L2
+// cache. It now stamps with a counter that only goes up. A stamp that leaked
+// between walks would make the second one skip sections the first had reached.
+
+TEST(two_walks_in_a_row_reach_the_same_sections)
+{
+    SectionField field;
+    field.reset(4);
+    field.setCentre(0, 0);
+    fillAll(field, mesh::kVisibilityAll, true);
+
+    VisibleSet first;
+    render::buildVisibleSet(field, openFrustum(), 0, 4, 0, &first);
+
+    VisibleSet second;
+    render::buildVisibleSet(field, openFrustum(), 0, 4, 0, &second);
+
+    CHECK(first.draw.size() > 0);
+    CHECK_EQ(second.sectionsVisited, first.sectionsVisited);
+    CHECK_EQ(second.draw.size(), first.draw.size());
+    for (usize i = 0; i < first.draw.size(); ++i) {
+        CHECK_EQ(second.draw[i].chunkX, first.draw[i].chunkX);
+        CHECK_EQ(second.draw[i].chunkZ, first.draw[i].chunkZ);
+        CHECK_EQ(second.draw[i].sectionY, first.draw[i].sectionY);
+    }
+}
+
+TEST(a_walk_after_a_render_distance_change_reaches_the_whole_new_field)
+{
+    // The stamp array is sized to the grid, so a resize has to reset it rather
+    // than leave stamps from a grid of a different shape lying in it.
+    SectionField field;
+    field.reset(2);
+    field.setCentre(0, 0);
+    fillAll(field, mesh::kVisibilityAll, true);
+
+    VisibleSet small;
+    render::buildVisibleSet(field, openFrustum(), 0, 4, 0, &small);
+    CHECK_EQ(small.sectionsVisited, 5 * 5 * kSectionsY);
+
+    field.reset(5);
+    field.setCentre(0, 0);
+    fillAll(field, mesh::kVisibilityAll, true);
+
+    VisibleSet large;
+    render::buildVisibleSet(field, openFrustum(), 0, 4, 0, &large);
+    CHECK_EQ(large.sectionsVisited, 11 * 11 * kSectionsY);
+
+    field.reset(2);
+    field.setCentre(0, 0);
+    fillAll(field, mesh::kVisibilityAll, true);
+
+    VisibleSet back;
+    render::buildVisibleSet(field, openFrustum(), 0, 4, 0, &back);
+    CHECK_EQ(back.sectionsVisited, small.sectionsVisited);
+}
+
+// ---------------------------------------------------------------------------
+
+TEST(one_column_lookup_answers_the_same_as_the_four_accessors)
+{
+    // ColumnRef is what the walk uses instead of isLoaded/visibility/meshSlot/
+    // sectionDirty, so it has to answer identically -- including for a column
+    // that is not there, which is the camera-in-an-unloaded-column case.
+    SectionField field;
+    field.reset(3);
+    field.setCentre(0, 0);
+    fillColumn(field, 1, 2, mesh::kVisibilityAll, true);
+    field.setSectionDirty(1, 5, 2, true);
+
+    const SectionField::ColumnRef present = field.column(1, 2);
+    CHECK(bool(present));
+    for (int sy = 0; sy < kSectionsY; ++sy) {
+        CHECK_EQ(present.visibility(sy).mask(), field.visibility(1, sy, 2).mask());
+        CHECK_EQ(present.meshSlot(sy), field.meshSlot(1, sy, 2));
+        CHECK_EQ(present.dirty(sy), field.sectionDirty(1, sy, 2));
+    }
+
+    const SectionField::ColumnRef absent = field.column(2, 2);
+    CHECK(!bool(absent));
+    CHECK_EQ(field.isLoaded(2, 2), false);
+    for (int sy = 0; sy < kSectionsY; ++sy) {
+        CHECK_EQ(absent.visibility(sy).mask(), field.visibility(2, sy, 2).mask());
+        CHECK_EQ(absent.meshSlot(sy), field.meshSlot(2, sy, 2));
+        CHECK_EQ(absent.dirty(sy), field.sectionDirty(2, sy, 2));
+    }
+}

@@ -140,6 +140,19 @@ void MeshBuilder::copyTo(void* destination) const
     } else {
         copy(dst, cubes_.data(), layout.cubeBytes);
     }
+
+    // The gap between the cube range's end and the detail range's aligned start
+    // -- at most 8 bytes, and only in CubeFormat::Quads. It is zeroed rather
+    // than left alone because the caller's staging buffer is reused between
+    // sections and every byte of it is uploaded: skipping this would hand the
+    // GPU the previous section's tail, which is not read by any draw but is
+    // exactly the kind of thing that makes a memory checker's report useless.
+    const bool anythingFollows = layout.detailBytes != 0 || layout.translucentBytes != 0;
+    const usize pad = anythingFollows ? layout.detailOffset() - layout.cubeBytes : 0;
+    if (pad != 0) {
+        std::memset(dst + layout.cubeBytes, 0, pad);
+    }
+
     copy(dst + layout.detailOffset(), details_.data(), layout.detailBytes);
     copy(dst + layout.translucentOffset(), translucent_.data(), layout.translucentBytes);
 }

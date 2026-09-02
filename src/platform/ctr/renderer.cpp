@@ -14,6 +14,24 @@
 
 namespace mc::ctr {
 
+// **A breadcrumb straight onto the bottom screen, for a console that may not
+// live to draw another frame.**
+//
+// `consoleInit` turns double buffering off, so the bottom screen is a plain
+// framebuffer the CPU writes and the LCD scans out -- no swap, no GPU, no
+// completed frame required. A line printed here is on the screen before the
+// next instruction runs, which makes it the one report channel that survives
+// the thing being investigated. Row 30 is below the overlay's footer at 28-29.
+//
+// Only ever called on the quad path, and only at the few points worth naming:
+// a printf a frame would cost more than it tells.
+void geoTrace(const char* what)
+{
+    std::printf("\x1b[30;1H\x1b[2K\x1b[33mgeo: %s\x1b[0m", what);
+    gfxFlushBuffers();
+}
+
+
 namespace {
 
 // Alpha's sky, as the RGBA8 the render target is cleared to.
@@ -111,7 +129,78 @@ Mat4 toCoreMat4(const C3D_Mtx& m)
     return out;
 }
 
+// **The GPU drain, and the only one the public API can express.**
+//
+// `C3D_FrameSync` is not it, whatever the name suggests. Disassembled out of
+// `renderqueue.o` it is `gspWaitForAnyEvent` spun until one of citro3d's two
+// VBlank counters moves:
+//
+//     ldr r6, [r4]          @ frameCounter[0]
+//     ldr r5, [r4, #4]      @ frameCounter[1]
+//     bl  gspWaitForAnyEvent
+//     ...                   @ loop while neither has changed
+//
+// It is the frame-rate limiter and it returns whether or not the GPU has
+// finished anything at all. What actually waits on the GPU is the
+// `gxCmdQueueWait` inside `C3D_FrameBegin` -- with no timeout under
+// C3D_FRAME_SYNCDRAW, with a zero one under C3D_FRAME_NONBLOCK.
+//
+// So the drain is that poll, put on a deadline; the frame it opens on success
+// is closed again immediately. Closing costs nothing: `C3Di_SplitFrame` finds
+// an empty command list and adds none, and `C3D_FrameEnd` transfers only
+// targets whose `used` flag a `C3D_FrameDrawOn` set, which nothing here does.
+//
+// **False means the deadline expired**, and the caller is about to hand back
+// memory the GPU is still fetching from. There is nothing better available --
+// the alternative is handing it back anyway, with no idea -- but the caller
+// gets to say so on the way past.
+// The poll every bounded wait in this file is built on: open a frame without
+// blocking, and keep asking until the deadline. **On success a frame is open**
+// and the caller owns it. There is no other way to wait on the GPU from outside
+// citro3d -- C3D_FRAME_SYNCDRAW's wait takes no timeout, which is the whole
+// reason this exists.
+bool pollFrameBegin(float seconds)
+{
+    const u64 start = svcGetSystemTick();
+    const u64 deadline = u64(double(seconds) * double(SYSCLOCK_ARM11));
+    while (!C3D_FrameBegin(C3D_FRAME_NONBLOCK)) {
+        if (svcGetSystemTick() - start > deadline) {
+            return false;
+        }
+        // Not a spin: the GPU is the thing that has to make progress, and
+        // burning the core it shares does not help it.
+        svcSleepThread(1000000);  // 1 ms
+    }
+    return true;
+}
+
+bool drainGpu(float seconds)
+{
+    // No C3D_FrameSync here, unlike beginFrameBounded: a drain is not a pacing
+    // point, and the callers are teardowns rather than frames.
+    if (!pollFrameBegin(seconds)) {
+        return false;
+    }
+    C3D_FrameEnd(0);
+    return true;
+}
+
+// Long enough that no honest frame is still running -- the slowest this project
+// has recorded is under 50 ms -- and short enough that a player who has just
+// wedged the GPU is told rather than left holding a dead console.
+constexpr float kGpuDrainSeconds = 0.5f;
+
 }  // namespace
+
+bool beginFrameBounded(float seconds)
+{
+    // The pacing half of C3D_FRAME_SYNCDRAW, kept: C3D_FrameSync waits on the
+    // two VBlank counters rather than on the GPU, so it always returns and it
+    // is what holds the caller to the refresh rate. Only the queue drain below
+    // it can wedge, and only that is under the deadline.
+    C3D_FrameSync();
+    return pollFrameBegin(seconds);
+}
 
 void Camera::look(float* dx, float* dy, float* dz) const
 {
@@ -350,7 +439,33 @@ void Renderer::rebuildChunks()
     // everything, including what is in flight. This is a settings change that
     // happens once when the player moves a slider, so a full drain costs
     // nothing worth counting.
-    C3D_FrameSync();
+    //
+    // **This used to be `C3D_FrameSync`, and that waited for the wrong thing.**
+    // It is a VBlank wait, not a GPU one -- see drainGpu, which disassembles it
+    // -- so it returned on the next refresh whether or not the GPU had finished
+    // the list it was handed, and the pool below was freed and immediately
+    // reallocated underneath an active fetch. On a frame that outruns the
+    // refresh, which is the whole of the far-from-origin case, that is every
+    // time.
+    if (drainGpu(kGpuDrainSeconds)) {
+        // **Only on success.** The queue is empty, so whatever geoshader draws
+        // it held have retired and the next frame may take the unbounded wait.
+        geoWorkInFlight_ = false;
+    } else {
+        // The GPU did not come back, so what follows frees memory it is still
+        // reading. Nothing here can prevent that -- the alternative is to leak
+        // the pool and carry on with a console that is already dead -- but the
+        // line says which of the two failures this was.
+        //
+        // **And `geoWorkInFlight_` stays set**, which is the point. Clearing it
+        // unconditionally -- which this did -- told the next `drawFrame` that
+        // the queue was empty on the strength of a drain that had just said it
+        // was not, and that frame then took the unbounded
+        // `C3D_FRAME_SYNCDRAW` on a queue still holding the list that wedged.
+        // That is the third hardware failure exactly, re-armed inside its own
+        // fix. See docs/3ds-performance.md section 2.
+        geoTrace("GPU did not drain before the pool was freed");
+    }
 
     render::ChunkRendererConfig chunkConfig = chunks_.config();
     chunkConfig.meshDistance = config_.meshDistance;
@@ -378,6 +493,28 @@ void Renderer::setCubeFormat(mesh::CubeFormat format)
         return;
     }
     cubeFormat_ = format;
+
+    // **The way back out of the watchdog's latch, and the only one.**
+    // `quadDrawsStopped_` stops the cube pass recording geoshader draws, and it
+    // has to survive a run of good frames -- a GPU that missed a deadline is
+    // not one to hand a geoshader draw back to because the next frame happened
+    // to come through. What it must not survive is a deliberate change of
+    // format: the fallback in main.cpp arrives here to select 4-vertex, and a
+    // player who selects geoshader again is asking for it on purpose. Either
+    // way the decision has been made somewhere that can be reasoned about,
+    // which is more than the latch was doing.
+    //
+    // `gpuStalls_` is deliberately not cleared: the count is the session's
+    // history and the debug page reports it as such.
+    quadDrawsStopped_ = false;
+
+    if (format == mesh::CubeFormat::Quads) {
+        // Printed *before* the work, not after: the point of a breadcrumb is to
+        // be the last thing on the screen if the next thing never returns.
+        // rebuildChunks starts with a GPU drain, which is reached long before
+        // any quad has been drawn.
+        geoTrace("pool teardown (GPU drain)");
+    }
 
     // Everything resident is in the old encoding, and its bytes mean something
     // else in the new one. The pool goes, and the streamer re-meshes.
@@ -411,8 +548,14 @@ bool Renderer::setAtlas(const texture::AtlasImage& image)
 {
     // The in-flight frame is sampling the texture this is about to free, for
     // the same reason rebuildChunks has to wait: FrameEnd enqueued the list and
-    // did not wait for it. Once, on a texture-pack change.
-    C3D_FrameSync();
+    // did not wait for it. Once, on a texture-pack change. **The GPU, not the
+    // refresh** -- see the note in rebuildChunks on what `C3D_FrameSync` waits
+    // for, which is not this.
+    // Cleared only if the drain actually happened; see rebuildChunks for what
+    // clearing it on a failed drain re-arms.
+    if (drainGpu(kGpuDrainSeconds)) {
+        geoWorkInFlight_ = false;
+    }
 
     // The old texture is handed back *first*. Atlas::init asks for VRAM before
     // it will settle for linear, and holding 256 KB of the old one while the
@@ -475,6 +618,24 @@ void parkShaderProgram()
 
 void Renderer::shutdown()
 {
+    // **Everything below is freed out from under a list that may still be
+    // running.** Leaving a world hands the top screen to the menu, so a GPU
+    // still chewing on the last world frame here surfaces several function
+    // calls away from anything that mentions the world. Drain first.
+    //
+    // The drain is the first of two guards and not the load-bearing one: it has
+    // a deadline, and the case where it expires is exactly the case where the
+    // GPU is already gone. The menu's own frame is bounded for that reason --
+    // see ctr::beginFrameBounded -- because a drain that fails here used to
+    // hand the menu an unbounded wait on a wedged queue, which is a console
+    // that has to be powered off.
+    // Cleared only if the drain actually happened; see rebuildChunks. The menu
+    // this hands the screen to now bounds its own wait (ctr::beginFrameBounded),
+    // so a drain that expires here costs it a frame rather than the console.
+    if (drainGpu(kGpuDrainSeconds)) {
+        geoWorkInFlight_ = false;
+    }
+
     // Before the pipelines go, so citro3d is not left pointing at one of them
     // when the menu binds citro2d's program on the way back. See
     // parkShaderProgram.
@@ -590,43 +751,194 @@ Frustum Renderer::cullFrustum(const Camera& camera) const
 // One vertex format, every section that has any of it. Splitting the frame this
 namespace {
 
+// ---------------------------------------------------------------------------
+// The geometry-shader bisect knobs
+// ---------------------------------------------------------------------------
+// The quad path's first hardware run hung the GPU hard -- both screens, no
+// HOME, power off -- after one or two chunks had drawn. Everything static about
+// it checks out (the shbin's two DVLEs, the outmaps, the gsh stride and mode,
+// the setemit encodings, the uniform allocation), so the fault is in what the
+// draw loop *accumulates*, and the only way to find that is to take pieces of
+// the loop away until it stops.
+//
+// **Compile-time, and deliberately not on the debug page.** Every test costs a
+// power cycle anyway, so a rebuild is not the expensive part, and a knob that
+// cannot be reached by a stray d-pad press cannot make a hardware measurement
+// mean something other than what it says.
+//
+// **Every one of these is inert unless the mesh being drawn is a quad mesh**,
+// so the 12-byte path measures the same with them compiled in as without.
+// Defaults are "no limit": this block ships neutral.
+//
+//   kGeoMaxSections    draw at most N quad sections in the cube pass, 0 = all
+//   kGeoMaxQuads       clamp each quad draw to N input vertices, 0 = all
+//   kGeoCubePassOnly   skip the detail and translucent passes entirely
+//   kGeoForceMono      one eye, halving the command list and the draw count
+//
+// Start where the probe is -- mono, cube pass only, kGeoMaxSections = 1 -- and
+// relax one at a time. Which knob stops the hang names the suspect; see the
+// table in docs/3ds-performance.md section 2.
+constexpr int kGeoMaxSections = 0;
+constexpr int kGeoMaxQuads = 0;
+constexpr bool kGeoCubePassOnly = false;
+constexpr bool kGeoForceMono = false;
+
+// **The fix, as a switch, so its absence stays measurable.** End the command
+// list on both sides of the geoshader cube pass, so the shader-unit
+// repartition that turning the geometry stage on or off performs never lands
+// on a list with draws still in flight. See the note on kGeoRamp.
+constexpr bool kGeoSplitPasses = true;
+
+// ---------------------------------------------------------------------------
+// The ramp: the same bisect, done automatically in one boot
+// ---------------------------------------------------------------------------
+// **A wedged GPU stays wedged for the rest of the session**, so a bisect cannot
+// walk downwards from a hang -- there is only ever one hang to learn from, and
+// it is the last thing that happens. The bisect therefore has to walk *upwards*
+// and be read backwards: start below anything that could plausibly break,
+// loosen one limit at a time, and the step being held when the GPU stops is the
+// one that did it.
+//
+// The two axes are the only two things left between the probe -- one draw, six
+// quads, no hang -- and the game, which wedged on four draws and 1,701 quads
+// with no command-list split. So quads are ramped first with the draw count
+// pinned at one, and only then the draw count with the quads unpinned. Whether
+// the ramp dies in the first block or the second is the whole question:
+//
+//   dies in the first block   a single geoshader draw has a size it cannot pass
+//   dies in the second block  a geoshader draw cannot follow another one
+//
+// Each step is announced on the bottom screen as it is entered, so the answer
+// survives even if nothing else does.
+struct GeoRampStep {
+    bool splitPasses;  // finish the command list around the geoshader pass
+    bool cubeOnly;     // skip the detail and translucent passes entirely
+    int sections;      // 0 = no limit
+    int quads;         // 0 = no limit
+    const char* name;
+};
+
+// **What the ramp found.** Blocks 1 and 2 survived -- the whole render distance,
+// every geoshader draw unlimited, one after another, no trouble at all -- and it
+// wedged the instant the detail passes were allowed back in, with the cube pass
+// pinned to a single sixteen-quad draw. So the fault is not the geometry shader,
+// not the size of a draw, and not how many of them there are. **It is a
+// non-geoshader draw following a geoshader one.**
+//
+// That has a mechanism. Turning the geometry stage off repartitions the shader
+// units -- `GPUREG_VSH_COM_MODE`, and `GPUREG_GEOSTAGE_CONFIG` with it -- and
+// `shaderProgramConfigure` writes those registers straight into the command
+// list. Nothing drains the pipeline first, so the repartition lands while the
+// previous draw's vertices are still in flight, and the machine stops. No
+// further register write can fix that, because a register write is just another
+// command behind the ones already queued.
+//
+// **Ending the command list does fix it.** `C3D_FrameSplit` hands what has been
+// recorded to the GPU and starts a new list; the GPU finishes the first list
+// before it begins the second, so the shader-unit change in list two happens
+// after every draw in list one has retired. That is the drain, and it is the
+// only one available from outside citro3d.
+//
+// So the ramp now tests the fix rather than the fault: the mitigation is on for
+// the first two rungs and off for the third. Surviving the first two and dying
+// on the third is the whole proof -- it says both that the split works and that
+// its absence is what was killing the console.
+constexpr GeoRampStep kGeoRamp[] = {
+    {true, false, 1, 16, "split on, 1 draw, 16 quads"},
+    {true, false, 0, 0, "split on, no limit"},
+    {false, false, 0, 0, "split OFF, no limit"},
+};
+constexpr int kGeoRampSteps = int(sizeof(kGeoRamp) / sizeof(kGeoRamp[0]));
+
+// Frames to hold a step before loosening again. A second at 30 fps: long enough
+// that a step which only fails sometimes still gets several chances, short
+// enough that the whole ramp is over in about ten seconds.
+constexpr int kGeoRampFrames = 90;
+
+// **Off, its job done.** It found the fault in four launches and then proved the
+// fix in a fifth. Kept rather than deleted because the next path that programs
+// the GPU differently will want exactly this, and rebuilding it from the
+// description is more work than switching it back on.
+constexpr bool kGeoAutoRamp = false;
+
+// The watchdog's deadline, in seconds. **The same one the menu's frame uses**
+// -- one number, in renderer.hpp, because two copies of a deadline is two
+// deadlines that drift. See Renderer::beginFrameOrGiveUp.
+constexpr float kGeoWatchdogSeconds = kFrameWatchdogSeconds;
+
+// **After the first stall, retry cheaply.** Spending the full deadline every
+// frame would leave the console technically alive at half a frame a second,
+// which is not far enough from dead to be worth the distinction. One frame's
+// worth is long enough to catch a GPU that comes back and short enough that the
+// buttons and the bottom screen stay usable while it does not.
+constexpr float kGeoRetrySeconds = 0.032f;
+
 // **citro3d does not bounds-check its command buffer.** `GPUCMD_AddRawCommands`
 // memcpys into `gpuCmdBuf + offset` and advances the offset; nothing anywhere
 // compares that against `gpuCmdBufSize`. Overrun it and the writes land in
-// whatever linear allocation follows -- so it presents as a crash somewhere
-// else entirely, intermittently, depending on where the player is looking.
+// whatever linear allocation follows -- and since what follows is the linear
+// heap itself, the fault does not surface as bad geometry. It surfaces as the
+// *next* `linearAlloc` or `linearFree` walking a smashed free list, which on
+// hardware is an exception screen or a reboot, somewhere else entirely, with
+// nothing on the GPU's side to show for it.
 //
 // The draw list is what fills it, and **stereo is what makes it reachable**:
 // the same view costs twice the commands, which is why the symptom was "it
-// crashes in 3D, sometimes". Sizing the buffer bigger only moves the view that
-// breaks it, because the bound is the number of visible sections and that is a
-// property of the world, not of us. So the buffer is checked instead: when
-// there is not enough room left for another section, the frame is split, which
-// hands what has been recorded to the GPU and starts recording again.
+// crashes in 3D, sometimes".
 //
-// A split is safe in the middle of a pass. `C3Di_SplitFrame` calls
-// `GPUCMD_Split` and nothing else that matters; the GPU executes the lists in
-// order and its registers -- render target, shader, textures, viewport --
-// carry across, because a command list is a recording, not a context.
+// **The budget is per frame and nothing can extend it mid-frame.** This is the
+// part that was got wrong, so it is written out: `GPUCMD_Split` -- read out of
+// libctru's own disassembly, not assumed -- does
+//
+//     gpuCmdBuf += offset;  gpuCmdBufSize -= offset;  gpuCmdBufOffset = 0;
+//
+// Free space is `size - offset`. Before the split that is `size - offset`;
+// after it, `(size - offset) - 0`. **The same number.** A split hands the
+// recorded words to the GX queue and starts a new list *in the space that was
+// left*, so it cannot buy a single word. The previous version of this guard
+// split when a section would not fit and then drew the section anyway, which
+// is exactly the overrun it was written to prevent, plus a wasted queue entry.
+//
+// So the guard stops drawing instead. When there is no room for another
+// section the frame gives up on the rest of its geometry: holes in the world,
+// far ones first, and a counter that says so. That is the only choice this
+// side of the ceiling that is not memory corruption.
+//
+// The ceiling itself is `ctr::kCommandBufferBytes`. At the ~43 words a section
+// draw costs -- a buffer-info bind, four dirty float uniforms in the PICA's
+// 24-bit packing, and eleven register writes for the draw -- 1 MB is a little
+// over six thousand draws a frame, which covers the render distances the
+// performance gate is written against and does not cover the debug page's
+// ceiling of 24. `FrameStats::commandWords` on the Info page is what says
+// which of those a given view is.
 constexpr u32 kCommandWordsPerSection = 1024;
 
-bool splitIfCommandBufferIsFull()
+// **The geometry-shader bind is the fattest thing this engine records**, and the
+// reserve above was sized against the other two. `C3D_BindProgram` sets both
+// `C3DiF_VshCode` and `C3DiF_GshCode` whenever the DVLP changes, and the quad
+// program is two DVLEs sharing one code blob -- so every switch onto it inlines
+// that blob into the command list *twice*, once for the vertex stage and once
+// for the geometry stage, plus both operand-descriptor tables, plus 23 float
+// uniform vectors where the 12-byte path has five.
+//
+// Counted rather than guessed: roughly 430 words worst case against a 1024-word
+// reserve, so 1024 is not actually too small today. It is doubled anyway,
+// because the margin is what the reserve is *for*.
+constexpr u32 kCommandWordsPerQuadSection = 2048;
+
+// Words left in the command buffer, across the current list and everything
+// after it. `size` shrinks by what each split handed over, so this is the whole
+// remaining budget and not just this list's share.
+u32 commandWordsFree()
 {
     u32 size = 0;
     u32 offset = 0;
     GPUCMD_GetBuffer(nullptr, &size, &offset);
 
-    // Words, both of them. The reserve covers a pipeline bind plus a section's
-    // draw with room to spare, which is far more than either costs: being wrong
-    // in this direction buys an extra split, and being wrong in the other
-    // corrupts whatever linear allocation sits after the command buffer.
-    // Written as an addition so an offset that has somehow already passed the
-    // end still splits, rather than wrapping to a huge headroom and sailing on.
-    if (offset + kCommandWordsPerSection > size) {
-        C3D_FrameSplit(0);
-        return true;
-    }
-    return false;
+    // Written as a comparison rather than a subtraction because both are u32:
+    // an offset that has somehow already passed the end would otherwise wrap to
+    // a headroom of four billion and wave every draw through.
+    return offset >= size ? 0 : size - offset;
 }
 
 }  // namespace
@@ -636,6 +948,12 @@ bool splitIfCommandBufferIsFull()
 // attribute layout change twice per eye instead of twice per section.
 void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 originChunkZ)
 {
+    // The budget went in an earlier pass of this frame. Nothing gets it back,
+    // so there is nothing to do here but leave the geometry out.
+    if (commandBudgetSpent_) {
+        return;
+    }
+
     const render::VboPool& pool = chunks_.pool();
     const bool detail = pass != Pass::Cube;
 
@@ -654,6 +972,12 @@ void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 orig
     // and the wrong attribute layout, which is the one way this could go wrong
     // silently.
     const Pipeline* bound = nullptr;
+
+    // Only counts quad meshes, and only in the cube pass; see kGeoMaxSections.
+    // Published to the member below so drawEye knows whether the pass it just
+    // ran actually put a geoshader draw in the list -- an empty one needs no
+    // split, and splits are not free.
+    int geoSectionsDrawn = 0;
 
     for (int i = 0; i < count; ++i) {
         const render::VisibleSection& section = list[reversed ? count - 1 - i : i];
@@ -684,6 +1008,26 @@ void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 orig
             continue;
         }
 
+        // The bisect knobs, in the one place a quad draw can be cut short.
+        if (geoQuads) {
+            // The watchdog has already caught this path wedging the GPU once.
+            // The section is left undrawn -- a hole in the world, which is what
+            // a player should see rather than a console that has to be held
+            // down to turn off.
+            if (quadDrawsStopped_) {
+                continue;
+            }
+            const int sectionLimit = geoSectionLimit();
+            const int quadLimit = geoQuadLimit();
+            if (sectionLimit != 0 && geoSectionsDrawn >= sectionLimit) {
+                continue;
+            }
+            if (quadLimit != 0 && quads > quadLimit) {
+                quads = quadLimit;
+            }
+            ++geoSectionsDrawn;
+        }
+
         // **The shared index buffer is a hard bound, and only the cube pass has
         // a proof it fits.** kMaxQuadsPerSection is derived from the
         // checkerboard -- half the cells solid, each showing all six faces --
@@ -704,8 +1048,20 @@ void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 orig
             ++frameStats_.clampedDraws;
         }
 
-        if (splitIfCommandBufferIsFull()) {
-            ++frameStats_.commandSplits;
+        // **The last point at which stopping is still free.** Everything below
+        // records into the command buffer, so the room for all of it has to be
+        // there before any of it is written.
+        const u32 reserve = geoQuads ? kCommandWordsPerQuadSection : kCommandWordsPerSection;
+        if (commandWordsFree() < reserve) {
+            // What is left of *this* pass's list. The passes after it stop at
+            // the top of drawPass and add nothing, so this reads as "the frame
+            // ran out here" rather than as an exact count of missing geometry
+            // -- some of the tail would have been empty or stale anyway. It is
+            // a warning light, and the number beside it, `cmd`, is the
+            // measurement.
+            frameStats_.droppedSections += count - i;
+            commandBudgetSpent_ = true;
+            break;
         }
 
         // Bound lazily, so a frame with no non-cube geometry anywhere in view
@@ -770,12 +1126,21 @@ void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 orig
             // geometry shader emits the two triangles. GPU_GEOMETRY_PRIM is
             // what hands primitive assembly to it.
             C3D_DrawArrays(GPU_GEOMETRY_PRIM, 0, quads);
+
+            // **The one place a geoshader draw enters the queue**, so the one
+            // place the latch that guards every wait on that queue can be set
+            // honestly. See beginFrameOrGiveUp.
+            geoWorkInFlight_ = true;
         } else {
             C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
         }
 
         ++frameStats_.drawCalls;
         frameStats_.quads += usize(quads);
+    }
+
+    if (pass == Pass::Cube) {
+        geoDrawsLastCubePass_ = geoSectionsDrawn;
     }
 }
 
@@ -798,7 +1163,39 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // questioning, since the PICA drops early-Z while the test is on and that
     // pass carries 97 % of the world; measured on hardware, turning it off
     // changed GPU draw by nothing measurable. See drawFrame.
+    // **The geometry stage is turned on by the bind inside this pass**, and on
+    // the second eye that bind follows the first eye's detail draws. Same
+    // hazard as the one on the way out, so the same drain: end the list first,
+    // and the repartition happens with nothing of the previous pass in flight.
+    // `C3Di_SplitFrame` returns early when nothing has been recorded, so the
+    // first pass of a frame pays nothing for this.
+    const bool splitAroundGeo =
+        cubeFormat_ == mesh::CubeFormat::Quads && geoSplitPasses();
+    if (splitAroundGeo) {
+        C3D_FrameSplit(0);
+        ++frameStats_.geoSplits;
+    }
+
     drawPass(vp, Pass::Cube, originChunkX, originChunkZ);
+
+    // **And the drain on the way out, which is the one the hardware asked for.**
+    // Without it the next pass's bind writes GPUREG_VSH_COM_MODE and
+    // GPUREG_GEOSTAGE_CONFIG into the same list the geoshader draws are still
+    // being consumed from, and the GPU stops for good. Skipped when the pass put
+    // no geoshader draw in the list, because then there is nothing to drain.
+    if (splitAroundGeo && geoDrawsLastCubePass_ > 0) {
+        C3D_FrameSplit(0);
+        ++frameStats_.geoSplits;
+    }
+
+    // The bisect knob: with the quad format live, stop here. The detail pass is
+    // the first thing that follows a geoshader draw, and it is also the first
+    // thing that reads a buffer base the 12-byte path can never produce -- so
+    // "cube pass only" separates "the geoshader draw wedges the GPU" from "what
+    // runs after one does".
+    if (geoCubePassOnly() && cubeFormat_ == mesh::CubeFormat::Quads) {
+        return;
+    }
 
     // Opaque non-cube geometry is drawn without back-face culling: a flower is
     // two crossed planes and the original has no culling to satisfy, so both
@@ -917,14 +1314,150 @@ void Renderer::applyWorldState()
 
 }
 
+// **C3D_FrameBegin with a deadline, and only while the quad format is live.**
+//
+// `C3D_FRAME_SYNCDRAW` is two waits: `C3D_FrameSync`, which blocks until the
+// GPU has finished the previous list, and then the queue drain. Neither is
+// bounded, so a command list the GPU never completes takes the main thread with
+// it -- and the main thread is also `aptMainLoop`, which is why the symptom is
+// both screens dead and HOME doing nothing. That is exactly what the geometry
+// shader path did on its first hardware run.
+//
+// **Be honest about what this buys.** If the GPU is genuinely wedged, nothing
+// in this process can un-wedge it; the loop below will spin out its deadline,
+// latch the stall, and then still have no frame to open. What it does buy is
+// the difference between a console that dies silently and one that says *which*
+// path killed it, plus a real chance at the softer failure -- a queue that is
+// merely backed up -- where stopping the quad draws lets the next list be small
+// enough to get through.
+//
+// **On expiry it opens no frame and says so, and the caller must draw nothing.**
+// The first version of this fell back to the blocking `C3D_FRAME_SYNCDRAW` after
+// the deadline, on the theory that there was nothing else to do -- and that made
+// the whole watchdog useless, because a wedged GPU never returns from it either.
+// The console still died with nothing on screen. Giving up properly is what lets
+// the loop keep running: input, ticks and saves carry on, the top screen holds
+// whatever it last managed, and the bottom screen -- which needs no GPU at all,
+// see geoTrace -- gets to say what happened.
+int Renderer::geoSectionLimit() const
+{
+    return kGeoAutoRamp ? kGeoRamp[geoRampStep_].sections : kGeoMaxSections;
+}
+
+int Renderer::geoQuadLimit() const
+{
+    return kGeoAutoRamp ? kGeoRamp[geoRampStep_].quads : kGeoMaxQuads;
+}
+
+bool Renderer::geoCubePassOnly() const
+{
+    return kGeoAutoRamp ? kGeoRamp[geoRampStep_].cubeOnly : kGeoCubePassOnly;
+}
+
+bool Renderer::geoSplitPasses() const
+{
+    return kGeoAutoRamp ? kGeoRamp[geoRampStep_].splitPasses : kGeoSplitPasses;
+}
+
+bool Renderer::beginFrameOrGiveUp()
+{
+    // **The question is what is in the queue, not what the settings page says.**
+    //
+    // This wait is for the *previous* frame, and the previous frame is the one
+    // that could wedge -- so gating it on `cubeFormat_` was gating it on the
+    // wrong frame. Toggling the debug page back to 4-vertex flipped that field
+    // instantly, and the very next `drawFrame` took the unbounded
+    // `C3D_FRAME_SYNCDRAW` on a queue still holding a geoshader list. If that
+    // list was the one that wedged, the main thread -- which is also
+    // `aptMainLoop` -- never came back: top screen black, HOME dead, no
+    // exception, and not a word from the watchdog, because the watchdog is the
+    // branch that was skipped. Switching the format back and forth is exactly
+    // how a player reaches it.
+    //
+    // `geoWorkInFlight_` is what was actually recorded, cleared only where the
+    // queue is proven empty, so it stays true across the toggle for as long as
+    // it has to. The other two are kept: the format because the frame about to
+    // be recorded needs the same protection, and the stall latch because once
+    // it has fired the format has already been dropped back and taking the
+    // blocking wait on the strength of that would hang on the very next frame.
+    if (!geoWorkInFlight_ && cubeFormat_ != mesh::CubeFormat::Quads && !quadDrawsStopped_) {
+        C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+        return true;
+    }
+
+    // **The pacing half of C3D_FRAME_SYNCDRAW, kept.** `C3D_FrameSync` waits on
+    // the two VBlank counters, not on the GPU -- it is the frame-rate limiter,
+    // and VBlank keeps firing whether or not the GPU is finishing anything. So
+    // it always returns, and skipping it (which the first version of this did,
+    // by using NONBLOCK alone) let the game free-run at whatever rate the CPU
+    // managed. That is not a difference the quad format should carry into a
+    // measurement of the quad format.
+    //
+    // What can wedge is the other half: the queue drain. That is the only part
+    // below the deadline.
+    C3D_FrameSync();
+
+    // **The deadline follows the GPU's current state, not the session's
+    // history**, and getting that backwards was a hang of its own. It used to
+    // be `gpuStalls_ == 0 ? kGeoWatchdogSeconds : kGeoRetrySeconds`, so a
+    // single stall anywhere in a session put *every* later frame on the 32 ms
+    // retry deadline -- for good, since `gpuStalls_` is never cleared, and
+    // including after the cube format had been dropped back to the one that is
+    // known to draw. At the Far Lands a perfectly healthy frame's queued work
+    // can outlast 32 ms, so the watchdog then fired on merely-slow frames and
+    // `drawFrame` returned having drawn nothing, every frame, forever: a top
+    // screen frozen on the last good frame with HOME still working, which from
+    // the couch is indistinguishable from the console being dead.
+    //
+    // A frame that completes is proof the GPU came back, so the short deadline
+    // applies only while it has not. `gpuWedged_` is that state; `gpuStalls_`
+    // stays the history the debug page reports.
+    if (!pollFrameBegin(gpuWedged_ ? kGeoRetrySeconds : kGeoWatchdogSeconds)) {
+        // Once per episode rather than once per session, so a second wedge
+        // after a recovery is reported too and carries its own numbers.
+        if (!gpuWedged_) {
+            // The frame that did not come back is the one recorded before this
+            // one started, so this is what was in it.
+            stalledStats_ = previousStats_;
+            if (geoRampName_ != nullptr) {
+                // The rung is the answer, so it goes in the line that survives
+                // rather than only on a page nobody may reach.
+                std::snprintf(stallLine_, sizeof(stallLine_), "WEDGED at [%s]", geoRampName_);
+                geoTrace(stallLine_);
+            } else {
+                geoTrace("GPU never finished a list -- see the settings page");
+            }
+        }
+        ++gpuStalls_;
+        gpuWedged_ = true;
+        quadDrawsStopped_ = true;
+        return false;
+    }
+
+    // The queue is empty, which is the only proof there is that whatever
+    // geoshader draws it held have retired -- and the only proof that the GPU
+    // is finishing lists again.
+    geoWorkInFlight_ = false;
+    gpuWedged_ = false;
+    return true;
+}
+
 void Renderer::drawFrame(const Camera& camera, void* overlayContext, Overlay2D overlay)
 {
+    // Kept for one frame, because the frame the GPU fails to finish is the one
+    // recorded *before* the FrameBegin that never returns.
+    previousStats_ = frameStats_;
     frameStats_ = FrameStats{};
+
+    // The budget is refilled by C3D_FrameBegin and by nothing else, so the
+    // latch is cleared here rather than at the end of the frame that set it.
+    commandBudgetSpent_ = false;
 
     // Skip the second eye entirely at slider zero rather than rendering it and
     // throwing it away -- half the geometry cost, for free.
     const float slider = osGet3DSliderState();
-    const bool wantStereo = slider > 0.0f;
+    const bool wantStereo = slider > 0.0f
+                            && !(kGeoForceMono && cubeFormat_ == mesh::CubeFormat::Quads);
     if (wantStereo != stereo_) {
         gfxSet3D(wantStereo);
         stereo_ = wantStereo;
@@ -944,8 +1477,33 @@ void Renderer::drawFrame(const Camera& camera, void* overlayContext, Overlay2D o
     // C3D_FRAME_SYNCDRAW blocks until the next VBlank, so on a healthy frame it
     // is *supposed* to be the large one and the console is simply at 59.83 Hz.
     const u64 beforeBegin = svcGetSystemTick();
-    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    const bool haveFrame = beginFrameOrGiveUp();
     const u64 afterBegin = svcGetSystemTick();
+
+    // No frame was opened, so there is nothing to draw into and nothing to end.
+    // The game loop carries on around this: the bottom screen still updates and
+    // the buttons still work, which is the whole point of coming back at all.
+    if (!haveFrame) {
+        blockedMs_ = millisFromTicks(afterBegin - beforeBegin);
+        submitMs_ = 0.0f;
+        return;
+    }
+
+    // **The ramp advances here and nowhere else** -- after a FrameBegin that
+    // came back, which is the only proof the previous frame's list completed.
+    // Advancing before that wait would credit a rung with surviving a frame the
+    // GPU had not finished, and the rung being held is the whole answer.
+    if (kGeoAutoRamp && cubeFormat_ == mesh::CubeFormat::Quads && !quadDrawsStopped_) {
+        if (geoRampName_ == nullptr) {
+            geoRampName_ = kGeoRamp[geoRampStep_].name;
+            geoTrace(geoRampName_);
+        } else if (++geoRampHeld_ >= kGeoRampFrames && geoRampStep_ + 1 < kGeoRampSteps) {
+            ++geoRampStep_;
+            geoRampHeld_ = 0;
+            geoRampName_ = kGeoRamp[geoRampStep_].name;
+            geoTrace(geoRampName_);
+        }
+    }
 
     for (int i = 0; i < (stereo_ ? 2 : 1); ++i) {
         applyWorldState();
@@ -960,6 +1518,12 @@ void Renderer::drawFrame(const Camera& camera, void* overlayContext, Overlay2D o
             overlay(overlayContext, eye_[i]);
         }
     }
+    // **Read before C3D_FrameEnd**, which splits one last time and hands the
+    // buffer back: after it, what is left says nothing about what the frame
+    // spent. The overlay's own draws are inside this figure, which is right --
+    // they come out of the same budget as the world does.
+    frameStats_.commandWords = kCommandBufferBytes / 4 - commandWordsFree();
+
     C3D_FrameEnd(0);
 
     blockedMs_ = millisFromTicks(afterBegin - beforeBegin);

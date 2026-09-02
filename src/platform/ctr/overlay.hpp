@@ -9,9 +9,11 @@
 // unchanged and deliberately still a text console.
 //
 //   Player    the tab strip, and one of:
-//               **Map**    the world around the player at one pixel per block,
-//                          with their coordinates beside it and nothing else.
-//                          See map_screen.hpp.
+//               **Map**    the world around the player, with their coordinates
+//                          beside it and nothing else. The d-pad zooms it and
+//                          cycles the chunk and map-tile grids over it, and
+//                          that is the one player page that reads the d-pad at
+//                          all. See map_screen.hpp.
 //               **Items**  the inventory, drawn empty until M3 fills it. Only
 //                          in Survival and Creative -- Spectator has no
 //                          inventory, so it is not offered one.
@@ -38,7 +40,7 @@
 //               * what a map redraw cost -- which used to be on the map itself
 //   Storage   what the card is doing, and who is waiting for it.
 //   Settings  the knobs that change what the renderer does rather than what
-//             it reports, plus the teleport row and the map's debug grids.
+//             it reports, plus the teleport row.
 //
 // **The settings page owns the d-pad, and that is what makes it the right home
 // for anything needing a button.** Nothing global has to be spent on a debug
@@ -142,15 +144,25 @@ struct DebugSettings {
     int renderDistance = 8;
 
     // The geometry-shader cube path: one 8-byte vertex per quad instead of four
-    // 12-byte ones. **The measurement the M2 gate is waiting on**, which is why
-    // it is here at all -- see Renderer::setCubeFormat.
+    // 12-byte ones. See Renderer::setCubeFormat.
     //
-    // Off by default, so what boots is the path that is known to draw correctly
-    // and the experiment is something a maintainer turns on deliberately. It
-    // costs a re-mesh of everything resident in either direction, so unlike
+    // **On by default, as of the run that drew the whole render distance
+    // through it without a stall.** It was off for five hardware launches while
+    // it was an experiment that hung the GPU (docs/3ds-performance.md §2), and
+    // "off by default" was the right answer for exactly as long as that was
+    // true. It cuts vertex traffic 7.5x and vertex-shader invocations 4x, and
+    // the M2 gate is 3.2x away; booting into the slow path to protect against a
+    // failure that no longer happens costs that on every frame.
+    //
+    // **The 4-vertex path stays**, and this flag is what selects it -- by hand
+    // on this page, or by the watchdog in main.cpp when a frame does not come
+    // back. It is also the only path that can ever carry per-corner light or a
+    // biome tint, so it is a baseline rather than a legacy.
+    //
+    // Either direction costs a re-mesh of everything resident, so unlike
     // wireframe it is not an instant A/B: give the world a second to settle
     // before reading the numbers back.
-    bool geometryQuads = false;
+    bool geometryQuads = true;
 
     bool wireframe = false;
 
@@ -232,8 +244,10 @@ public:
     void setWorkerCore(const char* label) { workerCore_ = label; }
 
     // SELECT + Y / SELECT + X cycles the page; on the settings page the d-pad
-    // moves the cursor and changes the value under it. Returns true when
-    // `settings` changed and the caller has work to do.
+    // moves the cursor and changes the value under it, and on the map page it
+    // zooms and cycles the grids. Returns true when `settings` changed and the
+    // caller has work to do -- which the map page never does, since everything
+    // it changes is its own.
     //
     // **`camera` is here because the teleport row writes to it directly**, and
     // it is worth being explicit about why that is not a layering slip. A
@@ -335,8 +349,9 @@ private:
     // treat the bottom-screen console as destroyed and reprint it.
     static bool teleportViaKeyboard(Camera* camera);
 
-    // Render distance, cube format, wireframe, the map's debug grid, teleport.
-    static constexpr int kSettingCount = 5;
+    // Render distance, cube format, wireframe, teleport. The map's grids were a
+    // fifth; they are under the d-pad on the map page now.
+    static constexpr int kSettingCount = 4;
 
     settings::Gamemode gamemode_ = settings::Gamemode::Spectator;
     MapScreen map_;

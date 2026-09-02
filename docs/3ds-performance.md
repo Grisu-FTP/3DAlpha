@@ -165,7 +165,7 @@ twice), `BufInfo_Add` permutation `0x210`, `C3D_DrawElements` against the shared
 TEV stage 0 modulating texture against primary colour. The stride is 12 bytes from M0b onward, with
 both byte attributes widened to four components.
 
-## 2. Geometry-shader quad expansion — **built; the CPU-side half is measured**
+## 2. Geometry-shader quad expansion — **built, drawing, and the default**
 
 `picasso` supports `.gsh point c0` geometry shaders, usable with both `C3D_DrawArrays` and
 `C3D_DrawElements`. Submit **one 8-byte vertex per quad** and let the geoshader `setemit`/`emit`
@@ -176,8 +176,24 @@ units to three. §1 is the baseline that must work regardless.
 
 This now exists. `mesh::QuadVertex`, `shaders/quad.v.pica`, `shaders/quad.g.pica`, a third pipeline
 in `renderer.cpp`, and a switch on both harnesses (`--mesh <world> quads`, `--fly <world> d f
-[switch] quads`) and on the debug settings page. **It has not drawn a pixel**: everything below the
-"what is still unknown" heading is the point of the exercise and needs a console.
+[switch] quads`) and on the debug settings page. **It draws the whole render distance on hardware**,
+after five launches spent finding out why it did not — see *The first hardware run, and the hang*
+below. The M2 gate measurement it was built to take is now takeable and has not been taken.
+
+**It is what the game boots into.** `DebugSettings::geometryQuads` defaults to true and `main.cpp`
+applies it once before the first frame, which is free there and nowhere else — the pool is empty and
+the streamer has published nothing, so the re-mesh a format change normally forces has no work to do.
+"Off by default" was the right answer for exactly as long as the path hung the GPU; it does not, and
+the way back is still there and still automatic (`quadDrawsStopped_`).
+
+**The host harness keeps its explicit `quads` word** rather than following the console's default.
+Every measured number in this document was taken from the unadorned invocation, and silently changing
+what `--mesh <world>` means would invalidate all of them at once.
+
+**The 12-byte path stays, and it is a baseline rather than a legacy.** It is the watchdog's fallback,
+it is the only encoding that can carry per-corner light or a biome tint — see the three things the
+8-byte format gives up, below — and it is what `tests/quad_format_test.cpp` checks the geometry
+shader's corner basis against.
 
 ### What is in the 8 bytes
 
@@ -280,6 +296,454 @@ smallest class rounds up far more meshes when the average one is six times small
 is still down, 8.2 MB to 3.4 MB, but `kSmallestSizeClass` is now the wrong number if this path
 ships.
 
+### The first hardware run, and the hang
+
+New 3DS, debug page, cube format → geoshader. One or two chunks came back in the new encoding and
+then the console died: both screens frozen, no HOME, held down to power off. That is not a slow
+frame. `C3D_FrameBegin(C3D_FRAME_SYNCDRAW)` is the only unbounded GPU wait on the frame path, and
+the main thread it blocks is also `aptMainLoop` — so a command list the GPU never completes takes
+the whole application with it. Everything else in the frame refuses rather than blocks; the VBO pool
+does so explicitly.
+
+**The static half of the path was then verified end to end, against the built shbin and against
+libctru's and citro3d's own source, and it is correct.** This is written down so it is not
+re-derived:
+
+| checked | result |
+|---|---|
+| DVLB layout | 2 DVLEs, `DVLE[0]` vertex and `DVLE[1]` geometry — the source order in `ctr_add_shader_library` holds |
+| entry points | VS `main=0 end=49`, GS `main=49 end=78`, one shared 78-word blob, both stages uploaded |
+| VS outmap | six `dummy` outputs → `outmapMask = 0x3F`, count 6 → `GPUREG_VSH_OUTMAP_TOTAL1/2 = 5`. `DVLE_GenerateOutmap` counts a dummy output before its `default: continue`, so dummy is the right declaration and the count is right |
+| GS outmap | position, texcoord0, texcoord1, colour; `mergeOutmaps = 0`, so libctru uses the GS outmap alone — which is complete, since the GS emits every semantic the rasteriser needs |
+| gsh mode | `GSH_POINT` |
+| gsh stride | 6 → `GPUREG_GSH_INPUTBUFFER_CONFIG = 0x08000005`; six registers is the VS's six outputs, i.e. one input vertex per invocation. devkitPro's own `geoshader` example uses the same convention (two outputs a vertex × three vertices a triangle) |
+| gsh permutation | libctru's identity default, `0x76543210 / 0xFEDCBA98` |
+| `setemit` encodings | disassembled out of the blob: `vtx=0`, `vtx=1`, `vtx=2 +prim`, `vtx=0 +prim +invert`. The strip order and `inv prim` assemble as written |
+| uniform allocation | `mvp` c0-c3, `fogparam` c4, `faceBasis` c5-c22, first `.constf` at c95 — nothing the per-bind `faceBasis` writes can land on |
+| `mova` → `a0` | seven instructions separate them in the assembled code |
+| command reserve | a quad bind plus a draw is about 430 words worst case against a 1024-word reserve |
+
+So the fault is not visible by reading, and it has to be bisected on hardware. What that bisect has
+established, in three launches:
+
+1. **The probe draws and the GPU comes back.** One draw, six quads, one eye. The shader and the
+   pipeline are right on hardware.
+2. **The game wedges on four draws, 1,701 quads, zero command-list splits.** So neither the split
+   guard nor the command buffer is involved. That is a very small frame — four sections — which is
+   exactly what the first frames after a format switch hold, the mesh budget being four sections.
+3. **It wedges just as hard on two draws and twenty-eight quads.** The first ramp pinned the cube
+   pass to one draw of sixteen quads and the frame still went out with two draws, because the ramp
+   limited only the cube pass. So the size of a geoshader draw is not the variable and neither is
+   how many of them there are — the rung that died had a `DrawElements` through the detail pipeline
+   sitting immediately behind the geoshader `DrawArrays`, which is a thing the probe has never done.
+   Reading a ramp backwards only works if the ramp actually varies the thing that matters; this one
+   did not, and the cost of finding that out was one launch.
+4. **A watchdog that falls back to a blocking wait is not a watchdog.** The first version spent its
+   deadline and then called `C3D_FrameBegin(C3D_FRAME_SYNCDRAW)` anyway, on the reasoning that there
+   was nothing else to do; a wedged GPU never returns from that either, so the console still died
+   with nothing on screen. It now opens no frame at all and the caller draws nothing, which keeps
+   input, ticks and the bottom screen alive. The bottom screen is the report channel precisely
+   because `consoleInit` leaves it single-buffered and it needs no GPU to update.
+
+4. **It is a non-geoshader draw following a geoshader one.** With the detail and translucent passes
+   skipped, the quad path drew the whole render distance — every geoshader draw unlimited, one
+   after another — and the GPU kept up. Allowing the detail passes back in wedged it immediately,
+   with the cube pass pinned to a single sixteen-quad draw. So it is not the shader, not the size of
+   a draw, and not how many of them there are.
+
+**The mechanism, and the fix.** Turning the geometry stage off repartitions the shader units —
+`GPUREG_VSH_COM_MODE`, and `GPUREG_GEOSTAGE_CONFIG` with it — and `shaderProgramConfigure` writes
+those registers straight into the command list. Nothing drains the pipeline first, so the
+repartition lands while the previous draw's vertices are still in flight. No further register write
+can help, because a register write is only another command behind the ones already queued.
+
+Ending the list does help. `C3D_FrameSplit` hands what has been recorded to the GPU and starts a new
+one, and the GPU finishes the first before it begins the second — so the shader-unit change in list
+two happens after every draw in list one has retired. That is the drain, and it is the only one
+reachable from outside citro3d. `Renderer::drawEye` now splits on **both** sides of the cube pass
+whenever the quad format is live: on the way in because the second eye's bind turns the geometry
+stage *on* behind the first eye's detail draws, and on the way out because the detail pass's bind
+turns it off behind the geoshader draws. The outgoing split is skipped when the pass emitted no
+geoshader draw, since then there is nothing to drain.
+
+Cost: two extra command lists per eye, so two or four a frame. That is the price of the format
+working at all, and it is charged only while the format is selected. The Info page shows them as
+`geo`, beside the command-buffer figure below.
+
+**Proved in both directions, in one launch.** The ramp was turned round to test the fix rather than
+the fault — split on at one 16-quad draw, split on with no limit at all, then split off. It drew the
+whole render distance through the first two, 159 draws and 78,758 quads a frame, and wedged on the
+third the moment the split was taken away. So the drain is sufficient at full scale and its absence
+is what was killing the console; neither half of that is inferred.
+
+Two things about the instruments, worth keeping for the next path that programs the GPU differently:
+**a ramp only answers about the axis it varies** — the first one left the detail passes unlimited,
+so its smallest rung still contained the fatal draw and reported a hang at "1 draw, 16 quads" that
+had nothing to do with either number. And **`C3D_FrameSync` is a VBlank wait, not a GPU wait**: it
+is the frame-rate limiter, it always returns, and the watchdog keeps it. Only the queue drain that
+follows it can wedge, and only that is under the deadline.
+
+- **A geometry-shader cube in the probe** (hold SELECT at boot, then LEFT). Six quads, one draw, one
+  eye, no streaming, no pool, no command-list split. **It draws, and the GPU comes back.** So the
+  shader and the pipeline are both right on hardware and the hang is something the game's draw loop
+  adds on top of them — which also settles §2's one open question, `a0` after `mova`: seven
+  instructions of separation is enough. See the prediction table in `docs/status.md`, where this one
+  launch struck out every row but the hang itself.
+
+  Its texture does not match the 12-byte cube and cannot: `quad.v.pica` divides tile coordinates by
+  16 because the game's atlas is 16 tiles to a side, and the probe's is four, so a tile index here
+  selects a sixteenth of the probe's atlas rather than a quarter. `tileX` steps by two across the
+  six faces so they come out green, green, brown, brown, grey, grey — a flat one-colour cube could
+  not tell "the tile fields reached the shader" from "they were ignored".
+- **Four compile-time knobs** at the top of the anonymous namespace in `renderer.cpp`, every one of
+  them inert unless the mesh being drawn is a quad mesh: `kGeoMaxSections`, `kGeoMaxQuads`,
+  `kGeoCubePassOnly`, `kGeoForceMono`.
+- **`kGeoSplitPasses`, the fix above, as a switch** — so its absence stays measurable rather than
+  becoming an unexplained `C3D_FrameSplit` nobody dares remove.
+- **A ramp, `kGeoRamp`, which is those knobs walked automatically.** A wedged GPU stays wedged for
+  the session, so a bisect cannot walk *down* from a hang — there is only ever one hang and it is
+  the last thing that happens. It has to walk up and be read backwards: start below anything that
+  could plausibly break, loosen one limit a second, and the rung being held when the GPU stops is
+  the one that did it. Quads are ramped first with the draw count pinned at one, then the draw count
+  with the quads unpinned, because those are the only two axes left between the probe and the game.
+  Each rung is announced on the bottom screen through `geoTrace` as it is entered, so the answer
+  survives a console that never draws anything again. The ramp advances only after a
+  `C3D_FrameBegin` that returned, which is the only proof the previous list completed.
+- **A watchdog on `C3D_FrameBegin`**, again only under the quad format. It spends a two-second
+  deadline on `C3D_FRAME_NONBLOCK` before falling back to the blocking wait, and on expiry it stops
+  issuing quad draws and `main.cpp` puts the cube format back to the one that is known to draw. It
+  cannot un-wedge a GPU that is genuinely gone — nothing in the process can — but it turns a silent
+  death into a `GPU STALL` counter on the debug page, and it does rescue the softer failure where
+  the queue is merely backed up.
+- **The defect found by reading, fixed regardless.** `MeshRanges::detailOffset()` returned
+  `cubeBytes`. At 48 bytes a quad that is always a multiple of 16, so the detail and translucent
+  vertex buffers always started 16-byte aligned; at 8 bytes a quad an odd quad count put their base
+  at 8 mod 16 — an alignment the 12-byte path cannot produce, so nothing about the 12-byte path
+  working says it is safe. The cube range is now padded up to 16, `total()` covers only the ranges
+  that have content so a cube-only section is charged nothing, `copyTo` zeroes the pad, and
+  `tests/quad_format_test.cpp` checks both offsets in both formats over odd and even quad counts.
+  Meshing the same world both ways still gives identical quad counts, which is the check that this
+  moved bytes and not geometry.
+
+### The second hardware failure: an exception, not a hang
+
+The drain fixed the wedge and the format then ran. What it did not fix was reported next: **at high
+load it still killed the console — but as an exception screen or a reboot, not as a freeze.** That
+is a different animal. A wedge is the GPU never finishing a list, and the watchdog exists to catch
+it; an exception is the *CPU* taking a data abort, and the watchdog has nothing to say about one.
+The reported triggers were the 3D slider up, a large render distance, and the farlands with the
+slider at zero. Each of those is a term in the same product.
+
+**The bound is the command buffer, and the guard that was supposed to enforce it could not.**
+`GPUCMD_Split`, disassembled out of `libctru.a` rather than assumed:
+
+```
+gpuCmdBuf     += gpuCmdBufOffset;   // advance past what was recorded
+gpuCmdBufSize -= gpuCmdBufOffset;   // and shrink the size by the same amount
+gpuCmdBufOffset = 0;
+```
+
+Free space is `size - offset`. Before a split that is `size - offset`; after it, `(size - offset) -
+0`. **A split reclaims nothing.** It hands the recorded words to the GX queue and starts a new list
+inside the space that was already left. So `splitIfCommandBufferIsFull` flushed a list when a
+section would not fit, bought not one word, and then recorded the section anyway — straight past
+the end of the 1 MB `linearAlloc`, into the linear heap. Nothing surfaces at that moment: the fault
+appears at the *next* `linearAlloc` or `linearFree` walking a smashed free list, which is an
+exception screen somewhere else entirely.
+
+**Why the geometry-shader format is what reaches it.** A section draw costs about **43 command
+words** — a buffer-info bind (6), four dirty float uniforms in the PICA's 24-bit packing (15), and
+eleven register writes for the draw (22), counted out of citro3d's disassembly. At
+`kCommandBufferBytes` = 1 MB that is 262,144 words, or **6,096 draws in a frame**. The draw count
+is bounded by what the VBO pool holds, and a quad mesh is 8 bytes where a 4-vertex mesh is 48 — so
+the *same* 12 or 32 MB budget holds roughly six times as many sections. The farlands is where
+almost every section is dense and non-empty; stereo doubles the passes; render distance squares the
+column count:
+
+| render distance | sections in range | stereo cube draws if all are non-empty |
+|---|---|---|
+| 8 | 2,312 | 4,624 |
+| 12 (New 3DS play ceiling) | 5,000 | **10,000** |
+| 24 (debug page ceiling) | 19,208 | **38,416** |
+
+In the 4-vertex format those farlands sections are six times larger, the pool refuses most of them,
+and the draw count never approaches 6,096. That is the whole of why this reads as a geoshader bug
+and is not one.
+
+**The fix is a real bound, not a bigger buffer.** Sizing the buffer up only moves which view breaks
+it, and the ceiling has to exist somewhere regardless. `drawPass` now checks
+`commandWordsFree()` before each section and, when there is not enough for one, stops drawing for
+the rest of the frame — every later pass included, since nothing refills the budget until
+`C3D_FrameBegin`. The result is holes in the world, far ones first (the cube and detail passes walk
+near to far), and `droppedSections` counted on the Info page. **Below the ceiling it cannot fire at
+all**, so a non-zero reading is never noise.
+
+The Info page's `splits` row became `cmd`: words used and the percentage of the budget they are. A
+view sitting near 100 % is a view about to start losing geometry, and that percentage — not a
+guess — is what `kCommandBufferBytes` should be raised against.
+
+### The third hardware failure: the watchdog was watching the wrong frame
+
+Reported next: switching the cube format back and forth a few times, in the farlands, and then the
+console died — top screen black, no exception dump, no HOME, nothing on the bottom screen either.
+**The absence of a `geo:` line is the whole clue.** `geoTrace` needs no GPU and no completed frame,
+so a watchdog that fires always leaves one; a death with a silent bottom screen is a main thread
+that never reached the watchdog at all.
+
+It did not, and the reason is one line:
+
+```cpp
+if (cubeFormat_ != mesh::CubeFormat::Quads && !quadDrawsStopped_) {
+    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);   // unbounded
+    return true;
+}
+```
+
+**`C3D_FrameBegin` waits for the *previous* frame, and that branch tested the *next* one.** The wait
+is `gxCmdQueueWait(queue, -1)` — disassembled out of `renderqueue.o`, where `C3D_FRAME_SYNCDRAW`
+resolves the timeout argument to `-1` and `C3D_FRAME_NONBLOCK` to `0`, which is the only difference
+between them and the whole basis of the watchdog. The queue it waits on holds what the frame before
+recorded. `cubeFormat_` describes what the frame about to be recorded will hold. Toggling the debug
+page back to 4-vertex flipped that field instantly, so the very next `drawFrame` took the unbounded
+wait on a queue still full of geoshader draws — and if one of those was the list that wedged, the
+main thread, which is also `aptMainLoop`, never came back. The watchdog was two lines further down
+and was never reached.
+
+Switching the format back and forth is exactly how a player reaches it, and the farlands is where
+the frame is heavy enough for the wedge to be there waiting.
+
+The fix is to gate the wait on what was actually recorded. `Renderer::geoWorkInFlight_` is set where
+`C3D_DrawArrays(GPU_GEOMETRY_PRIM, ...)` is recorded and cleared only where the queue is *proven*
+empty — a `C3D_FrameBegin` that returned, or a drain that did — so it survives the toggle for as
+long as the draws do.
+
+**And the same mistake, in three more places.** `C3D_FrameSync` is a VBlank wait, not a GPU one; it
+was already written down here and the three callers that mattered still read as though it were a
+drain:
+
+```
+C3D_FrameSync:
+    ldr r6, [r4]              @ frameCounter[0]
+    ldr r5, [r4, #4]          @ frameCounter[1]
+    bl  gspWaitForAnyEvent
+    ...                       @ loop while neither has moved
+```
+
+`Renderer::rebuildChunks` — which is what a format switch *is* — called it and then `linearFree`d
+the whole VBO pool, 12 to 32 MB, and immediately reallocated and re-meshed into it. On any frame
+that outruns the refresh, which is the whole of the far-from-origin case, the GPU was still fetching
+vertices out of that memory; on a frame that never finishes it always is. `Renderer::setAtlas` freed
+the block atlas the same way, and `Renderer::shutdown` freed the pool, the index buffer and all
+three shader programs the same way — the last of those handing the top screen to a menu whose own
+`C3D_FrameBegin(C3D_FRAME_SYNCDRAW)` has no watchdog behind it at all.
+
+All three now use `drainGpu`, which is the only drain the public API can express: poll
+`C3D_FrameBegin(C3D_FRAME_NONBLOCK)` on a deadline and close the frame it opens on success. That
+close is free — `C3Di_SplitFrame` finds an empty list, and `C3D_FrameEnd` transfers only targets a
+`C3D_FrameDrawOn` marked `used`, which an empty frame has none of.
+
+Two things worth keeping from this one. **A watchdog is only as good as the predicate that reaches
+it** — this one was correct in every way except which frame it asked about, and that made it absent
+exactly when the format was being changed, which is the one action the whole feature exists to
+offer. And **`C3D_FrameSync` is not a drain**: it was disassembled, written down, and then three
+callers went on trusting the name. The name is the trap; `drainGpu`'s comment carries the
+disassembly so the next reader does not have to take it on faith.
+
+### The fourth hardware failure: three ways the third fix stopped one call short
+
+Reported after all of the above shipped: at the Far Lands, with the geometry-shader format live and
+a large render distance, the console still died — **as a freeze with HOME dead, and separately as an
+exception screen** — and neither left anything on the card. No Luma dump under `3dsx_app/`, no
+`3dalpha-oom.txt`. The dump handed over with the report turned out to be `005`'s
+`crash_dump_00000009.dmp` byte for byte, picked back up off the card; `cmp` says so. So there was no
+new evidence in it and none was taken from it.
+
+What could be settled without a console was settled first, and it cleared the ground:
+
+| checked | result |
+|---|---|
+| the build on the card | current — `crashlogs/current-build.elf` matches `build/a1.1.2/*.elf` and carries every one of the new trace literals, so these deaths are genuinely post-fix |
+| host core, ASan + UBSan | 674/674 |
+| host core, TSan | 674/674, zero races |
+| `--fly w 12 1500 gen`, `--fly w 12 800 flip` | clean under ASan, generation and format switch both |
+| the command budget, against libcitro3d's disassembly | correct — `C3D_Init` 16-aligns the size and `linearAlloc`s exactly that many bytes (**no doubling**), storing `size/4` words; `C3D_FrameBegin` reloads `gpuCmdBuf` and `gpuCmdBufSize` from the context and zeroes the offset. `kCommandBufferBytes / 4` a frame, refilled only there, is the right model and `commandWordsFree()` measures it |
+
+Which leaves `src/platform/ctr/`, the layer no test reaches. Three defects were in it, and all three are
+in the fix for the third failure rather than anywhere new.
+
+**One: `geoWorkInFlight_` was cleared on a drain that failed.** All three teardowns did
+
+```cpp
+drainGpu(kGpuDrainSeconds);   // returns false if the deadline expired
+geoWorkInFlight_ = false;     // ...cleared anyway
+```
+
+`geoWorkInFlight_` exists to answer "could the queue still hold a geoshader draw", and it is the gate
+on the unbounded `C3D_FRAME_SYNCDRAW`. Clearing it after a drain that has just reported the GPU did
+**not** come back tells the next `drawFrame` the queue is empty on exactly the evidence that says it
+is not — and that frame then takes the unbounded wait on the list that wedged. **That is the third
+failure, re-armed inside its own fix.** It is now cleared only on the branch where the drain
+returned true.
+
+**Two: the watchdog's deadline was chosen from the session's history, not the GPU's state.**
+
+```cpp
+const float seconds = gpuStalls_ == 0 ? kGeoWatchdogSeconds : kGeoRetrySeconds;
+```
+
+`gpuStalls_` is never cleared, so one stall anywhere in a session put **every later frame** on the
+32 ms retry deadline — permanently, and including after `main.cpp` had dropped the cube format back
+to the one that is known to draw. `kGeoRetrySeconds` was sized as "one frame's worth, long enough to
+catch a GPU that comes back", which is right for a GPU believed wedged and wrong for a healthy one:
+at the Far Lands a perfectly honest frame's queued work outlasts 32 ms. The watchdog then fired on
+merely-slow frames, `drawFrame` returned having drawn nothing, and it did so every frame from then
+on. **The top screen freezes on its last good frame and HOME still works** — which is a different
+death from the one below, and telling them apart from the couch is one button.
+
+The state and the history are now separate fields. `gpuWedged_` means the watchdog fired and no
+frame has completed since; a completed frame is the only proof the GPU came back, so it clears
+there and the full deadline returns with it. `gpuStalls_` stays the latched count the debug page
+reports, and the `geo:` line is now printed once per *episode* rather than once per session, so a
+second wedge after a recovery is reported too.
+
+**Three: the menu's frame was the one unbounded GPU wait left in the binary.** `menu.cpp` opened
+with `C3D_FrameBegin(C3D_FRAME_SYNCDRAW)` and nothing behind it. Every wait on the world's frame path
+had been put under a deadline; the menu is *where a wedged GPU gets handed over*, and it was missed
+because `Renderer::shutdown` drains before handing the screen across — so it reads as covered. It is
+not: the drain has a deadline of its own, and **the case where that deadline expires is exactly the
+case where the GPU is already gone.** A guard whose failure mode is the failure it guards against is
+not a guard. `ctr::beginFrameBounded` is the same `C3D_FrameSync` plus polled `C3D_FRAME_NONBLOCK`
+the renderer uses, exported for callers that own no `Renderer`; on expiry the menu opens no frame,
+draws nothing, holds its last image, and keeps `aptMainLoop` and HOME alive.
+
+`probe.cpp` keeps its plain `C3D_FRAME_SYNCDRAW` deliberately. It is the reference path — the thing a
+hardware answer is measured against — and it is only worth that if it behaves like unadorned citro3d.
+
+**`quadDrawsStopped_` also has a way back now, and it is a deliberate one.** It survives a run of
+good frames on purpose: a GPU that missed a deadline is not one to hand a geoshader draw back to
+because the next frame happened to come through. `Renderer::setCubeFormat` clears it, which is
+reached both by `main.cpp`'s fallback selecting 4-vertex and by a player selecting geoshader again.
+Either way the decision was made somewhere that can be reasoned about.
+
+**None of this is measured, and the exception screen is not explained by any of it.** The freeze has
+a mechanism and a fix; the exception is a CPU fault, the watchdog has nothing to say about one, and
+with no dump written there is nothing to resolve. Luma's own screen prints the process name, the
+exception type and the registers before anything reaches the card — that is the artifact to capture
+next, and until one exists this section has three fixes and one open failure, not four fixes.
+
+### The heap split, and the bound under the render distance
+
+The fourth report came with `sdmc:/3dalpha-oom.txt` on the card, which settles what `005`, `006` and
+`007` could each only narrow: **the console runs out of newlib heap.** Not linear, not the command
+buffer, not the GPU. `crashlogs/007` explains why that arrives looking like two different deaths.
+
+The line itself, kept because it is the only measurement of a real failure this project has:
+
+```
+OUT OF HEAP  free 4405k of 40960k  blocks 10688k  owed 1582k  pool 13425k
+             cols 382  sect 1314  chunk -63 -2000007  geoshader
+```
+
+**Read it before believing the section below it.** Resident columns are `blocks 10688k` -- 10.4 MB
+of the 35.7 MB in use, **29 %**. The grid was not what ran the heap out; at `cols 382` against the
+729 that render distance 12 asks for, it had not even finished loading. What is left is the chunk
+cache's clean side (capped at 8 MB), the generator's own cache (`16 * loadRadius + 96` columns, so
+about 8 MB here), the 1.5 MB owed to the card, decoded sound, the map's patch cache, and allocator
+overhead across tens of thousands of 2 KB nibble arrays. **Those together are the larger half, and
+the reporter named none of them** -- `clean` and `gen` are on that line now for the next one.
+
+So the honest split of what follows: **the heap was simply too small for what the game legitimately
+uses**, and raising it is the fix for this crash. The column budget below is a real bound and a
+necessary one, but it is a backstop for a case this report is not -- at 10.4 MB it would not have
+fired. Sizing it was worth doing; claiming it prevents this would not be.
+
+Note also `28.0 KB` per column here against the `21.7 KB` measured below. The measurement is of
+*freshly generated* columns; these have been lit and ticked, and `NibbleArray::set` materialises a
+plane that `assign` had collapsed and never collapses it again. **That is a candidate for `compact()`
+after relighting** -- 6.3 KB a column, and the 0.0 % figure below does not cover it because the probe
+never ran the relighter.
+
+And `chunk -63 -2000007` is 32 million blocks out, two and a half times the Far Lands. The 1.55x
+below is measured at the Far Lands proper; nothing here says what the cost is that far out beyond
+the 28.0 KB this one line implies.
+
+**What a column costs, measured through the real generator** rather than reasoned about -- 169
+columns at chunk (0,0) and 169 at chunk (784426,0), broken down by plane:
+
+| | ordinary | far lands |
+|---|---|---|
+| **per column** | **14.0 KB** | **21.7 KB** |
+| blocks | 9.0 KB | 12.8 KB |
+| sky light | 2.8 KB | 6.6 KB |
+| block light | 1.1 KB | 1.2 KB |
+| metadata | 0.0 KB | 0.0 KB |
+| non-uniform sections | 763/1352 | 1078/1352 |
+
+**1.55x, not the "several times" `006` predicted, and not for the reason it gave.** The palette is
+not failing. Ordinary terrain is all-air above the surface and all-stone below, and a *uniform*
+section costs nothing at all; the Far Lands simply has far fewer of them. That is a smaller effect
+than guessed and it is still the whole problem, because the grid is `(2d + 1)^2` columns either way:
+
+| render distance | columns | ordinary | far lands |
+|---|---|---|---|
+| 12 | 729 | 10.0 MB | 15.5 MB |
+| 16 | 1089 | 14.9 MB | 23.1 MB |
+| 20 | 1681 | 23.0 MB | 35.6 MB |
+| 24 | 2401 | 32.8 MB | **50.9 MB** |
+
+against a heap that was capped at **40 MB** and also holds code, stacks, the generator's own column
+cache, the chunk cache and the map.
+
+**Two ways to make a column cheaper were measured, and both are dead.** `compact()` recovers 0.0% --
+nothing in the game calls it, which looked like a lead, but the generator already uses
+`NibbleArray::assign()`, which collapses a plane to uniform on load, and metadata is never
+materialised at all. A 1-/2-bit palette tier recovers 2%: the distinct-id histogram peaks at 5-8 ids
+per section, and only 36 of 1352 Far Lands sections hold four or fewer. The representation is close
+to optimal.
+
+**The room was next door.** `gpu_memory.cpp` says so in its own comment: "The heap policy hands us
+82 MB of it", and `vboBudget` caps the pool at 32 MB on a New 3DS and 12 on an Old one. Roughly
+38 MB of linear memory sat idle while the heap beside it ran out. The split was `remaining / 3`
+capped at 40 MB -- a fraction, chosen before either side had been measured.
+
+It is now chosen from what linear actually needs: the pool's own budget plus a 16 MB overhead for
+the command buffer, the index buffer, the atlas, the audio ring, the staging textures and
+`vboBudget`'s own 8 MB refusal margin. The heap gets the rest.
+
+| available | heap before | **heap after** | linear after | pool gets |
+|---|---|---|---|---|
+| 123 MB (New 3DS) | 40 MB | **75 MB** | 48 MB | 32 MB |
+| 64 MB (Old 3DS) | 21 MB | **36 MB** | 28 MB | 12 MB |
+
+Checked numerically across twelve sizes down to 16 MB before it was built: the pool keeps its full
+budget in both real configurations, and no size panics that did not already panic under the old
+policy. That mattered enough to check rather than reason about -- `__system_allocateHeaps` runs
+before services are up and calls `svcBreak(USERBREAK_PANIC)` if it asks for more than exists, so a
+mistake here is a console that does not boot and cannot say why.
+
+**And a real bound under it, because a bigger heap only moves which view breaks it.** This is the
+same lesson as the command buffer two sections up, and it is the second time this project has
+learned it. `WorldStreamer::setMemoryBudget` puts a ceiling in bytes on the resident columns. Over
+it, the admission radius shrinks a ring at a time and everything outside is dropped; comfortably
+under it -- seven eighths, so a view sitting on the line does not oscillate -- it grows back. The
+render distance becomes a request rather than a promise, and `Stats::admitRadius` reports which it
+is, on the Info page as `admit N of N rings`, silent while the budget is not biting.
+
+**The hysteresis is the part that is not decoration.** Evicting the outer ring without also refusing
+to *admit* it is an eviction treadmill: the load path reads straight back what the budget just
+dropped, for ever, freeing nothing and costing SD I/O. Both halves are the same radius.
+
+The console gives columns five eighths of whatever heap the split produced -- deliberately
+conservative, because too large is the crash this exists to stop and too small is only a shorter
+view. Three tests cover it in `tests/streamer_generate_test.cpp`; the budget ships **off** on the
+host so every documented `--fly` number keeps its meaning.
+
+**What is still open**, and it is now the biggest thing here: the 26 MB of heap that the one real
+report shows is *not* resident columns. The accounting above closes it to within about 8 MB by
+reasoning, which is not the same as measuring it. `clean` and `gen` on the out-of-memory line are
+what will settle the two largest terms, and until they come back from a console the split is sized
+against an estimate rather than a measurement.
+
 ### What is still unknown, and it is the part that matters
 
 **None of the above is the M2 gate.** The gate failed at 0.208 µs per quad of GPU time, and that
@@ -288,6 +752,8 @@ adopt — less memory, slightly less CPU, identical geometry — so the experime
 
 On the console: settings page → cube format → geoshader, wait for the world to re-mesh, and compare
 GPU draw on the Info page against the same view in the 12-byte format. Either answer is decisive.
+The hang that blocked this is fixed; if `GPU STALL` ever appears on that row again, the number
+beside it is not a measurement and the watchdog has already dropped the format back to 4-vertex.
 
 - **If the pass gets materially faster**, the cost was vertex fetch and shading, and this becomes
   the path. The remaining vertex-side lever after it is a shorter shader.
@@ -606,6 +1072,62 @@ Two supporting numbers from the same run:
   establishes that the work is small and that the binding constraint is memory, not mesher
   throughput. Fluid cost 2.7 µs of that emit — measured against the same world with the fluid
   emitter switched off, not estimated.
+
+### The walk's constant factor: ARMv6k cannot divide (measured, fixed)
+
+The algorithm above was right and its implementation was paying for a fact about the CPU. **ARMv6k
+has no integer division instruction**, so every `%` in `core/render/visible_set.cpp` compiled to an
+`__aeabi_idivmod` call out to libgcc. Counted out of the shipped object rather than reasoned about:
+
+```console
+$ arm-none-eabi-objdump -d build/a1.1.2/CMakeFiles/3dalpha_core.dir/src/core/render/visible_set.o \
+    | awk '/^[0-9a-f]+ </{fn=$2} /aeabi_idivmod/{c[fn]++} END{for(f in c) print c[f], f}' | sort -rn
+10 <mc::render::buildVisibleSet(...)      4 <SectionField::find(...)
+ 2 <SectionField::visibility(...)          2 <SectionField::sectionDirty(...)
+ 2 <SectionField::meshSlot(...)            2 <SectionField::isLoaded(...)
+ ...                                       # 34 call sites in the file
+```
+
+`find()` did not inline, and the walk asked four separate accessors about every section it
+visited — `isLoaded`, `meshSlot`, `sectionDirty`, `visibility` — each of which resolved the column
+from scratch, then did two more divisions per face inside `visitedIndex`. **About twenty software
+divisions per visited section**, plus four passes over a `Cell` grid on a console whose old model
+has no L2 cache at all.
+
+None of it was necessary. `cellIndex` is a wrap into a `(2 * radius + 1)` grid, every caller checks
+`inRange` first, so the offset from the centre is bounded by the radius and the wrap is one
+conditional add against a base cached when the centre moves:
+
+```cpp
+int cx = baseX_ + int(chunkX - centreX_);   // baseX_ = floorMod(centreX_, edge_)
+if (cx < 0)           cx += edge_;          // |offset| <= radius_, so one
+else if (cx >= edge_) cx -= edge_;          // correction always suffices
+```
+
+| | before | after |
+|---|---|---|
+| `__aeabi_idivmod` call sites in `visible_set.o` | **34** | **6** |
+| divisions per visited section | ~20 | **0** |
+| divisions per frame | ~20 × sections visited | 4 (`setCentre` ×2, camera seed ×2) |
+| column lookups per visited section | 4 | 1 (`SectionField::ColumnRef`) |
+| `visited` array cleared per frame | `edge² × 8` bytes | once per 65,535 frames (stamped) |
+
+The six that remain are all once-per-frame or once-per-render-distance: `setCentre`, `reset`, and
+the camera's own seed index, which keeps a `floorMod` on purpose because the camera is not
+guaranteed to be inside the field — the centre follows it a frame late, since `WorldStreamer::update`
+runs after the walk.
+
+**This buys core 0, not the GPU.** The cube pass is a flat 0.208 µs/quad and this removes no quads,
+so it cannot move the M2 gate; what it frees is the core the walk shares with meshing, the tick, the
+relighter and streaming. Verified behaviour-preserving rather than argued: `--fly` over the real
+660-chunk world at distance 8 for 400 frames is identical frame for frame, and `--mesh`'s reachable
+and drawn tables are unchanged to the section (distance 8: 1,525 of 2,312 reached; 309–554 drawn).
+Host suite 684/684. **The hardware `walkMs` before/after has not been taken yet.**
+
+The overlay gained the graph's half of the culling, which
+[§Debug overlay](#debug-overlay) had asked for and nothing reported: sections in range minus
+sections visited is what the masks stopped, since the walk either reaches a section or never
+arrives. It needs no new counter.
 
 ## 5. Hardware fog does the distance fade for free — **reversed, it cannot do this one**
 

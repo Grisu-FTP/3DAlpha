@@ -744,3 +744,247 @@ TEST(a_patch_is_stored_with_z_running_backwards)
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Zoom
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The console's own framebuffer layout: stored in columns, bottom-up, so a step
+// south is a step *back* through memory. Every `memcpy` path in
+// `renderMapWindow` -- the 1:1 one and the column-repeat one magnifying adds --
+// is only ever taken when `strideZ == -1`, which the row-major Canvas above can
+// never be. So the fast paths were untested by construction, and the way to
+// test them is to draw the same window into both layouts and demand the same
+// picture rather than to re-derive what the picture should be.
+struct ConsoleCanvas {
+    int width;
+    int height;
+    std::vector<MapPixel> pixels;
+
+    ConsoleCanvas(int w, int h) : width(w), height(h), pixels(usize(w * h), 0) {}
+
+    // The origin pixel is the *last* one of the first column, because z runs
+    // backwards through memory from there.
+    MapSurface surface()
+    {
+        return MapSurface{pixels.data() + (height - 1), height, -1};
+    }
+    MapPixel at(int x, int z) const { return pixels[usize(x * height + (height - 1 - z))]; }
+};
+
+// A chunk in which no two pixels are the same, so a sample taken from the wrong
+// block cannot pass by luck: water shaded by a depth that varies with both
+// axes, over a palette whose every tile is a different colour.
+MapChunkSample speckledChunk(int salt)
+{
+    MapChunkSample sample;
+    for (int x = 0; x < 16; ++x) {
+        for (int z = 0; z < 16; ++z) {
+            sample.surface[x * 16 + z] = kWater;
+            sample.height[x * 16 + z] = 62;
+            sample.depth[x * 16 + z] = u8(1 + ((x + 3 * z + salt) % 12));
+        }
+    }
+    return sample;
+}
+
+}  // namespace
+
+TEST(zoom_scales_are_powers_of_two_in_one_direction_only)
+{
+    CHECK_EQ(mapPixelsPerBlock(0), 1);
+    CHECK_EQ(mapBlocksPerPixel(0), 1);
+
+    CHECK_EQ(mapPixelsPerBlock(2), 4);
+    CHECK_EQ(mapBlocksPerPixel(2), 1);
+
+    CHECK_EQ(mapPixelsPerBlock(-1), 1);
+    CHECK_EQ(mapBlocksPerPixel(-1), 2);
+
+    // A chunk is sixteen blocks, and at every level in the range it is a whole
+    // number of pixels -- which is the whole of "the grids still land on the
+    // lattice". 208 and 200 are the console's own window.
+    for (int zoom = kZoomMin; zoom <= kZoomMax; ++zoom) {
+        const int chunkPixels = 16 * mapPixelsPerBlock(zoom) / mapBlocksPerPixel(zoom);
+        CHECK(chunkPixels >= 1);
+        CHECK_EQ(mapWindowBlocks(208, zoom) * mapPixelsPerBlock(zoom) / mapBlocksPerPixel(zoom),
+                 208);
+        CHECK_EQ(mapWindowBlocks(200, zoom) * mapPixelsPerBlock(zoom) / mapBlocksPerPixel(zoom),
+                 200);
+    }
+}
+
+TEST(a_magnified_window_repeats_each_block_over_a_square_of_pixels)
+{
+    MapPalette palette;
+    buildMapPalette(solidAtlas(), &palette);
+
+    MapStore store;
+    store.setCapacity(4);
+    store.store(0, 0, speckledChunk(0));
+
+    // Eight blocks of the chunk, four pixels each.
+    Canvas canvas(32, 32);
+    drawWindow(store, palette, MapWindow{0, 0, 32, 32, 2}, MapStyle{}, canvas.surface());
+
+    const MapPixel* patch = store.patch(0, 0);
+    CHECK(patch != nullptr);
+    for (int x = 0; x < 32; ++x) {
+        for (int z = 0; z < 32; ++z) {
+            CHECK_EQ(canvas.at(x, z), patch[patchIndex(x / 4, z / 4)]);
+        }
+    }
+}
+
+TEST(a_shrunk_window_point_samples_every_nth_block)
+{
+    MapPalette palette;
+    buildMapPalette(solidAtlas(), &palette);
+
+    MapStore store;
+    store.setCapacity(16);
+    // Two chunks by two, so the walk has to cross a chunk edge in both axes
+    // rather than staying inside one patch.
+    for (i32 cz = 0; cz < 2; ++cz) {
+        for (i32 cx = 0; cx < 2; ++cx) {
+            store.store(cx, cz, speckledChunk(int(cx * 5 + cz * 11)));
+        }
+    }
+
+    Canvas canvas(16, 16);
+    drawWindow(store, palette, MapWindow{0, 0, 16, 16, -1}, MapStyle{}, canvas.surface());
+
+    for (int px = 0; px < 16; ++px) {
+        for (int pz = 0; pz < 16; ++pz) {
+            const int blockX = px * 2;
+            const int blockZ = pz * 2;
+            const MapPixel* patch = store.patch(blockX / 16, blockZ / 16);
+            CHECK(patch != nullptr);
+            CHECK_EQ(canvas.at(px, pz), patch[patchIndex(blockX % 16, blockZ % 16)]);
+        }
+    }
+}
+
+TEST(zoom_widens_the_chunks_a_window_touches)
+{
+    // 208 pixels at 1:1 is fourteen chunks; shrunk once it is 416 blocks and
+    // twenty-seven; magnified twice it is 52 blocks and four.
+    i32 minX = 0, minZ = 0, maxX = 0, maxZ = 0;
+
+    windowChunkRange(MapWindow{0, 0, 208, 200, 0}, &minX, &minZ, &maxX, &maxZ);
+    CHECK_EQ(maxX - minX + 1, 13);
+
+    windowChunkRange(MapWindow{0, 0, 208, 200, -1}, &minX, &minZ, &maxX, &maxZ);
+    CHECK_EQ(maxX - minX + 1, 26);
+
+    windowChunkRange(MapWindow{0, 0, 208, 200, 2}, &minX, &minZ, &maxX, &maxZ);
+    CHECK_EQ(maxX - minX + 1, 4);
+
+    // ...and it still lands on the right chunks west of the origin.
+    windowChunkRange(MapWindow{-17, -1, 16, 16, -1}, &minX, &minZ, &maxX, &maxZ);
+    CHECK_EQ(minX, -2);
+    CHECK_EQ(maxX, 0);
+    CHECK_EQ(minZ, -1);
+    CHECK_EQ(maxZ, 1);
+}
+
+TEST(the_consoles_framebuffer_layout_draws_the_same_picture_at_every_zoom)
+{
+    MapPalette palette;
+    buildMapPalette(solidAtlas(), &palette);
+
+    MapStore store;
+    store.setCapacity(64);
+    for (i32 cz = -1; cz <= 2; ++cz) {
+        for (i32 cx = -1; cx <= 2; ++cx) {
+            // One chunk of the block deliberately left unsampled, so the
+            // unexplored fill is on both paths as well.
+            if (cx == 1 && cz == 1) {
+                continue;
+            }
+            store.store(cx, cz, speckledChunk(int(cx * 7 + cz * 13)));
+        }
+    }
+
+    MapStyle style;
+    style.unexplored = rgb565(255, 0, 255);
+    style.chunkGrid = true;
+
+    for (int zoom = kZoomMin; zoom <= kZoomMax; ++zoom) {
+        const MapWindow window{-9, -5, 24, 24, zoom};
+
+        Canvas rowMajor(24, 24);
+        ConsoleCanvas console(24, 24);
+        drawWindow(store, palette, window, style, rowMajor.surface(), u32(2 + zoom - kZoomMin));
+        renderMapWindow(store, window, style, console.surface());
+
+        for (int x = 0; x < 24; ++x) {
+            for (int z = 0; z < 24; ++z) {
+                CHECK_EQ(console.at(x, z), rowMajor.at(x, z));
+            }
+        }
+    }
+}
+
+TEST(the_marker_is_placed_in_pixels_and_so_moves_with_the_zoom)
+{
+    // Sixteen blocks of ground; the player stands four blocks into it. At 1:1
+    // that is pixel 4, magnified four times it is pixel 16, and shrunk it is
+    // pixel 2 -- and the arrow is the same size at all three, because `length`
+    // is pixels.
+    MapStyle style;
+    style.unexplored = 0;
+
+    struct Case {
+        int zoom;
+        int expectX;
+    };
+    const Case cases[] = {{0, 4}, {2, 16}, {-1, 2}};
+
+    int width = -1;
+    int height = -1;
+    for (const Case& c : cases) {
+        Canvas canvas(32, 32);
+        const MapWindow window{0, 0, 32, 32, c.zoom};
+        drawMarker(canvas.surface(), window, 4.5, 4.5, 0.0f, 4.0f, rgb565(255, 255, 255),
+                   rgb565(255, 255, 255));
+
+        // The middle of what was drawn. The arrow is a rotated shape rather
+        // than a dot, so its extent is what says where it was placed -- and
+        // because fill and outline are the same colour here, the extent is the
+        // shape's own bounding box and not a raster detail.
+        int minX = 32, maxX = -1, minZ = 32, maxZ = -1;
+        for (int z = 0; z < 32; ++z) {
+            for (int x = 0; x < 32; ++x) {
+                if (canvas.at(x, z) == 0) {
+                    continue;
+                }
+                minX = x < minX ? x : minX;
+                maxX = x > maxX ? x : maxX;
+                minZ = z < minZ ? z : minZ;
+                maxZ = z > maxZ ? z : maxZ;
+            }
+        }
+        CHECK(maxX >= 0);
+        CHECK(std::abs((minX + maxX) / 2 - c.expectX) <= 1);
+        CHECK(std::abs((minZ + maxZ) / 2 - c.expectX) <= 1);
+
+        // ...and the marker is the same size at every zoom, because `length` is
+        // pixels rather than blocks. The first case sets the size and the rest
+        // have to match it, **to within a pixel**: each zoom puts the centre on
+        // a different sub-pixel offset -- 4.5, 18.0 and 2.25 -- and the
+        // rasteriser's coverage of the same shape can differ by a pixel across
+        // those. What is being ruled out is the marker scaling with the map,
+        // which would be four times the size at +2 and not one pixel more.
+        if (width < 0) {
+            width = maxX - minX;
+            height = maxZ - minZ;
+            CHECK(width > 0);
+            CHECK(height > 0);
+        }
+        CHECK(std::abs((maxX - minX) - width) <= 1);
+        CHECK(std::abs((maxZ - minZ) - height) <= 1);
+    }
+}

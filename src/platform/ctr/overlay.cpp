@@ -2,6 +2,7 @@
 
 #include "core/util/console_text.hpp"
 #include "core/util/coord_text.hpp"
+#include "platform/ctr/heap.hpp"
 
 #include <3ds.h>
 
@@ -278,10 +279,34 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
         return false;
     }
 
-    // **The player's pages leave the d-pad alone.** It used to cycle the map's
-    // grids, which is a debug question and now lives on the settings page --
-    // and leaving the whole d-pad free is what lets a hotbar be built on the
-    // Items page later without taking a binding back off anybody.
+    // **The map page owns the d-pad; the other player pages still leave it
+    // alone**, which is what lets a hotbar be built on the Items page later
+    // without taking a binding back off anybody.
+    //
+    // Left and right cycle the grid overlay, up and down zoom in and out. Both
+    // are the MapScreen's own state -- it owns the style, marks what it has to
+    // and redraws itself -- so this returns false whatever happens: the caller
+    // has no pool to rebuild and no setting to apply.
+    //
+    // **Y is guarded the same way SELECT is above.** Holding Y and pressing the
+    // d-pad is main.cpp's stereo tuner, which reads the same buttons out of the
+    // same frame; without this, dialling in the disparity would also walk the
+    // map through its grids.
+    if (page_ == Page::Player) {
+        if (playerPage_ != PlayerPage::Map || (held & KEY_Y) != 0) {
+            return false;
+        }
+        if (down & (KEY_DLEFT | KEY_DRIGHT)) {
+            map_.cycleGrid((down & KEY_DRIGHT) != 0 ? 1 : -1);
+        }
+        // Up magnifies. The map is a picture of the ground, and pushing up
+        // towards it is the gesture every other map has.
+        if (down & (KEY_DUP | KEY_DDOWN)) {
+            map_.cycleZoom((down & KEY_DUP) != 0 ? 1 : -1);
+        }
+        return false;
+    }
+
     if (page_ != Page::Settings) {
         return false;
     }
@@ -317,15 +342,6 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     if (cursor_ == 2) {
         settings->wireframe = !settings->wireframe;
         return true;
-    }
-
-    // The map's grids. **Not in DebugSettings**, because nothing outside this
-    // file applies it: the MapScreen owns the style, marks every patch stale
-    // and redraws itself. Reported as "nothing changed" for exactly that
-    // reason -- the caller has no pool to rebuild.
-    if (cursor_ == 3) {
-        map_.cycleGrid(delta);
-        return false;
     }
 
     // Teleport. Either direction opens it, because the row has no value to step
@@ -642,17 +658,48 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     blank(r++);
     row(r++, "drawn   %4d sections  %6lu quads", gpu.drawCalls,
         static_cast<unsigned long>(gpu.quads));
-    // Splits should read 0. Anything else is a frame that outgrew the GPU
-    // command buffer -- harmless now, and the thing to raise
-    // ctr::kCommandBufferBytes against if it is happening every frame.
-    row(r++, "splits  %4d", gpu.commandSplits);
+    // **The percentage is the one to watch.** It is the frame's share of a hard
+    // per-frame budget that nothing can extend once it is spent, so a view
+    // sitting near 100 is a view about to start losing geometry -- and the
+    // thing to raise ctr::kCommandBufferBytes against. `drop` counts the
+    // sections that budget cost the frame, and should read 0.
+    //
+    // `geo` is splits taken on purpose to drain the pipeline around the
+    // geometry-shader cube pass, two per eye, and expected rather than a
+    // warning. It reads 0 in the 4-vertex format. See Renderer::drawEye.
+    const unsigned long cmdWords = static_cast<unsigned long>(gpu.commandWords);
+    const unsigned long cmdTotal = static_cast<unsigned long>(kCommandBufferBytes / 4);
+    const int cmdPercent = int((cmdWords * 100) / (cmdTotal != 0 ? cmdTotal : 1));
+    if (gpu.droppedSections == 0) {
+        row(r++, "cmd    %5luk %3d%%   geo %2d", cmdWords / 1024, cmdPercent, gpu.geoSplits);
+    } else {
+        row(r++, "cmd    %5luk %3d%%   \x1b[31mdrop %d\x1b[0m", cmdWords / 1024, cmdPercent,
+            gpu.droppedSections);
+    }
     // Y + d-pad moves these. The disparity is what a point at infinity gets at
     // full slider, in pixels of the 400 across the top screen; the focal
     // distance is what sits at the screen plane.
     row(r++, "3D      %2d.%d px inf   focus %3d blocks", int(renderer.stereoDisparityPixels()),
         tenths(renderer.stereoDisparityPixels()) % 10, int(renderer.stereoFocalBlocks()));
+    // **The graph's half of the culling, which nothing reported before.**
+    // docs/3ds-performance.md asks the overlay for "sections culled by frustum
+    // vs by visibility graph" and only the frustum's half existed, so the
+    // question "is the occlusion culling doing anything" could only be answered
+    // by turning on wireframe and looking -- which answers a different question,
+    // because wireframe's atlas discards its interiors and so writes no depth.
+    //
+    // No new counter is needed: the walk visits a section or it never arrives,
+    // so the sections in range that it never reached are the ones the masks
+    // stopped. Underground this is nearly all of them; on the surface under open
+    // sky it is close to nothing, which is the measured result recorded in that
+    // same document and worth being able to see.
+    const render::SectionField& field = renderer.chunks().field();
+    const int inRange = field.cellCount() * render::SectionField::kSectionsY;
+    const int graphCut = inRange - frame.sectionsVisited;
     row(r++, "walked  %4d seen   %4d frustum-cut", frame.sectionsVisited,
         frame.rejectedByFrustum);
+    row(r++, "        %4d graph-cut  %5d in range", graphCut < 0 ? 0 : graphCut,
+        inRange);
     row(r++, "queued  %4d mesh   %2d done, %2d empty", frame.queued, streaming.meshedThisFrame,
         streaming.emptyThisFrame);
 
@@ -734,10 +781,32 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
                                            : streaming.generatorEvictedLive),
             tail);
     }
+    // **What the memory budget is doing**, and silent while it is doing
+    // nothing. `admit` equal to the render distance's load radius is the
+    // healthy reading; below it the world in view is shorter than the setting
+    // asks for, and the alternative was running the heap out and dropping to
+    // the HOME menu. See WorldStreamer::setMemoryBudget and crashlogs/007.
+    if (streaming.admitRadius < world.loadRadius()) {
+        row(r++, "  \x1b[33madmit %2d of %2d rings  evicted %lu\x1b[0m", streaming.admitRadius,
+            world.loadRadius(), static_cast<unsigned long>(streaming.evictedForMemory));
+    }
     row(r++, "  blocks %3lu.%lu MB in the heap",
         static_cast<unsigned long>(streaming.blockBytes / kMb),
         static_cast<unsigned long>((streaming.blockBytes % kMb) * 10 / kMb));
-    row(r++, "free  linear %5lu KB  VRAM %5lu KB",
+    // **Three heaps, and the application one was missing.** `crashlogs/005`
+    // ended with three dumps whose own stack pointers were unmapped -- the
+    // shape of a process that has run out of memory rather than of any
+    // particular line -- and its notes named the number that would settle it:
+    // the free heap at the moment before. It was not on this page, so the next
+    // report could not carry it either. It is here now.
+    //
+    // `heap` is what malloc has not handed out and cannot see fragmentation, so
+    // it is a ceiling rather than a promise; see heap.hpp. It costs a
+    // `mallinfo` and the malloc lock with it, which the generation worker also
+    // takes -- a debug page's price, and the same one ChunkCache already pays
+    // every time it sizes what may be owed to the card.
+    row(r++, "free KB heap %5lu lin %5lu vram %4lu",
+        static_cast<unsigned long>(heapFreeBytes() / kKb),
         static_cast<unsigned long>(renderer.freeLinearBytes() / kKb),
         static_cast<unsigned long>(renderer.freeVramBytes() / kKb));
     // **The number that found the map's patch cache**, and the reason it is
@@ -890,27 +959,49 @@ int Overlay::drawStorage(const render::WorldStreamer& world)
 int Overlay::drawSettings(const Renderer& renderer, const DebugSettings& settings,
                           const Camera& camera)
 {
-    const char* cursor[kSettingCount] = {"  ", "  ", "  ", "  ", "  "};
+    const char* cursor[kSettingCount] = {"  ", "  ", "  ", "  "};
     cursor[cursor_] = "\x1b[33m> \x1b[0m";
 
     int r = kBodyRow;
     row(r++, "debug settings");
     blank(r++);
     row(r++, "%srender distance   %2d chunks", cursor[0], settings.renderDistance);
-    row(r++, "%scube format       %s", cursor[1],
-        renderer.cubeFormat() == mesh::CubeFormat::Quads ? "geoshader" : "4-vertex ");
+    // The stall count is on this row rather than a line of its own because it
+    // is only ever about this setting: the watchdog only runs under the quad
+    // format, and a non-zero count means the renderer took the setting away
+    // again. Silent when it is zero, which is every healthy session.
+    if (renderer.gpuStalls() == 0) {
+        row(r++, "%scube format       %s", cursor[1],
+            renderer.cubeFormat() == mesh::CubeFormat::Quads ? "geoshader" : "4-vertex ");
+    } else {
+        // **What the frame that never came back had in it**, which is the
+        // whole reason the watchdog gives up rather than blocking: these four
+        // numbers are what turns "the quad path hangs" into a bisect that has
+        // somewhere to start. `spl` above zero says a command list was split
+        // mid-frame; `3d` says the second eye was in it.
+        const Renderer::FrameStats& st = renderer.stalledStats();
+        row(r++, "%scube format       %s \x1b[31mGPU STALL\x1b[0m", cursor[1],
+            renderer.cubeFormat() == mesh::CubeFormat::Quads ? "geoshader" : "4-vertex ");
+        row(r++, "   wedged on %d draws %lu quads", st.drawCalls, (unsigned long)(st.quads));
+        row(r++, "   cmd %luk/%d  stale %d  clamp %d  3d %s",
+            static_cast<unsigned long>(st.commandWords) / 1024, st.geoSplits, st.staleSkipped,
+            st.clampedDraws, st.stereo ? "on" : "off");
+        if (renderer.geoRampName() != nullptr) {
+            row(r++, "   at ramp step [%s]", renderer.geoRampName());
+        }
+    }
     row(r++, "%swireframe         %s", cursor[2], renderer.wireframe() ? "on " : "off");
-    // **The map's grids, which are a claim rather than a decoration.** 16 says
-    // the map is aligned with the chunks and 128 says it is aligned with the
-    // maps of later versions, and both are things this project asserts and
-    // should be able to show on the hardware. Off by default, because neither
-    // is anything a player wants drawn over their world.
-    row(r++, "%smap grid          %s", cursor[3], map_.gridName());
+    // **The map's grids are not on this page any more.** They were here on the
+    // reasoning that "is the map aligned with the chunks" is a maintainer's
+    // question -- true, and beside the point, because a chunk grid is also the
+    // most useful thing a map can draw for a player. They are under the d-pad
+    // on the map's own page now; see map_screen.hpp.
+    //
     // The row doubles as the readout: after a teleport it shows where you
     // landed, which is the only confirmation the player needs and costs no
     // extra state to keep. Integers because newlib's printf here has no float
     // support -- see the note on tenths().
-    row(r++, "%steleport          %d %d %d", cursor[4], int(std::floor(camera.x)),
+    row(r++, "%steleport          %d %d %d", cursor[3], int(std::floor(camera.x)),
         int(std::floor(camera.y)), int(std::floor(camera.z)));
     blank(r++);
     row(r++, "d-pad up/down choose, l/r change");
@@ -929,9 +1020,10 @@ int Overlay::drawSettings(const Renderer& renderer, const DebugSettings& setting
     // The one live question on this page, so it gets the room. Says what to
     // look at, because the number that decides it is not on this screen.
     row(r++, "Cube format is the M2 gate's open");
-    row(r++, "question. Geoshader sends 8 bytes a");
-    row(r++, "quad, not 60. Both re-mesh, so wait");
-    row(r++, "then compare GPU draw on Info.");
+    row(r++, "question, and geoshader is now the");
+    row(r++, "default: 8 bytes a quad, not 60. Both");
+    row(r++, "re-mesh, so wait, then compare GPU");
+    row(r++, "draw on Info.");
     // The number the comparison is against, on the screen where the comparison
     // is made. 30 fps is 33.3 ms a frame, less the ~0.8 ms fixed cost.
     row(r++, "Gate: 30 fps at %d, 3D on, so GPU", kGateDistanceNew3DS);

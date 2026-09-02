@@ -27,13 +27,13 @@ hard oracle to check itself against.
 | **M0** Toolchain, version-driven build, 3DSX packaging | **done** — validated on a New 3DS. `make cia` is wired but inert until `makerom` is on PATH |
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
 | **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world. **Plus a second on-disk format**, `Packed`: sector-allocated region containers, 9× smaller than the folder layout on a 16 KB-cluster card and 280× fewer file operations, converted losslessly in either direction and byte-exact on a real 1,119-chunk world. New worlds are created in it. See §0j and [packed-worlds.md](packed-worlds.md) |
-| **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, and needs a seventh launch to say whether it closes the gap |
+| **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, **draws the whole render distance on hardware without stalling, and is what the game boots into as of this change** — the 4-vertex path stays as the watchdog's fallback and as the only encoding that can ever carry per-corner light. What is still *not* taken is the gate measurement itself: GPU draw time per quad, both formats, one session, one position |
 | M3 Singleplayer gameplay | not started as *gameplay*, **but its foundation is now built: the world ticks.** a1.1.2's 20 Hz clock (`ir.class`, accumulator, partial ticks, the ten-tick cap that drops rather than defers), its scheduled-update list with the original's ordering and both of its limits, its 80-samples-a-chunk random tick, and fifteen block behaviours -- grass, leaves, saplings, crops, farmland, flowers, mushrooms, sugar cane, cactus, ice, both snows, torches, sand and gravel. Blocks are dispatched by a **tick behaviour**, never by id, the way the renderer dispatches on render type. Redstone, fire and the fluids are named and not done; see §0o and [tick-a1.1.2.md](tick-a1.1.2.md). Also **the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now a tabbed HUD, and the debug pages are behind it rather than beside it.** The player's half is three pages switched by touching tabs along the top -- **Map**, **Items** and **Look** -- drawn as panels, slots and bevels in a1.1.2's own GUI colours over the pack's tiled dirt, while the three debug pages stay shared, unchanged and behind `SELECT + Y`. It is still libctru's text console underneath: the furniture is written straight into the RGB565 framebuffer and the console's glyphs are printed on top of it, on backgrounds set per row with `\x1b[48;2;R;G;Bm`, which is what stopped text punching black rectangles through the panels. **Map** is 208 by 200 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds -- **in every gamemode now, not only Spectator's** -- and it shows **coordinates and nothing else**: the chunk, the map tile, the chunk count and the redraw time were the maintainer's questions and have moved to the Info page, and the debug grids to the settings page. **There is no strip of button hints along the bottom**, because it was the same three lines on every page spending a twelfth of the screen to repeat itself; the debug pages keep theirs, which is where `SELECT + Y` is worth naming. Those 24 rows and 24 columns off the coordinate panel are what made the window a quarter bigger than the 192 by 176 it started at -- an estimated 790 us a redraw against 700, measured on the host as 16.9 us against 14.2. The marker is an **arrowhead rotated to a real yaw** rather than a diamond with a whole-block tick, which is what fixes both of the old one's faults at once -- it pointed eight ways and it was 41 % longer on a diagonal than on a straight. **Items** is the inventory frame, nine across with a hotbar, drawn empty until M3 fills it, and it is not offered in Spectator. **Look** is a pad that hands the drag to the camera, with a compass ribbon over it -- which exists because the bottom screen is both the UI and the only pointing device an old 3DS has, and dragging on a map used to turn the view. **Run on hardware, where a redraw read 5,000 us**; a per-chunk patch cache took that to a copy, and the number is on the Info page. **The HUD itself has not been seen on hardware.** See [map.md](map.md) |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
 | M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, and background music is built but unheard**, both ahead of the rest of M6; mobs and packaging not started. **Music is a1.1.2's `of.c()` transcribed exactly** -- the counter seeded at `nextInt(12000)` and reset to `nextInt(24000)+24000`, and, the part that is easy to lose, *not decremented while a track is playing*, so the period is the track's own length plus 20-40 minutes. It runs on the same `elapsedTicks()` the world does, beside `stepTicks`. Underneath it: `audio::Backend` (the `IAudio` docs/architecture.md always named), an ndsp voice on channel 0 fed by a ring of eight 1024-frame wave buffers in linear memory, and a third `WorkerRole` -- `Audio` -- decoding Ogg Vorbis through Tremor. **On an Old 3DS that decode is on core 0**, because a 3DSX has no other core; it sits below the main thread and the 186 ms ring is what makes that safe, which is a claim only hardware can settle -- the overlay counts underruns and decode microseconds for exactly that reason. Options -> Sound carries the volumes and the one line that says why a console is silent, distinguishing a missing DSP firmware from a DSP something else is holding. **Sound effects are deliberately absent**: nothing in the port can emit one yet, so the machinery arrives with its first caller rather than as dead code. See [audio-a1.1.2.md](audio-a1.1.2.md). Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
 
-**644 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**690 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -270,6 +270,47 @@ draw list. The dead end is left in the doc deliberately.
 
 ## Measured numbers (do not re-derive)
 
+> **The one real out-of-memory report, kept verbatim.** `free 4405k of 40960k  blocks 10688k
+> owed 1582k  pool 13425k  cols 382  sect 1314  chunk -63 -2000007  geoshader`. Resident columns are
+> **29 %** of the heap in use; the rest is the chunk cache, the generator's cache and overhead, and
+> is **not measured**. 10688k over 382 columns is 28.0 KB a column -- against the 21.7 KB below,
+> because these have been lit and ticked and `NibbleArray::set` never re-collapses a plane.
+>
+> **A resident column costs 14.0 KB over ordinary terrain and 21.7 KB at the Far Lands.** Measured
+> through the real generator, 169 columns each at chunk (0,0) and at chunk (784426,0), by plane:
+>
+> | | ordinary | far lands |
+> |---|---|---|
+> | **per column** | **14.0 KB** | **21.7 KB** |
+> | blocks | 9.0 KB | 12.8 KB |
+> | sky light | 2.8 KB | 6.6 KB |
+> | block light | 1.1 KB | 1.2 KB |
+> | metadata | 0.0 KB | 0.0 KB |
+> | non-uniform sections | 763/1352 | 1078/1352 |
+>
+> **1.55x, and the reason is uniform sections, not the palette.** Ordinary terrain is all-air above
+> the surface and all-stone below, and a uniform section costs literally nothing; the Far Lands has
+> far fewer of them. `crashlogs/006` guessed "several times" and "the palette buys nothing", and
+> both are wrong -- the palette is working, there is simply more that is not uniform.
+>
+> So the grid costs, at `(2d + 1)^2` columns:
+>
+> | render distance | columns | ordinary | far lands |
+> |---|---|---|---|
+> | 12 | 729 | 10.0 MB | 15.5 MB |
+> | 16 | 1089 | 14.9 MB | 23.1 MB |
+> | 20 | 1681 | 23.0 MB | 35.6 MB |
+> | 24 | 2401 | 32.8 MB | **50.9 MB** |
+>
+> **Two obvious savings were measured and both are dead.** `compact()` recovers **0.0%** -- nothing
+> in the game calls it, which looked like a lead, but the generator already uses
+> `NibbleArray::assign()`, which collapses to uniform on load, and metadata is never materialised at
+> all (0 of 1352 sections). A narrower palette tier recovers **2%**: the distinct-id histogram peaks
+> at 5-8 ids per section and only 36 of 1352 Far Lands sections hold four or fewer, so 1- and 2-bit
+> encodings take 12.8 KB to 12.5 KB. **The representation is close to optimal; the room was in the
+> heap split**, see §*The heap split*.
+
+
 > **Audio costs about 99 KB of binary and nothing else measured yet.** Linking Tremor takes `.text`
 > from 762,772 to 809,852 and `.rodata` from 68,916 to 120,540 -- a1.1.2 Release build, `-O3`.
 > The `.3dsx` goes 861,252 -> 960,224 bytes. **Every other audio number in this document is a
@@ -304,6 +345,23 @@ draw list. The dead end is left in the doc deliberately.
 > a total moves with it: `--fly` at distance 10 over 1,200 frames now settles at **frame 273**, not
 > the 277 recorded further down. That was checked rather than assumed — the settle frame moved and
 > the column count moved with it, in the same run. Per-column and per-section figures are unaffected.
+
+> **The visibility walk made about twenty software divisions per section it visited, and now makes
+> none.** ARMv6k has no divide instruction, so every `%` was an `__aeabi_idivmod` call; counted out
+> of the shipped object, `visible_set.o` held **34 call sites** and holds **6**. All six are now
+> once a frame or once a render distance (`setCentre`, `reset`, and the camera's seed index, which
+> keeps its `floorMod` because the camera is not guaranteed to be inside the field). The walk also
+> resolves each column **once** instead of asking four accessors that each resolved it again, and
+> stamps its visited array instead of clearing `edge² × 8` bytes every frame.
+>
+> **Behaviour-preserving, and checked rather than asserted**: `--fly` over the real world at
+> distance 8 for 400 frames is identical frame for frame, and `--mesh`'s tables are unchanged to the
+> section — distance 8 reaches 1,525 of 2,312 and draws 309–554 (mean 423). Host suite 684/684.
+> **This removes no quads and cannot move the M2 gate**; what it frees is core 0, which the walk
+> shares with meshing, the tick, the relighter and streaming. See `docs/3ds-performance.md` §4.
+>
+> **The hardware number has not been taken.** `walkMs` is on the debug overlay and the before/after
+> at New 3DS distance 8 with 3D on, on the surface and underground, is what would settle it.
 
 **M0, New 3DS hardware.** Heap/linear 40/82 MB. VRAM free after two stereo top targets 5,019 of
 6,144 KB. Fill rate ~210 M fragments/s (4.777 ns each, two textures bound). Fixed cost ~562 µs per
@@ -2031,6 +2089,13 @@ and `MapStore` stamps them with what they were drawn with.
 If the same host-to-console ratio holds, that puts the redraw near **700 µs** on the console that
 read 5,000. The screen still prints the figure, because that is the number that found this.
 
+**And it found it again, twice over.** The 700 µs prediction was never checked directly, and when
+zoom landed a console read **3,283 µs** — which turned out not to be about zoom at all. Most of what
+was left after the patch cache was `MapStore::patch` hash lookups (2,704 of them per redraw, for 182
+distinct answers) and a stale-scan running on frames where nothing could be stale. Both are fixed;
+the host copy went 389 → 86 µs at 1:1. **See §0r**, which has the table and the console figure that
+still has to be taken.
+
 Two decisions inside it are worth keeping:
 
 - **`MapChunkSample` is stored x-major** while `ChunkColumn::heightMap` is z-major, which is what
@@ -2122,11 +2187,19 @@ and is gone: in a1.1.2 torchlight is exactly as warm as sunlight.
 `GPUCMD_AddRawCommands` memcpys into `gpuCmdBuf + offset` and advances the offset; nothing compares
 it against `gpuCmdBufSize`. The draw list fills it and stereo doubles the cost, so the crash landed
 in whatever linear allocation followed, intermittently, depending on where the player looked.
-Sizing the buffer bigger only moves which view breaks it, so `drawPass` now checks the real
-headroom before each section and calls `C3D_FrameSplit` when it is short -- safe mid-pass, because
-GPU registers carry across command lists. `kCommandBufferBytes` is 4x the default on top of that,
-to make splits rare rather than to make them unnecessary. **The overlay reports the split count:
-anything above 0 is a frame that would have corrupted memory before this.**
+`kCommandBufferBytes` is 4x the default, and `drawPass` checks the real headroom before each
+section.
+
+> **The first version of that check split the list, and a split reclaims nothing.** Read out of
+> libctru's disassembly rather than assumed, `GPUCMD_Split` does `gpuCmdBuf += offset;
+> gpuCmdBufSize -= offset; gpuCmdBufOffset = 0`. Free space is `size - offset` before it and
+> `(size - offset) - 0` after it -- **the same number**. A split hands the recorded words to the GX
+> queue and carries on recording *in the space that was left*, so the guard flushed a list, bought
+> nothing, and drew the section anyway: exactly the overrun it was written to prevent. The budget
+> is per frame and only `C3D_FrameBegin` refills it. `drawPass` now stops drawing when the room is
+> gone -- holes in the world, far ones first, `droppedSections` on the Info page -- and the page
+> reports `cmd` as a percentage of the budget rather than a split count. See
+> `docs/3ds-performance.md` section 2.
 
 *The 3D was flat.* Reported as "it goes in front of the other stuff but then still stays in the
 same depth layer", which turns out to describe the arithmetic exactly. From citro3d's own
@@ -2515,23 +2588,104 @@ What has to be checked next, roughly in the order it will break:
   convention would hang the torch on nothing. `tools/`-side scan, cross-checked against
   `torchMount()` in `tests/torch_test.cpp`. Two left: a torch **lying flat or leaning the wrong
   way** is the shear inverted, and a torch **dark in a cave** is the lightmap's `u` axis, above.
-- **The geometry-shader cube pass**, which has never run at all — a third program, a second DVLE, a
-  `GPU_GEOMETRY_PRIM` draw with no index buffer, and an 18-vec4 uniform table. It fails in ways that
-  are each distinct at a glance, which is the reason for listing them:
+- **The geometry-shader cube pass**, which has now run once and **hung the console** — a third
+  program, a second DVLE, a `GPU_GEOMETRY_PRIM` draw with no index buffer, and an 18-vec4 uniform
+  table. It fails in ways that are each distinct at a glance, which is the reason for listing them:
 
-  | what you see | what it is |
-  |---|---|
-  | nothing at all in the cube pass | the geometry shader is not emitting: the gsh input stride, or `GPU_GEOMETRY_PRIM` |
-  | the world inside out in patches | the strip's `inv prim`, i.e. the second triangle's winding |
-  | every face the same brightness | `faceBasis[].w` shade not reaching the shader — check the uniform table upload survives the bind |
-  | textures scrambled per face | `uvSign`, or `tileX`/`tileY` swapped |
-  | one corner of every quad wrong | `a0` read too soon after `mova` — the one hardware question §2 could not settle |
-  | garbage colour on three of four vertices | output registers do *not* persist across `emit`, which the shader currently assumes they might not and writes per vertex anyway |
+  | what you see | what it is | what happened |
+  |---|---|---|
+  | **both screens dead, HOME does nothing, power off** | a non-geoshader draw following a geoshader one: turning the geometry stage off repartitions the shader units inside a list whose earlier draws are still in flight | **this is what the game path did, and it is fixed** — `Renderer::drawEye` splits the command list on both sides of the cube pass. This row was not on the table before the run |
+  | nothing at all in the cube pass | the geometry shader is not emitting: the gsh input stride, or `GPU_GEOMETRY_PRIM` | **ruled out** — the probe's cube draws |
+  | the world inside out in patches | the strip's `inv prim`, i.e. the second triangle's winding | **ruled out** — the probe's cube is a cube |
+  | every face the same brightness | `faceBasis[].w` shade not reaching the shader | **ruled out** — the probe's faces are shaded apart |
+  | textures scrambled per face | `uvSign`, or `tileX`/`tileY` swapped | **ruled out** — the probe's six faces step across its atlas in order |
+  | one corner of every quad wrong | `a0` read too soon after `mova` — the one hardware question §2 could not settle | **ruled out**, and this is the answer to that question: seven instructions of separation is enough |
+  | garbage colour on three of four vertices | output registers do *not* persist across `emit` | **ruled out** — the probe's quads are evenly coloured |
 
-  The last two are the two unknowns worth watching for specifically. Everything else about the
-  format — corners, winding, UVs, shade, light, byte layout — is pinned on the host by
-  `tests/quad_format_test.cpp`, which expands every quad of a section through the same basis the
-  shader uses and compares it vertex for vertex against the 12-byte mesher.
+  Everything about the format itself — corners, winding, UVs, shade, light, byte layout — is pinned
+  on the host by `tests/quad_format_test.cpp`, which expands every quad of a section through the
+  same basis the shader uses and compares it vertex for vertex against the 12-byte mesher.
+
+  **The probe answered every row but the first, in one launch.** Six quads, one draw, one eye, no
+  pool and no command-list split: the cube draws, correctly, and the GPU comes back. So the shader
+  is right, the pipeline is right, and the hang was not in either.
+
+  **The first row took four more.** An automatic ramp — start below anything that could break,
+  loosen one limit a second, read the rung being held when the machine stops — walked the draw
+  count, the quad count, and then the passes. Unlimited geoshader draws over the whole render
+  distance were fine; one `DrawElements` behind them was not. The fix and the mechanism are in
+  `docs/3ds-performance.md` §2. Two lessons worth keeping:
+
+  - **A ramp only answers about the axis it varies.** The first one pinned the cube pass and left
+    the detail passes unlimited, so its smallest rung still had the fatal draw in it. It reported a
+    hang at "1 draw, 16 quads" that had nothing to do with either number, and cost a launch.
+  - **A watchdog that falls back to the blocking call is not a watchdog.** The first one spent its
+    deadline and then called `C3D_FrameBegin(C3D_FRAME_SYNCDRAW)` anyway; a wedged GPU never returns
+    from that either. It now opens no frame at all, and the report goes to the bottom screen, which
+    `consoleInit` leaves single-buffered and which therefore needs no GPU to update.
+  - **A watchdog is only as good as the predicate that reaches it.** The second one was correct in
+    every way except which frame it asked about: it took the unbounded wait whenever `cubeFormat_`
+    was not `Quads`, and `C3D_FrameBegin` waits for the *previous* frame. Toggling the debug page
+    back to 4-vertex flipped the field instantly and the next `drawFrame` blocked forever on a queue
+    still holding geoshader draws — top screen black, HOME dead, no exception, and no `geo:` line,
+    because the watchdog was two lines below the branch that was taken. Reported from hardware as
+    "switching back and forth in the farlands killed it"; the gate is now
+    `Renderer::geoWorkInFlight_`, set where a `GPU_GEOMETRY_PRIM` draw is recorded and cleared only
+    where the queue is proven empty. **A silent bottom screen is the diagnosis**: `geoTrace` needs
+    no GPU, so a watchdog that fires always leaves a line, and a death without one is a main thread
+    that never reached it.
+  - **The heap ran out -- and resident columns were only 29 % of it.** The first
+    `sdmc:/3dalpha-oom.txt` reads `free 4405k of 40960k  blocks 10688k  owed 1582k  cols 382`, so
+    the grid was 10.4 MB of the 35.7 MB in use and had not even finished loading. The larger half is
+    the chunk cache's clean side, the generator's own cache and allocator overhead, **and the
+    reporter named none of them**; `clean` and `gen` are on that line now. **The fix for this crash
+    is the heap split, not the column budget** -- at 10.4 MB the budget would not have fired.
+    Recorded because it is the only measurement of a real failure this project has, and because the
+    obvious reading of it is wrong.
+  - **The render distance still had no bound in bytes.** Residency was
+    purely geometric -- a cell held if inside the radius, dropped when it left, and nothing anywhere
+    asked what it cost. Measured, a column is 14.0 KB over ordinary terrain and 21.7 KB at the Far
+    Lands, so the debug page's ceiling of 24 needs 50.9 MB out there against a heap capped at 40.
+    Both halves of the fix are in `docs/3ds-performance.md` §2, *The heap split*: the split itself
+    was chosen from what linear memory actually needs rather than as a fraction (New 3DS heap
+    40 -> 75 MB, out of ~38 MB of linear the VBO pool was never going to ask for), and
+    `WorldStreamer::setMemoryBudget` is the real bound under it -- the admission radius shrinks a
+    ring at a time over budget and grows back under seven eighths of it, so a view too big for the
+    heap costs rings rather than the process. **Two ways to make a column cheaper were measured
+    first and both are dead**: `compact()` recovers 0.0%, a narrower palette tier 2%.
+  - **A guard whose failure mode is the failure it guards against is not a guard.** Three defects
+    were reported next, all three inside the fix above rather than anywhere new, and all three of
+    that shape. `geoWorkInFlight_` was cleared after a `drainGpu` that had just returned *false*,
+    which handed the next frame the unbounded wait on the strength of the evidence that it must not
+    — the third failure, re-armed inside its own fix. The watchdog's deadline was picked by
+    `gpuStalls_ == 0`, and `gpuStalls_` never clears, so one stall put every later frame on the
+    32 ms retry deadline for the session; at the Far Lands an honest frame outlasts that, so the
+    watchdog fired on merely-slow frames and `drawFrame` drew nothing ever again — a top screen
+    frozen with HOME still alive. And the menu's `C3D_FrameBegin(C3D_FRAME_SYNCDRAW)` was the one
+    unbounded GPU wait left in the binary, missed because `Renderer::shutdown` drains before handing
+    the screen over — but that drain has a deadline, and the case where it expires is the case where
+    the GPU is already gone. Now: cleared only on a successful drain; `gpuWedged_` (state) split
+    from `gpuStalls_` (history); `ctr::beginFrameBounded` behind the menu's frame too. See
+    `docs/3ds-performance.md` §2, *The fourth hardware failure*.
+  - **`C3D_FrameSync` is not a GPU drain**, and three callers went on believing it was after that
+    had already been disassembled and written down. `rebuildChunks` — which is what a format switch
+    *is* — freed the whole VBO pool behind it, `setAtlas` freed the block atlas, and `shutdown`
+    freed the pool, the index buffer and all three shader programs, every one of them while the GPU
+    could still be fetching from exactly that memory. All three now use `drainGpu`, which polls
+    `C3D_FrameBegin(C3D_FRAME_NONBLOCK)` on a deadline. See `docs/3ds-performance.md` §2, *The third
+    hardware failure*.
+
+  **The hang is not a table row that was got wrong; it is a row that was missing.** Every entry
+  above describes something drawing *incorrectly*, because the table was written by someone
+  reasoning about what the shader computes. A command list the GPU does not complete is not about
+  what the shader computes at all, and nothing in the reasoning that produced this table would ever
+  have reached it. The lesson is the table's own: a first run of any path that programs the GPU
+  differently needs a "does the machine come back" row before it needs a "does it look right" row.
+
+  What was done about it is in `docs/3ds-performance.md` §2 under *The first hardware run, and the
+  hang*: the whole static half of the path was verified against the built shbin and against
+  libctru's own source and is correct, so the remaining work is bisection on hardware, and the probe
+  and the four knobs in `renderer.cpp` exist to do it.
 - **The translucent pass itself**, which is three GPU state changes that have never run. Blending
   on, depth *writes* off with the depth *test* still on, and back-face culling back on — unlike the
   opaque detail pass, because a fluid face is single-sided and drawing its back too would blend the
@@ -2606,7 +2760,7 @@ gate the answer has to clear by 2.1× is a target the geometry-shader path could
 at the seventh launch** — in both formats, one session, one position — and replace this paragraph
 with it.
 
-**The geometry-shader path is now built, and the seventh launch is what it is waiting for.** One
+**The geometry-shader path is now built, it draws, and it is the boot default.** One
 8-byte vertex per quad, expanded by `shaders/quad.g.pica`. Everything a host can check about it is
 checked and in `docs/3ds-performance.md §2`; the summary is that **it costs nothing to adopt** —
 identical quad counts to the last quad, 107.34 MB of world geometry down to 25.96, 31.6 µs a section
@@ -2614,9 +2768,40 @@ down to 28.7, and the VBO pool stops being a constraint at every configuration (
 3DS goes from 11.15 MB at its ceiling with 1,014 evictions to 3.33 MB with none). None of that is
 the gate. The gate is GPU time per quad, and it can only be re-taken on hardware:
 
-> **Settings page → cube format → geoshader.** Wait for the world to re-mesh, then compare GPU draw
-> on the Info page against the same view in the 12-byte format. Take both halves in one session, at
-> one position, or the comparison is between two different views.
+> **Settings page → cube format → 4-vertex, and back.** The page boots on `geoshader` now, so the
+> comparison runs the other way round: read GPU draw off the Info page, step the row to `4-vertex`,
+> wait for the world to re-mesh, and read it again. Take both halves in one session, at one
+> position, or the comparison is between two different views.
+
+#### Why it is the default before the gate is measured
+
+**Because "off by default" was a statement about the hang, and the hang is fixed.** The flag was off
+for five hardware launches while the quad path wedged the GPU — that history is below, and it is the
+reason `Renderer` still carries a watchdog, a stall counter and a latch. What has changed is the
+evidence: it now draws the whole render distance across sessions, including at the Far Lands at
+distance 12 (`crashlogs/008`, where the thing that failed was the newlib heap and the geoshader was
+merely present). Every host-side number favours it by a wide margin, and there is a proven way back
+— `quadDrawsStopped_` drops the format on a frame that does not return, and `main.cpp` re-meshes into
+the 4-vertex encoding. Booting into the slow path to guard against a failure that no longer happens
+costs 7.5× the vertex traffic on every frame in exchange for nothing.
+
+**What was not removed, and why the question of removing it is closed for now.** The 4-vertex path is
+not legacy:
+
+- It is the **watchdog's fallback**. Delete it and a wedged GPU has nowhere to go.
+- It is the **only encoding with per-corner data**. The 8 bytes carry one light byte and one shade
+  index for the whole quad, so smooth lighting and ambient occlusion — both of which this project
+  intends — cannot ride on it, and neither can the Beta-era biome tint that `porting-to-other-versions.md`
+  is written around. `QuadVertex::ao` is a reserved byte, not an implementation.
+- It is the **reference the quad path is checked against**. `tests/quad_format_test.cpp` asserts the
+  geometry shader's basis rebuilds `kFaceCorner` exactly; there is nothing to rebuild against if the
+  corner tables stop being drawn by anything.
+
+What *is* worth removing is the experiment scaffolding around it — `kGeoMaxSections`, `kGeoMaxQuads`,
+`kGeoCubePassOnly`, `kGeoForceMono`, `kGeoAutoRamp` and `kGeoRamp` in `renderer.cpp`, all of which sit
+at their "no limit" values and exist to bisect a hang that is fixed. They are kept for now because the
+next unexplained stall is exactly when they are wanted, and they cost nothing while `kGeoAutoRamp` is
+false. Delete them when a season of hardware runs has gone by without one.
 
 **Either answer is decisive, which is why it was worth building before the measurement rather than
 after.** The two paths emit *identical triangles* — same count, same positions, same winding — and
@@ -2692,8 +2877,9 @@ fragment-bound.
   packed-world converter stashes every file it does not recognise *into* the container, so a map
   directory would vanish from plain view the first time a world was packed unless it were given the
   same "carried as well as stashed" treatment `3dalpha.ini` has. Getting the second one wrong is data
-  loss on a conversion. Until then the map remembers 512 chunks on an old 3DS and 1,536 on a New one,
-  which is a session's worth.
+  loss on a conversion. Until then the map remembers 768 chunks on an old 3DS and 1,536 on a New one,
+  which is a session's worth. Both figures are set by the widest zoom level rather than the default
+  one; see §0r.
 - **Meshing on a worker thread.** Everything is on the main thread behind a 4-sections-per-frame
   budget. `WorldStreamer` is the seam. Doing it now would be building on a guess: the budget that
   makes the main thread survivable is measurable, and there is no frame time to measure yet.
@@ -3557,6 +3743,116 @@ console:
   Info page.
 - Whether the random-tick rejection is enough on its own, or whether the ten-tick catch-up burst
   still needs spreading across frames. `tickMs` is the number that answers it.
+
+### 0r. The map's d-pad — a zoom, and the grids taken off the debug page
+
+**The map page owns the d-pad now.** Left and right cycle the grid overlay; up and down zoom. Both
+were reachable before only through the maintainer's half of the bottom screen, and one of them was
+not reachable at all.
+
+#### The grids moved because the reasoning that put them on the debug page was half right
+
+They were on the settings page on the argument that "is the map aligned with the chunks" is a
+*claim this project makes* rather than scenery a player wants. That is true and it is not the whole
+truth: a chunk grid over a map is also the single most useful overlay Minecraft has ever given
+anybody, and burying it behind a `SELECT` chord on a page of frame timings was answering the wrong
+question. It is three states — off, the 128-block map-tile grid, both — under d-pad left and right,
+off by default, with the state named in the panel beside the map so it is not something the player
+has to press a button to discover.
+
+The settings page is a row shorter for it: render distance, cube format, wireframe, teleport.
+
+#### The zoom is four levels, and the range is asymmetric on purpose
+
+`map::MapWindow` carries a `zoom` as a power of two: **−1 (two blocks a pixel), 0 (one to one, the
+default), +1 and +2**. Up magnifies.
+
+**Zoom is a property of the window and not of the stored pixels.** A chunk's 16×16 patch is always
+drawn at one pixel per block, so a zoom step invalidates nothing — the patch stamp does not move, the
+store keeps everything it had, and the cost of a zoom step is one ordinary redraw rather than a whole
+window re-shaded. That is the decision the whole feature rests on, and it is what makes magnifying
+free: there is no larger patch to hold.
+
+Which is also why the range is lopsided. Magnifying costs nothing; **shrinking costs the store**,
+because the window covers four times the ground per level:
+
+| Zoom | Ground shown | Chunks the window touches |
+|---|---|---|
+| −2 | 832 × 800 blocks | ~2,600 — **4.0 MB of patches** |
+| **−1** | 416 × 400 | ~702 |
+| **0** | 208 × 200 | ~196 |
+| **+1** | 104 × 100 | ~64 |
+| **+2** | 52 × 50 | ~25 |
+
+A store that cannot hold the whole window does not degrade gently, it thrashes, and it thrashes
+*backwards*: the sampling scan runs in rings from the player outward, so the least-recently-touched
+entry is the ground under the marker and eviction would take exactly what is being looked at. So the
+store is sized for the widest level instead — **768 chunks on an old 3DS (1.13 MB) and 1,536 on a New
+one (2.25 MB)**, up from 512 and 1,280 — and −2 is out of range, because 4 MB of map patches on a
+console whose newlib heap has already been measured running out (`crashlogs/008`) is not a trade
+worth making for a level nobody asked for.
+
+#### What it costs to draw — **and the 3,283 µs that found a much older bug**
+
+The estimate here was "under 1.5× the 1:1 copy, neither measured on hardware". **The hardware said
+3,283 µs at zoom −1**, four times what the 1:1 blit was believed to cost. That is too much to be
+explained by moving the same 41,600 pixels a different way, and it was not the pixels.
+
+**Two things, and the bigger one had been there since the patch cache landed.**
+
+- **The walk was buying its patch pointers by the pixel column.** `renderMapWindow` asked
+  `MapStore::patch` for a pointer every time it crossed a chunk edge going south — 208 columns × 13
+  chunk rows = **2,704 hash lookups to obtain 182 distinct answers**, each a probe into an index in
+  front of 2.25 MB of entries that no 3DS cache can hold. Sixteen output columns share a chunk
+  column, so the pointers are gathered once per chunk column now, into 64 on the stack. Zoom did not
+  cause this; it made it four times worse and therefore visible.
+- **A redraw driven by turning was re-scanning the window for staleness.** A patch goes stale exactly
+  two ways — a chunk is stored, or the stamp is bumped — and a stale patch only comes into view when
+  the window moves or its zoom changes. `MapScreen` records what the last refresh covered and skips
+  the scan when all of that matches, which is the common case: the yaw step moves and nothing else.
+
+Measured on the host over the 1,119-chunk reference world, one 208 × 200 window, sanitised build:
+
+| | zoom −1 | zoom 0 | zoom +1 | zoom +2 |
+|---|---|---|---|---|
+| copy, before | 1,052 µs | 389 µs | 280 µs | 130 µs |
+| copy, after | **397** | **86** | **187** | **78** |
+| stale scan, now skipped on a turn | 89 | 24 | — | — |
+
+The 1:1 copy is **4.5× faster than it has ever been**, and the same change is most of what shrinking
+cost. Magnifying measures *cheaper* than 1:1, which the estimate had backwards: it reads a quarter of
+the source columns and block-moves three quarters of what it writes.
+
+Output is byte-identical before and after, checked at all four zoom levels through `--map`.
+
+**The console figures that replace 3,283 have not been taken, and it is worth taking all four.**
+The host ratios say −1 should land near a quarter of what it did and 1:1 near a fifth of what it has
+been believed to be since the patch cache — but the host is thirty to forty times faster here and
+cannot answer for an ARM11's cache, which is precisely the thing that was being missed. `--map
+<world> zoom=<n>` prints all three host costs; the Info page's map redraw row is where the console
+ones land.
+
+**Shrinking point-samples rather than averaging.** Later versions average, and averaging four
+already-shaded RGB565 pixels 41,600 times a redraw is arithmetic an ARM11 does not have spare. What
+it costs is that a one-block feature has an even chance of falling between samples. What it buys,
+beyond the time, is that the grids survive: chunk and tile lines sit on origins, origins are
+multiples of the sampling step, so every line lands on the lattice at every level.
+
+Two alignment details that are load-bearing, both in `MapScreen::windowFor`:
+
+- **Powers of two only**, so a chunk is a whole number of pixels at every level — 64, 32, 16, 8.
+- **The origin is snapped to the sampling step.** Unsnapped, a shrunk window would flip between the
+  even and the odd blocks as the player walked, so the whole picture would change colour on alternate
+  steps: it would shimmer rather than scroll.
+
+#### Where it is checked
+
+`tests/map_test.cpp` gained five tests. The one worth naming draws the same window into a row-major
+buffer and into a **column-major, z-reversed** one — the console's own framebuffer layout — and
+demands the same picture at every zoom level. Every `memcpy` path in `renderMapWindow` is taken only
+when `strideZ == -1`, which the row-major canvas every other test uses can never be, so those paths
+were untested by construction until now. `--map <world> grid zoom=<n>` draws the whole thing to
+`map.pam` for looking at.
 
 ## Open questions
 

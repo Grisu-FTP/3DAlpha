@@ -41,7 +41,7 @@ make index                # regenerate docs/code-map.md and docs/doc-index.md
 ```
 
 The host build is sanitised by default (`-DSANITIZE=ON`: ASan, UBSan, `float-cast-overflow`) and the
-sanitizers instrument `3dalpha_core`, not just the tests. **672 tests pass** as of the last run.
+sanitizers instrument `3dalpha_core`, not just the tests. **690 tests pass** as of the last run.
 
 ThreadSanitizer is a separate build, because TSan and ASan cannot be combined. Re-run it after
 anything touching `WorldStreamer`'s worker, `ChunkCache`, or the audio decode thread — it has caught

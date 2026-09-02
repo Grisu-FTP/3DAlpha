@@ -2038,7 +2038,22 @@ void Menu::drawFrame()
         return;
     }
 
-    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    // **Bounded, because this is where a wedged GPU gets handed over.**
+    // `C3D_FRAME_SYNCDRAW` ends in an unbounded `gxCmdQueueWait`, and the
+    // thread it blocks is also `aptMainLoop` -- so a list the GPU never
+    // finishes takes the menu, both screens and HOME with it, with no dump and
+    // nothing on the card. `Renderer::shutdown` drains before handing the
+    // screen over, but that drain has a deadline and the case where it expires
+    // is exactly the case where the GPU is already gone: the guard that mattered
+    // was missing from the one frame that inherits the problem.
+    //
+    // On expiry no frame was opened, so there is nothing to draw into and
+    // nothing to end. The menu simply holds its last image; input, `aptMainLoop`
+    // and HOME keep running, which is the whole difference between a console
+    // the player can back out of and one they have to hold the power button on.
+    if (!beginFrameBounded(kFrameWatchdogSeconds)) {
+        return;
+    }
     prepare2D();
     C2D_TargetClear(target_, C2D_Color32(0x18, 0x14, 0x10, 0xFF));
     C2D_SceneBegin(target_);

@@ -1,0 +1,57 @@
+=== crashlogs/007-abort-aftermath/crash_dump_00000010.dmp ===
+process: 3dsx_app
+dump format v3.1, 244 bytes
+ARM11 core 0, data abort
+       r0 = 0x001FCC00
+       r1 = 0x00000000
+       r2 = 0x001F993C
+       r3 = 0x00000001
+       r4 = 0x001FCC00
+       r5 = 0x001FCC04
+       r6 = 0x001FCC0C
+       r7 = 0x001FCC11
+       r8 = 0x001FCC14
+       r9 = 0x001FCBAC
+      r10 = 0x00000000
+      r11 = 0x00000002
+      r12 = 0x00000000
+       sp = 0x0800F8B8
+       lr = 0x001917F0    gspEventThreadMain at /home/davem/projects/devkitpro/pacman-packages/libctru/src/libctru-2.7.0/libctru/source/services/gspgpu.c:395
+       pc = 0x00189864    syncArbitrateAddress at /home/davem/projects/devkitpro/pacman-packages/libctru/src/libctru-2.7.0/libctru/source/synchronization.c:21
+     cpsr = 0x60000010
+     dfsr = 0x00000805
+     ifsr = 0x00000008
+      far = 0x0800F8B4
+    fpexc = 0x40000700
+   fpinst = 0xEE777A87
+  fpinst2 = 0xEE777A87
+  -> translation fault (section), on write to 0x0800F8B4
+code (ARM), 0x00189808..0x00189864:
+    0x00189808: EB00232B
+    0x0018980C: E3500000
+    0x00189810: B8BD8010
+    0x00189814: E5D43000
+    0x00189818: E3530000
+    0x0018981C: 13A00003
+    0x00189820: 03A00000
+    0x00189824: EB002351
+    0x00189828: E8BD4010
+    0x0018982C: EA002340
+    0x00189830: 001F9938
+    0x00189834: E59F0000
+    0x00189838: EA00288D
+    0x0018983C: 001F993C
+    0x00189840: E59F300C
+    0x00189844: E5930000
+    0x00189848: E3500000
+    0x0018984C: 012FFF1E
+    0x00189850: EA002894
+    0x00189854: 001F993C
+    0x00189858: E1A0C001
+    0x0018985C: E1A03002
+    0x00189860: E59F2014
+    0x00189864: E52DE004   <-- pc
+stack: EMPTY -- the kernel could not read sp, so sp is unmapped.
+       That is a stack overflow or a corrupted sp, not a missing field.
+process: 3dsx_app
+

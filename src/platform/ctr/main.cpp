@@ -537,6 +537,25 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         return 0;
     }
 
+    // **The bound under the render distance**, sized from the heap that the
+    // split in heap.cpp actually produced rather than from a constant beside
+    // it -- the two consoles get very different figures and so does a launch
+    // context that hands over less than either.
+    //
+    // Five eighths to the resident columns. The other three eighths are what
+    // else lives in this heap and is not counted by `blockBytes`: the
+    // generator's own column cache, which is `16 * loadRadius + 96` columns and
+    // so about 11 MB at the debug page's ceiling; the chunk cache's clean and
+    // dirty sides, the dirty one capped at 4 MB; decoded sound effects; the
+    // map's patch cache; thread stacks and fragmentation.
+    //
+    // **Deliberately conservative, because the two failure modes are not
+    // symmetric.** Too large is the crash this exists to stop; too small is a
+    // shorter view at the Far Lands and nothing else. `blocks N.N MB in the
+    // heap` and `free KB heap` on the Info page are the pair to tune it
+    // against, with `admit` beside them saying whether it is biting at all.
+    world.setMemoryBudget(mc::ctr::heapTotalBytes() / 8 * 5);
+
     ctr::Camera camera;
     world.spawnPosition(&camera.x, &camera.y, &camera.z);
     camera.y += 1.62;  // eye height, the original's own number
@@ -600,6 +619,21 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // one here, because what bounds this page is the heap rather than the pool
     // -- the pool evicts and carries on either way.
     settings.maxDistance = ctr::kDebugMaxDistance;
+
+    // **The boot cube format, applied once, before the first frame.** The
+    // renderer and the streamer both start in the 4-vertex encoding, and the
+    // settings page only reaches this code when the player changes something --
+    // so a default of "geoshader" that was never applied would show one thing
+    // on the page and draw another. Cheap here and nowhere else: the pool is
+    // empty and the streamer has published nothing, so the re-mesh both calls
+    // would otherwise force has no work to do.
+    {
+        const mesh::CubeFormat startFormat = settings.geometryQuads
+                                                 ? mesh::CubeFormat::Quads
+                                                 : mesh::CubeFormat::Vertices;
+        renderer.setCubeFormat(startFormat);
+        world.setCubeFormat(startFormat, renderer.chunks());
+    }
 
     render::WorldStreamer::Budget budget;
     budget.columnsPerFrame = isNew3DS ? 2 : 1;
@@ -856,11 +890,30 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             if (wanted != renderer.cubeFormat()) {
                 renderer.setCubeFormat(wanted);
                 world.setCubeFormat(wanted, renderer.chunks());
+                if (wanted == mesh::CubeFormat::Quads) {
+                    // The republish walks the whole spiral synchronously, so if
+                    // this line is the last one on the screen the fault is in
+                    // there and not in any draw. See Renderer::setCubeFormat for
+                    // the breadcrumb before it.
+                    ctr::geoTrace("republished; first quad frame next");
+                }
             }
             // Refuses if there was no room for the outline atlas, so the
             // setting is read back from the renderer rather than assumed.
             renderer.setWireframe(settings.wireframe);
             settings.wireframe = renderer.wireframe();
+        }
+
+        // **The renderer gave up on the quad format.** Its watchdog caught a
+        // command list the GPU never finished; the sections built in that
+        // encoding are being skipped, so the world has holes in it until they
+        // are rebuilt. Ask for the encoding that is known to draw, through the
+        // same `settings` field the debug page writes, so the page and the
+        // renderer cannot end up disagreeing about which one is live.
+        if (renderer.quadDrawsStopped() && settings.geometryQuads) {
+            settings.geometryQuads = false;
+            renderer.setCubeFormat(mesh::CubeFormat::Vertices);
+            world.setCubeFormat(mesh::CubeFormat::Vertices, renderer.chunks());
         }
 
         const u64 tick = svcGetSystemTick();
@@ -972,6 +1025,29 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         renderer.drawFrame(camera);
 
         overlay.draw(renderer, world, camera, timing, dt * 1000.0f, timeOfDay, settings);
+
+        // **The figures the out-of-memory reporter prints, refreshed here and
+        // nowhere else.** They are copied rather than fetched at the moment of
+        // failure because that failure can land on the generation worker or the
+        // I/O thread, and reaching back into the streamer from a new handler
+        // would ask for locks whichever of them is already holding. Eight
+        // word-sized stores a frame; see heap.hpp.
+        {
+            const render::WorldStreamer::Stats& streaming = world.stats();
+            const render::VboPool::Stats& pool = renderer.chunks().pool().stats();
+            mc::ctr::MemorySnapshot snapshot;
+            snapshot.blockKb = u32(streaming.blockBytes / 1024);
+            snapshot.dirtyKb = u32(streaming.io.dirtyBytes / 1024);
+            snapshot.cleanKb = u32(streaming.io.cleanBytes / 1024);
+            snapshot.genLive = streaming.generatorPeakLive;
+            snapshot.poolKb = u32(pool.resident / 1024);
+            snapshot.columns = u32(streaming.columnsResident);
+            snapshot.sections = u32(pool.residents);
+            snapshot.chunkX = camera.chunkX();
+            snapshot.chunkZ = camera.chunkZ();
+            snapshot.quadFormat = renderer.cubeFormat() == mesh::CubeFormat::Quads ? 1 : 0;
+            mc::ctr::setMemorySnapshot(snapshot);
+        }
     }
 
     // The original says the same thing on its way out of a world, and it is
@@ -1153,6 +1229,14 @@ int main()
     consoleInit(GFX_BOTTOM, nullptr);
 
     mc::io::setVolumeInfoQuery(&queryVolume);
+
+    // **Before the first allocation that could fail**, which is to say before
+    // anything at all. Running out of newlib heap ends this process with a
+    // silent `abort` -- see heap.hpp for why, disassembled -- and the report
+    // from hardware that led to this was "it rebooted to the HOME menu", which
+    // is what that looks like from the couch. The handler cannot prevent it;
+    // it makes it say what ran out, on the bottom screen and on the card.
+    mc::ctr::installOutOfMemoryReporter();
 
     bool isNew3DS = false;
     APT_CheckNew3DS(&isNew3DS);

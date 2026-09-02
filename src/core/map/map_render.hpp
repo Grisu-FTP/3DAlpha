@@ -41,6 +41,29 @@
 // it, the palette and the grid style. So `renderMapChunk` draws a chunk's
 // sixteen-by-sixteen patch once, `refreshMapWindow` keeps the window's patches
 // current, and `renderMapWindow` is left with a copy.
+//
+// **...and then most of what was left turned out not to be the copy either.**
+// Zoom is what exposed it: a hardware redraw at zoom -1 came back at 3,283
+// microseconds, four times what the 1:1 blit was believed to cost, which was
+// too much to be explained by moving the same 41,600 pixels a different way. It
+// was not the pixels. The walk asked `MapStore::patch` for a pointer every time it crossed
+// a chunk edge going south -- 208 columns times thirteen chunk rows, **2,704
+// hash lookups to obtain 182 distinct answers**, each one a probe into an index
+// in front of 2.25 MB of entries that no 3DS cache can hold. Sixteen output
+// columns share a chunk column, so the pointers are gathered once per chunk
+// column now and the walk indexes an array of 64 of them on the stack.
+//
+// Measured on the host over the 1,119-chunk reference world, one 208 x 200
+// window, sanitised build, before and after:
+//
+//     zoom          -1        0       +1       +2
+//     before      1052 us   389 us   280 us   130 us
+//     after        397       86      187       78
+//
+// The 1:1 copy is **4.5x faster** and it was never the copy that was slow. The
+// same change is most of what shrinking cost, and it is why magnifying measures
+// *cheaper* than 1:1 -- it reads a quarter of the source columns and block-moves
+// three quarters of what it writes.
 // ---------------------------------------------------------------------------
 
 #include "core/map/map_palette.hpp"
@@ -59,14 +82,65 @@ struct MapSurface {
     int strideZ = 1;
 };
 
-// The patch of world being drawn. The origin is its north-west block, and one
-// block is one pixel, so a chunk is always sixteen pixels and a chunk edge is
-// always a pixel edge -- which is the whole of "aligned with the chunks".
+// How far the map may be zoomed, as a power of two, and what a level means.
+//
+// **Powers of two, so a chunk edge is still a pixel edge at every level.** A
+// chunk is sixteen blocks; magnified it is 32 or 64 pixels and shrunk it is
+// eight, and all of those are whole numbers. Any other ratio would put the
+// grids -- and the alignment claim they exist to show -- half way through a
+// pixel at some zoom levels and not others.
+//
+// **The range is asymmetric because memory is.** Magnifying costs nothing at
+// all: the patches stay one pixel per block and the blit repeats them, so +2 is
+// free. Shrinking costs the store, because the window covers four times the
+// ground per level -- at -1 the window touches about 700 chunks, which is what
+// `MapScreen::configure` now sizes the store for, and at -2 it would touch
+// 2,600 and 4 MB of patches on a console whose newlib heap has already been
+// measured running out (crashlogs/008). One level out is what fits.
+inline constexpr int kZoomMin = -1;
+inline constexpr int kZoomMax = 2;
+
+// Pixels one block covers, and blocks one pixel covers. Exactly one of the two
+// is ever greater than one, which is what lets the render walk use both at once
+// without a branch on the sign.
+inline int mapPixelsPerBlock(int zoom)
+{
+    return zoom > 0 ? 1 << zoom : 1;
+}
+
+inline int mapBlocksPerPixel(int zoom)
+{
+    return zoom < 0 ? 1 << -zoom : 1;
+}
+
+// How much ground a run of pixels covers at this zoom.
+inline int mapWindowBlocks(int pixels, int zoom)
+{
+    return zoom < 0 ? pixels << -zoom : pixels >> zoom;
+}
+
+// The patch of world being drawn. The origin is its north-west block, and at
+// `zoom == 0` one block is one pixel, so a chunk is always sixteen pixels and a
+// chunk edge is always a pixel edge -- which is the whole of "aligned with the
+// chunks".
+//
+// **Zoom is a property of the window and not of the stored pixels**, and that
+// is the decision the whole feature rests on. A chunk's patch is always drawn
+// at one pixel per block, so changing zoom invalidates nothing: the store keeps
+// every patch it had, `stamp` does not move, and the cost of a zoom step is one
+// ordinary redraw rather than the whole window re-shaded. It also means
+// magnifying costs no memory, since there is no larger patch to hold.
+//
+// `width` and `height` are always pixels. The ground covered is
+// `mapWindowBlocks(width, zoom)`, and the origin is expected to be a multiple
+// of `mapBlocksPerPixel(zoom)` so that the sampled lattice does not shift under
+// the player as they walk.
 struct MapWindow {
     i32 originBlockX = 0;
     i32 originBlockZ = 0;
     int width = 0;
     int height = 0;
+    int zoom = 0;
 };
 
 struct MapStyle {
@@ -116,12 +190,31 @@ int refreshMapWindow(MapStore& store, const MapPalette& palette, const MapWindow
 // patch gets `style.unexplored` -- so the caller never has to clear first.
 //
 // Call `refreshMapWindow` first, or this draws whatever the patches last held.
+//
+// **`zoom == 0` is a different function to the rest, and on purpose.** At 1:1 a
+// run down a chunk is contiguous and ascending in both the patch and the
+// framebuffer, so the whole redraw is one `memcpy` per chunk column -- the path
+// the 700-microsecond figure above was measured on, and the one the console
+// takes whenever the player has not zoomed. Zoomed, the source lattice no
+// longer matches the destination and there is nothing to `memcpy`; magnifying
+// gets most of it back by building one output column and copying it to the
+// `pixelsPerBlock - 1` identical columns beside it, and shrinking is an honest
+// per-pixel walk.
+//
+// Shrinking **point-samples**: a pixel is the block that lands on it, not an
+// average of the blocks around it. Later versions average, and averaging four
+// or sixteen already-shaded RGB565 pixels per output pixel is arithmetic this
+// console cannot afford 41,600 times on a redraw. What it costs is that a
+// one-block feature has an even chance of falling between samples; what it buys
+// is that the grids, which sit on chunk and tile origins, always land on the
+// lattice and so survive every zoom level intact.
 void renderMapWindow(const MapStore& store, const MapWindow& window, const MapStyle& style,
                      const MapSurface& surface);
 
 // The chunks a window touches, inclusive on both ends. What the caller iterates
 // to decide which chunks are worth sampling and which to keep alive in the
-// store.
+// store. Reads `window.zoom`, so a shrunk window reports the wider ground it
+// actually shows.
 void windowChunkRange(const MapWindow& window, i32* minChunkX, i32* minChunkZ, i32* maxChunkX,
                       i32* maxChunkZ);
 
@@ -157,6 +250,11 @@ extern const char* const kCompass[8];
 // **Written for more than one of them from the start.** Multiplayer adds
 // callers, not parameters: every other player is this function with their own
 // position, yaw and colour.
+//
+// `length` is in **pixels**, not blocks, so the marker is the same size at
+// every zoom level. It is an indicator of where you are and not a thing on the
+// ground, and one that grew four times over when the map was magnified would be
+// covering the detail the player zoomed in to see.
 void drawMarker(const MapSurface& surface, const MapWindow& window, double blockX, double blockZ,
                 float yawDegrees, float length, MapPixel fill, MapPixel outline);
 

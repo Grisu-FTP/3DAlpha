@@ -1,0 +1,1 @@
+OUT OF HEAP  free 4405k of 40960k  blocks 10688k  owed 1582k  pool 13425k  cols 382  sect 1314  chunk -63 -2000007  geoshader

@@ -82,6 +82,36 @@ constexpr u32 kCommandBufferBytes = 4 * 0x40000;
 // context and its pointer away together -- the M0 probe's teardown.
 void parkShaderProgram();
 
+// **A breadcrumb straight onto the bottom screen.** `consoleInit` leaves that
+// screen single-buffered, so this lands before the next instruction runs -- no
+// GPU, no completed frame. It is the only report channel that survives a GPU
+// that has stopped finishing command lists, which is what the geometry-shader
+// cube format did on hardware. Used only on that path, and only where the very
+// next call might not return. See the definition in renderer.cpp.
+void geoTrace(const char* what);
+
+// **C3D_FrameBegin with a deadline, for a caller that owns no Renderer.**
+//
+// `C3D_FRAME_SYNCDRAW` is a VBlank wait followed by an unbounded
+// `gxCmdQueueWait`, and the main thread it blocks is also `aptMainLoop` -- so a
+// command list the GPU never finishes takes the whole application with it, HOME
+// included. Every such wait on the world's frame path is behind
+// `Renderer::beginFrameOrGiveUp`. **The menu's was not**, and the menu is
+// precisely where a wedged GPU is handed over: `Renderer::shutdown` drains
+// first, but that drain has a deadline of its own and the case where it expires
+// is exactly the case where the GPU is already gone.
+//
+// Same shape as the member: `C3D_FrameSync` for pacing, which always returns,
+// then the queue drain polled under a deadline. **False means no frame was
+// opened and the caller must draw nothing** -- not even `C3D_FrameEnd`.
+bool beginFrameBounded(float seconds);
+
+// The deadline `beginFrameBounded` is called with everywhere in this project.
+// Long enough that no honest frame reaches it -- the slowest recorded is under
+// 50 ms -- and short enough that a player is told rather than left holding a
+// console that has to be powered off.
+constexpr float kFrameWatchdogSeconds = 2.0f;
+
 class Renderer {
 public:
     struct Config {
@@ -103,11 +133,25 @@ public:
         int drawCalls = 0;
         usize quads = 0;
         bool stereo = false;
-        // How many times the GPU command buffer filled up mid-frame. Any value
-        // above zero is a frame that would have overrun the buffer and
-        // corrupted linear memory before the split guard existed, so this is
-        // the number that says whether that crash is what was happening.
-        int commandSplits = 0;
+        // Command words this frame put in the GPU command buffer, against the
+        // kCommandBufferBytes / 4 it has. **This is a hard per-frame budget and
+        // nothing can extend it mid-frame** -- see commandWordsFree in
+        // renderer.cpp for why a split does not -- so it is the number that
+        // says how close a view is to running out of room to be drawn.
+        u32 commandWords = 0;
+
+        // Sections the frame refused to draw because that budget was gone.
+        // Non-zero means holes in the world, far ones first; it also means
+        // kCommandBufferBytes is too small for the render distance in use.
+        // **Zero is not luck**: below the ceiling this cannot fire at all.
+        int droppedSections = 0;
+
+        // Splits taken on purpose, to drain the pipeline around the
+        // geometry-shader cube pass. Two per eye while the quad format is
+        // live, zero otherwise. They cost command words like anything else,
+        // which is why commandWords above is the number that bounds a frame
+        // and this one is only ever a description of it.
+        int geoSplits = 0;
 
         // Sections dropped from a draw because the pool slot the visible set
         // recorded had since changed hands. Small and non-zero is the guard
@@ -264,6 +308,24 @@ public:
     float blockedMs() const { return blockedMs_; }
     float submitMs() const { return submitMs_; }
 
+    // **How many times the GPU failed to finish a list inside the watchdog's
+    // deadline.** Zero on every healthy frame this project has ever recorded;
+    // non-zero means the quad path wedged and the renderer stopped feeding it.
+    // Read by the debug overlay, and by main.cpp, which drops the cube format
+    // back to the one that is known to draw. See beginFrameOrGiveUp.
+    u32 gpuStalls() const { return gpuStalls_; }
+    bool quadDrawsStopped() const { return quadDrawsStopped_; }
+
+    // What the frame that never came back had in it. Meaningless until
+    // gpuStalls() is non-zero, and the whole point of the watchdog: the numbers
+    // in here are the difference between "the quad path hangs" and "the quad
+    // path hangs at N draws with M splits".
+    const FrameStats& stalledStats() const { return stalledStats_; }
+
+    // Which rung of the geometry-shader ramp was being held when the GPU
+    // stopped. Null when the ramp is not running. See kGeoRamp in renderer.cpp.
+    const char* geoRampName() const { return geoRampName_; }
+
     usize freeVramBytes() const;
     usize freeLinearBytes() const;
 
@@ -281,6 +343,18 @@ private:
     float fogStartBlocks() const { return fogEndBlocks() * 0.25f; }
 
     void drawEye(int eye, const Camera& camera, float iod);
+
+    // C3D_FrameBegin, with a deadline while the quad format is live. Returns
+    // false when the deadline expired and no frame was opened -- the caller
+    // must then draw nothing at all. See the comment on the definition.
+    bool beginFrameOrGiveUp();
+
+    // The two limits drawPass applies to a quad draw: either the ramp's current
+    // rung or the fixed constants, never a mix. Zero means no limit.
+    int geoSectionLimit() const;
+    int geoQuadLimit() const;
+    bool geoCubePassOnly() const;
+    bool geoSplitPasses() const;
 
     // Everything a frame sets once and every eye depends on: the texture binds,
     // the alpha test, the three combiner stages, and the cull/depth/blend the
@@ -368,6 +442,64 @@ private:
 
     u32 frame_ = 0;
     bool stereo_ = false;
+
+    // **A geoshader draw has been recorded and not yet proven finished.**
+    //
+    // Set where `C3D_DrawArrays(GPU_GEOMETRY_PRIM, ...)` is recorded and
+    // cleared only where the GX queue is proven empty -- a `C3D_FrameBegin`
+    // that returned, or a `drainGpu` that did. It therefore stays true across
+    // a format switch, which is the whole point: `cubeFormat_` describes the
+    // frame about to be drawn and this describes the one still in the queue,
+    // and it is the one in the queue that a wait can hang on. See
+    // beginFrameOrGiveUp.
+    bool geoWorkInFlight_ = false;
+
+    // **How many times the watchdog fired, latched for the session**, and the
+    // number the debug page reports. Never cleared: it is a history, not a
+    // state.
+    u32 gpuStalls_ = 0;
+
+    // **The state, as distinct from the history: the watchdog fired and no
+    // frame has completed since.** It is what picks the retry deadline, and
+    // separating it from `gpuStalls_` is the fix for a real hang. The deadline
+    // used to be chosen by `gpuStalls_ == 0`, so one stall put *every*
+    // subsequent frame on the 32 ms retry deadline for the rest of the session
+    // -- including after the cube format had been dropped back to the one that
+    // is known to draw. At the Far Lands a healthy frame's queued work can
+    // outlast 32 ms, so the watchdog then fired on merely-slow frames and
+    // `drawFrame` returned without drawing, permanently: a frozen top screen
+    // with a live HOME, which is not distinguishable from a dead console
+    // without pressing it. A frame that completes proves the GPU came back, so
+    // the next one gets the full deadline again.
+    bool gpuWedged_ = false;
+
+    // Quad draws are off because the GPU stalled under them. Read by main.cpp,
+    // which drops the cube format back. **Cleared only by `setCubeFormat`** --
+    // a deliberate act by the player or by that fallback, never by a run of
+    // good frames, because a GPU that missed a deadline is not one to hand a
+    // geoshader draw back to on the strength of luck.
+    bool quadDrawsStopped_ = false;
+    FrameStats previousStats_;
+    FrameStats stalledStats_;
+
+    // The ramp's position, and how long it has been there.
+    int geoRampStep_ = 0;
+    int geoRampHeld_ = 0;
+    const char* geoRampName_ = nullptr;
+
+    // How many geoshader draws the last cube pass put in the list. Zero means
+    // there is nothing for the drain after it to drain.
+    int geoDrawsLastCubePass_ = 0;
+
+    // **Latched for the rest of the frame the moment the command buffer runs
+    // out**, and cleared by drawFrame. Every pass after it draws nothing: the
+    // budget is per frame and nothing gets it back, so a pass that carried on
+    // would only be recording past the end of the buffer.
+    bool commandBudgetSpent_ = false;
+
+    // Formatted once, at the stall, and then pointed at by the trace. A local
+    // would be gone by the time anything read it.
+    char stallLine_[64] = {};
     float drawMs_ = 0.0f;
     float processMs_ = 0.0f;
     float blockedMs_ = 0.0f;

@@ -390,16 +390,51 @@ struct MeshRanges {
     // one format, so they need no such field.
     CubeFormat cubeFormat = CubeFormat::Vertices;
 
-    usize total() const { return cubeBytes + detailBytes + translucentBytes; }
+    // Vertex buffer bases are handed to the GPU as addresses, and the two
+    // detail ranges start wherever the cube range ends -- so the cube range's
+    // *length* decides their alignment. In CubeFormat::Vertices that is free:
+    // 48 bytes a quad, so the end is always a multiple of 16 whatever the quad
+    // count. In CubeFormat::Quads it is 8 bytes a quad, and an odd quad count
+    // lands the detail buffer's base at 8 mod 16 -- an alignment the 12-byte
+    // path can never produce, on a machine whose attribute fetch has never been
+    // asked to. Rounding up costs at most 8 bytes a section and removes the
+    // question; see docs/3ds-performance.md section 2.
+    static constexpr usize kRangeAlign = 16;
+
+    static constexpr usize alignUp(usize bytes)
+    {
+        return (bytes + (kRangeAlign - 1)) & ~(kRangeAlign - 1);
+    }
+
+    // The end of the last range that has anything in it. **Not simply
+    // `translucentOffset() + translucentBytes`**: the pad below exists to align
+    // what comes *after* the cube range, so a section that is nothing but cubes
+    // -- most of a world -- must not be charged eight bytes for a boundary
+    // nothing sits on. It also keeps `upload` reading exactly what `copyTo`
+    // wrote, which ASan checks on every pool test.
+    usize total() const
+    {
+        if (translucentBytes != 0) {
+            return translucentOffset() + translucentBytes;
+        }
+        if (detailBytes != 0) {
+            return detailOffset() + detailBytes;
+        }
+        return cubeBytes;
+    }
 
     // Quads in the cube range, whichever encoding it is in. The draw loop asks
     // this rather than dividing by a stride it decided on its own -- which is
     // how a mesh built before a format switch would get drawn as garbage.
+    //
+    // **The unpadded length, not detailOffset().** The pad is not geometry.
     usize cubeQuads() const { return cubeBytes / cubeBytesPerQuad(cubeFormat); }
 
-    // Where each range starts, for a caller holding the base pointer.
-    usize detailOffset() const { return cubeBytes; }
-    usize translucentOffset() const { return cubeBytes + detailBytes; }
+    // Where each range starts, for a caller holding the base pointer. Both are
+    // multiples of kRangeAlign because detailBytes and translucentBytes are
+    // whole 16-byte DetailVertex.
+    usize detailOffset() const { return alignUp(cubeBytes); }
+    usize translucentOffset() const { return detailOffset() + detailBytes; }
 };
 
 // A section is 16^3, and the arrangement that exposes the most faces is a

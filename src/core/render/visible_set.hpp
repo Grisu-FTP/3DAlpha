@@ -34,17 +34,41 @@ class SectionField {
 public:
     static constexpr int kSectionsY = world::ChunkColumn::kSectionCount;
 
+private:
+    // **Defined before anything public that names it**, because ColumnRef below
+    // holds one and a nested class cannot point at a type the class has not
+    // declared yet. kSectionsY above is the only thing it needs in hand; the
+    // constructor's kNoMesh resolves later, as member function bodies do.
+    struct Cell {
+        i32 chunkX = 0;
+        i32 chunkZ = 0;
+        bool occupied = false;
+        u16 visibility[kSectionsY] = {};
+        u16 mesh[kSectionsY];
+
+        // One bit per section. A byte rather than an array of bools because
+        // there is one Cell per column of the render distance and this is read
+        // once per section per frame by the visibility walk.
+        u8 dirty = 0;
+
+        Cell()
+        {
+            for (u16& slot : mesh) {
+                slot = kNoMesh;
+            }
+        }
+    };
+
+public:
     // radius is in chunks; the grid is (2 * radius + 1) square.
     void reset(int radius);
 
     int radius() const { return radius_; }
     int edge() const { return edge_; }
 
-    void setCentre(i32 chunkX, i32 chunkZ)
-    {
-        centreX_ = chunkX;
-        centreZ_ = chunkZ;
-    }
+    // **Also recomputes the wrapped base the cell index is built from**, which
+    // is the whole reason this is not two assignments any more. See cellIndex.
+    void setCentre(i32 chunkX, i32 chunkZ);
 
     i32 centreX() const { return centreX_; }
     i32 centreZ() const { return centreZ_; }
@@ -62,6 +86,49 @@ public:
     void clearColumn(i32 chunkX, i32 chunkZ);
 
     mesh::SectionVisibility visibility(i32 chunkX, int sectionY, i32 chunkZ) const;
+
+    // **One column resolved once**, for a caller that is about to ask several
+    // questions about the same one.
+    //
+    // The four accessors around this -- isLoaded, visibility, meshSlot,
+    // sectionDirty -- each resolve the column from scratch, and the visibility
+    // walk asked all four about every section it visited. That is four passes
+    // over a grid that does not fit a cache the old 3DS does not have, to reach
+    // three fields of one struct. The walk takes this instead; the accessors
+    // stay, because every caller outside the walk asks exactly one question.
+    //
+    // Reads on an empty ref answer the way the accessors do for a column that
+    // is not there -- mask 0, kNoMesh, not dirty -- so the walk needs no
+    // separate null case for the camera standing in an unloaded column.
+    class ColumnRef {
+    public:
+        ColumnRef() = default;
+
+        explicit operator bool() const { return cell_ != nullptr; }
+
+        mesh::SectionVisibility visibility(int sectionY) const
+        {
+            return mesh::SectionVisibility(cell_ == nullptr ? u16(0)
+                                                            : cell_->visibility[sectionY]);
+        }
+
+        u16 meshSlot(int sectionY) const
+        {
+            return cell_ == nullptr ? kNoMesh : cell_->mesh[sectionY];
+        }
+
+        bool dirty(int sectionY) const
+        {
+            return cell_ != nullptr && (cell_->dirty & u8(1u << sectionY)) != 0;
+        }
+
+    private:
+        friend class SectionField;
+        explicit ColumnRef(const Cell* cell) : cell_(cell) {}
+        const Cell* cell_ = nullptr;
+    };
+
+    ColumnRef column(i32 chunkX, i32 chunkZ) const { return ColumnRef(find(chunkX, chunkZ)); }
 
     // A section is in one of three states, and the third is what stops the
     // renderer meshing the same nothing every frame: 36 % of sections are
@@ -117,26 +184,6 @@ public:
     int cellCount() const { return edge_ * edge_; }
 
 private:
-    struct Cell {
-        i32 chunkX = 0;
-        i32 chunkZ = 0;
-        bool occupied = false;
-        u16 visibility[kSectionsY] = {};
-        u16 mesh[kSectionsY];
-
-        // One bit per section. A byte rather than an array of bools because
-        // there is one Cell per column of the render distance and this is read
-        // once per section per frame by the visibility walk.
-        u8 dirty = 0;
-
-        Cell()
-        {
-            for (u16& slot : mesh) {
-                slot = kNoMesh;
-            }
-        }
-    };
-
     int cellIndex(i32 chunkX, i32 chunkZ) const;
     const Cell* find(i32 chunkX, i32 chunkZ) const;
     Cell* find(i32 chunkX, i32 chunkZ);
@@ -145,6 +192,14 @@ private:
     int edge_ = 0;
     i32 centreX_ = 0;
     i32 centreZ_ = 0;
+
+    // floorMod(centre, edge) for each axis, kept in step with the centre so
+    // that cellIndex never divides. **This is the whole optimisation**: ARMv6k
+    // has no divide instruction, so every `%` was an __aeabi_idivmod call, and
+    // the walk made about twenty of them per section it visited. See cellIndex.
+    int baseX_ = 0;
+    int baseZ_ = 0;
+
     std::vector<Cell> cells_;
 };
 

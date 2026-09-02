@@ -23,10 +23,21 @@
 //     ||       | |                           | |
 //     ||       | |                           | |
 //     ||z  456 | |                           | |
-//     ||       | |                           | |
+//     ||zoom x2| |                           | |
+//     ||grid 16| |                           | |
 //     ||3DAlpha| |                           | |
 //     |+-------+ +---------------------------+ |
 //     +----------------------------------------+
+//
+// **The d-pad belongs to this page.** Left and right cycle the grid overlay,
+// up and down zoom in and out; the two rows above the wordmark say which state
+// each is in, because a setting with no readout is one the player has to press
+// a button to discover. Nothing else in the game reads the d-pad while a
+// player's page is up, so this costs no binding -- see overlay.hpp.
+//
+// Both used to be elsewhere. The grid was a row on the debug settings page,
+// which is a page for the maintainer, and zoom did not exist: the map was one
+// pixel per block and that was all it could ever be.
 //
 // **The strip of button hints along the bottom is gone**, and so are 24 pixels
 // of the coordinate column: the map is 208 by 200 where it was 192 by 176,
@@ -44,15 +55,26 @@
 //
 // **What it costs.** A redraw happens only when something moved: the player
 // crossed into a new block, turned far enough to move the marker, or a chunk
-// was sampled. Standing still costs nothing at all. Sampling is budgeted to a
-// chunk or two a frame, which is what keeps a newly opened world from spending
-// a frame scanning a hundred columns.
+// was sampled -- or the grid or the zoom changed under the d-pad. Standing
+// still costs nothing at all. Sampling is budgeted to a chunk or two a frame,
+// which is what keeps a newly opened world from spending a frame scanning a
+// hundred columns.
 //
 // **The first hardware run measured a redraw at 5,000 microseconds**, which is
 // a third of a frame on every block the player crosses, and it was spent
 // shading pixels that had all been shaded before. A chunk's sixteen by sixteen
 // patch is now drawn once and kept, so a redraw is a `memcpy` per chunk column;
 // see map_store.hpp and map_render.hpp.
+//
+// **A second hardware run, after zoom landed, measured 3,283 at zoom -1.** That
+// was four times what the 1:1 blit was believed to cost, and the cause was not
+// the pixels: the walk was doing 2,704 hash lookups into the store to obtain 182
+// distinct patch pointers, and the redraw was also re-scanning every chunk in
+// the window for staleness on a frame where the player had only turned. Both
+// are fixed -- the pointers are gathered once per chunk column
+// (`map_render.hpp`), and the scan is skipped outright when nothing can have
+// gone stale (`Refreshed`, below). The host numbers are in those two comments;
+// **the console figure that replaces 3,283 has not been taken yet.**
 
 #include "core/gui/paint.hpp"
 #include "core/map/map_palette.hpp"
@@ -90,24 +112,40 @@ static_assert(kMapTop + kMapHeight + 8 <= hud::kScreenHeight, "the map must fit 
 
 class MapScreen {
 public:
-    // **What is drawn over the terrain, and it is a debug setting because it is
-    // a debug question.** The 128-block grid says which of later versions' maps
-    // this ground would be on and the 16-block one says where the chunks are;
-    // both are claims this project makes about the map that are worth being
-    // able to check on the hardware rather than on the host. Neither is
-    // something a player wants over their world, which is why the map draws
-    // none of them by default and the switch is on the debug settings page
-    // rather than under the d-pad.
+    // **What is drawn over the terrain.** The 128-block grid says which of
+    // later versions' maps this ground would be on and the 16-block one says
+    // where the chunks are.
+    //
+    // It used to be a debug setting, on the reasoning that both are claims this
+    // project makes rather than scenery a player wants -- and the reasoning was
+    // half right. They *are* claims, and they are still worth checking on the
+    // hardware. But a chunk grid on a map is also the single most useful
+    // overlay a Minecraft player has ever been given, and burying it behind a
+    // SELECT chord on a maintainer's page was answering the wrong question. It
+    // is under the d-pad now, on the map's own page, off by default, and the
+    // player is told which of the three states they are in.
     enum class Grid {
         None,
         Tiles,
         ChunksAndTiles,
         Count,
     };
+
     // Sizes the store. A chunk costs 1,536 bytes now that its drawn patch is
-    // kept beside its sample, so 512 chunks is 768 KB and 360 blocks square of
-    // remembered ground, and 1,280 is 1.9 MB and 570 blocks square -- against
-    // the ~21 MB an old 3DS's newlib heap has and the ~40 MB a New one does.
+    // kept beside its sample.
+    //
+    // **These numbers are set by the widest zoom, not by the default one.** At
+    // 1:1 the window touches about 196 chunks and 512 would have been generous;
+    // zoomed one level out it covers four times the ground -- 27 by 26 chunks,
+    // 702 of them -- and a store that cannot hold the window at all does not
+    // degrade gracefully. It thrashes: the ring scan touches the centre first,
+    // so the least-recently-used entry is the ground under the player, and
+    // eviction would take exactly the chunks being looked at. So 768 on an old
+    // 3DS (1.13 MB) and 1,536 on a New one (2.25 MB), against the 36 MB and
+    // 75 MB of newlib heap those consoles now get -- 3% and 3%, for a store
+    // that covers the widest window with room left to remember ground that has
+    // scrolled off it.
+    //
     // Neither is a limit on where the player may go: ground beyond it is
     // sampled again when they come back.
     void configure(bool isNew3DS);
@@ -124,9 +162,23 @@ public:
     // in the old pack's colours.
     void setPalette(const texture::AtlasImage& atlas);
 
+    // The d-pad, on the map's own page: left and right through the grids, up
+    // and down through the zoom levels.
+    //
+    // **The grid wraps and the zoom clamps**, because they are different kinds
+    // of thing. Three named states with no order between them are a cycle; a
+    // zoom is a line with two ends, and coming out of the far end of a magnified
+    // map into the widest one is the sort of jump a player has to undo rather
+    // than one they meant.
     void cycleGrid(int delta);
     Grid grid() const { return grid_; }
     const char* gridName() const;
+
+    // `delta > 0` magnifies. Clamped to map::kZoomMin..kZoomMax; a step that
+    // would leave the range does nothing at all.
+    void cycleZoom(int delta);
+    int zoom() const { return zoom_; }
+    const char* zoomName() const;
 
     // Once a frame, wherever the streamer's columns are known to be settled.
     // Samples at most a chunk or two, so a world that has just opened fills the
@@ -166,12 +218,17 @@ private:
         int yawStep = -1;
         u32 stored = 0;  // the store's counter, so a new chunk forces a redraw
         Grid grid = Grid::None;
+        // **Not a stamp bump.** Zoom changes what the window shows and nothing
+        // about how a patch was drawn, so a zoom step is one ordinary redraw
+        // and the store keeps every patch it had. See map_render.hpp.
+        int zoom = 0;
         bool valid = false;
 
         bool operator==(const Signature& other) const
         {
             return valid && other.valid && originX == other.originX && originZ == other.originZ
-                   && yawStep == other.yawStep && stored == other.stored && grid == other.grid;
+                   && yawStep == other.yawStep && stored == other.stored && grid == other.grid
+                   && zoom == other.zoom;
         }
     };
 
@@ -188,6 +245,9 @@ private:
     map::MapPalette palette_;
     Signature shown_;
     Grid grid_ = Grid::None;
+    // One pixel per block. The level the redraw has a `memcpy` fast path for,
+    // and the one the whole map was measured at.
+    int zoom_ = 0;
     u32 lastDrawMicros_ = 0;
 
     // **What the patches in the store were drawn with.** Bumped by anything a
@@ -196,6 +256,32 @@ private:
     // Starts at 1 because `MapStore::store` marks a chunk 0 to mean "never
     // drawn", so a live stamp must never be 0.
     u32 stamp_ = 1;
+
+    // **What the last patch refresh was over**, and why a redraw is allowed to
+    // skip the refresh entirely.
+    //
+    // A patch goes stale exactly two ways -- a chunk is stored, which advances
+    // the store's `stored` counter and marks that chunk and the one south of
+    // it, or the stamp is bumped by a pack change or a grid change -- and a
+    // stale patch can only come *into view* when the window moves or its zoom
+    // changes. So a redraw matching all five of these cannot find anything to
+    // draw, and the scan over the window's chunks is skipped.
+    //
+    // It is worth the five fields. The scan is one hash lookup per chunk in the
+    // window -- 182 at 1:1, 650 shrunk -- measured on the host at 23.8 and 89.1
+    // microseconds against window copies of 88.2 and 399.1, so it is a fifth to
+    // a quarter of a redraw. And it is a fifth to a quarter of *the most common*
+    // redraw: turning moves the yaw step and nothing else, which is precisely
+    // the case this skips.
+    struct Refreshed {
+        i32 originX = 0;
+        i32 originZ = 0;
+        int zoom = 0;
+        u32 stored = 0;
+        u32 stamp = 0;
+        bool valid = false;
+    };
+    Refreshed refreshed_;
 
     // Where the last "keep these alive" pass was centred, so it runs when the
     // view moves rather than sixty times a second on a player standing still.

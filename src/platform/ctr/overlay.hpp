@@ -8,16 +8,36 @@
 // along the top. The maintainer's half is three text pages behind SELECT + Y,
 // unchanged and deliberately still a text console.
 //
-//   Player    the tab strip, and one of:
+//   Player    the tab strip, the hotbar along the bottom, and one of:
 //               **Map**    the world around the player, with their coordinates
 //                          beside it and nothing else. The d-pad zooms it and
 //                          cycles the chunk and map-tile grids over it, and
 //                          that is the one player page that reads the d-pad at
-//                          all. See map_screen.hpp.
-//               **Items**  the inventory, drawn empty until M3 fills it. Only
-//                          in Survival and Creative -- Spectator has no
-//                          inventory, so it is not offered one.
+//                          all -- unless the screen is focused, see below. See
+//                          map_screen.hpp.
+//               **Items**  the inventory, drawn empty. Only in Survival and
+//                          Creative -- Spectator carries nothing, so it is not
+//                          offered one.
+//               **Blocks** the Creative block palette, which is **not** the
+//                          inventory and is a page of its own for that reason:
+//                          a catalogue of every block the version defines, held
+//                          by nobody. Creative only.
 //               **Look**   a pad to drag on, with a compass ribbon over it.
+//
+//             **The hotbar is a band under all four of them**, in every mode
+//             that has one, so what is in your hand is on the screen whatever
+//             page you left it on. See hud.hpp for why it is here and not over
+//             the world.
+//
+//             **X focuses the bottom screen, and that is what makes it usable
+//             without touching it.** A resistive screen wants a stylus, and a
+//             player holding the console to walk does not have one out. Focused,
+//             the d-pad drives a cursor over the palette and the hotbar and A
+//             picks; unfocused, the d-pad goes back to the map. ZL and ZR change
+//             the held slot in either state, which is the New 3DS's shoulder
+//             pair doing what a mouse wheel does -- on an old console the
+//             focused d-pad is the way, which is the other reason the focus
+//             exists.
 //
 //             **The Look page exists because a drag has to belong to someone.**
 //             The bottom screen is both the game's UI and the only pointing
@@ -194,8 +214,15 @@ public:
     enum class PlayerPage {
         Map,
         Items,
+        Blocks,
         Look,
     };
+    // Every page, in tab order, for whichever gamemode is set; returns how many
+    // were written. **The one place the mapping lives**, so the tab strip, the
+    // selected index and a tap on a tab cannot end up disagreeing about which
+    // page a mode's third tab is -- which they could when each of the three
+    // worked it out for itself.
+    int playerPagesFor(PlayerPage* out) const;
 
     // Remembered so a page change can reprint the header. Also forgets
     // everything the last world's map remembered, which is the one piece of
@@ -213,11 +240,48 @@ public:
     // Sizes the map's memory against the model. Once, at world open.
     void configureMap(bool isNew3DS) { map_.configure(isNew3DS); }
 
-    // The pack the map takes its colours from -- the same atlas the world is
-    // drawn with, because a map that disagreed with the world about what stone
-    // looks like would be worse than one with no colour at all. Called at world
-    // open and again when the pause menu changes the pack.
-    void setMapAtlas(const texture::AtlasImage& atlas) { map_.setPalette(atlas); }
+    // The pack, for the two things on this screen that are made of it: the
+    // map's colours and the block icons in the hotbar and the palette. The same
+    // atlas the world is drawn with, because a map or a slot that disagreed
+    // with the world about what stone looks like would be worse than one with
+    // no colour at all.
+    //
+    // **The pixels are borrowed, not copied** -- 256 KB is not something this
+    // object should hold a second time -- so this has to be called again
+    // whenever the pack changes, which is at world open and after the pause
+    // menu's Texture Pack screen. An atlas that has not been built yet leaves
+    // the icons unpainted rather than painting the wrong thing.
+    void setAtlas(const texture::AtlasImage& atlas);
+
+    // What is in the player's hand, for the placement path. **Held here because
+    // the hotbar is HUD state**: it is drawn, touched and cursored on this
+    // screen and nowhere else, and nothing outside reads it but the one line in
+    // the edit path that asks what to place. It is not saved -- see
+    // core/item/hotbar.hpp.
+    const item::Hotbar& hotbar() const { return hotbar_; }
+
+    // Whether this gamemode has a hotbar at all. Spectator does not: it has no
+    // body, no reach and nothing to hold.
+    bool hasHotbar() const { return gamemode_ != settings::Gamemode::Spectator; }
+
+    // **Whether the bottom screen has the buttons.** X toggles it; while it is
+    // on, the d-pad drives the cursor and the shoulders change tab, so the
+    // caller has to suspend break and place for as long as it is true. One
+    // press does one thing, and this is the flag that guarantees it.
+    bool uiFocused() const { return focus_; }
+
+    // **Whether the circle pad is scrolling the map rather than walking.** True
+    // only while the screen is focused *and* the map is the page up, which is
+    // the one combination where the stick has somewhere better to be. The
+    // caller zeroes the body's heading while it holds -- panning and walking at
+    // once would be two things fighting over the same window.
+    bool mapPanActive() const { return focus_ && playerPage_ == PlayerPage::Map; }
+
+    // Once a frame, after handleInput. Reads the circle pad and scrolls the map
+    // when `mapPanActive()`; does nothing at all otherwise. `dt` is seconds,
+    // because a pan is a gesture and belongs on the frame clock -- unlike the
+    // body, whose every constant is per tick.
+    void tickFocus(float dt);
 
     // The backdrop behind the player's panels: the pack's `dirt.png`, tiled and
     // darkened exactly as a1.1.2's own menus tile it -- `Menu::backgroundTile`,
@@ -329,6 +393,25 @@ private:
     // and not once a frame.
     bool drawPlayerPage(const Camera& camera, bool cleared);
     bool drawLook(const gui::Surface& surface, const Camera& camera, bool cleared);
+    void drawBlocks(const gui::Surface& surface);
+
+    // The dark strip under the tab strip that says the screen is focused, and
+    // what the buttons mean while it is. Drawn last, over the page -- see
+    // hud::drawFocusBanner.
+    void drawFocusBanner(const gui::Surface& surface) const;
+
+    // Turns the focus off and puts everything it owned back: the palette
+    // cursor, the map's pan, and a full redraw, because the banner darkened
+    // pixels that can only be restored by drawing them again.
+    void releaseFocus();
+
+    // The focused d-pad, A and B, and the shoulder pair. Returns true when
+    // something it changed has to be redrawn.
+    bool handleFocusedInput(u32 down);
+
+    // Where the palette cursor is, as a palette index rather than a cell.
+    int paletteIndex() const { return palettePage_ * hud::kPalettePerPage + paletteCursor_; }
+    void showBlockInPalette(block::BlockId id);
 
     const NdspBackend* audio_ = nullptr;
 
@@ -355,6 +438,30 @@ private:
 
     settings::Gamemode gamemode_ = settings::Gamemode::Spectator;
     MapScreen map_;
+
+    // The nine slots, and where the palette and the focus are looking.
+    item::Hotbar hotbar_;
+    int palettePage_ = 0;
+    int paletteCursor_ = 0;
+
+    // **Focus is two booleans and not a mode enum**, because there are exactly
+    // three states and the third is not reachable: the screen is unfocused, or
+    // it is focused on the hotbar row, or it is focused on the palette grid --
+    // and the last is only possible on the Blocks page, which is enforced where
+    // the page changes rather than represented here.
+    bool focus_ = false;
+    bool focusPalette_ = false;
+
+    // The atlas's pixels, borrowed. Null until a pack has been handed over.
+    const u8* atlasRgba_ = nullptr;
+
+    // **Two dirty flags rather than one**, because the hotbar and the page
+    // above it change at completely different rates: a shoulder press moves the
+    // selection sixty times a second if it is held, and the palette behind it
+    // has not changed at all. Redrawing the page for a hotbar move would be
+    // 45 slot bevels and 45 icon blits to move one white rectangle.
+    bool hotbarDirty_ = true;
+    bool bodyDirty_ = true;
 
     // The pack's dirt, in the format the framebuffer wants it. 2 KB, and the
     // Overlay lives for the process, so it is not on anybody's stack.

@@ -19,6 +19,7 @@ handoff document and it is ~53,000 tokens; opening it whole is almost never the 
 | Is this number real? | `docs/status.md` §*Measured numbers (do not re-derive)* |
 | What does a block do when the world ticks it? | `docs/tick-a1.1.2.md` — the clock, the update list, the per-block tables, and every deviation |
 | When does music play, and why is it silent? | `docs/audio-a1.1.2.md` — the music counter transcribed, the pools, the volumes, and what is not ported yet |
+| How does the player move, and what shape is a block to walk into? | `docs/physics-a1.1.2.md` — `moveEntity` and `moveEntityWithHeading` transcribed, every constant as it appears in the class file, and the collision truth table |
 
 Both index files are generated: `make index` (or `python3 tools/gen_index.py`). Re-run after adding
 or renaming a file, or editing a heading in `docs/`. `python3 tools/gen_index.py --check` fails if
@@ -41,7 +42,7 @@ make index                # regenerate docs/code-map.md and docs/doc-index.md
 ```
 
 The host build is sanitised by default (`-DSANITIZE=ON`: ASan, UBSan, `float-cast-overflow`) and the
-sanitizers instrument `3dalpha_core`, not just the tests. **690 tests pass** as of the last run.
+sanitizers instrument `3dalpha_core`, not just the tests. **731 tests pass** as of the last run.
 
 ThreadSanitizer is a separate build, because TSan and ASan cannot be combined. Re-run it after
 anything touching `WorldStreamer`'s worker, `ChunkCache`, or the audio decode thread — it has caught
@@ -60,6 +61,7 @@ with no arguments prints every mode; the ones that come up most:
 ./build-host/3dalpha --fly <world-dir> 8 2000 gen  # generate, mesh, stream and save a world
 ./build-host/3dalpha --generate [seed] [radius]    # worldgen only
 ./build-host/3dalpha --mesh <world-dir>            # mesh a world, report the numbers
+./build-host/3dalpha --walk <world-dir> 8 2000    # walk it with the player body; non-zero on a fall-through
 ./build-host/3dalpha --map <world-dir>             # draw the bottom screen's map
 ./build-host/3dalpha --world-info <world-dir>      # format, seed, on-disk cost
 ```

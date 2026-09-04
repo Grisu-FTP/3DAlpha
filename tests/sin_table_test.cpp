@@ -1,6 +1,6 @@
 #include "framework.hpp"
 
-#include "impl/worldgen/alpha_nobiome/math_helper.hpp"
+#include "core/util/math_helper.hpp"
 #include "sin_table_vectors.hpp"
 
 #include <cmath>
@@ -10,7 +10,7 @@ using namespace mc;
 using mc::test::kSinSampleCount;
 using mc::test::kSinSamples;
 using mc::test::kSinTableHash;
-using worldgen::MathHelper;
+using mc::MathHelper;
 
 namespace {
 

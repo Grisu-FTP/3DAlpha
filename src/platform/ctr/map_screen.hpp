@@ -13,7 +13,8 @@
 // background colour so the two do not fight. See hud.hpp.
 //
 //     +----------------------------------------+
-//     | [ Map ]   [ Items ]   [ Look ]         |  the tab strip, hud.hpp's
+//     | [ Map ] [ Items ] [ Blocks ] [ Look ]  |  the tab strip, hud.hpp's
+//     |  focus banner band, or backdrop         |  hud.hpp's kBannerTop
 //     |+-------+ +---------------------------+ |
 //     ||       | |                           | |
 //     ||x  -12 | |                           | |
@@ -27,6 +28,7 @@
 //     ||grid 16| |                           | |
 //     ||3DAlpha| |                           | |
 //     |+-------+ +---------------------------+ |
+//     | [][][][][][][][][]                     |  the hotbar, hud.hpp's
 //     +----------------------------------------+
 //
 // **The d-pad belongs to this page.** Left and right cycle the grid overlay,
@@ -90,16 +92,20 @@ namespace mc::ctr {
 // The map's rectangle on the 320x240 bottom screen, and the column of text
 // beside it.
 //
-// **208 by 200, and it costs what a bigger picture costs.** 41,600 pixels
-// against the 36,864 that were measured at about 700 microseconds a redraw on a
-// New 3DS, so the copy is an estimated 790 -- a fifth of a millisecond more, on
-// a redraw that happens when the player crosses a block or turns far enough to
-// move the marker. Not free, and the thing to shrink first if a frame budget
-// ever needs it back.
+// **208 by 158, and both bands the screen grew are why.** It was 208 by 200 --
+// 41,600 pixels against the 36,864 that were measured at about 700 microseconds
+// a redraw on a New 3DS, so an estimated 790. The hotbar took the bottom 32
+// pixels and the focus banner the top 16 (see hud.hpp), which leaves 32,864:
+// **below** the window the 700 was actually measured on, so the estimate goes
+// the other way, to roughly 625. For once a layout change made a measured cost
+// smaller rather than larger.
+//
+// The 8 pixels below are the margin that keeps terrain from sitting under a
+// hotbar slot; the frame's two pixels above put it flush with the page's top.
 inline constexpr int kMapWidth = 208;
-inline constexpr int kMapHeight = 200;
+inline constexpr int kMapTop = hud::kPageTop + 2;
+inline constexpr int kMapHeight = hud::kHotbarTop - kMapTop - 8;   // 158
 inline constexpr int kMapLeft = 104;
-inline constexpr int kMapTop = 32;
 
 // How many characters wide the column beside it is. The frame around the map
 // starts at pixel 102, so twelve columns -- 96 pixels -- is the most that can
@@ -108,7 +114,8 @@ inline constexpr int kMapTextColumns = 12;
 
 static_assert(kMapTextColumns * hud::kCell + 6 <= kMapLeft,
               "the text column must stop before the map's frame");
-static_assert(kMapTop + kMapHeight + 8 <= hud::kScreenHeight, "the map must fit on the screen");
+static_assert(kMapTop + kMapHeight <= hud::kHotbarTop, "the map must clear the hotbar");
+static_assert(kMapTop - 2 >= hud::kPageTop, "the map's frame must clear the banner band");
 
 class MapScreen {
 public:
@@ -180,6 +187,27 @@ public:
     int zoom() const { return zoom_; }
     const char* zoomName() const;
 
+    // **Scrolling the window off the player.** Offsets in blocks, added to the
+    // camera's position everywhere the window is derived from it -- so the
+    // sampling, the ring order, the redraw signature and the picture all move
+    // together and none of them needed to learn about panning.
+    //
+    // It is the bottom screen's focused circle pad and nothing else drives it;
+    // see overlay.hpp. **The marker stays with the player**, which is the point:
+    // a panned map is for looking at ground you are not standing on, and it
+    // needs to keep showing where you actually are -- `map::drawMarker` clips
+    // against the window, so a player scrolled off the edge simply is not drawn.
+    //
+    // The offsets are clamped to +/- 2^20 blocks. That is not a design limit --
+    // the world has none worth naming here -- it is a guard on the `i32` floor
+    // in `windowFor`, which a stick held down for an hour would otherwise reach.
+    void pan(double blocksEast, double blocksSouth);
+
+    // Back to the player, and back to the player's coordinates in the panel.
+    // Called when the focus is let go.
+    void clearPan();
+    bool panned() const { return panX_ != 0.0 || panZ_ != 0.0; }
+
     // Once a frame, wherever the streamer's columns are known to be settled.
     // Samples at most a chunk or two, so a world that has just opened fills the
     // map in over a second or so rather than in one frame.
@@ -189,7 +217,12 @@ public:
     // `force` is for after anything cleared or overwrote the bottom screen --
     // a page change, an applet, the pause menu -- because the ordinary path
     // draws nothing at all when nothing has moved.
-    void draw(const gui::Surface& surface, const Camera& camera, bool force);
+    //
+    // **True when it actually put pixels down**, which most frames it does not.
+    // The caller needs that answer for two reasons: the LCD's cache flush, and
+    // anything drawn *over* the map -- the focus banner is, and would be
+    // silently erased by a redraw it could not see.
+    bool draw(const gui::Surface& surface, const Camera& camera, bool force);
 
     const map::MapStore& store() const { return store_; }
 
@@ -222,13 +255,18 @@ private:
         // about how a patch was drawn, so a zoom step is one ordinary redraw
         // and the store keeps every patch it had. See map_render.hpp.
         int zoom = 0;
+        // **Not derivable from the origin.** A panned window whose origin
+        // happens to land back where the unpanned one was is still a different
+        // picture, because the coordinates in the panel say something else and
+        // the centre cross is on it.
+        bool panned = false;
         bool valid = false;
 
         bool operator==(const Signature& other) const
         {
             return valid && other.valid && originX == other.originX && originZ == other.originZ
                    && yawStep == other.yawStep && stored == other.stored && grid == other.grid
-                   && zoom == other.zoom;
+                   && zoom == other.zoom && panned == other.panned;
         }
     };
 
@@ -237,7 +275,7 @@ private:
     map::MapWindow windowFor(const Camera& camera) const;
 
     void drawFurniture(const gui::Surface& surface);
-    void drawText(const Camera& camera);
+    void drawText(const Camera& camera, const map::MapWindow& window);
     void drawPixels(const gui::Surface& surface, const Camera& camera,
                     const map::MapWindow& window, float yawDegrees);
 
@@ -248,6 +286,13 @@ private:
     // One pixel per block. The level the redraw has a `memcpy` fast path for,
     // and the one the whole map was measured at.
     int zoom_ = 0;
+
+    // How far the window has been scrolled off the player, in blocks. Doubles
+    // rather than ints because the stick is analogue and a pan quantised to
+    // whole blocks at four pixels a block would step rather than scroll.
+    double panX_ = 0.0;
+    double panZ_ = 0.0;
+
     u32 lastDrawMicros_ = 0;
 
     // **What the patches in the store were drawn with.** Bumped by anything a

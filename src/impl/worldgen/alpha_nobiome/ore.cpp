@@ -2,7 +2,7 @@
 
 #include "blocks.hpp"
 #include "core/block/registry.hpp"
-#include "impl/worldgen/alpha_nobiome/math_helper.hpp"
+#include "core/util/math_helper.hpp"
 
 namespace mc::worldgen {
 

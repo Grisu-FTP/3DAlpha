@@ -364,6 +364,27 @@ public:
     // function pointers for exactly that reason.
     void stepTicks(ChunkRenderer& renderer, int ticks);
 
+    // **A player's edit, which is a tick's edit made outside a tick.**
+    //
+    // Everything a block change has to set off is already built: setting it
+    // through `TickWorld` notifies the neighbours, schedules the block's own
+    // update, and reaches the falling sand and the fluid flow that
+    // core/tick/ already implements. What it does *not* do on its own is
+    // redraw, and that is the trap this method exists to close.
+    //
+    // `TickWorld`'s change callback only invalidates renderer sections while
+    // `tickRenderer_` is set, and `stepTicks` is the only thing that sets it.
+    // An edit made straight from the input handler would mark its column dirty,
+    // queue its lighting, and then be **invisible** until something else
+    // happened to touch that section. So this brackets the write exactly the
+    // way stepTicks brackets a tick, and drains the light the edit queued while
+    // the renderer is still in hand.
+    //
+    // False when the position is outside the world or its column is not
+    // resident -- an edit at the edge of the loaded grid is dropped rather than
+    // written into a column that is about to be replaced.
+    bool setBlock(ChunkRenderer& renderer, i32 x, int y, i32 z, block::BlockId id, u8 metadata);
+
     // The incremental relighter, for the debug page. Null before a world opens.
     const world::LightUpdater* lighting() const { return light_.get(); }
 

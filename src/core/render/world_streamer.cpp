@@ -209,6 +209,28 @@ void WorldStreamer::stepTicks(ChunkRenderer& renderer, int ticks)
     level_.time = tick_->time();
 }
 
+bool WorldStreamer::setBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
+                             block::BlockId id, u8 metadata)
+{
+    if (tick_ == nullptr) {
+        return false;
+    }
+    if (!tick_->chunkResident(x >> 4, z >> 4)) {
+        return false;
+    }
+
+    // The same bracket stepTicks uses, and for the same reason: without it the
+    // change callback below has no renderer to invalidate sections through.
+    tickRenderer_ = &renderer;
+    const bool changed = tick_->setBlockAndDataWithNotify(x, y, z, id, metadata);
+    if (light_ != nullptr) {
+        light_->drain(kLightBudgetPerFrame);
+    }
+    tickRenderer_ = nullptr;
+
+    return changed;
+}
+
 void WorldStreamer::flushTickDirty()
 {
     // One clone and one queued write per column that changed, however many

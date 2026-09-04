@@ -528,3 +528,96 @@ TEST(a_tick_edit_survives_the_column_leaving_the_grid)
     CHECK_EQ(reopened.worldTick()->blockAt(kEditX, kEditY, kEditZ), placed);
     reopened.close(kNow);
 }
+
+// **A player's edit has to redraw, and the obvious way to write it does not.**
+//
+// TickWorld's change callback only invalidates renderer sections while the
+// streamer is holding a renderer, and only stepTicks was ever holding one. An
+// edit made straight from the input handler therefore marked its column dirty
+// for the save, queued its lighting, and left the section drawing its old
+// geometry until something unrelated happened to touch it.
+//
+// This asserts both halves: the raw write does not mark the section, and
+// WorldStreamer::setBlock does.
+TEST(a_player_edit_marks_its_section_for_remesh_and_a_raw_tick_write_does_not)
+{
+    TestAllocator allocator;
+    ChunkRendererConfig config;
+    config.meshDistance = 2;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+
+    ChunkRenderer renderer;
+    renderer.reset(&allocator, config);
+
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("World");
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 4242LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    streamer.setAutosaveSeconds(0);
+    CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 2;
+    budget.generatedPerFrame = 2;
+    budget.meshesPerFrame = 8;
+    u32 counter = 1;
+
+    // Negative on both axes, per CONTRIBUTING.
+    constexpr i32 kChunkX = -2;
+    constexpr i32 kChunkZ = -3;
+    constexpr i32 kX = kChunkX * 16 + 7;
+    constexpr i32 kZ = kChunkZ * 16 + 3;
+    constexpr int kY = 68;
+    constexpr int kSectionY = kY / 16;
+
+    settle(streamer, renderer, kChunkX, kChunkZ, budget, &counter, 900);
+
+    tick::TickWorld* world = streamer.worldTick();
+    CHECK(world != nullptr);
+    if (world == nullptr) {
+        return;
+    }
+
+    // Something the generator did not already put there, so the write is a
+    // real change rather than a no-op.
+    const block::BlockId before = world->blockAt(kX, kY, kZ);
+    const block::BlockId first = before == block::BlockId(mcver::Block::Stone)
+                                     ? block::BlockId(mcver::Block::Cobblestone)
+                                     : block::BlockId(mcver::Block::Stone);
+
+    // Clear whatever the settle left marked, so the assertions below are about
+    // these two writes and nothing else.
+    settle(streamer, renderer, kChunkX, kChunkZ, budget, &counter, 900);
+    CHECK(!renderer.field().column(kChunkX, kChunkZ).dirty(kSectionY));
+
+    // The raw path: the block changes and the column is dirty for the save,
+    // but the section is not queued to be redrawn.
+    CHECK(world->setBlockWithNotify(kX, kY, kZ, first));
+    CHECK_EQ(world->blockAt(kX, kY, kZ), first);
+    CHECK(streamer.tickDirtyColumns() > 0);
+    CHECK(!renderer.field().column(kChunkX, kChunkZ).dirty(kSectionY));
+
+    // The player's path, one block up so it is again a real change.
+    const block::BlockId second = first == block::BlockId(mcver::Block::Stone)
+                                      ? block::BlockId(mcver::Block::Cobblestone)
+                                      : block::BlockId(mcver::Block::Stone);
+    CHECK(streamer.setBlock(renderer, kX, kY + 1, kZ, second, 0));
+    CHECK_EQ(world->blockAt(kX, kY + 1, kZ), second);
+    CHECK(renderer.field().column(kChunkX, kChunkZ).dirty(kSectionY));
+
+    // An edit outside the loaded grid is refused rather than written into a
+    // column that is about to be somebody else's.
+    CHECK(!streamer.setBlock(renderer, kX + 4000, kY, kZ + 4000, second, 0));
+
+    streamer.close(kNow);
+}
+

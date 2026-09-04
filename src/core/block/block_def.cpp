@@ -25,6 +25,22 @@ const char* renderTypeName(RenderType type)
     return "unknown";
 }
 
+const char* shapeName(Shape shape)
+{
+    switch (shape) {
+    case Shape::None:     return "none";
+    case Shape::FullCube: return "full_cube";
+    case Shape::Slab:     return "slab";
+    case Shape::Stairs:   return "stairs";
+    case Shape::Door:     return "door";
+    case Shape::Ladder:   return "ladder";
+    case Shape::Fence:    return "fence";
+    case Shape::Cactus:   return "cactus";
+    case Shape::Count:    break;
+    }
+    return "unknown";
+}
+
 const char* tickBehaviourName(TickBehaviour behaviour)
 {
     switch (behaviour) {

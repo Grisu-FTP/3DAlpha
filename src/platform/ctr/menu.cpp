@@ -184,12 +184,16 @@ void autosaveLabel(int seconds, char* out, usize size)
 }
 
 // The order the gamemode row steps through. Spectator first because it is the
-// default and the only implemented one; the other two are drawn disabled --
-// see settings::gamemodeImplemented.
+// default, then Creative, which M3 step 3 made real; Survival is last and is
+// still drawn disabled -- see settings::gamemodeImplemented.
+//
+// **The two that work are adjacent on purpose.** Stepping the row is one
+// button, so a disabled mode sitting between the two live ones would make every
+// switch between them pass through a state that refuses.
 constexpr settings::Gamemode kGamemodeOrder[] = {
     settings::Gamemode::Spectator,
-    settings::Gamemode::Survival,
     settings::Gamemode::Creative,
+    settings::Gamemode::Survival,
 };
 constexpr int kGamemodeCount = int(sizeof(kGamemodeOrder) / sizeof(kGamemodeOrder[0]));
 
@@ -2334,9 +2338,9 @@ void Menu::drawWorldSettings()
     const int row = worldSettingsRowFor(worldSettingsCursor_, inGame_);
     const float noteY = top + float(rows) * pitch + 2.0f;
     if (row == kRowGamemode && !settings::gamemodeImplemented(kGamemodeOrder[gamemodeCursor_])) {
-        drawLabelCentered("Not implemented yet -- there is no player", kScreenWidth * 0.5f,
+        drawLabelCentered("Not implemented yet -- damage, hardness and", kScreenWidth * 0.5f,
                           noteY, 0.42f, kInkWarn, true);
-        drawLabelCentered("body to collide with. Spectator is real.", kScreenWidth * 0.5f,
+        drawLabelCentered("drops do not exist. Creative does.", kScreenWidth * 0.5f,
                           noteY + 13.0f, 0.42f, kInkDim, true);
     } else if (row == kRowFormat && !inGame_) {
         drawLabelCentered(selectedFormat_ == world::WorldFormat::Packed

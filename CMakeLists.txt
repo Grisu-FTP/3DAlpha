@@ -261,11 +261,12 @@ if(NINTENDO_3DS)
 	# them via SOURCES hits a bug in its argument handling and fails.
 	ctr_add_shader_library(world_shader shaders/world.v.pica)
 	ctr_add_shader_library(detail_shader shaders/detail.v.pica)
+	ctr_add_shader_library(outline_shader shaders/outline.v.pica)
 	# Two sources, one shbin: picasso emits a DVLE per file in the order given,
 	# so DVLE[0] is the vertex half and DVLE[1] the geometry half. The order is
 	# load-bearing -- buildQuadPipeline indexes them.
 	ctr_add_shader_library(quad_shader shaders/quad.v.pica shaders/quad.g.pica)
-	dkp_add_embedded_binary_library(shaders world_shader detail_shader quad_shader)
+	dkp_add_embedded_binary_library(shaders world_shader detail_shader outline_shader quad_shader)
 	target_link_libraries(3dalpha PRIVATE shaders)
 
 	set_target_properties(3dalpha PROPERTIES

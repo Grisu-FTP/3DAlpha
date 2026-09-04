@@ -9,6 +9,7 @@
 #include <cstdio>
 
 #include <detail_shader_shbin.h>
+#include <outline_shader_shbin.h>
 #include <quad_shader_shbin.h>
 #include <world_shader_shbin.h>
 
@@ -255,6 +256,97 @@ bool Renderer::buildPipeline(Pipeline* pipeline, const void* shbin, u32 shbinSiz
     return true;
 }
 
+bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
+{
+    if (!buildPipeline(&outlinePipeline_, shbin, shbinSize, false)) {
+        return false;
+    }
+    // buildPipeline installed the cube format's three loaders. The outline has
+    // one attribute: three floats. Re-initialising is cheaper than teaching
+    // buildPipeline a third layout it would only ever use here.
+    AttrInfo_Init(&outlinePipeline_.attrs);
+    AttrInfo_AddLoader(&outlinePipeline_.attrs, 0, GPU_FLOAT, 3);
+
+    // Five kilobytes, once. Rebuilt when the crosshair moves off its block, and
+    // never during a frame -- see setSelection.
+    outlineVerts_ = linearAlloc(sizeof(render::OutlineVertex)
+                                * usize(render::kOutlineVertexCount));
+    return outlineVerts_ != nullptr;
+}
+
+void Renderer::setSelection(const AABB& worldBox)
+{
+    // Rebuilding 432 vertices is cheap, but doing it on a frame where nothing
+    // moved is 432 vertices of pure waste at 60 Hz, and the crosshair sits on
+    // one block for most of the frames it is on anything.
+    if (hasSelection_ && worldBox.minX == selectionBox_.minX
+        && worldBox.minY == selectionBox_.minY && worldBox.minZ == selectionBox_.minZ
+        && worldBox.maxX == selectionBox_.maxX && worldBox.maxY == selectionBox_.maxY
+        && worldBox.maxZ == selectionBox_.maxZ) {
+        return;
+    }
+    selectionBox_ = worldBox;
+    hasSelection_ = true;
+    outlineDirty_ = true;
+}
+
+// **Last in the eye, and it writes no depth.** Drawn after the world so it sits
+// on top of the face it outlines rather than fighting it, and with colour-only
+// writes so a translucent block behind it is not re-ordered by an edge.
+void Renderer::drawSelection(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ)
+{
+    if (!hasSelection_ || outlineVerts_ == nullptr) {
+        return;
+    }
+
+    auto* verts = static_cast<render::OutlineVertex*>(outlineVerts_);
+    // The origin the rest of the frame is built around. Y is **not** offset --
+    // viewProjection only moves x and z -- and offsetting it here would put the
+    // outline sixty-four blocks under the block it belongs to.
+    const double originX = double(originChunkX) * 16.0;
+    const double originZ = double(originChunkZ) * 16.0;
+    if (outlineDirty_) {
+        const int written = render::buildOutline(selectionBox_, originX, 0.0, originZ, verts,
+                                                 render::kOutlineVertexCount);
+        if (written != render::kOutlineVertexCount) {
+            return;
+        }
+        outlineDirty_ = false;
+        GSPGPU_FlushDataCache(verts,
+                              sizeof(render::OutlineVertex) * u32(render::kOutlineVertexCount));
+    }
+
+    bindPipeline(outlinePipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, outlinePipeline_.uLocMvp, &viewProjection);
+
+    // One combiner stage: hand the vertex colour straight to the framebuffer.
+    // The world's three-stage texture combiner has nothing to say about a shape
+    // with no texture on it.
+    C3D_TexEnv* env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+    for (int i = 1; i < 3; ++i) {
+        C3D_TexEnvInit(C3D_GetTexEnv(i));
+    }
+
+    // The alpha the original uses is 0.4, so it has to blend; and the alpha
+    // test the world pass leaves on would throw most of it away.
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+    C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_COLOR);
+
+    C3D_BufInfo* buf = C3D_GetBufInfo();
+    BufInfo_Init(buf);
+    BufInfo_Add(buf, outlineVerts_, sizeof(render::OutlineVertex), 1, 0x0);
+    C3D_DrawArrays(GPU_TRIANGLES, 0, render::kOutlineVertexCount);
+
+    // Nothing is restored here on purpose: applyWorldState runs before every
+    // eye and states all of the above rather than inheriting it, precisely so a
+    // pass like this one can leave the state where it likes.
+}
+
 // The geometry-shader program. Three things differ from the two above.
 //
 // **A second DVLE.** picasso puts every source file it is given into one shbin,
@@ -374,6 +466,7 @@ bool Renderer::init(const Config& config, bool isNew3DS)
     C3D_RenderTargetSetOutput(eye_[1], GFX_TOP, GFX_RIGHT, kDisplayTransferFlags);
 
     if (!buildPipeline(&cubePipeline_, world_shader_shbin, world_shader_shbin_size, false)
+        || !buildOutlinePipeline(outline_shader_shbin, outline_shader_shbin_size)
         || !buildPipeline(&detailPipeline_, detail_shader_shbin, detail_shader_shbin_size,
                           true)
         || !buildQuadPipeline(quad_shader_shbin, quad_shader_shbin_size)) {
@@ -1219,6 +1312,13 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
                    GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
     C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_COLOR);
     drawPass(vp, Pass::Translucent, originChunkX, originChunkZ);
+
+    // **After everything, including the translucent pass.** The outline is a
+    // UI element that happens to live in the world: drawn earlier it would be
+    // sorted against water and glass, and the one thing it must always be is
+    // visible on the block the crosshair is on.
+    drawSelection(vp, originChunkX, originChunkZ);
+
     C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
 }

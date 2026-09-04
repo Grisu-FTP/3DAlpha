@@ -1,6 +1,6 @@
 #include "impl/worldgen/alpha_nobiome/chunk_provider.hpp"
 
-#include "impl/worldgen/alpha_nobiome/math_helper.hpp"
+#include "core/util/math_helper.hpp"
 
 #include "blocks.hpp"
 

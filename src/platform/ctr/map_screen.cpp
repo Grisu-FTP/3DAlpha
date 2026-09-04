@@ -25,6 +25,16 @@ const map::MapPixel kTileGrid = map::rgb565(150, 60, 60);
 const map::MapPixel kMarkerFill = map::rgb565(255, 255, 255);
 const map::MapPixel kMarkerOutline = map::rgb565(0, 0, 0);
 
+// **Where a scrolled map is looking**, in the same amber the focus cursor uses
+// on the hotbar and the palette -- it is the same idea in a different place:
+// this is where you are pointing, as against where you are. The cross is drawn
+// only while the window is panned, because unpanned the marker is already at
+// the centre and a second mark on top of it would say nothing.
+const map::MapPixel kPanCross = map::rgb565(255, 210, 74);
+constexpr u32 kPannedText = 0xFFD24A;
+constexpr int kPanCrossArm = 5;
+constexpr int kPanCrossGap = 2;
+
 // The arrow, centre to tip -- so about eleven pixels of marker on a map that is
 // 192 across. Bigger than that and it stops being an indicator and starts being
 // terrain the player cannot see under; smaller and the raster has too little to
@@ -44,17 +54,33 @@ constexpr int kFieldW = kPanelW - 8;
 constexpr int kFieldH = 24;
 // Evenly spaced down the panel with the wordmark under them, which is what
 // keeps three numbers from reading as a column that ran out of things to say.
-constexpr int kFieldY[3] = {48, 104, 160};
-// The console row each one's text sits on: the middle of its box.
-constexpr int kFieldRow[3] = {8, 15, 22};
-// The two d-pad settings, in the gap between the z box (which ends at pixel
-// 184, so row 23) and the wordmark. Plain text on the panel rather than boxed
-// readouts: they are what the map is showing itself as, not measurements of the
-// world, and a bevelled slot around each would have made the column read as six
-// numbers instead of three.
-constexpr int kZoomRow = 24;
-constexpr int kGridRow = 25;
-constexpr int kWordmarkRow = 27;
+//
+// **The pitch went from 56 to 40 as the screen grew its two bands.** The panel
+// is as tall as the map's frame and the map lost 42 pixels between the hotbar
+// and the focus banner, so everything in this column moved rather than the
+// wordmark being dropped -- see hud.hpp. The boxes are unchanged at 24 tall;
+// only the gaps between them are smaller.
+constexpr int kFieldY[3] = {48, 88, 128};
+// The console row each one's text sits on: the middle of its box, which is
+// `y / 8 + 2` for a box that starts on a cell boundary.
+constexpr int kFieldRow[3] = {8, 13, 18};
+// The two d-pad settings, directly under the z box (which ends at pixel 152, so
+// row 20). Plain text on the panel rather than boxed readouts: they are what
+// the map is showing itself as, not measurements of the world, and a bevelled
+// slot around each would have made the column read as six numbers instead of
+// three.
+constexpr int kZoomRow = 20;
+constexpr int kGridRow = 21;
+// Row 22 is left blank, which is what separates what the map is showing from
+// what the program is.
+constexpr int kWordmarkRow = 23;
+
+// **Everything in the panel has to stop inside it**, and the panel is now the
+// map's height rather than the screen's. Checked here because the wordmark used
+// to sit at row 27 -- pixel 208 -- which is where the hotbar starts.
+static_assert(kFieldY[2] + kFieldH <= kPanelY + kPanelH, "the z box must fit the panel");
+static_assert((kWordmarkRow + 1) * hud::kCell <= kPanelY + kPanelH,
+              "the wordmark must fit the panel");
 
 // The axis letter, as pixels. **It is five wide where a character cell is
 // eight**, and that is the whole reason the column fits in 96 pixels: a Far
@@ -134,6 +160,24 @@ void MapScreen::reset()
     store_.clear();
     shown_ = Signature{};
     refreshed_ = Refreshed{};
+    clearPan();
+}
+
+void MapScreen::pan(double blocksEast, double blocksSouth)
+{
+    // See the header: an arithmetic guard on the i32 floor in windowFor, not a
+    // limit on where the map may look.
+    constexpr double kLimit = 1048576.0;
+    panX_ += blocksEast;
+    panZ_ += blocksSouth;
+    panX_ = panX_ < -kLimit ? -kLimit : (panX_ > kLimit ? kLimit : panX_);
+    panZ_ = panZ_ < -kLimit ? -kLimit : (panZ_ > kLimit ? kLimit : panZ_);
+}
+
+void MapScreen::clearPan()
+{
+    panX_ = 0.0;
+    panZ_ = 0.0;
 }
 
 void MapScreen::setPalette(const texture::AtlasImage& atlas)
@@ -169,9 +213,16 @@ map::MapWindow MapScreen::windowFor(const Camera& camera) const
     // as the player walked, so every pixel of the map would change colour on
     // alternate steps -- the picture would shimmer rather than scroll. Snapping
     // costs half a pixel of centring and buys a lattice that never moves.
+    //
+    // **The pan is added here and nowhere else.** Everything that asks where the
+    // map is looking goes through this function -- the sampling rings, the
+    // redraw signature, the picture and the panel's numbers -- so scrolling the
+    // window is one addition rather than a flag threaded through five callers.
     const i32 step = map::mapBlocksPerPixel(zoom_);
-    window.originBlockX = floorDiv(i32(std::floor(camera.x)) - blocksWide / 2, step) * step;
-    window.originBlockZ = floorDiv(i32(std::floor(camera.z)) - blocksHigh / 2, step) * step;
+    const double centreX = camera.x + panX_;
+    const double centreZ = camera.z + panZ_;
+    window.originBlockX = floorDiv(i32(std::floor(centreX)) - blocksWide / 2, step) * step;
+    window.originBlockZ = floorDiv(i32(std::floor(centreZ)) - blocksHigh / 2, step) * step;
     return window;
 }
 
@@ -272,7 +323,7 @@ void MapScreen::update(const render::WorldStreamer& world, const Camera& camera)
     }
 }
 
-void MapScreen::draw(const gui::Surface& surface, const Camera& camera, bool force)
+bool MapScreen::draw(const gui::Surface& surface, const Camera& camera, bool force)
 {
     const map::MapWindow window = windowFor(camera);
     const float yawDegrees = camera.yaw * 180.0f / kPi;
@@ -284,10 +335,11 @@ void MapScreen::draw(const gui::Surface& surface, const Camera& camera, bool for
     now.stored = store_.stats().stored;
     now.grid = grid_;
     now.zoom = zoom_;
+    now.panned = panned();
     now.valid = true;
 
     if (!force && now == shown_) {
-        return;
+        return false;
     }
 
     // The panel, the boxes and the frame do not move, so they are drawn when
@@ -296,11 +348,12 @@ void MapScreen::draw(const gui::Surface& surface, const Camera& camera, bool for
     if (force) {
         drawFurniture(surface);
     }
-    drawText(camera);
+    drawText(camera, window);
     // **The marker is drawn at the quantised angle, not the real one**, so the
     // signature can never claim the screen holds a picture it does not.
     drawPixels(surface, camera, window, map::yawFromStep(now.yawStep));
     shown_ = now;
+    return true;
 }
 
 void MapScreen::drawFurniture(const gui::Surface& surface)
@@ -325,17 +378,35 @@ void MapScreen::drawFurniture(const gui::Surface& surface)
                      mcver::kDisplay);
 }
 
-void MapScreen::drawText(const Camera& camera)
+void MapScreen::drawText(const Camera& camera, const map::MapWindow& window)
 {
     // Floored rather than truncated, so a coordinate names the block the player
     // is standing in on the negative side of the origin too -- int(-3.7) is -3,
     // which is the block next door. The same rule the teleport row uses.
-    const long values[3] = {(long)i32(std::floor(camera.x)), (long)i32(std::floor(camera.y)),
-                            (long)i32(std::floor(camera.z))};
+    //
+    // **Panned, x and z name the middle of the picture instead**, because that
+    // is the question a scrolled map is being asked: not "where am I" -- the
+    // marker still says that, or says you are off the edge -- but "what am I
+    // looking at". They are derived from the window rather than from the pan
+    // offset, so the number and the pixel under the cross can never disagree.
+    // `y` stays the player's: a point on a map has no height.
+    const bool scrolled = panned();
+    const long centreX =
+        (long)(window.originBlockX + map::mapWindowBlocks(kMapWidth, window.zoom) / 2);
+    const long centreZ =
+        (long)(window.originBlockZ + map::mapWindowBlocks(kMapHeight, window.zoom) / 2);
+    const long values[3] = {scrolled ? centreX : (long)i32(std::floor(camera.x)),
+                            (long)i32(std::floor(camera.y)),
+                            scrolled ? centreZ : (long)i32(std::floor(camera.z))};
 
     for (int i = 0; i < 3; ++i) {
-        hud::text(kFieldRow[i], kValueColumn, kValueColumns, hud::kReadoutText, hud::kReadoutFace,
-                  "%*ld", kValueColumns, values[i]);
+        // Amber for a coordinate that is the map's rather than the player's --
+        // the same colour the focus cursor is, and for the same reason: it is
+        // where you are pointing, not where you are.
+        const bool mapsOwn = scrolled && i != 1;
+        hud::text(kFieldRow[i], kValueColumn, kValueColumns,
+                  mapsOwn ? kPannedText : hud::kReadoutText, hud::kReadoutFace, "%*ld",
+                  kValueColumns, values[i]);
     }
 
     // What the d-pad is set to. Printed over the panel's own face rather than a
@@ -402,6 +473,25 @@ void MapScreen::drawPixels(const gui::Surface& surface, const Camera& camera,
     // is centred on this one.
     map::drawMarker(target, window, camera.x, camera.z, yawDegrees, kMarkerLength, kMarkerFill,
                     kMarkerOutline);
+
+    // The centre cross, on a scrolled map only. Four arms with a gap in the
+    // middle rather than a filled plus, so the pixel the coordinates name is
+    // the one pixel the cross does *not* cover -- a mark that hides what it
+    // marks is not a mark.
+    if (panned()) {
+        gui::Surface canvas;
+        canvas.pixels = target.pixels;
+        canvas.strideX = target.strideX;
+        canvas.strideY = target.strideZ;
+        canvas.width = window.width;
+        canvas.height = window.height;
+        const int cx = window.width / 2;
+        const int cy = window.height / 2;
+        gui::hLine(canvas, cx - kPanCrossGap - kPanCrossArm, cy, kPanCrossArm, kPanCross);
+        gui::hLine(canvas, cx + kPanCrossGap + 1, cy, kPanCrossArm, kPanCross);
+        gui::vLine(canvas, cx, cy - kPanCrossGap - kPanCrossArm, kPanCrossArm, kPanCross);
+        gui::vLine(canvas, cx, cy + kPanCrossGap + 1, kPanCrossArm, kPanCross);
+    }
 
     // Timed before the flush rather than after: the flush is a cache
     // maintenance call whose cost belongs to the screen being software-drawn at

@@ -180,6 +180,31 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 - **259-278** Why this doesn't compromise faithfulness
 - **279-297** Test requirements
 
+## `docs/physics-a1.1.2.md`
+
+468 lines, ~5,990 tokens.
+
+- **13-27** The classes
+- **28-50** Fields
+- **51-74** **`posY` is the eye, not the feet**
+- **75-98** Constants, as they appear in the class file
+- **99-110** `az` is always true, so two branches are dead
+- **111-121** `MathHelper` is shared, and its sine table is lossy on purpose
+- **122-179** `Entity.moveEntity` — `kh.c(DDD)`
+- **180-220** `EntityLiving.moveEntityWithHeading` — `ge.b(FF)`
+- **221-237** `Entity.moveFlying` — `kh.a(FFF)`
+- **238-245** `EntityLiving.jump` — `ge.C()`
+- **246-263** Collision shapes
+- **264-285** Three things the oracle corrected that reading alone did not
+- **286-294** What the oracle does not cover
+- **295-338** What the crosshair is on -- `cn.a(aj,aj,Z)` and `ly.a(cn,III,aj,aj)`
+  - **339-355** What paces a held button
+  - **356-379** The selection shape is not the collision shape
+- **380-407** Which way a placed block faces
+- **408-420** Drawing the selection box
+- **421-456** Creative flight — ours, and the only invented thing in this file
+- **457-468** What is not derived yet
+
 ## `docs/porting-to-other-versions.md`
 
 95 lines, ~1,287 tokens.
@@ -223,7 +248,7 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/status.md`
 
-3,913 lines, ~72,441 tokens.
+4,143 lines, ~77,014 tokens.
 
 - **16-53** Milestones
 - **54-112** Environment facts worth not rediscovering
@@ -271,41 +296,52 @@ grep -n 'geometry shader' docs/*.md   # find which section first
   - **1818-1949** 0j. Packed worlds, per-world settings, and the world options screen
   - **1950-2001** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
     - **2002-2024** Modelling the console's card, so this class of bug stops needing hardware
-  - **2025-2037** 0l. A bottom screen per gamemode, and a map on the spectator one
-    - **2038-2069** The map
-    - **2070-2131** What it cost -- **and the hardware number that changed the design**
-  - **2132-2708** 1. Run it on a console
-  - **2709-2775** 2. The M2 gate — **half measured, and the baseline fails**
-    - **2776-2858** Why it is the default before the gate is measured
-  - **2859-2934** Deferred but not forgotten
-  - **2935-3026** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
-  - **3027-3068** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
-    - **3069-3093** The generation wait now covers the whole render distance
-    - **3094-3114** What holds it
-  - **3115-3189** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
-    - **3190-3221** The fluids, and the one thing about them that matters on this console
-    - **3222-3243** Fire, and three tables that are not one table
-    - **3244-3283** Redstone: the power model, the wire and the torch
-    - **3284-3353** What of redstone needs a player, and what turned out not to
-  - **3354-3516** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
-  - **3517-3525** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
-    - **3526-3563** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
-    - **3564-3590** The crash: the tick recursed with no bound, on a 32 KB stack
-    - **3591-3618** The frame drops: three costs, one of them quadratic
-    - **3619-3634** Found while looking: tick edits were silently lost
-    - **3635-3664** The lava: there was no runtime lighting at all
-    - **3665-3680** The flash: "needs remeshing" was encoded as "has no mesh"
-    - **3681-3711** Two follow-ups from the first hardware run, and one of them was mine
-    - **3712-3732** What the retirement rule costs, measured
-    - **3733-3746** What is measured and what is not
-  - **3747-3752** 0r. The map's d-pad — a zoom, and the grids taken off the debug page
-    - **3753-3764** The grids moved because the reasoning that put them on the debug page was half right
-    - **3765-3794** The zoom is four levels, and the range is asymmetric on purpose
-    - **3795-3847** What it costs to draw — **and the 3,283 µs that found a much older bug**
-    - **3848-3856** Where it is checked
-- **3857-3860** Open questions
-  - **3861-3902** Answered
-- **3903-3913** Standing constraints
+  - **2025-2043** 0l. A bottom screen per gamemode, and a map on the spectator one
+    - **2044-2075** The map
+    - **2076-2137** What it cost -- **and the hardware number that changed the design**
+  - **2138-2727** 1. Run it on a console
+  - **2728-2794** 2. The M2 gate — **half measured, and the baseline fails**
+    - **2795-2877** Why it is the default before the gate is measured
+  - **2878-2953** Deferred but not forgotten
+  - **2954-3045** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
+  - **3046-3087** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
+    - **3088-3112** The generation wait now covers the whole render distance
+    - **3113-3133** What holds it
+  - **3134-3208** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
+    - **3209-3240** The fluids, and the one thing about them that matters on this console
+    - **3241-3262** Fire, and three tables that are not one table
+    - **3263-3302** Redstone: the power model, the wire and the torch
+    - **3303-3372** What of redstone needs a player, and what turned out not to
+  - **3373-3535** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
+  - **3536-3544** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
+    - **3545-3582** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
+    - **3583-3609** The crash: the tick recursed with no bound, on a 32 KB stack
+    - **3610-3637** The frame drops: three costs, one of them quadratic
+    - **3638-3653** Found while looking: tick edits were silently lost
+    - **3654-3683** The lava: there was no runtime lighting at all
+    - **3684-3699** The flash: "needs remeshing" was encoded as "has no mesh"
+    - **3700-3730** Two follow-ups from the first hardware run, and one of them was mine
+    - **3731-3751** What the retirement rule costs, measured
+    - **3752-3765** What is measured and what is not
+  - **3766-3771** 0r. The map's d-pad — a zoom, and the grids taken off the debug page
+    - **3772-3783** The grids moved because the reasoning that put them on the debug page was half right
+    - **3784-3813** The zoom is four levels, and the range is asymmetric on purpose
+    - **3814-3866** What it costs to draw — **and the 3,283 µs that found a much older bug**
+    - **3867-3875** Where it is checked
+  - **3876-3892** 0s. Creative — a hotbar, a palette that is not an inventory, and flight that collides
+    - **3893-3908** The palette is derived, not curated
+    - **3909-3920** The palette is a separate page from the inventory
+    - **3921-3947** The hotbar is a band on every page, and the bottom screen grew a third one
+    - **3948-3962** A block icon is a flat tile, and that is a deviation
+    - **3963-3988** X focuses the bottom screen, and it is not a convenience
+    - **3989-4003** The banner, and the one thing that made it awkward
+    - **4004-4033** The focused stick scrolls the map
+    - **4034-4045** Instant break was already true, and nothing is spent
+    - **4046-4070** Flight is Spectator's mover with `moveEntity` under it
+    - **4071-4086** What is not done
+- **4087-4090** Open questions
+  - **4091-4132** Answered
+- **4133-4143** Standing constraints
 
 ## `docs/tick-a1.1.2.md`
 
@@ -328,6 +364,20 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 - **554-570** Material predicates
 - **571-584** Where this port differs, and why
 - **585-597** Not yet ported
+
+## `docs/todo-m3.md`
+
+264 lines, ~4,673 tokens.
+
+- **12-29** Where things actually stand
+- **30-49** 0. Block collision shapes — **done**
+- **50-78** 1. The player body — the actual unlock
+  - **79-111** The 1.62 bug this closed
+- **112-155** 2. Reach, break and place
+- **156-232** 3. Creative — **done, except on hardware**
+- **233-238** 4. Survival
+- **239-252** 5. Entities — last, and split
+- **253-264** Standing rules that will bite here
 
 ## `docs/toolchain-setup.md`
 

@@ -187,8 +187,12 @@ def write_blocks(out: Path, m: dict) -> bool:
 
     def definition(entry) -> str:
         if entry is None:
+            # Shape::FullCube rather than None: an id this build does not
+            # know is far better treated as something to stand on than as
+            # something to fall through.
             return ('{"unknown", 0.0f, 0.0f, 0, {0, 0, 0, 0, 0, 0}, '
-                    "RenderType::Cube, 0, 0, 255, true, true, true, false, true, "
+                    "RenderType::Cube, Shape::FullCube, 0.6f, true, "
+                    "0, 0, 255, true, true, true, false, true, "
                     "TickBehaviour::None, 10, false, 0, 0, false, false}")
         # repr keeps the decimal point: "100f" is not a float literal, "100.0f"
         # is, and %g drops the point for integral values.
@@ -198,6 +202,9 @@ def write_blocks(out: Path, m: dict) -> bool:
             f'{{"{entry["name"]}", {hardness}f, {resistance}f, '
             f'{entry.get("texture", 0)}, {faces(entry)}, '
             f'RenderType::{pascal(entry["render"])}, '
+            f'Shape::{pascal(entry["shape"])}, '
+            f'{repr(float(entry["slipperiness"]))}f, '
+            f'{c_bool(entry["targetable"])}, '
             f'{material_index.get(entry.get("material"), 0)}, '
             f'{entry["light"]}, {entry["opacity"]}, '
             f'{c_bool(entry["opaque"])}, {c_bool(entry["fullCube"])}, '
@@ -215,7 +222,8 @@ def write_blocks(out: Path, m: dict) -> bool:
     # "nothing here" -- but id 0 is never constructed, so it takes index 0,
     # which no real material has.
     air = {"id": 0, "name": "air", "hardness": 0.0, "resistance": 0.0,
-           "texture": 0, "render": "none", "light": 0, "opacity": 0,
+           "texture": 0, "render": "none", "shape": "none", "slipperiness": 0.6, "targetable": False,
+           "light": 0, "opacity": 0,
            "opaque": False, "fullCube": False, "opaqueCube": False, "solid": False}
 
     lines = [
@@ -225,6 +233,7 @@ def write_blocks(out: Path, m: dict) -> bool:
         "\nnamespace mcver {\n",
         "\nusing mc::block::BlockDef;\n",
         "using mc::block::RenderType;\n",
+        "using mc::block::Shape;\n",
         "using mc::block::TickBehaviour;\n",
         "\n// Named ids, so no literal block number appears anywhere else.\n",
         "enum class Block : mc::block::BlockId {\n",
@@ -250,6 +259,103 @@ def write_blocks(out: Path, m: dict) -> bool:
     lines.append("\n}  // namespace mcver\n")
 
     (out / "blocks.hpp").write_text("".join(lines))
+    return True
+
+
+def write_selection(out: Path, m: dict) -> bool:
+    """Emit the selection shapes -- what a ray tests against, per block and metadata.
+
+    Two tables rather than one box per (id, metadata) pair: 1,120 pairs hold
+    only 40 distinct boxes, so the index is a byte and the whole thing is about
+    5 KB instead of 53 KB. On a console with 40 MB of heap that difference is
+    worth the indirection.
+
+    The source is generated in turn -- see tools/gen_selection.py -- so no
+    number here was ever typed by a human.
+    """
+    source = REPO / m["data"] / "selection.json"
+    if not source.is_file():
+        return False
+
+    doc = json.loads(source.read_text())
+    shapes = doc["shapes"]
+    index = {int(k): v for k, v in doc["index"].items()}
+
+    lines = [
+        BANNER.format(id=m["id"]),
+        "#pragma once\n",
+        '\n#include "core/util/types.hpp"\n',
+        "\nnamespace mcver {\n",
+        "\nusing mc::u8;\n",
+        "\n// The shape a ray is tested against, which is **not** the collision shape:\n",
+        "// a torch has no collision box at all and still has one of these. Floats,\n",
+        "// because every bound in the jar came from setBlockBounds, which takes floats.\n",
+        f"\ninline constexpr int kSelectionShapeCount = {len(shapes)};\n",
+        "\ninline constexpr float kSelectionShapes[kSelectionShapeCount][6] = {\n",
+    ]
+    for i, box in enumerate(shapes):
+        values = ", ".join(f"{v!r}f" for v in box)
+        lines.append(f"    {{{values}}},   // {i}\n")
+    lines.append("};\n")
+
+    lines.append(
+        "\n// [block id][metadata] -> an index into kSelectionShapes. Index 0 is the\n"
+        "// unit cube, so a block this version never constructs reads as a full block\n"
+        "// rather than as something a ray falls through.\n"
+    )
+    unit = shapes.index([0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+    if unit != 0:
+        sys.exit("configure: selection shape 0 is not the unit cube; the fallback assumes it is")
+    size = m["constants"].get("blockTableSize", 256)
+    lines.append(f"\ninline constexpr int kSelectionIndexSize = {size};\n")
+    lines.append(f"\ninline constexpr u8 kSelectionIndex[kSelectionIndexSize][16] = {{\n")
+    for bid in range(size):
+        row = index.get(bid, [0] * 16)
+        lines.append("    {" + ", ".join(str(v) for v in row) + "},\n")
+    lines.append("};\n")
+    lines.append("\n}  // namespace mcver\n")
+
+    (out / "selection.hpp").write_text("".join(lines))
+    return True
+
+
+def write_placement(out: Path, m: dict) -> bool:
+    """Emit which metadata a block lands with, per face struck.
+
+    `Block.onBlockPlaced`, which is what makes a torch on a wall a wall torch
+    and a staircase face the way you clicked. Twelve of the seventy blocks
+    answer differently per face; the rest are zero, and a table is still the
+    right shape for it because the alternative is a switch full of block ids.
+
+    Generated in turn from a real jar -- see tools/gen_selection.py.
+    """
+    source = REPO / m["data"] / "placement.json"
+    if not source.is_file():
+        return False
+
+    doc = json.loads(source.read_text())
+    table = {int(k): v for k, v in doc["metadata"].items()}
+    size = m["constants"].get("blockTableSize", 256)
+
+    lines = [
+        BANNER.format(id=m["id"]),
+        "#pragma once\n",
+        '\n#include "core/util/types.hpp"\n',
+        "\nnamespace mcver {\n",
+        "\nusing mc::u8;\n",
+        "\n// [block id][face] -> the metadata a placement leaves, in mc::mesh::Face order\n"
+        "// (0 -Y, 1 +Y, 2 -Z, 3 +Z, 4 -X, 5 +X). Zero for everything that does not care,\n"
+        "// which is most of the table.\n",
+        f"\ninline constexpr int kPlacementTableSize = {size};\n",
+        "\ninline constexpr u8 kPlacementMetadata[kPlacementTableSize][6] = {\n",
+    ]
+    for bid in range(size):
+        row = table.get(bid, [0] * 6)
+        lines.append("    {" + ", ".join(str(v) for v in row) + "},\n")
+    lines.append("};\n")
+    lines.append("\n}  // namespace mcver\n")
+
+    (out / "placement.hpp").write_text("".join(lines))
     return True
 
 
@@ -280,10 +386,16 @@ def main() -> None:
     write_cmake(out_dir, m)
     write_rsf(out_dir, m)
     has_blocks = write_blocks(out_dir, m)
+    has_selection = write_selection(out_dir, m)
+    has_placement = write_placement(out_dir, m)
 
     print(f"configure: {m['display']} (protocol {m['constants']['protocol']}) -> {out_dir}")
     if not has_blocks:
         print(f"configure: no {m['data']}/blocks.json yet")
+    if not has_selection:
+        print(f"configure: no {m['data']}/selection.json yet -- run tools/gen_selection.py")
+    if not has_placement:
+        print(f"configure: no {m['data']}/placement.json yet -- run tools/gen_selection.py")
     if unfilled:
         print(f"configure: slots not implemented yet: {', '.join(unfilled)}")
 

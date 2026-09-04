@@ -89,8 +89,11 @@ TEST(reading_a_world_does_not_write_a_settings_file)
 TEST(spectator_is_the_only_implemented_gamemode)
 {
     CHECK(settings::gamemodeImplemented(settings::Gamemode::Spectator));
+    // Creative landed with M3 step 3: a body that collides, reach, and a
+    // hotbar fed from the palette. Survival is still a set of rules on top of
+    // the same body and is drawn disabled until they exist.
+    CHECK(settings::gamemodeImplemented(settings::Gamemode::Creative));
     CHECK(!settings::gamemodeImplemented(settings::Gamemode::Survival));
-    CHECK(!settings::gamemodeImplemented(settings::Gamemode::Creative));
 
     CHECK_EQ(std::string(settings::gamemodeToken(settings::Gamemode::Spectator)),
              std::string("spectator"));

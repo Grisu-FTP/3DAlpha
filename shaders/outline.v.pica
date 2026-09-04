@@ -1,0 +1,43 @@
+; 3DAlpha selection outline vertex shader: position in, black at 40 % alpha out.
+;
+; The simplest shader in the project, and deliberately so. It has no texture, no
+; lighting and no fog: the selection box is a1.1.2's `glColor4f(0, 0, 0, 0.4)`
+; and nothing else, and the only thing this stage has to do is put the vertex
+; where the camera can see it.
+;
+; The colour is emitted here rather than set as a combiner constant so the
+; fragment stage can be configured to pass primary colour straight through,
+; which is one TexEnv stage instead of three.
+;
+;   float x, y, z    offset 0    position, relative to the camera's chunk
+;
+; Full floats rather than the packed shorts the world formats use: there are 432
+; of these a frame, they are rebuilt whenever the crosshair moves, and a format
+; that cannot express a torch's 0.4 offset would put the outline in the wrong
+; place on exactly the blocks whose shape is worth outlining.
+
+.constf consts(0.0, 1.0, 0.4, 0.0)
+.alias zeros consts.xxxx
+.alias ones  consts.yyyy
+
+.fvec mvp[4]
+
+.in position v0
+
+.out outpos position
+.out outclr color
+
+.proc main
+    mov r0.xyz, v0.xyz
+    mov r0.w,   ones
+
+    dp4 outpos.x, mvp[0], r0
+    dp4 outpos.y, mvp[1], r0
+    dp4 outpos.z, mvp[2], r0
+    dp4 outpos.w, mvp[3], r0
+
+    ; Black, four tenths opaque -- the original's own colour.
+    mov outclr, consts.xxxz
+
+    end
+.end

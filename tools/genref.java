@@ -106,6 +106,22 @@ public class genref {
             emitGenerate(args[1], args[3]);
             return;
         }
+        if (args.length == 4 && args[0].equals("--jar") && args[2].equals("--collision")) {
+            emitCollision(args[1], args[3]);
+            return;
+        }
+        if (args.length == 4 && args[0].equals("--jar") && args[2].equals("--player")) {
+            emitPlayerBody(args[1], args[3]);
+            return;
+        }
+        if (args.length == 4 && args[0].equals("--jar") && args[2].equals("--raytrace")) {
+            emitRayTrace(args[1], args[3]);
+            return;
+        }
+        if (args.length == 4 && args[0].equals("--jar") && args[2].equals("--place")) {
+            emitPlacement(args[1], args[3]);
+            return;
+        }
         System.err.println("       java tools/genref.java --jar <client.jar> --generate <scratch-dir>");
         System.err.println("usage: java tools/genref.java --random     > tests/java_random_vectors.hpp");
         System.err.println("       java tools/genref.java --strictmath > tests/strict_math_vectors.hpp");
@@ -115,6 +131,10 @@ public class genref {
         System.err.println("       java tools/genref.java --jar <client.jar> --world <scratch-dir> > tests/world_vectors.hpp");
         System.err.println("       java tools/genref.java --jar <client.jar> --ore <scratch-dir> > tests/ore_vectors.hpp");
         System.err.println("       java tools/genref.java --jar <client.jar> --liquid <scratch-dir> > tests/liquid_vectors.hpp");
+        System.err.println("       java tools/genref.java --jar <client.jar> --collision <scratch-dir> > tests/collision_box_vectors.hpp");
+        System.err.println("       java tools/genref.java --jar <client.jar> --player <scratch-dir> > tests/player_body_vectors.hpp");
+        System.err.println("       java tools/genref.java --jar <client.jar> --raytrace <scratch-dir> > tests/ray_trace_vectors.hpp");
+        System.err.println("       java tools/genref.java --jar <client.jar> --place <scratch-dir> > tests/placement_vectors.hpp");
         System.exit(2);
     }
 
@@ -4036,6 +4056,1274 @@ public class genref {
 
     private static String hex64(long value) {
         return String.format("0x%016XULL", value);
+    }
+
+    // ---------------------------------------------------------------------
+    // Block collision boxes -- `ly.a(cn,III,cf,ArrayList)`, addCollisionBoxesToList
+    // ---------------------------------------------------------------------
+    //
+    // The whole truth table: every block this version constructs, crossed with
+    // all sixteen metadata values, asked the same question `Entity.moveEntity`
+    // asks through `World.getCollidingBoundingBoxes`. Not a sample -- 16 is the
+    // entire domain of a metadata nibble, so there is nothing else to ask.
+    //
+    // **Why addCollisionBoxesToList and not getCollisionBoundingBoxFromPool.**
+    // The list form is the one the physics calls, and it is the only one that
+    // can answer with more than one box. Exactly one block in a1.1.2 does:
+    // stairs return two, a lower half-step and an upper full-height part. Going
+    // through the single-box entry point would silently flatten them.
+    //
+    // **Two facts this fixture establishes by measurement, both of which could
+    // reasonably have gone the other way:**
+    //
+    //   * A collision box is a pure function of (id, metadata). Nothing reads a
+    //     neighbour. The obvious candidate was the top half of a door, which
+    //     looked like it must consult the half below it for the hinge -- it does
+    //     not, and a door's box comes from its own low three bits, with bit 8
+    //     (the top-half flag) ignored entirely. Fences do not connect either.
+    //     This is what lets our resolver be a pure function with no world
+    //     access, which in turn is what makes it testable without a world.
+    //
+    //   * **A ladder whose metadata is not 2, 3, 4 or 5 sets no bounds at
+    //     all.** BlockLadder assigns its box inside four un-elsed `if`s, so an
+    //     out-of-range value leaves the shared Block singleton holding whatever
+    //     the *previous* query left there -- ask the same ladder the same
+    //     question twice in a different order and it answers differently. That
+    //     is a bug in the original, and it is why the loop below restores each
+    //     block's bounds before every query. **It restores that block's own
+    //     constructor defaults, snapshotted before anything has run, not a unit
+    //     cube:** a slab, a cactus and a fence all set their bounds once in the
+    //     constructor and never again, so resetting to a unit cube would
+    //     quietly record a slab as a full block. The value recorded for a
+    //     ladder's unreachable metadata is therefore its constructor default.
+    //     The game never writes those values.
+    //
+    // Doubles are emitted as plain decimal literals rather than the raw bit
+    // patterns the noise fixtures use, because every bound here is a multiple
+    // of a sixteenth and so is exact in binary -- and a table a human is going
+    // to cross-check against a slab and a stair is worth being able to read.
+    // The emitter does not take that on trust: it parses each literal back and
+    // refuses to emit one that does not compare equal to the double it came
+    // from.
+    //
+    // Regenerate with:
+    //   java tools/genref.java --jar <client.jar> --collision /tmp/genref-scratch
+    //     redirected to tests/collision_box_vectors.hpp
+
+    private static final int COLLISION_MAX_BOXES = 2;
+
+    private static String dbl(double v) {
+        String s;
+        if (v == Math.rint(v) && Math.abs(v) < 1e15) {
+            s = String.valueOf((long) v) + ".0";
+        } else {
+            s = String.valueOf(v);
+        }
+        if (Double.parseDouble(s) != v) {
+            throw new IllegalStateException("literal " + s + " does not round-trip to " + v);
+        }
+        return s;
+    }
+
+    private static void emitCollision(String jarPath, String scratchDir) {
+        java.io.File dir = new java.io.File(scratchDir, "collision");
+        try {
+            java.net.URLClassLoader loader = new java.net.URLClassLoader(
+                new java.net.URL[]{new java.io.File(jarPath).toURI().toURL()},
+                genref.class.getClassLoader());
+
+            Class<?> blockClass = loader.loadClass("ly");
+            Class<?> worldClass = loader.loadClass(WORLD);
+            Class<?> aabbClass = loader.loadClass("cf");
+
+            Object[] blocks = (Object[]) blockClass.getField("n").get(null);
+
+            java.lang.reflect.Constructor<?> ctor =
+                worldClass.getConstructor(java.io.File.class, String.class, long.class);
+            java.lang.reflect.Method getChunk = worldClass.getMethod("b", int.class, int.class);
+            // setBlockAndMetadata(x, y, z, id, metadata). **Not raw**: it runs
+            // onBlockAdded, which drops an unsupported torch on the floor and
+            // rewrites a placed one's metadata to 5. That is correct game
+            // behaviour and exactly wrong for enumerating a shape table, so the
+            // metadata is forced afterwards through the chunk -- see below.
+            java.lang.reflect.Method setBlockAndData = worldClass.getMethod(
+                "a", int.class, int.class, int.class, int.class, int.class);
+            // Chunk.setBlockMetadata(localX, y, localZ, metadata), which writes
+            // the nibble and nothing else.
+            Class<?> chunkClass = loader.loadClass("ga");
+            java.lang.reflect.Method setChunkMeta = chunkClass.getMethod(
+                "b", int.class, int.class, int.class, int.class);
+            java.lang.reflect.Method getBlockId = worldClass.getMethod(
+                "a", int.class, int.class, int.class);
+            java.lang.reflect.Method getBlockMeta = worldClass.getMethod(
+                "e", int.class, int.class, int.class);
+            // addCollisionBoxesToList(world, x, y, z, mask, out)
+            java.lang.reflect.Method addBoxes = blockClass.getMethod(
+                "a", worldClass, int.class, int.class, int.class, aabbClass,
+                java.util.ArrayList.class);
+            // Block's own minX..maxZ. Written directly rather than through
+            // setBlockBounds(float x6), because these are doubles and a round
+            // trip through float is a lossy step this has no reason to take.
+            java.lang.reflect.Field[] bound = {
+                blockClass.getField("bf"), blockClass.getField("bg"), blockClass.getField("bh"),
+                blockClass.getField("bi"), blockClass.getField("bj"), blockClass.getField("bk"),
+            };
+
+            // Block.slipperiness -- 0.6 for everything except ice.
+            java.lang.reflect.Field slipperiness = blockClass.getField("bo");
+
+            // **collisionRayTrace, called for its side effect.**
+            // `setBlockBoundsBasedOnState` is an *empty method* on Block in
+            // a1.1.2 and a torch does not override it -- the torch overrides
+            // collisionRayTrace instead and sets its bounds inline before
+            // delegating to super. So the only way to see the shape the ray
+            // actually tests against is to run the same entry point the ray
+            // does and then read what it left on the singleton. Asking
+            // setBlockBoundsBasedOnState instead reports every torch in the
+            // game as a full cube.
+            java.lang.reflect.Method collisionRayTrace = blockClass.getMethod(
+                "a", worldClass, int.class, int.class, int.class,
+                loader.loadClass("aj"), loader.loadClass("aj"));
+            Class<?> vecClass = loader.loadClass("aj");
+            java.lang.reflect.Method makeVec = vecClass.getMethod(
+                "a", double.class, double.class, double.class);
+            // canCollideCheck(metadata, hitLiquids) -- whether the ray sees it
+            // at all.
+            java.lang.reflect.Method canCollideCheck = blockClass.getMethod(
+                "a", int.class, boolean.class);
+            // AxisAlignedBB.getBoundingBox -- the unpooled factory, so the mask
+            // cannot be recycled out from under us by anything the block does.
+            java.lang.reflect.Method makeBox = aabbClass.getMethod(
+                "a", double.class, double.class, double.class,
+                double.class, double.class, double.class);
+
+            java.lang.reflect.Field[] edge = {
+                aabbClass.getField("a"), aabbClass.getField("b"), aabbClass.getField("c"),
+                aabbClass.getField("d"), aabbClass.getField("e"), aabbClass.getField("f"),
+            };
+
+            deleteTree(dir);
+            dir.mkdirs();
+            Object world = ctor.newInstance(dir, "genref", 1234567890L);
+            getChunk.invoke(world, 0, 0);
+
+            // High above the generated surface, so the block under test is
+            // surrounded by air and nothing it is placed against can matter.
+            final int bx = 8;
+            final int by = 100;
+            final int bz = 8;
+            // Something to stand on. Without it a torch, a sapling or a rail
+            // deletes itself the instant it is placed and the sweep records the
+            // shape of air.
+            final int supportY = by - 1;
+            final double[] origin = {bx, by, bz, bx, by, bz};
+
+            // Snapshotted before a single query runs, so nothing has had a
+            // chance to leave its own bounds behind on the singleton.
+            double[][] defaults = new double[256][6];
+            for (int id = 0; id < 256 && id < blocks.length; id++) {
+                if (blocks[id] == null) {
+                    continue;
+                }
+                for (int e = 0; e < 6; e++) {
+                    defaults[id][e] = bound[e].getDouble(blocks[id]);
+                }
+            }
+
+            p("// Generated by tools/genref.java --jar <client.jar> --collision <scratch-dir>.");
+            p("// Do not edit by hand.");
+            p("//");
+            p("// **Every collision box in a1.1.2**: each block the version constructs, crossed");
+            p("// with all sixteen metadata values, asked through `addCollisionBoxesToList` --");
+            p("// the same entry point `Entity.moveEntity` reaches through");
+            p("// `World.getCollidingBoundingBoxes`. Sixteen is the whole domain of a metadata");
+            p("// nibble, so this is the entire truth table rather than a sample of it.");
+            p("//");
+            p("// Coordinates are relative to the block's own corner, so a full cube is");
+            p("// 0,0,0 -> 1,1,1. Boxes are listed in the order the original appends them.");
+            p("//");
+            p("// Measured facts worth not re-deriving:");
+            p("//");
+            p("//   * A box depends only on (id, metadata). Nothing consults a neighbour --");
+            p("//     not the top half of a door, which reads its own low three bits and");
+            p("//     ignores bit 8 entirely, and not a fence, which does not connect. That");
+            p("//     is what lets mc::block::collisionBoxes be a pure function.");
+            p("//   * Stairs are the only block that answers with more than one box.");
+            p("//   * A ladder with metadata outside 2..5 sets no bounds at all, and in the");
+            p("//     original answers with whatever the shared Block singleton was left");
+            p("//     holding by the previous query. The generator restores each block's own");
+            p("//     constructor bounds before every query, so what is recorded here is that");
+            p("//     default rather than an artefact of iteration order.");
+            p("//");
+            p("// Regenerate with:");
+            p("//   java tools/genref.java --jar <client.jar> --collision /tmp/genref-scratch");
+            p("//     redirected to tests/collision_box_vectors.hpp");
+            p("");
+            p("#pragma once");
+            p("");
+            p("#include \"core/util/types.hpp\"");
+            p("");
+            p("namespace mc::test {");
+            p("");
+            p("struct CollisionBox {");
+            p("    double minX, minY, minZ, maxX, maxY, maxZ;");
+            p("};");
+            p("");
+            p("struct CollisionCase {");
+            p("    u16 id;");
+            p("    u8 metadata;");
+            p("    int boxCount;                 // 0 means the block does not collide");
+            p("    CollisionBox boxes[" + COLLISION_MAX_BOXES + "];");
+            p("};");
+            p("");
+
+            StringBuilder table = new StringBuilder();
+            StringBuilder selection = new StringBuilder();
+            StringBuilder targets = new StringBuilder();
+            int cases = 0;
+            int empty = 0;
+            int multi = 0;
+            int nonUnit = 0;
+            int targetableCases = 0;
+            int unplaceable = 0;
+
+            for (int id = 0; id < 256; id++) {
+                if (id >= blocks.length || blocks[id] == null) {
+                    continue;
+                }
+                for (int meta = 0; meta < 16; meta++) {
+                    // Clear the block, then put this block's own constructor
+                    // bounds back, so one that sets none per-state is recorded
+                    // as itself rather than as the last block's leftovers.
+                    setBlockAndData.invoke(world, bx, by, bz, 0, 0);
+                    setBlockAndData.invoke(world, bx, supportY, bz, 1, 0);
+                    for (int e = 0; e < 6; e++) {
+                        bound[e].setDouble(blocks[id], defaults[id][e]);
+                    }
+                    setBlockAndData.invoke(world, bx, by, bz, id, meta);
+                    // Force the nibble under the placement rules, so the sweep
+                    // really is every metadata rather than every metadata the
+                    // block would have accepted.
+                    Object chunk = getChunk.invoke(world, bx >> 4, bz >> 4);
+                    setChunkMeta.invoke(chunk, bx & 15, by, bz & 15, meta);
+                    final boolean survived =
+                        ((Integer) getBlockId.invoke(world, bx, by, bz)).intValue() == id
+                        && ((Integer) getBlockMeta.invoke(world, bx, by, bz)).intValue() == meta;
+                    if (!survived) {
+                        unplaceable++;
+                    }
+
+                    Object mask = makeBox.invoke(null,
+                        bx - 1.0, by - 1.0, bz - 1.0, bx + 2.0, by + 2.0, bz + 2.0);
+                    java.util.ArrayList<Object> found = new java.util.ArrayList<Object>();
+                    addBoxes.invoke(blocks[id], world, bx, by, bz, mask, found);
+
+                    // The **selection** shape, which is not the collision shape:
+                    // `collisionRayTrace` calls setBlockBoundsBasedOnState and
+                    // then reads the block's own bounds, so a torch -- which
+                    // collides with nothing -- still has a box to be looked at.
+                    for (int e = 0; e < 6; e++) {
+                        bound[e].setDouble(blocks[id], defaults[id][e]);
+                    }
+                    // A ray from well outside the block to well outside the
+                    // other side, so it is a real query rather than a
+                    // degenerate one. What it returns is discarded; what it
+                    // leaves in bf..bk is the answer.
+                    collisionRayTrace.invoke(blocks[id], world, bx, by, bz,
+                        makeVec.invoke(null, bx - 2.0, by + 0.5, bz + 0.5),
+                        makeVec.invoke(null, bx + 3.0, by + 0.5, bz + 0.5));
+                    StringBuilder pick = new StringBuilder();
+                    for (int e = 0; e < 6; e++) {
+                        pick.append(e == 0 ? "" : ", ").append(dbl(bound[e].getDouble(blocks[id])));
+                    }
+                    final boolean targetable =
+                        ((Boolean) canCollideCheck.invoke(blocks[id], meta, Boolean.FALSE))
+                            .booleanValue();
+                    selection.append("    {").append(pick).append("},   // ")
+                             .append(id).append(" meta ").append(meta).append("\n");
+                    targets.append(targetable ? "    true,\n" : "    false,\n");
+                    if (targetable) {
+                        targetableCases++;
+                    }
+
+                    if (found.size() > COLLISION_MAX_BOXES) {
+                        throw new IllegalStateException("block " + id + " metadata " + meta
+                            + " returned " + found.size() + " boxes; COLLISION_MAX_BOXES is "
+                            + COLLISION_MAX_BOXES);
+                    }
+
+                    StringBuilder boxes = new StringBuilder();
+                    for (int b = 0; b < COLLISION_MAX_BOXES; b++) {
+                        boxes.append(b == 0 ? "" : ", ").append("{");
+                        if (b < found.size()) {
+                            Object box = found.get(b);
+                            boolean unit = true;
+                            for (int e = 0; e < 6; e++) {
+                                double v = edge[e].getDouble(box) - origin[e];
+                                boxes.append(e == 0 ? "" : ", ").append(dbl(v));
+                                if (v != (e < 3 ? 0.0 : 1.0)) {
+                                    unit = false;
+                                }
+                            }
+                            if (!unit) {
+                                nonUnit++;
+                            }
+                        } else {
+                            boxes.append("0.0, 0.0, 0.0, 0.0, 0.0, 0.0");
+                        }
+                        boxes.append("}");
+                    }
+
+                    if (found.isEmpty()) {
+                        empty++;
+                    }
+                    if (found.size() > 1) {
+                        multi++;
+                    }
+                    cases++;
+                    table.append("    {").append(id).append(", ").append(meta).append(", ")
+                         .append(found.size()).append(", {").append(boxes).append("}},\n");
+                }
+            }
+            setBlockAndData.invoke(world, bx, by, bz, 0, 0);
+
+            // Slipperiness rides along in this fixture rather than getting one of
+            // its own: it is the other half of what a block does to something
+            // standing on it, `EntityLiving.moveEntityWithHeading` reads it out
+            // of the same table in the same breath as the collision box, and it
+            // is one float per block rather than a fixture's worth of data.
+            p("// Ground friction, `Block.slipperiness`. The default is 0.6 and exactly one");
+            p("// block in a1.1.2 overrides it. `moveEntityWithHeading` multiplies this by");
+            p("// 0.91 to get the factor it applies to horizontal motion each tick.");
+            p("inline constexpr float kBlockSlipperiness[256] = {");
+            for (int row = 0; row < 256; row += 8) {
+                StringBuilder sb = new StringBuilder();
+                for (int id = row; id < row + 8; id++) {
+                    float value = 0.0f;
+                    if (id < blocks.length && blocks[id] != null) {
+                        value = slipperiness.getFloat(blocks[id]);
+                    }
+                    sb.append(id == row ? "" : ", ").append(value).append("f");
+                }
+                p("    " + sb + ",");
+            }
+            p("};");
+            p("");
+            p("inline constexpr int kCollisionCaseCount = " + cases + ";");
+            p("");
+            p("// The **selection** box, in the same order as kCollisionCases: the block's own");
+            p("// bounds after setBlockBoundsBasedOnState, which is what Block.collisionRayTrace");
+            p("// reads. It is not the collision box -- a torch has no collision box at all and");
+            p("// still has one of these, which is why a torch can be aimed at and broken but");
+            p("// not stood on.");
+            p("inline constexpr CollisionBox kSelectionBoxes[kCollisionCaseCount] = {");
+            System.out.print(selection);
+            p("};");
+            p("");
+            p("// Block.canCollideCheck(metadata, false), which in a1.1.2 is just isCollidable():");
+            p("// whether the ray notices the block before it looks at its shape.");
+            p("inline constexpr bool kTargetable[kCollisionCaseCount] = {");
+            System.out.print(targets);
+            p("};");
+            p("");
+            p("inline constexpr int kTargetableCases = " + targetableCases + ";");
+            p("");
+            p("// How many (id, metadata) pairs the game refused to hold even with the nibble");
+            p("// forced -- a block that deletes itself on placement whatever is under it. Their");
+            p("// shapes are still enumerated, because the shape of a block is a property of the");
+            p("// block and not of whether this scene could keep one alive.");
+            p("inline constexpr int kUnplaceableCases = " + unplaceable + ";");
+            p("");
+            p("");
+            p("// Negative controls. A resolver that answered \"unit cube, always\" would pass a");
+            p("// fixture with no empties and no odd sizes in it; one that answered \"nothing");
+            p("// collides\" would pass a fixture that was all empties. The tests assert these");
+            p("// counts, so neither degenerate resolver can be green.");
+            p("inline constexpr int kCollisionEmptyCases = " + empty + ";");
+            p("inline constexpr int kCollisionMultiBoxCases = " + multi + ";");
+            p("inline constexpr int kCollisionNonUnitBoxes = " + nonUnit + ";");
+            p("");
+            p("inline constexpr CollisionCase kCollisionCases[kCollisionCaseCount] = {");
+            System.out.print(table);
+            p("};");
+            p("");
+            p("}  // namespace mc::test");
+        } catch (Exception e) {
+            System.err.println("genref --collision failed: " + e);
+            e.printStackTrace();
+            System.exit(1);
+        } finally {
+            deleteTree(dir);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // The player body -- `ge.b(FF)` (moveEntityWithHeading) driving
+    // `kh.c(DDD)` (moveEntity), on a real `dm` (EntityPlayer)
+    // ---------------------------------------------------------------------
+    //
+    // **The entity is the real EntityPlayer, not a stand-in.** `dm` turns out to
+    // be concrete, to take nothing but a World, and to override neither of the
+    // two movement methods -- so this drives the same code the game does, with
+    // the game's own 0.6 x 1.8 box, 1.62 eye and 0.5 step height, all of which
+    // the emitter reads back out and prints rather than assuming.
+    //
+    // **Each scene is emitted as the list of blocks that make it**, not as a
+    // procedure, so the C++ test builds a bit-identical world without either
+    // side reimplementing the other's scene builder. The play volume is cleared
+    // to air first and the clear is part of the contract: the harness starts
+    // from air and places exactly these blocks.
+    //
+    // **Doubles are raw bit patterns here, unlike the collision fixture.**
+    // There every bound was a multiple of a sixteenth and exact in decimal;
+    // here almost nothing is -- gravity compounds through a drag of
+    // 0.9800000190734863 -- and a decimal round trip could hide the one-ulp
+    // disagreement that this exists to catch.
+    //
+    // **What it does not cover: sneaking.** `Entity.isSneaking` is a hardcoded
+    // false and only the client-side player class overrides it, so an
+    // EntityPlayer cannot be made to sneak from outside. The ledge walk-back in
+    // moveEntity is therefore unreachable from here and is tested by hand.
+    // Water and lava are likewise out: the C++ side implements the land branch.
+    //
+    // Regenerate with:
+    //   java tools/genref.java --jar <client.jar> --player /tmp/genref-scratch
+    //     redirected to tests/player_body_vectors.hpp
+
+    // A scene: blocks placed relative to the case's origin, as
+    // {dx, dy, dz, id, metadata}.
+    private static final int[][] SCENE_NONE = {};
+
+    private static int[][] plate(int id, int x0, int x1, int z0, int z1) {
+        java.util.List<int[]> out = new java.util.ArrayList<int[]>();
+        for (int x = x0; x <= x1; x++) {
+            for (int z = z0; z <= z1; z++) {
+                out.add(new int[]{x, 0, z, id, 0});
+            }
+        }
+        return out.toArray(new int[0][]);
+    }
+
+    private static int[][] concat(int[][] a, int[][] b) {
+        int[][] out = new int[a.length + b.length][];
+        System.arraycopy(a, 0, out, 0, a.length);
+        System.arraycopy(b, 0, out, a.length, b.length);
+        return out;
+    }
+
+    // Some of Entity's fields are protected rather than public -- fallDistance
+    // is -- so this walks the hierarchy and forces access rather than making
+    // the caller know which are which.
+    private static java.lang.reflect.Field entityField(Class<?> from, String name)
+            throws NoSuchFieldException {
+        for (Class<?> c = from; c != null; c = c.getSuperclass()) {
+            try {
+                java.lang.reflect.Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException ignored) {
+                // keep walking
+            }
+        }
+        throw new NoSuchFieldException(name);
+    }
+
+    private static String dbits(double v) {
+        return "0x" + Long.toHexString(Double.doubleToRawLongBits(v)) + "ULL";
+    }
+
+    private static String fbits(float v) {
+        return "0x" + Integer.toHexString(Float.floatToRawIntBits(v)) + "u";
+    }
+
+    private static void emitPlayerBody(String jarPath, String scratchDir) {
+        java.io.File dir = new java.io.File(scratchDir, "player");
+        try {
+            java.net.URLClassLoader loader = new java.net.URLClassLoader(
+                new java.net.URL[]{new java.io.File(jarPath).toURI().toURL()},
+                genref.class.getClassLoader());
+
+            Class<?> worldClass = loader.loadClass(WORLD);
+            Class<?> entityClass = loader.loadClass("kh");
+            Class<?> livingClass = loader.loadClass("ge");
+            Class<?> playerClass = loader.loadClass("dm");
+
+            java.lang.reflect.Constructor<?> worldCtor =
+                worldClass.getConstructor(java.io.File.class, String.class, long.class);
+            java.lang.reflect.Constructor<?> playerCtor = playerClass.getConstructor(worldClass);
+            java.lang.reflect.Method getChunk = worldClass.getMethod("b", int.class, int.class);
+            java.lang.reflect.Method setBlockAndData = worldClass.getMethod(
+                "a", int.class, int.class, int.class, int.class, int.class);
+
+            java.lang.reflect.Method setPosition = entityClass.getMethod(
+                "a", double.class, double.class, double.class);
+            java.lang.reflect.Method moveWithHeading =
+                livingClass.getMethod("b", float.class, float.class);
+            java.lang.reflect.Method jumpMethod = livingClass.getDeclaredMethod("C");
+            jumpMethod.setAccessible(true);
+
+            java.lang.reflect.Field posX = entityField(entityClass, "ak");
+            java.lang.reflect.Field posY = entityField(entityClass, "al");
+            java.lang.reflect.Field posZ = entityField(entityClass, "am");
+            java.lang.reflect.Field motionX = entityField(entityClass, "an");
+            java.lang.reflect.Field motionY = entityField(entityClass, "ao");
+            java.lang.reflect.Field motionZ = entityField(entityClass, "ap");
+            java.lang.reflect.Field yawField = entityField(entityClass, "aq");
+            java.lang.reflect.Field boxField = entityField(entityClass, "au");
+            java.lang.reflect.Field onGround = entityField(entityClass, "av");
+            java.lang.reflect.Field collidedH = entityField(entityClass, "aw");
+            java.lang.reflect.Field collidedV = entityField(entityClass, "ax");
+            java.lang.reflect.Field yOffset = entityField(entityClass, "aB");
+            java.lang.reflect.Field fallDistance = entityField(entityClass, "aH");
+            java.lang.reflect.Field ySize = entityField(entityClass, "aL");
+            java.lang.reflect.Field stepHeight = entityField(entityClass, "aM");
+            java.lang.reflect.Field widthField = entityField(entityClass, "aC");
+            java.lang.reflect.Field heightField = entityField(entityClass, "aD");
+            java.lang.reflect.Field boxMinY = entityField(loader.loadClass("cf"), "b");
+
+            final int STONE = 1;
+            final int SLAB = 44;
+            final int ICE = 79;
+            final int FENCE = 85;
+
+            // {name, scene, yaw, strafe, forward, jump, startFeetAbove, steps}
+            //
+            // **Yaw 0 faces +Z**, so every walkway runs long in z and the
+            // obstacles sit at +z. Building them along x instead makes the
+            // player stroll off the side, which is a good way to spend an
+            // afternoon comparing two different falls.
+            Object[][] cases = {
+                {"fall_onto_stone_from_eight_blocks", plate(STONE, -3, 3, -3, 3),
+                 0.0f, 0.0f, 0.0f, false, 8.0, 45},
+                {"walk_forward_on_flat_stone", plate(STONE, -3, 3, -3, 12),
+                 0.0f, 0.0f, 1.0f, false, 0.0, 40},
+                {"walk_forward_into_a_wall", concat(plate(STONE, -3, 3, -3, 12),
+                     new int[][]{{-1,1,3,STONE,0},{0,1,3,STONE,0},{1,1,3,STONE,0},
+                                 {-1,2,3,STONE,0},{0,2,3,STONE,0},{1,2,3,STONE,0}}),
+                 0.0f, 0.0f, 1.0f, false, 0.0, 40},
+                {"step_up_a_slab", concat(plate(STONE, -3, 3, -3, 12),
+                     new int[][]{{-1,1,3,SLAB,0},{0,1,3,SLAB,0},{1,1,3,SLAB,0}}),
+                 0.0f, 0.0f, 1.0f, false, 0.0, 40},
+                {"a_full_block_is_too_tall_to_step", concat(plate(STONE, -3, 3, -3, 12),
+                     new int[][]{{-1,1,3,STONE,0},{0,1,3,STONE,0},{1,1,3,STONE,0}}),
+                 0.0f, 0.0f, 1.0f, false, 0.0, 40},
+                {"a_fence_is_a_block_and_a_half_and_cannot_be_jumped",
+                 concat(plate(STONE, -3, 3, -3, 12),
+                     new int[][]{{-1,1,3,FENCE,0},{0,1,3,FENCE,0},{1,1,3,FENCE,0}}),
+                 0.0f, 0.0f, 1.0f, true, 0.0, 45},
+                {"walk_off_the_end_of_a_ledge", plate(STONE, -3, 3, -3, 2),
+                 0.0f, 0.0f, 1.0f, false, 0.0, 30},
+                {"jump_repeatedly_on_the_spot", plate(STONE, -3, 3, -3, 3),
+                 0.0f, 0.0f, 0.0f, true, 0.0, 45},
+                {"walk_on_ice_keeps_sliding", plate(ICE, -3, 3, -3, 12),
+                 0.0f, 0.0f, 1.0f, false, 0.0, 45},
+                {"walk_diagonally_into_a_corner", concat(plate(STONE, -8, 8, -8, 8),
+                     new int[][]{{-1,1,3,STONE,0},{0,1,3,STONE,0},{1,1,3,STONE,0},
+                                 {2,1,3,STONE,0},{2,1,2,STONE,0},{2,1,1,STONE,0},
+                                 {2,1,0,STONE,0},{2,1,-1,STONE,0}}),
+                 45.0f, 0.0f, 1.0f, false, 0.0, 40},
+                {"strafe_and_forward_together_do_not_go_faster",
+                 plate(STONE, -10, 10, -10, 10),
+                 0.0f, 1.0f, 1.0f, false, 0.0, 30},
+            };
+
+            // Two origins, so every case is run once in positive coordinates
+            // and once across the negative axis -- the place a floor divide
+            // that should be an arithmetic shift goes wrong by a whole chunk.
+            int[][] origins = {{8, 70, 8}, {-317, 70, -404}};
+
+            p("// Generated by tools/genref.java --jar <client.jar> --player <scratch-dir>.");
+            p("// Do not edit by hand.");
+            p("//");
+            p("// **A real a1.1.2 EntityPlayer, ticked.** `dm` is concrete, takes only a World,");
+            p("// and overrides neither moveEntity nor moveEntityWithHeading, so these are the");
+            p("// game's own numbers rather than a stand-in's. Every case runs twice: once in");
+            p("// positive coordinates and once across the negative axis, which is where a");
+            p("// floor divide that should have been an arithmetic shift goes wrong by a whole");
+            p("// chunk.");
+            p("//");
+            p("// Each scene is a list of blocks placed into a volume that was cleared to air,");
+            p("// so the harness can rebuild the world exactly rather than reimplementing a");
+            p("// scene builder. Positions are relative to the case's origin, whose y is the");
+            p("// level the plate's top surface sits at. The clear runs deep -- a player who");
+            p("// steps off a ledge falls tens of blocks, and generated terrain below a");
+            p("// shallow shell would catch them here and not in the harness.");
+            p("//");
+            p("// **Yaw 0 faces +Z**, so the walkways run long in z.");
+            p("//");
+            p("// Doubles are raw bit patterns. Unlike the collision boxes, almost nothing");
+            p("// here is exact in decimal -- gravity compounds through a drag of");
+            p("// 0.9800000190734863 -- and a decimal round trip could hide exactly the");
+            p("// one-ulp disagreement this fixture exists to catch.");
+            p("//");
+            p("// **Sneaking is not covered.** Entity.isSneaking is a hardcoded false and only");
+            p("// the client-side player class overrides it, so an EntityPlayer cannot be made");
+            p("// to sneak from outside the game. The ledge walk-back is tested by hand.");
+            p("// Water and lava are likewise absent; the C++ side implements the land branch.");
+            p("//");
+            p("// Regenerate with:");
+            p("//   java tools/genref.java --jar <client.jar> --player /tmp/genref-scratch");
+            p("//     redirected to tests/player_body_vectors.hpp");
+            p("");
+            p("#pragma once");
+            p("");
+            p("#include \"core/util/types.hpp\"");
+            p("");
+            p("namespace mc::test {");
+            p("");
+            p("// The dimensions the emitter read back off a constructed EntityPlayer, so the");
+            p("// constants in player_body.hpp are checked against the jar and not just against");
+            p("// the prose in docs/physics-a1.1.2.md.");
+            {
+                Object probe = playerCtor.newInstance(
+                    worldCtor.newInstance(new java.io.File(dir, "probe"), "genref", 1L));
+                p("inline constexpr float kPlayerYOffset = " + yOffset.getFloat(probe) + "f;");
+                p("inline constexpr float kPlayerBoxWidth = " + widthField.getFloat(probe) + "f;");
+                p("inline constexpr float kPlayerBoxHeight = " + heightField.getFloat(probe) + "f;");
+                p("inline constexpr float kPlayerStepHeight = " + stepHeight.getFloat(probe) + "f;");
+            }
+            p("");
+            p("struct ScenePlacement {");
+            p("    i32 dx;");
+            p("    int dy;");
+            p("    i32 dz;");
+            p("    u16 id;");
+            p("    u8 metadata;");
+            p("};");
+            p("");
+            p("// One tick's worth of state, straight off the entity's fields.");
+            p("struct PlayerBodyStep {");
+            p("    u64 posX, posY, posZ;        // the original's posY -- the eye");
+            p("    u64 motionX, motionY, motionZ;");
+            p("    u64 boxMinY;                 // the feet");
+            p("    u32 ySize, fallDistance;");
+            p("    bool onGround, collidedHorizontally, collidedVertically;");
+            p("};");
+            p("");
+            p("struct PlayerBodyCase {");
+            p("    const char* name;");
+            p("    i32 originX;");
+            p("    int originY;");
+            p("    i32 originZ;");
+            p("    int placementCount;");
+            p("    const ScenePlacement* placements;");
+            p("    float yawDegrees, strafe, forward;");
+            p("    bool jump;");
+            p("    u64 startFeetAbove;          // blocks above the plate's top surface");
+            p("    int stepCount;");
+            p("    const PlayerBodyStep* steps;");
+            p("};");
+            p("");
+
+            StringBuilder table = new StringBuilder();
+            int emitted = 0;
+            int groundedSteps = 0;
+            int airborneSteps = 0;
+
+            for (int c = 0; c < cases.length; c++) {
+                final String name = (String) cases[c][0];
+                final int[][] scene = (int[][]) cases[c][1];
+                final float yaw = ((Float) cases[c][2]).floatValue();
+                final float strafe = ((Float) cases[c][3]).floatValue();
+                final float forward = ((Float) cases[c][4]).floatValue();
+                final boolean jumping = ((Boolean) cases[c][5]).booleanValue();
+                final double startAbove = ((Double) cases[c][6]).doubleValue();
+                final int steps = ((Integer) cases[c][7]).intValue();
+
+                for (int o = 0; o < origins.length; o++) {
+                    final int ox = origins[o][0];
+                    final int oy = origins[o][1];
+                    final int oz = origins[o][2];
+
+                    java.io.File wdir = new java.io.File(dir, "w" + c + "_" + o);
+                    deleteTree(wdir);
+                    wdir.mkdirs();
+                    Object world = worldCtor.newInstance(wdir, "genref", 1234567890L);
+                    for (int cx = (ox >> 4) - 2; cx <= (ox >> 4) + 2; cx++) {
+                        for (int cz = (oz >> 4) - 2; cz <= (oz >> 4) + 2; cz++) {
+                            getChunk.invoke(world, cx, cz);
+                        }
+                    }
+
+                    // Clear the play volume to air. The harness starts from air,
+                    // so this is what makes the two worlds the same world.
+                    // Deep, not just around the scene: a player who walks off
+                    // a ledge falls tens of blocks, and generated terrain under
+                    // the cleared shell would catch them here and nowhere else.
+                    for (int dx = -14; dx <= 14; dx++) {
+                        for (int dz = -14; dz <= 14; dz++) {
+                            for (int dy = -45; dy <= 24; dy++) {
+                                setBlockAndData.invoke(world, ox + dx, oy + dy, oz + dz, 0, 0);
+                            }
+                        }
+                    }
+                    for (int[] b : scene) {
+                        setBlockAndData.invoke(world, ox + b[0], oy + b[1], oz + b[2], b[3], b[4]);
+                    }
+
+                    Object player = playerCtor.newInstance(world);
+                    // The plate's top surface is at oy + 1, so feet stand there.
+                    final double feet = (double) oy + 1.0 + startAbove;
+                    setPosition.invoke(player, (double) ox + 0.5,
+                                       feet + (double) yOffset.getFloat(player),
+                                       (double) oz + 0.5);
+                    motionX.setDouble(player, 0.0);
+                    motionY.setDouble(player, 0.0);
+                    motionZ.setDouble(player, 0.0);
+                    onGround.setBoolean(player, false);
+                    ySize.setFloat(player, 0.0f);
+                    fallDistance.setFloat(player, 0.0f);
+                    yawField.setFloat(player, yaw);
+
+                    StringBuilder rows = new StringBuilder();
+                    for (int s = 0; s < steps; s++) {
+                        // The order onLivingUpdate uses: jump first, if the
+                        // button is held and there is something underfoot.
+                        if (jumping && onGround.getBoolean(player)) {
+                            jumpMethod.invoke(player);
+                        }
+                        moveWithHeading.invoke(player, strafe, forward);
+
+                        Object bb = boxField.get(player);
+                        rows.append("    {")
+                            .append(dbits(posX.getDouble(player))).append(", ")
+                            .append(dbits(posY.getDouble(player))).append(", ")
+                            .append(dbits(posZ.getDouble(player))).append(", ")
+                            .append(dbits(motionX.getDouble(player))).append(", ")
+                            .append(dbits(motionY.getDouble(player))).append(", ")
+                            .append(dbits(motionZ.getDouble(player))).append(", ")
+                            .append(dbits(boxMinY.getDouble(bb))).append(", ")
+                            .append(fbits(ySize.getFloat(player))).append(", ")
+                            .append(fbits(fallDistance.getFloat(player))).append(", ")
+                            .append(onGround.getBoolean(player)).append(", ")
+                            .append(collidedH.getBoolean(player)).append(", ")
+                            .append(collidedV.getBoolean(player))
+                            .append("},\n");
+                        if (onGround.getBoolean(player)) {
+                            groundedSteps++;
+                        } else {
+                            airborneSteps++;
+                        }
+                    }
+
+                    final String tag = name + (o == 0 ? "" : "_negative");
+                    p("inline constexpr ScenePlacement kScene_" + tag + "["
+                      + Math.max(scene.length, 1) + "] = {");
+                    if (scene.length == 0) {
+                        p("    {0, 0, 0, 0, 0},");
+                    }
+                    for (int[] b : scene) {
+                        p("    {" + b[0] + ", " + b[1] + ", " + b[2] + ", " + b[3] + ", " + b[4] + "},");
+                    }
+                    p("};");
+                    p("");
+                    p("inline constexpr PlayerBodyStep kSteps_" + tag + "[" + steps + "] = {");
+                    System.out.print(rows);
+                    p("};");
+                    p("");
+
+                    table.append("    {\"").append(tag).append("\", ")
+                         .append(ox).append(", ").append(oy).append(", ").append(oz).append(", ")
+                         .append(scene.length).append(", kScene_").append(tag).append(", ")
+                         .append(yaw).append("f, ").append(strafe).append("f, ")
+                         .append(forward).append("f, ").append(jumping).append(", ")
+                         .append(dbits(startAbove)).append(", ")
+                         .append(steps).append(", kSteps_").append(tag).append("},\n");
+                    emitted++;
+                    deleteTree(wdir);
+                }
+            }
+
+            p("inline constexpr int kPlayerBodyCaseCount = " + emitted + ";");
+            p("");
+            p("// Negative controls. A body that never left the ground, or never touched it,");
+            p("// would satisfy a run that only compared positions in one of those states.");
+            p("inline constexpr int kPlayerBodyGroundedSteps = " + groundedSteps + ";");
+            p("inline constexpr int kPlayerBodyAirborneSteps = " + airborneSteps + ";");
+            p("");
+            p("inline constexpr PlayerBodyCase kPlayerBodyCases[kPlayerBodyCaseCount] = {");
+            System.out.print(table);
+            p("};");
+            p("");
+            p("}  // namespace mc::test");
+        } catch (Exception e) {
+            System.err.println("genref --player failed: " + e);
+            e.printStackTrace();
+            System.exit(1);
+        } finally {
+            deleteTree(dir);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // What the crosshair is on -- `cn.a(aj,aj,Z)` (rayTraceBlocks) driving
+    // `ly.a(cn,III,aj,aj)` (collisionRayTrace)
+    // ---------------------------------------------------------------------
+    //
+    // A scene with one of everything awkward in it -- a slab, stairs, a wall
+    // torch, a fence, a ladder, a door, a pane of water -- and several hundred
+    // rays swept across it from four eye positions.
+    //
+    // **The scene is emitted as a readback, not as what was asked for.** Some
+    // blocks rewrite their own metadata when placed (a torch put on a floor
+    // becomes metadata 5 whatever it was told) and some delete themselves
+    // outright, so what the fixture records is every non-air block the world
+    // actually held afterwards. That way the harness rebuilds the same world
+    // instead of the same intentions.
+    //
+    // **Directions are emitted rather than yaw and pitch.** This is a test of
+    // the ray walk, not of getLook; feeding both sides the same vector keeps
+    // one from covering for the other.
+
+    private static void emitRayTrace(String jarPath, String scratchDir) {
+        java.io.File dir = new java.io.File(scratchDir, "raytrace");
+        try {
+            java.net.URLClassLoader loader = new java.net.URLClassLoader(
+                new java.net.URL[]{new java.io.File(jarPath).toURI().toURL()},
+                genref.class.getClassLoader());
+
+            Class<?> worldClass = loader.loadClass(WORLD);
+            Class<?> vecClass = loader.loadClass("aj");
+            Class<?> hitClass = loader.loadClass("mf");
+
+            java.lang.reflect.Constructor<?> worldCtor =
+                worldClass.getConstructor(java.io.File.class, String.class, long.class);
+            java.lang.reflect.Method getChunk = worldClass.getMethod("b", int.class, int.class);
+            java.lang.reflect.Method setBlockAndData = worldClass.getMethod(
+                "a", int.class, int.class, int.class, int.class, int.class);
+            java.lang.reflect.Method getId = worldClass.getMethod(
+                "a", int.class, int.class, int.class);
+            java.lang.reflect.Method getMeta = worldClass.getMethod(
+                "e", int.class, int.class, int.class);
+            java.lang.reflect.Method rayTrace = worldClass.getMethod("a", vecClass, vecClass);
+            java.lang.reflect.Method makeVec = vecClass.getMethod(
+                "a", double.class, double.class, double.class);
+
+            java.lang.reflect.Field hitX = entityField(hitClass, "b");
+            java.lang.reflect.Field hitY = entityField(hitClass, "c");
+            java.lang.reflect.Field hitZ = entityField(hitClass, "d");
+            java.lang.reflect.Field hitSide = entityField(hitClass, "e");
+            java.lang.reflect.Field hitVec = entityField(hitClass, "f");
+            java.lang.reflect.Field vecX = entityField(vecClass, "a");
+            java.lang.reflect.Field vecY = entityField(vecClass, "b");
+            java.lang.reflect.Field vecZ = entityField(vecClass, "c");
+
+            deleteTree(dir);
+            dir.mkdirs();
+            Object world = worldCtor.newInstance(dir, "genref", 1234567890L);
+
+            final int ox = 8;
+            final int oy = 70;
+            final int oz = 8;
+            for (int cx = (ox >> 4) - 1; cx <= (ox >> 4) + 1; cx++) {
+                for (int cz = (oz >> 4) - 1; cz <= (oz >> 4) + 1; cz++) {
+                    getChunk.invoke(world, cx, cz);
+                }
+            }
+            for (int dx = -10; dx <= 10; dx++) {
+                for (int dz = -10; dz <= 10; dz++) {
+                    for (int dy = -3; dy <= 10; dy++) {
+                        setBlockAndData.invoke(world, ox + dx, oy + dy, oz + dz, 0, 0);
+                    }
+                }
+            }
+
+            // A floor, and then one of everything with an interesting shape.
+            for (int dx = -6; dx <= 6; dx++) {
+                for (int dz = -6; dz <= 6; dz++) {
+                    setBlockAndData.invoke(world, ox + dx, oy, oz + dz, 1, 0);
+                }
+            }
+            setBlockAndData.invoke(world, ox + 0, oy + 1, oz + 2, 44, 0);   // slab
+            setBlockAndData.invoke(world, ox + 1, oy + 1, oz + 2, 53, 0);   // wooden stairs
+            setBlockAndData.invoke(world, ox + 2, oy + 1, oz + 2, 53, 2);   // and another facing
+            setBlockAndData.invoke(world, ox - 1, oy + 1, oz + 2, 85, 0);   // fence
+            setBlockAndData.invoke(world, ox - 2, oy + 1, oz + 2, 50, 0);   // torch on the floor
+            setBlockAndData.invoke(world, ox + 3, oy + 1, oz + 2, 1, 0);    // a wall to hang things on
+            setBlockAndData.invoke(world, ox + 3, oy + 2, oz + 2, 1, 0);
+            setBlockAndData.invoke(world, ox + 3, oy + 1, oz + 1, 50, 2);   // wall torch
+            setBlockAndData.invoke(world, ox + 3, oy + 2, oz + 1, 65, 4);   // ladder
+            setBlockAndData.invoke(world, ox - 3, oy + 1, oz + 2, 6, 0);    // sapling
+            setBlockAndData.invoke(world, ox - 4, oy + 1, oz + 2, 78, 0);   // snow layer
+            setBlockAndData.invoke(world, ox + 0, oy + 1, oz + 4, 8, 0);    // water: not targetable
+            setBlockAndData.invoke(world, ox + 1, oy + 1, oz + 4, 20, 0);   // glass
+            setBlockAndData.invoke(world, ox + 2, oy + 1, oz + 4, 64, 1);   // door
+
+            // Read the world back, so the harness rebuilds what is there rather
+            // than what was asked for.
+            StringBuilder scene = new StringBuilder();
+            int placements = 0;
+            for (int dx = -10; dx <= 10; dx++) {
+                for (int dz = -10; dz <= 10; dz++) {
+                    for (int dy = -3; dy <= 10; dy++) {
+                        final int id = ((Integer) getId.invoke(world, ox + dx, oy + dy, oz + dz))
+                                           .intValue();
+                        if (id == 0) {
+                            continue;
+                        }
+                        final int meta =
+                            ((Integer) getMeta.invoke(world, ox + dx, oy + dy, oz + dz)).intValue();
+                        scene.append("    {").append(dx).append(", ").append(dy).append(", ")
+                             .append(dz).append(", ").append(id).append(", ").append(meta)
+                             .append("},\n");
+                        placements++;
+                    }
+                }
+            }
+
+            // **Within reach of the awkward blocks, not merely in the same
+            // room.** The first attempt put the eyes four and a half blocks
+            // from the row of interesting geometry -- past a reach of four --
+            // and the whole sweep hit the floor and reported three faces.
+            final double[][] eyes = {
+                {ox + 0.5, oy + 2.62, oz + 0.5},   // facing the slab and stairs
+                {ox - 2.5, oy + 2.62, oz + 0.5},   // beside the torch and the fence
+                {ox + 3.5, oy + 2.62, oz - 0.5},   // under the wall torch and ladder
+                {ox + 1.5, oy + 2.62, oz + 2.5},   // standing among them
+                {ox + 1.5, oy + 3.62, oz + 3.5},   // above the water, glass and door
+                {ox - 3.5, oy + 2.62, oz + 3.5},   // looking back across the lot
+            };
+
+            StringBuilder rows = new StringBuilder();
+            int cast = 0;
+            int hits = 0;
+            java.util.HashSet<Integer> facesSeen = new java.util.HashSet<Integer>();
+            java.util.HashSet<Integer> blocksSeen = new java.util.HashSet<Integer>();
+
+            for (double[] eye : eyes) {
+                for (int yaw = 0; yaw < 360; yaw += 7) {
+                    for (int pitch = -75; pitch <= 75; pitch += 13) {
+                        final double ry = Math.toRadians(yaw);
+                        final double rp = Math.toRadians(pitch);
+                        final double dx = -Math.sin(ry) * Math.cos(rp);
+                        final double dy = -Math.sin(rp);
+                        final double dz = Math.cos(ry) * Math.cos(rp);
+
+                        Object v1 = makeVec.invoke(null, eye[0], eye[1], eye[2]);
+                        Object v2 = makeVec.invoke(null, eye[0] + dx * 4.0, eye[1] + dy * 4.0,
+                                                   eye[2] + dz * 4.0);
+                        Object hit = rayTrace.invoke(world, v1, v2);
+
+                        rows.append("    {")
+                            .append(dbits(eye[0])).append(", ").append(dbits(eye[1])).append(", ")
+                            .append(dbits(eye[2])).append(", ")
+                            .append(dbits(dx)).append(", ").append(dbits(dy)).append(", ")
+                            .append(dbits(dz)).append(", ");
+                        if (hit == null) {
+                            rows.append("false, 0, 0, 0, 0, 0x0ULL, 0x0ULL, 0x0ULL},\n");
+                        } else {
+                            Object v = hitVec.get(hit);
+                            final int side = hitSide.getInt(hit);
+                            rows.append("true, ")
+                                .append(hitX.getInt(hit)).append(", ")
+                                .append(hitY.getInt(hit)).append(", ")
+                                .append(hitZ.getInt(hit)).append(", ")
+                                .append(side).append(", ")
+                                .append(dbits(vecX.getDouble(v))).append(", ")
+                                .append(dbits(vecY.getDouble(v))).append(", ")
+                                .append(dbits(vecZ.getDouble(v))).append("},\n");
+                            hits++;
+                            facesSeen.add(Integer.valueOf(side));
+                            blocksSeen.add((Integer) getId.invoke(world, hitX.getInt(hit),
+                                                                 hitY.getInt(hit),
+                                                                 hitZ.getInt(hit)));
+                        }
+                        cast++;
+                    }
+                }
+            }
+
+            p("// Generated by tools/genref.java --jar <client.jar> --raytrace <scratch-dir>.");
+            p("// Do not edit by hand.");
+            p("//");
+            p("// **A real a1.1.2 World, ray-traced.** A floor with one of everything awkward");
+            p("// standing on it -- a slab, two stairs facing different ways, a fence, a torch on");
+            p("// the floor and another on a wall, a ladder, a sapling, a snow layer, glass, a");
+            p("// door and a block of water -- swept by several hundred rays from four eye");
+            p("// positions.");
+            p("//");
+            p("// The scene is a **readback**: some blocks rewrite their own metadata when they");
+            p("// are placed and some delete themselves, so what is recorded is every non-air");
+            p("// block the world actually held, not what it was told to hold.");
+            p("//");
+            p("// Directions are given rather than yaw and pitch, because this is a test of the");
+            p("// ray walk and not of getLook -- feeding both sides the same vector stops one");
+            p("// from covering for the other. `side` is the original's sideHit, which is the");
+            p("// same numbering as mc::mesh::Face.");
+            p("//");
+            p("// Regenerate with:");
+            p("//   java tools/genref.java --jar <client.jar> --raytrace /tmp/genref-scratch");
+            p("//     redirected to tests/ray_trace_vectors.hpp");
+            p("");
+            p("#pragma once");
+            p("");
+            p("#include \"core/util/types.hpp\"");
+            p("");
+            p("namespace mc::test {");
+            p("");
+            p("struct RayScenePlacement {");
+            p("    i32 dx;");
+            p("    int dy;");
+            p("    i32 dz;");
+            p("    u16 id;");
+            p("    u8 metadata;");
+            p("};");
+            p("");
+            p("struct RayCase {");
+            p("    u64 eyeX, eyeY, eyeZ;");
+            p("    u64 dirX, dirY, dirZ;");
+            p("    bool hit;");
+            p("    i32 blockX;");
+            p("    int blockY;");
+            p("    i32 blockZ;");
+            p("    int side;");
+            p("    u64 hitX, hitY, hitZ;");
+            p("};");
+            p("");
+            p("inline constexpr i32 kRayOriginX = " + ox + ";");
+            p("inline constexpr int kRayOriginY = " + oy + ";");
+            p("inline constexpr i32 kRayOriginZ = " + oz + ";");
+            p("");
+            p("inline constexpr int kRayScenePlacementCount = " + placements + ";");
+            p("");
+            p("inline constexpr RayScenePlacement kRayScene[kRayScenePlacementCount] = {");
+            System.out.print(scene);
+            p("};");
+            p("");
+            p("inline constexpr int kRayCaseCount = " + cast + ";");
+            p("");
+            p("// Negative controls: a walk that hit nothing, or that only ever hit the floor");
+            p("// from directly above, would satisfy a comparison that only checked misses.");
+            p("inline constexpr int kRayHitCount = " + hits + ";");
+            p("inline constexpr int kRayDistinctFaces = " + facesSeen.size() + ";");
+            p("inline constexpr int kRayDistinctBlocks = " + blocksSeen.size() + ";");
+            p("");
+            p("inline constexpr RayCase kRayCases[kRayCaseCount] = {");
+            System.out.print(rows);
+            p("};");
+            p("");
+            p("}  // namespace mc::test");
+        } catch (Exception e) {
+            System.err.println("genref --raytrace failed: " + e);
+            e.printStackTrace();
+            System.exit(1);
+        } finally {
+            deleteTree(dir);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Which way a placed block ends up facing
+    // ---------------------------------------------------------------------
+    //
+    // The sequence a1.1.2 actually runs, found by following the right-click
+    // from the controller down:
+    //
+    //   av.a(...)  ItemBlock.onItemUse   -> world.setBlockWithNotify(x, y, z, id)
+    //                                    -> block.onBlockPlaced(world, x, y, z, side)
+    //   ia/nj      the controller        -> block.onBlockPlacedBy(world, x, y, z, player)
+    //
+    // **ItemBlock does not call onBlockPlacedBy** -- the controller does, after
+    // onItemUse has returned true. Six blocks override the side hook and eight
+    // declare the player one, so this sweeps every block against every face at
+    // eight player headings and records what metadata the world is left
+    // holding. Whatever does not vary, does not vary, and the table says so.
+    //
+    // The clicked block is a stone cube and the target is the cell on the
+    // struck face, which is the ordinary case; a placement that needs a
+    // different support answers with whatever the game leaves behind, including
+    // deleting itself, and the fixture records that too.
+
+    private static void emitPlacement(String jarPath, String scratchDir) {
+        java.io.File dir = new java.io.File(scratchDir, "placement");
+        try {
+            java.net.URLClassLoader loader = new java.net.URLClassLoader(
+                new java.net.URL[]{new java.io.File(jarPath).toURI().toURL()},
+                genref.class.getClassLoader());
+
+            Class<?> blockClass = loader.loadClass("ly");
+            Class<?> worldClass = loader.loadClass(WORLD);
+            Class<?> playerClass = loader.loadClass("dm");
+            Class<?> entityClass = loader.loadClass("kh");
+
+            Object[] blocks = (Object[]) blockClass.getField("n").get(null);
+
+            Object world = worldClass.getConstructor(java.io.File.class, String.class, long.class)
+                               .newInstance(dir, "genref", 1234567890L);
+            java.lang.reflect.Method getChunk = worldClass.getMethod("b", int.class, int.class);
+            getChunk.invoke(world, 0, 0);
+
+            java.lang.reflect.Method setRaw = worldClass.getMethod(
+                "a", int.class, int.class, int.class, int.class, int.class);
+            // setBlockWithNotify(x, y, z, id) -- what ItemBlock uses.
+            java.lang.reflect.Method setWithNotify = worldClass.getMethod(
+                "d", int.class, int.class, int.class, int.class);
+            java.lang.reflect.Method getId = worldClass.getMethod(
+                "a", int.class, int.class, int.class);
+            java.lang.reflect.Method getMeta = worldClass.getMethod(
+                "e", int.class, int.class, int.class);
+            java.lang.reflect.Method onPlaced = blockClass.getMethod(
+                "d", worldClass, int.class, int.class, int.class, int.class);
+            java.lang.reflect.Method onPlacedBy = blockClass.getMethod(
+                "b", worldClass, int.class, int.class, int.class, playerClass);
+
+            Object player = playerClass.getConstructor(worldClass).newInstance(world);
+            java.lang.reflect.Method setPosition = entityClass.getMethod(
+                "a", double.class, double.class, double.class);
+            java.lang.reflect.Field yawField = entityField(entityClass, "aq");
+
+            // The clicked block, and the six cells around it.
+            final int cx = 8;
+            final int cy = 70;
+            final int cz = 8;
+            final int[][] offset = {
+                {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0},
+            };
+            // **Sixteen, not eight.** Eight lands every sample exactly on a
+            // quadrant boundary, which is the worst place to ask a rounding
+            // question: the first sweep reported the lever changing at 225
+            // degrees and nowhere else, which is a sampling artefact rather
+            // than a rule.
+            final float[] yaws = new float[16];
+            for (int i = 0; i < yaws.length; i++) {
+                yaws[i] = i * 22.5f;
+            }
+
+            StringBuilder rows = new StringBuilder();
+            int cases = 0;
+            int oriented = 0;
+            java.util.TreeSet<Integer> sideVaries = new java.util.TreeSet<Integer>();
+            java.util.TreeSet<Integer> yawVaries = new java.util.TreeSet<Integer>();
+
+            for (int id = 0; id < 256; id++) {
+                if (id >= blocks.length || blocks[id] == null) {
+                    continue;
+                }
+                int[][] result = new int[6][yaws.length];
+                for (int side = 0; side < 6; side++) {
+                    for (int y = 0; y < yaws.length; y++) {
+                        // A fresh stone cube to click on, and empty space all
+                        // round it, every time.
+                        for (int dx = -2; dx <= 2; dx++) {
+                            for (int dy = -2; dy <= 2; dy++) {
+                                for (int dz = -2; dz <= 2; dz++) {
+                                    setRaw.invoke(world, cx + dx, cy + dy, cz + dz, 0, 0);
+                                }
+                            }
+                        }
+                        setRaw.invoke(world, cx, cy, cz, 1, 0);
+
+                        final int tx = cx + offset[side][0];
+                        final int ty = cy + offset[side][1];
+                        final int tz = cz + offset[side][2];
+
+                        setPosition.invoke(player, cx + 0.5, cy + 3.0, cz + 0.5);
+                        yawField.setFloat(player, yaws[y]);
+
+                        setWithNotify.invoke(world, tx, ty, tz, id);
+                        onPlaced.invoke(blocks[id], world, tx, ty, tz, side);
+                        onPlacedBy.invoke(blocks[id], world, tx, ty, tz, player);
+
+                        final int landedId = ((Integer) getId.invoke(world, tx, ty, tz)).intValue();
+                        result[side][y] = landedId == id
+                            ? ((Integer) getMeta.invoke(world, tx, ty, tz)).intValue()
+                            : -1;
+                        cases++;
+                    }
+                }
+
+                boolean varies = false;
+                for (int side = 0; side < 6; side++) {
+                    for (int y = 0; y < yaws.length; y++) {
+                        if (result[side][y] != result[0][0]) {
+                            varies = true;
+                        }
+                        if (result[side][y] != result[side][0]) {
+                            yawVaries.add(Integer.valueOf(id));
+                        }
+                        if (result[side][y] != result[0][y]) {
+                            sideVaries.add(Integer.valueOf(id));
+                        }
+                    }
+                }
+                if (varies) {
+                    oriented++;
+                }
+
+                rows.append("    {").append(id).append(", {");
+                for (int side = 0; side < 6; side++) {
+                    rows.append(side == 0 ? "" : ", ").append("{");
+                    for (int y = 0; y < yaws.length; y++) {
+                        rows.append(y == 0 ? "" : ", ").append(result[side][y]);
+                    }
+                    rows.append("}");
+                }
+                rows.append("}},   // ").append("\n");
+            }
+
+            p("// Generated by tools/genref.java --jar <client.jar> --place <scratch-dir>.");
+            p("// Do not edit by hand.");
+            p("//");
+            p("// **What metadata a block ends up with when a player places it**, swept over every");
+            p("// face of a clicked stone cube and eight player headings.");
+            p("//");
+            p("// The sequence is the one a1.1.2 runs, found by following a right-click down:");
+            p("// ItemBlock.onItemUse does setBlockWithNotify then onBlockPlaced(side), and the");
+            p("// *controller* -- not ItemBlock -- calls onBlockPlacedBy(player) afterwards.");
+            p("//");
+            p("// -1 means the block did not survive being placed there at all: it deleted");
+            p("// itself, the way a torch does with nothing to hang on.");
+            p("//");
+            p("// side is mc::mesh::Face: 0 -Y, 1 +Y, 2 -Z, 3 +Z, 4 -X, 5 +X. Headings are");
+            p("// 0, 45, 90 ... 315 degrees.");
+            p("//");
+            p("// Regenerate with:");
+            p("//   java tools/genref.java --jar <client.jar> --place /tmp/genref-scratch");
+            p("//     redirected to tests/placement_vectors.hpp");
+            p("");
+            p("#pragma once");
+            p("");
+            p("#include \"core/util/types.hpp\"");
+            p("");
+            p("namespace mc::test {");
+            p("");
+            p("inline constexpr int kPlacementHeadingCount = " + yaws.length + ";");
+            StringBuilder headings = new StringBuilder();
+            for (int i = 0; i < yaws.length; i++) {
+                headings.append(i == 0 ? "" : ", ").append(yaws[i]).append("f");
+            }
+            p("inline constexpr float kPlacementHeadings[kPlacementHeadingCount] = {");
+            p("    " + headings + ",");
+            p("};");
+            p("");
+            p("struct PlacementCase {");
+            p("    u16 id;");
+            p("    int metadata[6][kPlacementHeadingCount];   // -1 if it did not survive");
+            p("};");
+            p("");
+            p("inline constexpr int kPlacementCaseCount = " + (cases / (6 * yaws.length)) + ";");
+            p("");
+            p("// Blocks whose result depends on the face struck, and on the player's heading.");
+            p("// Both lists are short, and a table that came out empty would mean the sweep was");
+            p("// not doing anything.");
+            p("inline constexpr int kPlacementSideVaryingCount = " + sideVaries.size() + ";");
+            p("inline constexpr int kPlacementYawVaryingCount = " + yawVaries.size() + ";");
+            p("");
+            p("inline constexpr PlacementCase kPlacementCases[kPlacementCaseCount] = {");
+            System.out.print(rows);
+            p("};");
+            p("");
+            p("}  // namespace mc::test");
+
+            System.err.println("side-varying ids: " + sideVaries);
+            System.err.println("yaw-varying ids:  " + yawVaries);
+        } catch (Exception e) {
+            System.err.println("genref --place failed: " + e);
+            e.printStackTrace();
+            System.exit(1);
+        } finally {
+            deleteTree(dir);
+        }
     }
 
     private static void p(String line) {

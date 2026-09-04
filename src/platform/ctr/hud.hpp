@@ -22,23 +22,41 @@
 // label here is printed that way, which is why nothing in the layout has to
 // route around the character grid.
 //
-// The layout is 320 x 240, in two bands:
+// The layout is 320 x 240, in three bands:
 //
 //     +----------------------------------------+  y = 0
-//     |  [ Map ]  [ Items ]  [ Look ]          |  the tab strip, rows 1-3
+//     |  [ Map ] [ Items ] [ Blocks ] [ Look ] |  the tab strip, rows 1-3
 //     +----------------------------------------+  y = 24
+//     |  " Bottom screen focused "  + a fade    |  the focus banner, or backdrop
+//     +----------------------------------------+  y = 40
 //     |                                        |
-//     |               the page                 |  rows 4-30
+//     |               the page                 |  rows 6-26
 //     |                                        |
+//     +----------------------------------------+  y = 208
+//     |  the hotbar, on every player page      |
 //     +----------------------------------------+  y = 240
 //
-// **There was a third band, and it said what the buttons did.** It is gone, and
-// the page has the 24 pixels: the hints were the same three lines on every page
-// and they were spending a twelfth of the screen to repeat themselves. The
-// debug pages still carry theirs, which is where SELECT + Y is worth naming --
-// it is the one binding that is not discoverable by touching the screen.
+// **There was a third band once and it said what the buttons did.** It is gone:
+// the hints were the same three lines on every page and they were spending a
+// twelfth of the screen to repeat themselves. The debug pages still carry
+// theirs, which is where SELECT + Y is worth naming -- it is the one binding
+// that is not discoverable by touching the screen.
+//
+// **The band at the bottom now is the hotbar, and it is reserved in every
+// gamemode.** A page whose height depended on whether the mode had a hotbar
+// would be two layouts, two sets of constants and two map window sizes to
+// measure against the console; Spectator gets 32 pixels of backdrop instead.
+// What that costs is a slightly shorter map and what it buys is that the hotbar
+// never moves and the page above it never resizes.
+//
+// **It is here rather than over the world**, which is docs/3ds-performance.md
+// section 11 and not a new decision: the top screen draws nothing but the
+// world, so the HUD costs no overdraw at all on a fill-bound device. It is also
+// the only screen that can be touched.
 
+#include "core/block/block_def.hpp"
 #include "core/gui/paint.hpp"
+#include "core/item/hotbar.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::ctr::hud {
@@ -50,12 +68,43 @@ inline constexpr int kScreenHeight = 240;
 inline constexpr int kColumns = kScreenWidth / kCell;   // 40
 inline constexpr int kRows = kScreenHeight / kCell;     // 30
 
-// The two bands. The tab strip is three character rows so a label sits in the
-// middle of it with a row of pixels either side; the page is everything below.
+// The three bands. The tab strip is three character rows so a label sits in the
+// middle of it with a row of pixels either side; the page is what is left once
+// the hotbar has taken the bottom 32.
 inline constexpr int kTabTop = 0;
 inline constexpr int kTabHeight = 24;
 inline constexpr int kBodyTop = kTabTop + kTabHeight;   // 24
-inline constexpr int kBodyHeight = kScreenHeight - kBodyTop;  // 216
+
+// **Sixteen pixels under the tab strip that nothing but the backdrop draws
+// into**, and that is a load-bearing promise rather than spare margin. The
+// focus banner *darkens* what is under it, which is an operation that cannot be
+// applied twice to the same pixels -- so it has to sit somewhere that is
+// painted exactly once, on a page clear, and never repainted underneath it. The
+// map alone would otherwise redraw through it on every block the player walks
+// and darken the strip a shade further each time, down to black over a minute
+// or so.
+//
+// Unfocused it is backdrop, and reads as the page having a margin.
+inline constexpr int kBannerTop = kBodyTop;                    // 24
+inline constexpr int kBannerHeight = 16;
+inline constexpr int kPageTop = kBannerTop + kBannerHeight;    // 40
+
+// **The hotbar band, and the slot size every grid here is built from.** 24
+// pixels is what a 16-pixel atlas tile needs with a border either side that is
+// still visible on a 320-pixel screen -- so an icon is blitted at 1:1 and never
+// resampled, which with a nearest-neighbour copy is the difference between a
+// readable block and a smear. Nine of them is 216 pixels, centred with 52
+// either side.
+inline constexpr int kSlotPixels = 24;
+inline constexpr int kHotbarHeight = 32;
+inline constexpr int kHotbarTop = kScreenHeight - kHotbarHeight;    // 208
+inline constexpr int kHotbarSlotY = kHotbarTop + 4;
+inline constexpr int kHotbarColumns = item::kHotbarSlots;
+inline constexpr int kHotbarWidth = kHotbarColumns * kSlotPixels;   // 216
+inline constexpr int kHotbarX = (kScreenWidth - kHotbarWidth) / 2;  // 52
+
+inline constexpr int kBodyHeight = kHotbarTop - kBodyTop;           // 184
+inline constexpr int kPageHeight = kHotbarTop - kPageTop;          // 168
 
 // **a1.1.2's own GUI colours, and only its own.** A panel is the face plus a
 // light bevel and a dark one; a slot is the same two bevels the other way
@@ -140,12 +189,102 @@ void drawTabs(const gui::Surface& surface, const TabStrip& tabs);
 // the strip, which is what keeps a drag on the page from changing the page.
 int tabAt(const TabStrip& tabs, int touchX, int touchY);
 
-// **The inventory, drawn empty.** There is no inventory yet -- M3 has not
-// started -- so what this page is today is the frame the slots will be dealt
-// into, at the size and spacing they will keep: nine across, three rows and a
-// hotbar, each slot 24 pixels so a 16-pixel item can be drawn into it at 1.5x
-// or a 32-pixel one at 1:1 with room for a border.
+// **The inventory, still drawn empty -- and Creative is why that is not a
+// contradiction.** Creative has a palette and a hotbar, and neither of them is
+// an inventory: nothing is carried, nothing is picked up and nothing is stored,
+// so there is no content for these 27 slots until Survival puts some there.
+// What the page is today is the frame they will be dealt into, nine across and
+// three rows, at the size and spacing they will keep.
+//
+// **It lost its own hotbar row**, because the hotbar is a band of its own on
+// every page now. Two hotbars on one screen would have had to agree about which
+// slot was selected, and the way they agree is by there being one.
 void drawItemsPage(const gui::Surface& surface);
+
+// **One block as a 16 x 16 icon, blitted at 1:1 out of the terrain atlas.**
+//
+// `atlasRgba` is `texture::AtlasImage::rgba` -- 256 x 256, RGBA8, top row
+// first -- or null, in which case nothing is drawn and the cell stays an empty
+// slot rather than a wrong one. `tile` is the block's own atlas index, which is
+// `BlockDef::texture`.
+//
+// **A flat tile and not a cube, which is a deviation worth naming.** a1.1.2
+// draws a block in a slot through `RenderBlocks.renderBlockAsItem` -- a small
+// three-quarter view built by the same block renderer that draws the world.
+// Doing that here would mean a second geometry path on a screen that has no GPU
+// access at all: this is a CPU blit into libctru's framebuffer. So a cell shows
+// the block's `texture` column, which the table already defines as "what the
+// block shows anywhere a single tile is wanted". Grass reads as grass from
+// above and a log as its bark.
+//
+// Alpha is a cutout rather than a blend -- a texel under the threshold is
+// skipped -- which is what leaves a torch or a sapling standing on the slot
+// instead of in a black box. The atlas carries no partial alpha worth blending.
+inline constexpr int kIconPixels = 16;
+inline constexpr u8 kIconAlphaCutoff = 128;
+void drawBlockIcon(const gui::Surface& surface, int x, int y, const u8* atlasRgba, int tile);
+
+// **The hotbar, on every player page.** `cursor` is the slot the bottom-screen
+// focus is sitting on, or -1 when the focus is off or on the palette above --
+// drawn differently from `hotbar.selected`, because the two are different
+// questions: one is what is in your hand and the other is what A would act on.
+void drawHotbar(const gui::Surface& surface, const item::Hotbar& hotbar, const u8* atlasRgba,
+                int cursor);
+
+// Which hotbar slot a touch landed on, or -1 -- including every touch outside
+// the band, so a page can pass it every press it sees.
+int hotbarSlotAt(int touchX, int touchY);
+
+// **The Creative block palette, which is its own page and not the inventory.**
+// They are different things: the palette is a catalogue of every block this
+// version defines and holds nothing, the inventory is what a player is carrying.
+// Drawing a catalogue inside an inventory frame would imply the blocks in it
+// were owned, which in Creative is exactly the confusion worth avoiding.
+//
+// Nine columns by five rows, so a page is 45 cells and a1.1.2's 70 blocks are
+// two pages. `page` is 0-based; `cursor` is the cell the focus is on within
+// this page, or -1; `selected` is the block in hand, outlined wherever on this
+// page it appears. `caption` is the line under the grid -- the name of whatever
+// the player is pointing at, which is the only place a block's name fits.
+inline constexpr int kPaletteColumns = 9;
+inline constexpr int kPaletteRows = 5;
+inline constexpr int kPalettePerPage = kPaletteColumns * kPaletteRows;
+
+// How many pages the palette fills, at least one.
+int palettePageCount();
+
+void drawBlocksPage(const gui::Surface& surface, const u8* atlasRgba, int page, int cursor,
+                    block::BlockId selected, const char* caption);
+
+// Which cell of the drawn page a touch landed on, or -1. The index is
+// page-relative: add `page * kPalettePerPage` for a palette index.
+int paletteCellAt(int touchX, int touchY);
+
+// **The focus banner: a dark gradient under the tab strip with a line of text
+// on it.** Drawn while X has the bottom screen focused, and it exists because
+// the focus is otherwise invisible -- the d-pad quietly means something else
+// and nothing on the screen says so, which is the worst kind of mode.
+//
+// It lives in the reserved band at `kBannerTop`, which nothing but the backdrop
+// ever paints -- see the note there. That is what makes it safe for the fade to
+// be *destructive*: it darkens the pixels it finds, so a strip anything else
+// redrew under it would darken a shade further every time. Leaving the focus is
+// a full page redraw rather than an attempt to undo it.
+//
+// The label row is flat rather than graded, and that is libctru's doing, not a
+// choice: `consoleDrawChar` writes all 64 pixels of a cell, so a character row
+// has exactly one background colour. The gradient is the rows underneath it,
+// fading from that colour back into the page.
+inline constexpr int kFocusBannerLabelHeight = kCell;
+inline constexpr int kFocusBannerFadeHeight = kBannerHeight - kFocusBannerLabelHeight;
+void drawFocusBanner(const gui::Surface& surface, const char* text);
+
+// The two page arrows on the palette's title row: -1 for the previous page, +1
+// for the next, 0 for neither. They exist because the shoulder buttons are
+// break and place, so paging cannot have them unless the screen is focused --
+// and a page control that is invisible to a player who never focuses the screen
+// is not a page control.
+int paletteArrowAt(int touchX, int touchY);
 
 // **The look pad**, which is a page rather than a mode because the bottom
 // screen is both the game's UI and the only pointing device an old 3DS has, and
@@ -161,7 +300,7 @@ void drawLookPage(const gui::Surface& surface);
 void drawCompassRibbon(const gui::Surface& surface, float yawDegrees);
 
 // The first pixel row of the look pad's drag area. A touch above it belongs to
-// the tab strip.
-inline constexpr int kLookPadTop = kBodyTop;
+// the tab strip and to the banner band, neither of which is the camera's.
+inline constexpr int kLookPadTop = kPageTop;
 
 }  // namespace mc::ctr::hud

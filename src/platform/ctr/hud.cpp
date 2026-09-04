@@ -1,5 +1,9 @@
 #include "platform/ctr/hud.hpp"
 
+#include "core/block/registry.hpp"
+#include "core/item/creative_palette.hpp"
+#include "core/texture/atlas_image.hpp"
+
 #include <3ds.h>
 
 #include <cmath>
@@ -66,9 +70,15 @@ const u8* const kPointGlyphs[8][2] = {
 // The look pad and the compass ribbon inside it, shared by the two calls that
 // draw them.
 constexpr int kPadX = 8;
-constexpr int kPadY = 32;
+// **The page's top, not the body's**, and it stops eight pixels short of the
+// hotbar. It used to run 32..232; the hotbar took the bottom band and the focus
+// banner the top one, and a drag area that ran into either would be a drag
+// starting on a control.
+constexpr int kPadY = kPageTop;
 constexpr int kPadW = kScreenWidth - kPadX * 2;
-constexpr int kPadH = 200;
+constexpr int kPadH = kHotbarTop - kPadY - 8;
+static_assert(kPadY + kPadH <= kHotbarTop, "the look pad must clear the hotbar");
+static_assert(kPadY >= kPageTop, "the look pad must clear the banner band");
 constexpr int kRibbonX = kPadX + 8;
 constexpr int kRibbonY = kPadY + 8;
 constexpr int kRibbonW = kPadW - 16;
@@ -231,23 +241,23 @@ int tabAt(const TabStrip& tabs, int touchX, int touchY)
 
 void drawItemsPage(const gui::Surface& surface)
 {
-    // Nine slots across at 24 pixels, three rows and a hotbar under them, which
-    // is the original's layout at the largest size a 320-pixel screen will take
-    // it. The panel is eight pixels of margin around that, a title row above
-    // and a line below saying why the slots are empty.
-    constexpr int kSlotPixels = 24;
+    // Nine slots across at 24 pixels and three rows, which is the original's
+    // main inventory at the largest size a 320-pixel screen will take it. The
+    // fourth row it used to draw was a hotbar, and the hotbar is the band at
+    // the bottom of the screen now -- see the note in hud.hpp.
     constexpr int kSlotColumns = 9;
     constexpr int kGridWidth = kSlotColumns * kSlotPixels;
     constexpr int kPanelX = (kScreenWidth - kGridWidth) / 2 - 8;
     constexpr int kPanelW = kGridWidth + 16;
-    constexpr int kPanelY = 56;
-    constexpr int kPanelH = 152;
+    constexpr int kPanelY = 64;
+    constexpr int kPanelH = 112;
     constexpr int kGridX = kPanelX + 8;
-    constexpr int kGridY = 80;
-    constexpr int kHotbarY = kGridY + 3 * kSlotPixels + 8;
+    constexpr int kGridY = kPanelY + 32;
+
+    static_assert(kPanelY + kPanelH <= kHotbarTop, "the inventory must clear the hotbar");
 
     panel(surface, kPanelX, kPanelY, kPanelW, kPanelH);
-    textCentred(9, kPanelX, kPanelW, kPanelText, kPanelFace, "Inventory");
+    textCentred(kPanelY / kCell + 2, kPanelX, kPanelW, kPanelText, kPanelFace, "Inventory");
 
     for (int row = 0; row < 3; ++row) {
         for (int column = 0; column < kSlotColumns; ++column) {
@@ -255,13 +265,14 @@ void drawItemsPage(const gui::Surface& surface)
                  kSlotPixels);
         }
     }
-    for (int column = 0; column < kSlotColumns; ++column) {
-        slot(surface, kGridX + column * kSlotPixels, kHotbarY, kSlotPixels, kSlotPixels);
-    }
 
-    // Row 25 is the eight pixels under the hotbar. Dimmer than the title,
-    // because it is an apology rather than a heading.
-    textCentred(25, kPanelX, kPanelW, kPanelDark, kPanelFace, "empty until M3");
+    // Inside the panel rather than under it, dimmer than the title, because it
+    // is an explanation rather than a heading -- and because a row of text
+    // outside the panel would have to guess the backdrop's colour, which is the
+    // pack's dirt and not a constant. **Creative does not fill these**: it has
+    // a palette and a hotbar, and neither of them is a thing you carry.
+    textCentred((kGridY + 3 * kSlotPixels) / kCell + 1, kPanelX, kPanelW, kPanelDark, kPanelFace,
+                "carried items: Survival");
 }
 
 void drawLookPage(const gui::Surface& surface)
@@ -354,6 +365,259 @@ void drawCompassRibbon(const gui::Surface& surface, float yawDegrees)
         }
     }
 
+}
+
+
+// ---------------------------------------------------------------------------
+// Block icons, the hotbar, and the Creative palette.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The palette page's furniture, laid out from the same 24-pixel slot everything
+// else on this screen uses. Nine by five is 45 cells, so a1.1.2's 70 blocks are
+// two pages -- and a version with more of them gets more pages without a
+// constant here changing.
+constexpr int kPalPanelX = kHotbarX - 8;
+constexpr int kPalPanelW = kPaletteColumns * kSlotPixels + 16;
+constexpr int kPalPanelY = kPageTop;
+constexpr int kPalPanelH = kHotbarTop - kPageTop - 8;
+constexpr int kPalGridX = kHotbarX;                 // the hotbar's own columns
+constexpr int kPalGridY = kPalPanelY + 24;          // under the title row
+constexpr int kPalTitleRow = kPalPanelY / kCell + 2;
+// The first whole character row under the grid. `text` rows are 1-based, so
+// the +1 is what puts it below the last slot instead of across it.
+constexpr int kPalCaptionRow = (kPalGridY + kPaletteRows * kSlotPixels) / kCell + 1;
+
+// The two page arrows, aligned to the character grid so the glyph inside each
+// sits in the middle of its box rather than a pixel or two off it.
+constexpr int kArrowW = 16;
+constexpr int kArrowH = 16;
+constexpr int kArrowY = kPalPanelY + 4;
+constexpr int kArrowLeftX = kPalPanelX + 4;
+constexpr int kArrowRightX = kPalPanelX + kPalPanelW - 4 - kArrowW;
+
+static_assert(kPalPanelY >= kPageTop, "the palette must clear the banner band");
+static_assert(kPalPanelY + kPalPanelH <= kHotbarTop, "the palette must clear the hotbar");
+static_assert(kPalGridY + kPaletteRows * kSlotPixels <= kPalPanelY + kPalPanelH,
+              "the palette grid must fit its panel");
+static_assert(kPalCaptionRow * kCell <= kPalPanelY + kPalPanelH,
+              "the caption must fit inside the panel");
+
+// Highlights. **Neither is a1.1.2's**, because a1.1.2 has neither: its hotbar
+// selection is a sprite off `gui.png` and it has no cursor at all, there being
+// a mouse. White for the hand and amber for the cursor, which are the two
+// colours already used on this screen for "this is yours" and "this is where
+// you are" -- the map's marker is the same amber.
+constexpr u32 kSelectedEdge = 0xFFFFFF;
+constexpr u32 kCursorEdge = 0xFFD24A;
+
+// A two-pixel frame just outside a slot, which is where a1.1.2 puts its own
+// selection sprite: over the gap between slots rather than over the item, so
+// nothing it marks is harder to see for being marked.
+void slotEdge(const gui::Surface& surface, int x, int y, u32 colour)
+{
+    const gui::Pixel pixel = px(colour);
+    gui::frameRect(surface, x, y, kSlotPixels, kSlotPixels, pixel);
+    gui::frameRect(surface, x + 1, y + 1, kSlotPixels - 2, kSlotPixels - 2, pixel);
+}
+
+// One cell of a grid: the slot, the block's icon in the middle of it, and
+// whichever of the two edges apply.
+void drawCell(const gui::Surface& surface, int x, int y, const u8* atlasRgba, block::BlockId id,
+              bool selected, bool cursor)
+{
+    slot(surface, x, y, kSlotPixels, kSlotPixels);
+    if (id != block::kAir) {
+        drawBlockIcon(surface, x + (kSlotPixels - kIconPixels) / 2,
+                      y + (kSlotPixels - kIconPixels) / 2, atlasRgba, int(block::def(id).texture));
+    }
+    // The cursor is drawn last so it wins where both apply -- which is the
+    // common case, since picking a block puts the cursor and the hand on it.
+    if (selected) {
+        slotEdge(surface, x, y, kSelectedEdge);
+    }
+    if (cursor) {
+        slotEdge(surface, x, y, kCursorEdge);
+    }
+}
+
+bool insideBox(int px_, int py_, int x, int y, int w, int h)
+{
+    return px_ >= x && px_ < x + w && py_ >= y && py_ < y + h;
+}
+
+}  // namespace
+
+void drawBlockIcon(const gui::Surface& surface, int x, int y, const u8* atlasRgba, int tile)
+{
+    // Null is the ordinary state before a pack has been handed over, and an
+    // out-of-range tile is what an id from a world this build does not know
+    // would ask for. Both draw nothing, which leaves an empty slot -- a cell
+    // that is visibly empty is readable, one showing the wrong block is not.
+    constexpr int kTiles = texture::kAtlasTilesPerEdge;
+    if (atlasRgba == nullptr || tile < 0 || tile >= kTiles * kTiles) {
+        return;
+    }
+    const int tileX = (tile % kTiles) * texture::kAtlasTilePixels;
+    const int tileY = (tile / kTiles) * texture::kAtlasTilePixels;
+
+    for (int row = 0; row < kIconPixels; ++row) {
+        const u8* source = atlasRgba + (usize(tileY + row) * texture::kAtlasEdge + tileX) * 4;
+        for (int column = 0; column < kIconPixels; ++column, source += 4) {
+            if (source[3] < kIconAlphaCutoff) {
+                continue;
+            }
+            gui::Pixel* out = surface.at(x + column, y + row);
+            if (out != nullptr) {
+                *out = gui::rgb565(int(source[0]), int(source[1]), int(source[2]));
+            }
+        }
+    }
+}
+
+void drawHotbar(const gui::Surface& surface, const item::Hotbar& hotbar, const u8* atlasRgba,
+                int cursor)
+{
+    // **The band is repainted flat rather than re-tiled with the pack's dirt.**
+    // It is the one part of the screen that redraws without a page change --
+    // every shoulder press moves the selection -- and a flat fill is a third of
+    // the cost of the tiled one. It also reads as a bar, which is what a1.1.2's
+    // own hotbar is: a strip laid over the scene rather than part of it.
+    gui::fillRect(surface, 0, kHotbarTop, kScreenWidth, kHotbarHeight, px(kBackdrop));
+    panel(surface, kHotbarX - 2, kHotbarTop + 2, kHotbarWidth + 4, kHotbarHeight - 4);
+
+    for (int i = 0; i < kHotbarColumns; ++i) {
+        const item::ItemStack& stack = hotbar.slots[i];
+        const block::BlockId id = stack.empty() ? block::kAir : block::BlockId(stack.id);
+        drawCell(surface, kHotbarX + i * kSlotPixels, kHotbarSlotY, atlasRgba, id,
+                 i == hotbar.selected, i == cursor);
+    }
+}
+
+int hotbarSlotAt(int touchX, int touchY)
+{
+    if (!insideBox(touchX, touchY, kHotbarX, kHotbarTop, kHotbarWidth, kHotbarHeight)) {
+        return -1;
+    }
+    // The whole height of the band, not just the slot's 24 pixels: four pixels
+    // of margin is not something a finger on a resistive screen can aim inside.
+    return (touchX - kHotbarX) / kSlotPixels;
+}
+
+int palettePageCount()
+{
+    const int size = item::paletteSize();
+    return size <= 0 ? 1 : (size + kPalettePerPage - 1) / kPalettePerPage;
+}
+
+void drawBlocksPage(const gui::Surface& surface, const u8* atlasRgba, int page, int cursor,
+                    block::BlockId selected, const char* caption)
+{
+    panel(surface, kPalPanelX, kPalPanelY, kPalPanelW, kPalPanelH);
+
+    const int pages = palettePageCount();
+    const int shown = page < 0 ? 0 : (page >= pages ? pages - 1 : page);
+
+    char title[40];
+    std::snprintf(title, sizeof title, "Blocks  %d/%d", shown + 1, pages);
+    textCentred(kPalTitleRow, kPalPanelX, kPalPanelW, kPanelText, kPanelFace, title);
+
+    // The arrows are drawn on every page, including the ones where they do
+    // nothing, and dimmed where they do. A control that disappears at the end
+    // of a list moves the other one, and a control that moves is a control that
+    // gets mis-tapped.
+    for (int side = 0; side < 2; ++side) {
+        const int x = side == 0 ? kArrowLeftX : kArrowRightX;
+        const bool live = side == 0 ? shown > 0 : shown + 1 < pages;
+        slot(surface, x, kArrowY, kArrowW, kArrowH);
+        text(kPalTitleRow, x / kCell + 1, 2, live ? kPanelText : kPanelDark, kSlotFace,
+             side == 0 ? "<" : ">");
+    }
+
+    const int first = shown * kPalettePerPage;
+    for (int row = 0; row < kPaletteRows; ++row) {
+        for (int column = 0; column < kPaletteColumns; ++column) {
+            const int cell = row * kPaletteColumns + column;
+            const block::BlockId id = item::paletteBlock(first + cell);
+            drawCell(surface, kPalGridX + column * kSlotPixels, kPalGridY + row * kSlotPixels,
+                     atlasRgba, id, id != block::kAir && id == selected, cell == cursor);
+        }
+    }
+
+    // **The one place a block's name fits**, and the reason the page has a
+    // caption at all: 45 cells of 16-pixel tile are not self-describing, and
+    // "which of these two greys is gravel" is a question a picture cannot
+    // answer. The caller supplies it, because what it names is whatever the
+    // player is pointing at and this file does not know what that is.
+    textCentred(kPalCaptionRow, kPalPanelX, kPalPanelW, kPanelText, kPanelFace,
+                caption != nullptr ? caption : "");
+}
+
+int paletteCellAt(int touchX, int touchY)
+{
+    if (!insideBox(touchX, touchY, kPalGridX, kPalGridY, kPaletteColumns * kSlotPixels,
+                   kPaletteRows * kSlotPixels)) {
+        return -1;
+    }
+    const int column = (touchX - kPalGridX) / kSlotPixels;
+    const int row = (touchY - kPalGridY) / kSlotPixels;
+    return row * kPaletteColumns + column;
+}
+
+int paletteArrowAt(int touchX, int touchY)
+{
+    // Generously larger than what is drawn, in both directions: the box is 16
+    // pixels and a fingertip on a resistive screen is not.
+    constexpr int kPad = 4;
+    if (insideBox(touchX, touchY, kArrowLeftX - kPad, kArrowY - kPad, kArrowW + kPad * 2,
+                  kArrowH + kPad * 2)) {
+        return -1;
+    }
+    if (insideBox(touchX, touchY, kArrowRightX - kPad, kArrowY - kPad, kArrowW + kPad * 2,
+                  kArrowH + kPad * 2)) {
+        return 1;
+    }
+    return 0;
+}
+
+
+void drawFocusBanner(const gui::Surface& surface, const char* label)
+{
+    // The label's own row: flat, because a character cell has one background
+    // colour and there is nothing to be done about that. Near-black rather than
+    // black, so it reads as a shade over the page instead of a hole in it.
+    constexpr u32 kBannerFace = 0x101014;
+    constexpr u32 kBannerText = 0xFFD24A;
+    gui::fillRect(surface, 0, kBannerTop, kScreenWidth, kFocusBannerLabelHeight, px(kBannerFace));
+    text(kBannerTop / kCell + 1, 1, kColumns, kBannerText, kBannerFace, "%s",
+         label != nullptr ? label : "");
+
+    // ...and the fade under it, which is the part that actually says "there is
+    // something over this page". **It darkens what is already there rather than
+    // drawing a colour**, so the map or the palette shows through it -- which is
+    // the difference between a shade and a lid.
+    //
+    // RGB565 unpacked, scaled and repacked per pixel. 320 x 16 is 5,120 of them
+    // and this runs when the page redraws, not every frame; the map's own copy
+    // next door is 34,944 pixels for comparison.
+    const int top = kBannerTop + kFocusBannerLabelHeight;
+    for (int row = 0; row < kFocusBannerFadeHeight; ++row) {
+        // From fully dark at the label's edge to untouched at the bottom, so
+        // the two halves of the banner meet with no seam.
+        const int keep = 256 * (row + 1) / (kFocusBannerFadeHeight + 1);
+        for (int x = 0; x < kScreenWidth; ++x) {
+            gui::Pixel* out = surface.at(x, top + row);
+            if (out == nullptr) {
+                continue;
+            }
+            const int r = (*out >> 11) & 0x1F;
+            const int g = (*out >> 5) & 0x3F;
+            const int b = *out & 0x1F;
+            *out = gui::Pixel((((r * keep) >> 8) << 11) | (((g * keep) >> 8) << 5)
+                              | ((b * keep) >> 8));
+        }
+    }
 }
 
 }  // namespace mc::ctr::hud

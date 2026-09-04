@@ -579,9 +579,9 @@ TEST(a_negative_stride_surface_lands_exactly_where_the_bottom_screen_is)
     constexpr int kScreenWidth = 320;
     constexpr int kScreenHeight = 240;
     constexpr int kMapWidth = 208;
-    constexpr int kMapHeight = 200;
+    constexpr int kMapHeight = 158;  // 200 before the hotbar and banner bands
     constexpr int kMapLeft = 104;
-    constexpr int kMapTop = 32;
+    constexpr int kMapTop = 42;
 
     MapPalette palette;
     buildMapPalette(solidAtlas(), &palette);

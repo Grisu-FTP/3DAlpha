@@ -51,6 +51,40 @@ enum class RenderType : u8 {
 
 const char* renderTypeName(RenderType type);
 
+// What a block is shaped like when something walks into it -- collision's
+// answer to RenderType, and it exists for exactly the same reason. Collision
+// code references shapes and never block ids, so a version whose stairs are not
+// id 53 needs no change here.
+//
+// **None of the three existing columns could serve.** `solid` is the original's
+// Material.isSolid() and is wrong in both directions -- a stone button and a
+// snow layer are solid and do not collide, glass and leaves are solid and are
+// not full cubes. `fullCube` and `opaqueCube` are render properties. The note
+// further down this file says as much; this is the column it was waiting for.
+//
+// The numbering is ours: a1.1.2 has no such concept, and the shapes below were
+// recovered by asking a running jar for every block's collision boxes at every
+// metadata value and grouping the answers. See tools/genref.java --collision
+// and tests/collision_box_vectors.hpp, which is that measurement.
+//
+// A shape is a pure function of (block, metadata) -- **measured, not assumed**:
+// nothing in a1.1.2 consults a neighbour, not even the top half of a door,
+// which reads its own low three bits. That is what lets collisionBoxes() take
+// no world at all. See core/block/collision.hpp.
+enum class Shape : u8 {
+    None = 0,   // no collision: air, fluids, plants, torches, rails, snow, fire
+    FullCube,   // the ordinary case
+    Slab,       // the bottom half only
+    Stairs,     // two boxes, and the only shape that answers with more than one
+    Door,       // a thin plate, which of the four sides coming from metadata
+    Ladder,     // a thinner plate, likewise
+    Fence,      // a full cube that is **one and a half blocks tall**, not one
+    Cactus,     // inset a sixteenth all round, and a sixteenth short on top
+    Count,
+};
+
+const char* shapeName(Shape shape);
+
 // What a block *does* when the world ticks it -- the tick system's answer to
 // RenderType, and it exists for the same reason. The renderer references
 // render types and never block ids; the tick system references behaviours and
@@ -126,6 +160,26 @@ struct BlockDef {
     u16 faces[6];
 
     RenderType render;
+
+    // How the block collides. Beside `render` because the two are the same kind
+    // of thing -- a dispatch column that keeps ids out of the code that uses it.
+    Shape shape;
+
+    // Ground friction for something standing on top. 0.6 for everything in
+    // a1.1.2 except ice, which is 0.98 -- and the difference between those two
+    // numbers is the whole of why ice is ice.
+    //
+    // `moveEntityWithHeading` multiplies it by 0.91 to get the per-tick factor
+    // on horizontal motion, and derives the acceleration term from its cube, so
+    // a higher value both keeps more speed and grants less control.
+    float slipperiness;
+
+    // Whether a ray notices this block -- `Block.canCollideCheck`, which in
+    // a1.1.2 is just `isCollidable()`. False for water, lava and fire and true
+    // for everything else, including blocks you cannot walk into: a torch has
+    // no collision box and is still perfectly targetable, which is the whole
+    // reason the selection shape is a separate table from the collision one.
+    bool targetable;
 
     // The original's own material grouping, as a dense index -- 0 is air and
     // whatever else this version never constructs. Two questions are asked of

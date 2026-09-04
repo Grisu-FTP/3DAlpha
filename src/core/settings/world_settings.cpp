@@ -41,10 +41,24 @@ const char* gamemodeLabel(Gamemode mode)
 
 bool gamemodeImplemented(Gamemode mode)
 {
-    // Spectator is not aspirational here: with no player body there is no
-    // collision, no reach and no inventory, so free flight through the world is
-    // the whole of what this mode means and the whole of what the game does.
-    return mode == Gamemode::Spectator;
+    // Spectator is not aspirational here: free flight through the world with no
+    // body is the whole of what the mode means and the whole of what it does.
+    //
+    // **Creative joined it at M3 step 3.** There is a body now, it collides, it
+    // reaches four blocks, it breaks and places, and it has nine slots and a
+    // palette to fill them from. Survival is still false and the reason is
+    // specific rather than general: everything it adds -- fall damage, block
+    // hardness and break progress, drops, stack depletion -- is a rule on top
+    // of the same body, and a mode that is selectable but plays exactly like
+    // Creative would be a label that lies. See docs/todo-m3.md step 4.
+    switch (mode) {
+    case Gamemode::Spectator:
+    case Gamemode::Creative:
+        return true;
+    case Gamemode::Survival:
+        break;
+    }
+    return false;
 }
 
 bool gamemodeFromToken(std::string_view token, Gamemode* out)

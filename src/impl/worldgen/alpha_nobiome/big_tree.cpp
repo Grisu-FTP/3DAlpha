@@ -3,7 +3,7 @@
 #include "blocks.hpp"
 #include "core/util/java_cast.hpp"
 #include "core/util/java_random.hpp"
-#include "impl/worldgen/alpha_nobiome/math_helper.hpp"
+#include "core/util/math_helper.hpp"
 #include "impl/worldgen/alpha_nobiome/population_view.hpp"
 
 #include <cmath>

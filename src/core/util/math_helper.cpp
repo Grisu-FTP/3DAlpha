@@ -1,8 +1,8 @@
-#include "impl/worldgen/alpha_nobiome/math_helper.hpp"
+#include "core/util/math_helper.hpp"
 
 #include <cmath>
 
-namespace mc::worldgen {
+namespace mc {
 
 float* MathHelper::table_ = nullptr;
 bool MathHelper::built_ = false;
@@ -32,4 +32,4 @@ const float* MathHelper::table()
     return table_;
 }
 
-}  // namespace mc::worldgen
+}  // namespace mc

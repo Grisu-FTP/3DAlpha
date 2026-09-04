@@ -18,6 +18,7 @@
 #include "core/map/map_store.hpp"
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/visibility.hpp"
+#include "core/entity/player_body.hpp"
 #include "core/render/chunk_renderer.hpp"
 #include "core/render/vbo_pool.hpp"
 #include "core/render/world_streamer.hpp"
@@ -566,6 +567,244 @@ void vboPool(const Totals& t, const world::LevelData& level)
 render::VboPool::Budget flyBudget(int distance)
 {
     return {usize(4.5 * 1024 * 1024), usize((distance >= 10 ? 27.5 : 7.5) * 1024 * 1024)};
+}
+
+// Walk a real world with a real body, under the sanitizers.
+//
+// **This is the only place the physics meets terrain that nobody designed.**
+// tests/player_body_test.cpp proves the body agrees with the jar tick for tick,
+// but it proves it on eleven hand-built scenes made of plates and walls. A
+// world has overhangs, one-block gaps, sand over caves, water, and a coastline;
+// what this looks for is the class of failure a fixture cannot contain --
+// falling through the floor, walking into geometry and stopping dead, a
+// position going NaN, or the body leaving the world entirely.
+//
+// It is a **check, not a measurement**: it returns non-zero when something went
+// wrong, so it can sit in a script. None of the numbers it prints belong in
+// docs/status.md's measured table.
+//
+// The walk goes straight for ten seconds at a time and then turns, rather than
+// curving continuously: a constant turn rate is a circle, and a circle covers
+// one hillside forever. It jumps about twice a second, not constantly -- a jump
+// takes thirteen ticks to land, so jumping every twelve leaves the body
+// permanently airborne and quietly stops testing the thing it is here to test.
+//
+// **And it turns away when it stops making progress**, which is not politeness
+// to the terrain but the difference between a test and a stuck body: a first
+// run fell into a ravine at tick ~300 and spent the remaining 1,700 pressed
+// against the same wall, still reporting "ok" while exercising nothing.
+//
+// **Point it at a copy.** `open()` writes session.lock and `close()` rewrites
+// level.dat, like every other mode here.
+int walk(const char* worldDir, int distance, int ticks, bool generate)
+{
+    HostVboAllocator allocator;
+
+    render::ChunkRendererConfig config;
+    config.meshDistance = distance;
+    config.budget = flyBudget(distance);
+    // Meshing is not what this exercises, but it cannot be zero: the streamer
+    // publishes through the renderer, and a column that never meshes never
+    // reports itself resident.
+    config.meshBudgetPerFrame = 4;
+
+    render::ChunkRenderer renderer;
+    renderer.reset(&allocator, config);
+
+    render::WorldStreamer streamer;
+    // Without this the walk is bounded by whatever was generated before, and
+    // stepping past that edge is a fall into a world that has no floor because
+    // it has no chunks -- see the absent-column note in the loop below.
+    streamer.setGenerateMissing(generate);
+    if (!streamer.open(worldDir, distance, nowMillis())) {
+        std::printf("cannot open %s\n", worldDir);
+        return 2;
+    }
+
+    // The same two meanings spawnPosition has on the console: level.dat's
+    // Pos[1] is a1.1.2's posY and sits 1.62 above the feet, while spawnY is a
+    // block coordinate and is the feet already. See docs/physics-a1.1.2.md.
+    double spawnX = 0.0;
+    double spawnY = 0.0;
+    double spawnZ = 0.0;
+    streamer.spawnPosition(&spawnX, &spawnY, &spawnZ);
+    const double feetY = streamer.level().player.present
+                             ? spawnY - double(entity::kEyeHeight)
+                             : spawnY;
+
+    entity::PlayerBody body;
+    body.setFeet(spawnX, feetY, spawnZ);
+
+    std::printf("world      %s\n", worldDir);
+    std::printf("spawn      feet %.3f %.3f %.3f, chunk (%d, %d)\n", body.x, body.y, body.z,
+                int(std::floor(body.x / 16.0)), int(std::floor(body.z / 16.0)));
+    std::printf("distance   %d chunks, %d ticks\n", distance, ticks);
+    std::printf("\n");
+
+    // The streamer's per-frame budget, not the pool's -- two different things
+    // with the same name. Two columns a frame is the console's rate.
+    render::WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 2;
+
+    // Let the streamer settle before the first step, or the body spends its
+    // opening ticks falling through chunks that have not arrived. The console
+    // covers this with a loading screen; here it is just a wait.
+    for (int i = 0; i < 400; ++i) {
+        Frustum frustum;
+        frustum.setOrigin(body.chunkX(), body.chunkZ());
+        renderer.beginFrame(u32(i), frustum, body.chunkX(), int(std::floor(body.y / 16.0)),
+                            body.chunkZ());
+        streamer.update(renderer, body.chunkX(), body.chunkZ(), budget);
+    }
+
+    tick::TickWorld* world = streamer.worldTick();
+    if (world == nullptr) {
+        std::printf("no tick world\n");
+        return 2;
+    }
+
+    // A world with no saved player hands back `spawnY`, a block coordinate that
+    // can leave the body buried -- and a buried body cannot walk in any
+    // direction, which looks exactly like broken physics.
+    const int lifted = body.liftOutOfGround(*world);
+    if (lifted > 0) {
+        std::printf("spawn      was inside the ground; lifted %d block%s to feet %.3f\n",
+                    lifted, lifted == 1 ? "" : "s", body.y);
+    }
+
+    const double startX = body.x;
+    const double startZ = body.z;
+    double lowest = body.y;
+    double highestFall = 0.0;
+    int grounded = 0;
+    int airborne = 0;
+    int stuck = 0;
+    int failures = 0;
+    double travelled = 0.0;
+    int stalledRun = 0;
+    int escapes = 0;
+
+    for (int t = 0; t < ticks; ++t) {
+        // Straight for 200 ticks, then a turn that is not a fraction of a
+        // circle, so the path wanders instead of closing on itself. `escapes`
+        // adds to it whenever the body has been getting nowhere.
+        const float yaw = float(t / 200) * 37.0f + float(escapes) * 53.0f;
+
+        entity::PlayerInput input;
+        input.strafe = 0.0f;
+        input.forward = 1.0f;
+        input.yawDegrees = yaw;
+        // Often enough to keep exercising the launch and the landing, rarely
+        // enough that most ticks are still a walk.
+        input.jump = (t % 40) == 0;
+        input.sneak = false;
+
+        const double beforeX = body.x;
+        const double beforeZ = body.z;
+
+        body.tick(*world, input);
+
+        Frustum frustum;
+        frustum.setOrigin(body.chunkX(), body.chunkZ());
+        renderer.beginFrame(u32(t + 1000), frustum, body.chunkX(),
+                            int(std::floor(body.y / 16.0)), body.chunkZ());
+        streamer.update(renderer, body.chunkX(), body.chunkZ(), budget);
+
+        if (body.onGround) {
+            ++grounded;
+        } else {
+            ++airborne;
+        }
+        if (body.y < lowest) {
+            lowest = body.y;
+        }
+        if (double(body.fallDistance) > highestFall) {
+            highestFall = double(body.fallDistance);
+        }
+
+        const double moved = (body.x - beforeX) * (body.x - beforeX)
+                           + (body.z - beforeZ) * (body.z - beforeZ);
+        travelled += std::sqrt(moved);
+        if (moved < 1e-9) {
+            ++stuck;
+            ++stalledRun;
+            // Twenty ticks of no progress is a wall, not a pause. Turn.
+            if (stalledRun >= 20) {
+                ++escapes;
+                stalledRun = 0;
+            }
+        } else {
+            stalledRun = 0;
+        }
+
+        // The three things a fixture cannot catch.
+        if (!(body.x == body.x) || !(body.y == body.y) || !(body.z == body.z)) {
+            std::printf("FAIL tick %d: position is NaN\n", t);
+            ++failures;
+            break;
+        }
+        if (body.y < 0.0) {
+            // **Two very different things look the same from here.** Falling
+            // through a floor that exists is a physics bug. Falling because the
+            // column underneath was never loaded is the original's own
+            // behaviour, faithfully reproduced -- getCollidingBoundingBoxes
+            // contributes nothing for an absent chunk -- and it means the walk
+            // outran the world rather than that the body is wrong. Only the
+            // first is a failure.
+            const bool loaded = world->chunkResident(body.chunkX(), body.chunkZ());
+            if (loaded) {
+                std::printf("FAIL tick %d: fell through loaded ground at %.3f %.3f %.3f\n",
+                            t, body.x, body.y, body.z);
+                ++failures;
+            } else {
+                std::printf("stopped tick %d: walked off the edge of the generated world "
+                            "at %.3f %.3f -- pass `gen` to keep going\n",
+                            t, body.x, body.z);
+            }
+            break;
+        }
+        if (body.y > 256.0) {
+            std::printf("FAIL tick %d: left the world upwards at %.3f\n", t, body.y);
+            ++failures;
+            break;
+        }
+    }
+
+    const double dx = body.x - startX;
+    const double dz = body.z - startZ;
+    std::printf("end        feet %.3f %.3f %.3f\n", body.x, body.y, body.z);
+    std::printf("walked     %.1f blocks of path, %.1f from where it started\n",
+                travelled, std::sqrt(dx * dx + dz * dz));
+    std::printf("lowest y   %.3f\n", lowest);
+    std::printf("longest fall %.2f blocks\n", highestFall);
+    std::printf("on ground  %d ticks, airborne %d\n", grounded, airborne);
+    std::printf("stalled    %d ticks, turned away %d times\n", stuck, escapes);
+
+    streamer.close(nowMillis());
+
+    // Never leaving the ground over a long walk means the body never fell, which
+    // on real terrain means it is not being asked anything. Never touching it
+    // means it never landed.
+    const bool ranToCompletion = grounded + airborne == ticks;
+    if (ranToCompletion && (grounded == 0 || airborne == 0)) {
+        std::printf("FAIL: the walk never %s\n", grounded == 0 ? "landed" : "left the ground");
+        ++failures;
+    }
+    // Mostly airborne means the body is falling somewhere, not walking, and
+    // every ground-contact path -- friction, the step up, the landing -- has
+    // stopped being exercised without anything having failed.
+    if (ranToCompletion && airborne > grounded) {
+        std::printf("FAIL: airborne for %d of %d ticks; this is a fall, not a walk\n",
+                    airborne, ticks);
+        ++failures;
+    }
+    if (ranToCompletion && stuck == ticks) {
+        std::printf("FAIL: the body never moved at all\n");
+        ++failures;
+    }
+
+    std::printf("\n%s\n", failures == 0 ? "walk ok" : "walk FAILED");
+    return failures == 0 ? 0 : 1;
 }
 
 void fly(const char* worldDir, int distance, int frames, int switchTo,
@@ -1686,7 +1925,10 @@ int mapWorld(const char* worldDir, const char* packPath, bool grid, int zoom)
         // 208 by 200 at (104, 32), with the tab strip above it and the
         // coordinate panel beside it. See platform/ctr/map_screen.hpp.
         constexpr int kMapWidth = 208;
-        constexpr int kMapHeight = 200;
+        // The console's window, which lost 32 pixels to the hotbar band and 16
+        // to the focus banner; see platform/ctr/map_screen.hpp. Kept in step so
+        // the cost this prints is the cost the console pays.
+        constexpr int kMapHeight = 158;
         constexpr int kMapLeft = 104;
         constexpr int kMapTop = 32;
 
@@ -2273,6 +2515,12 @@ int main(int argc, char** argv)
     // The console's own loop, without the console. Everything between reading
     // the SD card and issuing a draw call runs here, so a streaming bug is a
     // sanitizer report rather than a puzzle on a 240-line screen.
+    if (argc > 2 && std::strcmp(argv[1], "--walk") == 0) {
+        const int distance = argc > 3 ? std::atoi(argv[3]) : 8;
+        const int ticks = (argc > 4 && !(trailingWord && argc == 5)) ? std::atoi(argv[4]) : 2000;
+        return walk(argv[2], distance, ticks, generate);
+    }
+
     if (argc > 2 && std::strcmp(argv[1], "--fly") == 0) {
         const int distance = argc > 3 ? std::atoi(argv[3]) : 8;
         const int frames = argc > 4 ? std::atoi(argv[4]) : 200;
@@ -2296,6 +2544,12 @@ int main(int argc, char** argv)
     std::printf("        generate a fresh world outward from one chunk and report what it\n");
     std::printf("        cost, per column and in cache high-water\n");
     std::printf("  --mesh <world-dir> [quads]           mesh a whole world, report the numbers\n");
+    std::printf("  --walk <world-dir> [distance] [ticks] [gen]\n");
+    std::printf("        walk a real world with the player body under the sanitizers and\n");
+    std::printf("        report what it hit. A check, not a measurement: non-zero exit when\n");
+    std::printf("        the body falls through the world, goes NaN or never moves. Point it\n");
+    std::printf("        at a copy -- opening a world writes to it. `gen` generates the\n");
+    std::printf("        chunks it walks into, so the walk is not bounded by what exists\n");
     std::printf("  --pack <zip|dir|devart>              assemble a texture pack's atlas and\n");
     std::printf("        report what scaling it needed; writes atlas.pam to look at\n");
     std::printf("  --extract-jar <jar> <packs-dir>      turn a client jar into a texture pack,\n");

@@ -1,5 +1,7 @@
 #include "platform/ctr/overlay.hpp"
 
+#include "core/block/registry.hpp"
+#include "core/item/creative_palette.hpp"
 #include "core/util/console_text.hpp"
 #include "core/util/coord_text.hpp"
 #include "platform/ctr/heap.hpp"
@@ -136,6 +138,20 @@ void Overlay::begin(const char* worldName, const char* model)
     playerPage_ = PlayerPage::Map;
     lookYawStep_ = -1;
     uiTouchActive_ = false;
+
+    // A new world starts with the palette's first nine and the focus off. The
+    // hotbar is not saved anywhere -- see core/item/hotbar.hpp -- so this is
+    // not losing anything a previous session had.
+    hotbar_ = item::Hotbar{};
+    hotbar_.fillFromPalette();
+    palettePage_ = 0;
+    paletteCursor_ = 0;
+    focus_ = false;
+    focusPalette_ = false;
+    hotbarDirty_ = true;
+    bodyDirty_ = true;
+    // map_.reset() above already cleared the pan; this is the pair of it for a
+    // reader looking for where the focus state is put back.
 }
 
 void Overlay::setGamemode(settings::Gamemode mode)
@@ -144,14 +160,38 @@ void Overlay::setGamemode(settings::Gamemode mode)
         return;
     }
     gamemode_ = mode;
-    // Spectator has no Items tab, so a player who was on it has to be moved
-    // off before the strip is next drawn -- otherwise the selected index would
-    // name a tab that no longer exists.
-    if (mode == settings::Gamemode::Spectator && playerPage_ == PlayerPage::Items) {
+
+    // **A page the new mode does not have has to be left before the strip is
+    // next drawn**, or the selected index would name a tab that is not there.
+    // Asked of the mapping rather than tested mode by mode, so a mode added
+    // later cannot be forgotten here.
+    PlayerPage pages[hud::kMaxTabs];
+    const int count = playerPagesFor(pages);
+    bool present = false;
+    for (int i = 0; i < count; ++i) {
+        present = present || pages[i] == playerPage_;
+    }
+    if (!present) {
         playerPage_ = PlayerPage::Map;
     }
+
+    // The focus has nothing to sit on without a hotbar.
+    if (!hasHotbar() && focus_) {
+        releaseFocus();
+    }
+
     // The strip has a different number of tabs on it now.
     dirty_ = true;
+}
+
+void Overlay::setAtlas(const texture::AtlasImage& atlas)
+{
+    map_.setPalette(atlas);
+    // Borrowed. `empty()` is the atlas's own "not built yet", and null is what
+    // the icon blit treats as "draw nothing" rather than "draw tile zero".
+    atlasRgba_ = atlas.empty() ? nullptr : atlas.rgba.data();
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
 }
 
 void Overlay::setBackdropTile(const std::vector<u8>& rgba)
@@ -167,53 +207,90 @@ void Overlay::setBackdropTile(const std::vector<u8>& rgba)
     dirty_ = true;
 }
 
-// **Built here rather than stored, because the gamemode is what it depends
-// on.** The switch has no default: a mode added later does not compile until
-// somebody has decided which tabs it gets.
-hud::TabStrip Overlay::tabs() const
+// **Which pages a mode has, in one place.** The switch has no default: a mode
+// added later does not compile until somebody has decided which tabs it gets.
+//
+// Creative fills all four of hud::kMaxTabs, which is the ceiling and is
+// asserted rather than assumed -- a fifth page needs the strip widened before
+// it needs anything here.
+int Overlay::playerPagesFor(PlayerPage* out) const
 {
-    hud::TabStrip strip;
-    strip.labels[strip.count++] = "Map";
+    // Creative fills the strip exactly. A fifth page needs the strip widened
+    // before it needs anything in this function.
+    static_assert(hud::kMaxTabs >= 4, "Creative needs four tabs");
+    int count = 0;
+    out[count++] = PlayerPage::Map;
     switch (gamemode_) {
     case settings::Gamemode::Spectator:
-        break;  // no inventory to show, so no tab for one
+        break;  // carries nothing and places nothing, so neither page applies
     case settings::Gamemode::Survival:
+        out[count++] = PlayerPage::Items;
+        break;
     case settings::Gamemode::Creative:
-        strip.labels[strip.count++] = "Items";
+        out[count++] = PlayerPage::Items;
+        out[count++] = PlayerPage::Blocks;
         break;
     }
-    strip.labels[strip.count++] = "Look";
+    out[count++] = PlayerPage::Look;
+    return count;
+}
+
+hud::TabStrip Overlay::tabs() const
+{
+    PlayerPage pages[hud::kMaxTabs];
+    const int count = playerPagesFor(pages);
+
+    hud::TabStrip strip;
+    for (int i = 0; i < count; ++i) {
+        switch (pages[i]) {
+        case PlayerPage::Map:
+            strip.labels[strip.count++] = "Map";
+            break;
+        case PlayerPage::Items:
+            strip.labels[strip.count++] = "Items";
+            break;
+        case PlayerPage::Blocks:
+            strip.labels[strip.count++] = "Blocks";
+            break;
+        case PlayerPage::Look:
+            strip.labels[strip.count++] = "Look";
+            break;
+        }
+    }
     strip.selected = selectedTab();
     return strip;
 }
 
 int Overlay::selectedTab() const
 {
-    const bool hasItems = gamemode_ != settings::Gamemode::Spectator;
-    switch (playerPage_) {
-    case PlayerPage::Map:
-        return 0;
-    case PlayerPage::Items:
-        return 1;
-    case PlayerPage::Look:
-        break;
+    PlayerPage pages[hud::kMaxTabs];
+    const int count = playerPagesFor(pages);
+    for (int i = 0; i < count; ++i) {
+        if (pages[i] == playerPage_) {
+            return i;
+        }
     }
-    return hasItems ? 2 : 1;
+    return 0;
 }
 
 void Overlay::selectTab(int index)
 {
-    const bool hasItems = gamemode_ != settings::Gamemode::Spectator;
-    PlayerPage wanted = PlayerPage::Map;
-    if (index == 1) {
-        wanted = hasItems ? PlayerPage::Items : PlayerPage::Look;
-    } else if (index >= 2) {
-        wanted = PlayerPage::Look;
-    }
-    if (wanted == playerPage_) {
+    PlayerPage pages[hud::kMaxTabs];
+    const int count = playerPagesFor(pages);
+    if (index < 0 || index >= count) {
         return;
     }
-    playerPage_ = wanted;
+    if (pages[index] == playerPage_) {
+        return;
+    }
+    playerPage_ = pages[index];
+
+    // **The palette cursor only exists on the palette's own page.** Leaving it
+    // set while the Map page is up would mean the d-pad moved something the
+    // player cannot see.
+    if (playerPage_ != PlayerPage::Blocks) {
+        focusPalette_ = false;
+    }
     dirty_ = true;
 }
 
@@ -236,6 +313,48 @@ int Overlay::touchLookTop() const
     return hud::kLookPadTop;
 }
 
+namespace {
+
+// A block's name as something to read: `mossy_cobblestone` is what the table
+// carries -- the column is ours, and snake_case is what it was written in -- and
+// "Mossy cobblestone" is what a caption wants. Formatted into the caller's
+// buffer rather than returned, because nothing here allocates.
+// An analogue axis as -1..1 with the deadzone taken out, which is the same
+// arithmetic platform/ctr/main.cpp uses on the same stick -- 156 is full
+// deflection and most consoles rest a little off centre.
+float padAxis(s16 raw)
+{
+    constexpr float kDeadzone = 0.1f;
+    const float value = float(raw) / 156.0f;
+    if (value > -kDeadzone && value < kDeadzone) {
+        return 0.0f;
+    }
+    return value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
+}
+
+void blockCaption(block::BlockId id, char* out, usize size)
+{
+    if (size == 0) {
+        return;
+    }
+    if (id == block::kAir) {
+        std::snprintf(out, size, "%s", "empty");
+        return;
+    }
+    const char* name = block::def(id).name;
+    usize written = 0;
+    for (; name[written] != '\0' && written + 1 < size; ++written) {
+        const char c = name[written];
+        out[written] = c == '_' ? ' ' : c;
+    }
+    out[written] = '\0';
+    if (written > 0 && out[0] >= 'a' && out[0] <= 'z') {
+        out[0] = char(out[0] - 'a' + 'A');
+    }
+}
+
+}  // namespace
+
 void Overlay::tickMap(const render::WorldStreamer& world, const Camera& camera)
 {
     map_.update(world, camera);
@@ -251,9 +370,43 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     } else if ((down & KEY_TOUCH) != 0 && page_ == Page::Player) {
         touchPosition touch;
         hidTouchRead(&touch);
-        const int tab = hud::tabAt(tabs(), int(touch.px), int(touch.py));
+        const int x = int(touch.px);
+        const int y = int(touch.py);
+        const int tab = hud::tabAt(tabs(), x, y);
+        const int slot = hasHotbar() ? hud::hotbarSlotAt(x, y) : -1;
         if (tab >= 0) {
             selectTab(tab);
+            uiTouchActive_ = true;
+        } else if (slot >= 0) {
+            // **The hotbar answers a touch on every page**, which is the whole
+            // reason it is a band rather than something on the inventory page:
+            // changing what is in your hand should not cost a page change.
+            if (slot != hotbar_.selected) {
+                hotbar_.selected = slot;
+                hotbarDirty_ = true;
+            }
+            uiTouchActive_ = true;
+        } else if (playerPage_ == PlayerPage::Blocks) {
+            const int arrow = hud::paletteArrowAt(x, y);
+            const int cell = hud::paletteCellAt(x, y);
+            if (arrow != 0) {
+                const int wanted = palettePage_ + arrow;
+                if (wanted >= 0 && wanted < hud::palettePageCount()) {
+                    palettePage_ = wanted;
+                    bodyDirty_ = true;
+                }
+            } else if (cell >= 0) {
+                // Touching a block puts it in the hand, in the slot that is
+                // already selected. **It does not move the selection**: a
+                // player filling a hotbar picks the slot and then the block,
+                // and a pick that also moved the slot would fill one slot nine
+                // times.
+                paletteCursor_ = cell;
+                hotbar_.set(hotbar_.selected,
+                            item::paletteBlock(paletteIndex()));
+                bodyDirty_ = true;
+                hotbarDirty_ = true;
+            }
             uiTouchActive_ = true;
         } else if (playerPage_ != PlayerPage::Look) {
             // The map and the inventory keep their own presses. Marking the
@@ -261,6 +414,18 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
             // the camera, which is what it used to do.
             uiTouchActive_ = true;
         }
+    }
+
+    // **ZL and ZR change the held slot from anywhere**, page or no page, focus
+    // or no focus -- they are the New 3DS's shoulder pair and this is what a
+    // mouse wheel does in the original. They do not exist on an old 3DS, which
+    // is the other half of why the focused d-pad below is not a convenience.
+    //
+    // Read before SELECT's page cycle, because nothing in that chord uses them
+    // and a held SELECT should not take the hotbar away.
+    if (hasHotbar() && (down & (KEY_ZL | KEY_ZR)) != 0) {
+        hotbar_.cycle((down & KEY_ZR) != 0 ? 1 : -1);
+        hotbarDirty_ = true;
     }
 
     // SELECT is the modifier rather than a page key of its own, so the page
@@ -288,12 +453,40 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     // and redraws itself -- so this returns false whatever happens: the caller
     // has no pool to rebuild and no setting to apply.
     //
-    // **Y is guarded the same way SELECT is above.** Holding Y and pressing the
-    // d-pad is main.cpp's stereo tuner, which reads the same buttons out of the
-    // same frame; without this, dialling in the disparity would also walk the
-    // map through its grids.
+    // **The stereo tuner is SELECT + d-pad**, and SELECT already returned above,
+    // so nothing needs guarding here any more. It used to be Y + d-pad and this
+    // test excluded it; Y is sneak now, and leaving the old guard in would have
+    // made the map's zoom die whenever the player crouched.
     if (page_ == Page::Player) {
-        if (playerPage_ != PlayerPage::Map || (held & KEY_Y) != 0) {
+        // **X focuses the bottom screen and X lets it go.** The screen is
+        // resistive and a player walking has no stylus out; focused, the d-pad
+        // and A do what a tap would, and the world keeps moving underneath --
+        // the circle pad and the camera are untouched. Only in a mode that has
+        // something to focus on.
+        if (hasHotbar() && (down & KEY_X) != 0) {
+            if (focus_) {
+                releaseFocus();
+            } else {
+                focus_ = true;
+                focusPalette_ = playerPage_ == PlayerPage::Blocks;
+                paletteCursor_ = 0;
+                // The banner has to appear over whatever is already drawn, and
+                // the page below it has to come back when it goes -- so both
+                // directions are a full redraw. It happens on a button press,
+                // not in a loop.
+                dirty_ = true;
+            }
+            return false;
+        }
+        // **Focused, the screen gets first refusal on the press** -- and
+        // refuses the map's own d-pad, which falls through below. On the map
+        // page the stick is doing the moving, so zoom and the grids keep the
+        // buttons they have always had; there is nothing for a cursor to walk
+        // over on a map.
+        if (focus_ && handleFocusedInput(down)) {
+            return false;
+        }
+        if (playerPage_ != PlayerPage::Map) {
             return false;
         }
         if (down & (KEY_DLEFT | KEY_DRIGHT)) {
@@ -531,6 +724,200 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
     }
 }
 
+// **The palette and the hotbar are nine columns wide on purpose.** The focused
+// d-pad steps between them straight down, and a column in one meaning a
+// different column in the other would make that step a translation nobody could
+// predict.
+static_assert(hud::kPaletteColumns == hud::kHotbarColumns,
+              "the palette and the hotbar share a column");
+
+void Overlay::releaseFocus()
+{
+    focus_ = false;
+    focusPalette_ = false;
+
+    // **Going out puts the map back on the player.** A pan is a thing you did
+    // with the focus on, and leaving the focus with the window parked four
+    // hundred blocks away would be a mode the player had no way left to get out
+    // of -- the stick walks again the moment X is let go.
+    map_.clearPan();
+
+    // A full clear rather than the two page flags. The banner *darkened* the
+    // pixels underneath it, which is not something that can be undone by
+    // drawing the banner again; only repainting the page restores them.
+    dirty_ = true;
+}
+
+void Overlay::tickFocus(float dt)
+{
+    if (!mapPanActive()) {
+        return;
+    }
+
+    circlePosition pad;
+    hidCircleRead(&pad);
+    const float x = padAxis(pad.dx);
+    const float z = padAxis(pad.dy);
+    if (x == 0.0f && z == 0.0f) {
+        return;
+    }
+
+    // **Half a window a second, at every zoom.** Expressed in windows rather
+    // than blocks because that is what the gesture means: pushing the stick
+    // over should take about the same time to cross the picture whether the
+    // picture is 104 blocks across or 416. A fixed blocks-per-second would feel
+    // like four different speeds.
+    const double windowsPerSecond = 0.5;
+    const double blocksWide = double(map::mapWindowBlocks(kMapWidth, map_.zoom()));
+    const double blocksHigh = double(map::mapWindowBlocks(kMapHeight, map_.zoom()));
+
+    // Pad +y is *up* on the stick, which is north, which is -Z.
+    map_.pan(double(x) * blocksWide * windowsPerSecond * double(dt),
+             double(-z) * blocksHigh * windowsPerSecond * double(dt));
+}
+
+// True when the press was the focused screen's and the caller should stop.
+// **False is not "nothing happened"** -- it is "this belongs to the page", which
+// on the map means the zoom and the grids.
+bool Overlay::handleFocusedInput(u32 down)
+{
+    // B lets the screen go, which is the same thing B does everywhere else in
+    // this shell.
+    if ((down & KEY_B) != 0) {
+        releaseFocus();
+        return true;
+    }
+
+    // **The shoulders change tab, and the focus survives the change.** That is
+    // the whole reason they are not the palette's pager any more: a focused
+    // screen with no button route between Map, Items and Blocks could only be
+    // navigated by touching it, which is exactly what the focus exists to avoid.
+    // The palette pages instead by running the cursor off either end of its
+    // grid, and by the two arrows on its title row for anyone using the stylus.
+    //
+    // Unfocused, L and R are break and place; main.cpp reads the same focus
+    // flag and suspends the edit path, so no press ever does both.
+    if ((down & (KEY_L | KEY_R)) != 0) {
+        PlayerPage pages[hud::kMaxTabs];
+        const int count = playerPagesFor(pages);
+        const int tab = selectedTab() + ((down & KEY_R) != 0 ? 1 : count - 1);
+        selectTab(tab % count);
+        // selectTab drops the palette cursor when it leaves the Blocks page and
+        // does not put it back on the way in, so say where the focus goes.
+        focusPalette_ = playerPage_ == PlayerPage::Blocks;
+        hotbarDirty_ = true;
+        bodyDirty_ = true;
+        return true;
+    }
+
+    // **The map keeps its own d-pad even focused.** The stick is what moves a
+    // focused map, so the zoom and the grids are not competing with anything --
+    // and there is no cursor on this page to walk over. ZL and ZR still change
+    // the held slot; they are read before this is ever called.
+    if (playerPage_ == PlayerPage::Map) {
+        return false;
+    }
+
+    const bool onBlocks = playerPage_ == PlayerPage::Blocks;
+    const int pages = hud::palettePageCount();
+
+    if (focusPalette_) {
+        if ((down & (KEY_DLEFT | KEY_DRIGHT)) != 0) {
+            // Linear through the page and off its ends into the next one, which
+            // is how a list of 70 things reads. Stopping at the last cell of
+            // the last page is the only clamp.
+            int cell = paletteCursor_ + ((down & KEY_DRIGHT) != 0 ? 1 : -1);
+            if (cell < 0) {
+                cell = 0;
+                if (palettePage_ > 0) {
+                    --palettePage_;
+                    cell = hud::kPalettePerPage - 1;
+                }
+            } else if (cell >= hud::kPalettePerPage) {
+                cell = hud::kPalettePerPage - 1;
+                if (palettePage_ + 1 < pages) {
+                    ++palettePage_;
+                    cell = 0;
+                }
+            }
+            paletteCursor_ = cell;
+            bodyDirty_ = true;
+        }
+        if ((down & KEY_DUP) != 0 && paletteCursor_ >= hud::kPaletteColumns) {
+            paletteCursor_ -= hud::kPaletteColumns;
+            bodyDirty_ = true;
+        }
+        if ((down & KEY_DDOWN) != 0) {
+            if (paletteCursor_ + hud::kPaletteColumns < hud::kPalettePerPage) {
+                paletteCursor_ += hud::kPaletteColumns;
+                bodyDirty_ = true;
+            } else {
+                // Off the bottom row is the hotbar, in the same column -- the
+                // grid and the band are one cursor space with a gap in it.
+                focusPalette_ = false;
+                hotbar_.selected = paletteCursor_ % hud::kPaletteColumns;
+                bodyDirty_ = true;
+                hotbarDirty_ = true;
+            }
+        }
+        if ((down & KEY_A) != 0) {
+            // Into the slot that is already selected. **A does not move the
+            // selection**: filling a hotbar is pick a slot, then pick a block,
+            // and a pick that moved the slot too would fill one slot nine times.
+            hotbar_.set(hotbar_.selected, item::paletteBlock(paletteIndex()));
+            bodyDirty_ = true;
+            hotbarDirty_ = true;
+        }
+        return true;
+    }
+
+    // The hotbar row. Left and right are the selection, which is what ZL and ZR
+    // do and is the reason an old 3DS is not shut out of changing it.
+    if ((down & (KEY_DLEFT | KEY_DRIGHT)) != 0) {
+        hotbar_.cycle((down & KEY_DRIGHT) != 0 ? 1 : -1);
+        hotbarDirty_ = true;
+    }
+    if (onBlocks && (down & KEY_DUP) != 0) {
+        focusPalette_ = true;
+        paletteCursor_ = (hud::kPaletteRows - 1) * hud::kPaletteColumns + hotbar_.selected;
+        bodyDirty_ = true;
+        hotbarDirty_ = true;
+    }
+    if (onBlocks && (down & KEY_A) != 0) {
+        // "Where did this come from" -- the cursor jumps to the held block's
+        // own cell, paging the palette to find it. Useful precisely when the
+        // palette is two pages and the block is on the other one.
+        showBlockInPalette(hotbar_.selectedBlock());
+    }
+    return true;
+}
+
+void Overlay::showBlockInPalette(block::BlockId id)
+{
+    const int index = item::paletteIndexOf(id);
+    if (index < 0) {
+        return;
+    }
+    palettePage_ = index / hud::kPalettePerPage;
+    paletteCursor_ = index % hud::kPalettePerPage;
+    focusPalette_ = true;
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
+}
+
+void Overlay::drawBlocks(const gui::Surface& surface)
+{
+    // The caption names whatever the player is pointing at: the cursor's cell
+    // while the grid is focused, and what is in the hand otherwise.
+    const block::BlockId named =
+        focusPalette_ ? item::paletteBlock(paletteIndex()) : hotbar_.selectedBlock();
+    char caption[40];
+    blockCaption(named, caption, sizeof caption);
+
+    hud::drawBlocksPage(surface, atlasRgba_, palettePage_, focusPalette_ ? paletteCursor_ : -1,
+                        hotbar_.selectedBlock(), caption);
+}
+
 bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
 {
     gui::Surface screen;
@@ -545,7 +932,9 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
     if (cleared) {
         // The console first: `\x1b[2J` blanks every cell, and every panel below
         // is drawn over the top of that. Doing it the other way round would
-        // erase the panels.
+        // erase the panels. The focus banner is drawn at the *end* of this
+        // function rather than here, because it darkens the backdrop and has to
+        // find it already down.
         clearScreen();
         hud::drawBackdrop(screen, haveBackdrop_ ? backdrop_ : nullptr);
         hud::drawTabs(screen, tabs());
@@ -553,24 +942,74 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         // The pages below all key off "has this moved", and after a clear
         // nothing on the screen is theirs any more.
         lookYawStep_ = -1;
+        bodyDirty_ = true;
+        hotbarDirty_ = true;
     }
 
+    bool drew = cleared;
     switch (playerPage_) {
     case PlayerPage::Map:
-        map_.draw(screen, camera, cleared);
         // The map times and flushes its own writes -- see MapScreen::draw --
-        // and it is the one page here that draws on most frames.
-        return cleared;
+        // and it is the one page here that draws on most frames. **Its answer
+        // matters now**: the focus banner is drawn over the map, so a redraw
+        // this function could not see would quietly erase it.
+        drew = map_.draw(screen, camera, cleared) || drew;
+        break;
     case PlayerPage::Items:
-        // Nothing on it changes yet, so once drawn it stays drawn.
-        if (cleared) {
+        // Nothing on it changes, so once drawn it stays drawn.
+        if (bodyDirty_) {
             hud::drawItemsPage(screen);
+            drew = true;
         }
-        return cleared;
+        break;
+    case PlayerPage::Blocks:
+        if (bodyDirty_) {
+            drawBlocks(screen);
+            drew = true;
+        }
+        break;
     case PlayerPage::Look:
+        drew = drawLook(screen, camera, cleared) || drew;
         break;
     }
-    return drawLook(screen, camera, cleared);
+    bodyDirty_ = false;
+
+    // **The band last, and only when it moved.** It is over the page rather
+    // than beside it in drawing order for one reason: nothing above may write
+    // into the bottom 32 pixels, and if something ever does, the hotbar is what
+    // covers it up rather than what gets covered.
+    if (hasHotbar() && hotbarDirty_) {
+        // **No cursor on the map page.** The focused d-pad is the map's there,
+        // so a cursor on the hotbar would be marking a slot that no button
+        // moves -- which is worse than not marking one at all.
+        const bool cursorOnHotbar =
+            focus_ && !focusPalette_ && playerPage_ != PlayerPage::Map;
+        hud::drawHotbar(screen, hotbar_, atlasRgba_, cursorOnHotbar ? hotbar_.selected : -1);
+        hotbarDirty_ = false;
+        drew = true;
+    }
+
+    // **On a clear and never otherwise**, which is the whole of what keeps the
+    // fade one layer deep: it darkens the pixels it finds, and the band it sits
+    // in is painted exactly once per clear by the backdrop and by nothing else
+    // afterwards. See hud::kBannerTop. Everything that changes what the banner
+    // says -- the focus going on or off, and a change of tab -- sets `dirty_`,
+    // so there is no state where the strip and the page disagree.
+    if (cleared && focus_) {
+        drawFocusBanner(screen);
+    }
+    return drew;
+}
+
+void Overlay::drawFocusBanner(const gui::Surface& surface) const
+{
+    // Forty columns exactly, which is the screen. What the buttons mean differs
+    // by page, and saying so is most of the value: the map's stick scrolls and
+    // the other pages' d-pad picks, and neither is guessable.
+    const char* label = playerPage_ == PlayerPage::Map
+                            ? " Bottom screen focused: pad pans, B back"
+                            : " Bottom screen focused: d-pad, A, B back";
+    hud::drawFocusBanner(surface, label);
 }
 
 bool Overlay::drawLook(const gui::Surface& surface, const Camera& camera, bool cleared)

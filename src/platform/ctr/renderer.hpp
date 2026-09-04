@@ -9,6 +9,7 @@
 
 #include "core/mesh/vertex.hpp"
 #include "core/render/chunk_renderer.hpp"
+#include "core/render/outline.hpp"
 #include "core/util/frustum.hpp"
 #include "core/util/types.hpp"
 #include "platform/ctr/gpu_memory.hpp"
@@ -280,6 +281,17 @@ public:
     // The context pointer is the same idiom io::FileSystem::listDirectory uses,
     // and for the same reason: -fno-exceptions, -fno-rtti, and no appetite for
     // a std::function's allocation in a frame.
+    // **What the crosshair is on, or nothing.** Set once a frame from the ray
+    // trace; the box is in world coordinates and this makes it chunk-relative
+    // at draw time, because the camera's chunk is the origin every other matrix
+    // in the frame is built around.
+    //
+    // The outline is drawn as triangles -- the PICA200 has no line primitive,
+    // which is a deviation from a1.1.2's one-pixel `GL_LINE_STRIP` and the only
+    // option available. See core/render/outline.hpp.
+    void setSelection(const AABB& worldBox);
+    void clearSelection() { hasSelection_ = false; }
+
     using Overlay2D = void (*)(void* context, C3D_RenderTarget* target);
     void drawFrame(const Camera& camera, void* overlayContext = nullptr,
                    Overlay2D overlay = nullptr);
@@ -406,6 +418,10 @@ private:
 
     bool buildPipeline(Pipeline* pipeline, const void* shbin, u32 shbinSize, bool detail);
 
+    // One float3 attribute and nothing else, so it does not fit buildPipeline's
+    // two packed formats.
+    bool buildOutlinePipeline(const void* shbin, u32 shbinSize);
+
     // The geometry-shader program, which differs in three ways and so does not
     // fit buildPipeline: a second DVLE to attach, a gsh input stride, and a
     // face table to upload.
@@ -421,6 +437,17 @@ private:
     Pipeline cubePipeline_;
     Pipeline detailPipeline_;
     Pipeline quadPipeline_;
+    Pipeline outlinePipeline_;
+
+    // One allocation for the life of the renderer: 432 vertices of twelve bytes
+    // is five kilobytes, rebuilt only when the crosshair moves off the block it
+    // was on, and never in the middle of a frame.
+    void* outlineVerts_ = nullptr;
+    AABB selectionBox_{};
+    bool hasSelection_ = false;
+    bool outlineDirty_ = false;
+
+    void drawSelection(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
 
     // Where quad.v.pica's faceBasis[18] lives, and the values to put in it.
     // Written on every bind rather than once at init for the same reason the

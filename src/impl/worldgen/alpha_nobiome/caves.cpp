@@ -1,7 +1,7 @@
 #include "impl/worldgen/alpha_nobiome/caves.hpp"
 
 #include "blocks.hpp"
-#include "impl/worldgen/alpha_nobiome/math_helper.hpp"
+#include "core/util/math_helper.hpp"
 
 namespace mc::worldgen {
 

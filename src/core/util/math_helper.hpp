@@ -1,6 +1,12 @@
 #pragma once
 
-// a1.1.2's MathHelper -- class `eo` -- for the parts world generation uses.
+// a1.1.2's MathHelper -- class `eo` -- for the parts this project uses.
+//
+// **It lives in core rather than in the worldgen slot, and that is the point.**
+// It started beside the cave carver because the carver was the only caller, but
+// `Entity.moveFlying` turns a heading into motion through the *same* quantised
+// table, so the player body needs it too -- and `src/core/entity/` may not
+// include `src/impl/worldgen/`. It is `eo`, not anything to do with terrain.
 //
 // **The cave carver never calls a transcendental.** It goes through a
 // 65,536-entry float table that the original builds once from
@@ -27,7 +33,9 @@
 #include "core/util/java_cast.hpp"
 #include "core/util/types.hpp"
 
-namespace mc::worldgen {
+#include <cmath>
+
+namespace mc {
 
 class MathHelper {
 public:
@@ -89,6 +97,17 @@ public:
     // but it shares a world with a noise generator that does.
     static i32 floorDouble(double value) { return javaFloorToInt(value); }
 
+    // `eo.c(F)F`, sqrt_float: the argument is widened, square-rooted as a
+    // double and narrowed again, so it is **not** the same as a float sqrt.
+    // `Math.sqrt` is one of the few things Java specifies exactly -- correctly
+    // rounded, per IEEE 754 -- so std::sqrt agrees with it and no strictmath
+    // equivalent is needed here, unlike log and pow.
+    static float sqrtFloat(float value) { return float(std::sqrt(double(value))); }
+
+    // `eo.a(D)F`, sqrt_double. Same call, but the argument was already a
+    // double; only the result narrows.
+    static float sqrtDouble(double value) { return float(std::sqrt(value)); }
+
     // For the test that hashes the table against the JVM's.
     static const float* table();
 
@@ -97,4 +116,4 @@ private:
     static bool built_;
 };
 
-}  // namespace mc::worldgen
+}  // namespace mc

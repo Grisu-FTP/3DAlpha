@@ -28,7 +28,7 @@ hard oracle to check itself against.
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
 | **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world. **Plus a second on-disk format**, `Packed`: sector-allocated region containers, 9× smaller than the folder layout on a 16 KB-cluster card and 280× fewer file operations, converted losslessly in either direction and byte-exact on a real 1,119-chunk world. New worlds are created in it. See §0j and [packed-worlds.md](packed-worlds.md) |
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, **draws the whole render distance on hardware without stalling, and is what the game boots into as of this change** — the 4-vertex path stays as the watchdog's fallback and as the only encoding that can ever carry per-corner light. What is still *not* taken is the gate measurement itself: GPU draw time per quad, both formats, one session, one position |
-| M3 Singleplayer gameplay | not started as *gameplay*, **but its foundation is now built: the world ticks.** a1.1.2's 20 Hz clock (`ir.class`, accumulator, partial ticks, the ten-tick cap that drops rather than defers), its scheduled-update list with the original's ordering and both of its limits, its 80-samples-a-chunk random tick, and fifteen block behaviours -- grass, leaves, saplings, crops, farmland, flowers, mushrooms, sugar cane, cactus, ice, both snows, torches, sand and gravel. Blocks are dispatched by a **tick behaviour**, never by id, the way the renderer dispatches on render type. Redstone, fire and the fluids are named and not done; see §0o and [tick-a1.1.2.md](tick-a1.1.2.md). Also **the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator is the only implemented mode and it is the honest one** -- there is no player body yet, so movement is free flight with no collision; Survival and Creative are drawn disabled. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now a tabbed HUD, and the debug pages are behind it rather than beside it.** The player's half is three pages switched by touching tabs along the top -- **Map**, **Items** and **Look** -- drawn as panels, slots and bevels in a1.1.2's own GUI colours over the pack's tiled dirt, while the three debug pages stay shared, unchanged and behind `SELECT + Y`. It is still libctru's text console underneath: the furniture is written straight into the RGB565 framebuffer and the console's glyphs are printed on top of it, on backgrounds set per row with `\x1b[48;2;R;G;Bm`, which is what stopped text punching black rectangles through the panels. **Map** is 208 by 200 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds -- **in every gamemode now, not only Spectator's** -- and it shows **coordinates and nothing else**: the chunk, the map tile, the chunk count and the redraw time were the maintainer's questions and have moved to the Info page, and the debug grids to the settings page. **There is no strip of button hints along the bottom**, because it was the same three lines on every page spending a twelfth of the screen to repeat itself; the debug pages keep theirs, which is where `SELECT + Y` is worth naming. Those 24 rows and 24 columns off the coordinate panel are what made the window a quarter bigger than the 192 by 176 it started at -- an estimated 790 us a redraw against 700, measured on the host as 16.9 us against 14.2. The marker is an **arrowhead rotated to a real yaw** rather than a diamond with a whole-block tick, which is what fixes both of the old one's faults at once -- it pointed eight ways and it was 41 % longer on a diagonal than on a straight. **Items** is the inventory frame, nine across with a hotbar, drawn empty until M3 fills it, and it is not offered in Spectator. **Look** is a pad that hands the drag to the camera, with a compass ribbon over it -- which exists because the bottom screen is both the UI and the only pointing device an old 3DS has, and dragging on a map used to turn the view. **Run on hardware, where a redraw read 5,000 us**; a per-chunk patch cache took that to a copy, and the number is on the Info page. **The HUD itself has not been seen on hardware.** See [map.md](map.md) |
+| M3 Singleplayer gameplay | not started as *gameplay*, **but its foundation is now built: the world ticks.** a1.1.2's 20 Hz clock (`ir.class`, accumulator, partial ticks, the ten-tick cap that drops rather than defers), its scheduled-update list with the original's ordering and both of its limits, its 80-samples-a-chunk random tick, and fifteen block behaviours -- grass, leaves, saplings, crops, farmland, flowers, mushrooms, sugar cane, cactus, ice, both snows, torches, sand and gravel. Blocks are dispatched by a **tick behaviour**, never by id, the way the renderer dispatches on render type. Redstone, fire and the fluids are named and not done; see §0o and [tick-a1.1.2.md](tick-a1.1.2.md). Also **the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator and Creative are both implemented; Survival is the one drawn disabled.** Spectator is free flight with no body and is offered under a name that says so; Creative landed at M3 step 3 with a body that collides, a four-block reach, break and place, a nine-slot hotbar on the bottom screen, a block palette page fed from the registry, and flight that collides -- **and a1.1.2 has no Creative mode at all**, so all of it is invented and none of it has an oracle. See section 0s. Survival stays disabled because everything it adds -- damage, hardness, drops, depletion -- is a rule on top of the same body and does not exist. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now a tabbed HUD, and the debug pages are behind it rather than beside it.** The player's half is three pages switched by touching tabs along the top -- **Map**, **Items** and **Look** -- drawn as panels, slots and bevels in a1.1.2's own GUI colours over the pack's tiled dirt, while the three debug pages stay shared, unchanged and behind `SELECT + Y`. It is still libctru's text console underneath: the furniture is written straight into the RGB565 framebuffer and the console's glyphs are printed on top of it, on backgrounds set per row with `\x1b[48;2;R;G;Bm`, which is what stopped text punching black rectangles through the panels. **Map** is 208 by 200 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds -- **in every gamemode now, not only Spectator's** -- and it shows **coordinates and nothing else**: the chunk, the map tile, the chunk count and the redraw time were the maintainer's questions and have moved to the Info page, and the debug grids to the settings page. **There is no strip of button hints along the bottom**, because it was the same three lines on every page spending a twelfth of the screen to repeat itself; the debug pages keep theirs, which is where `SELECT + Y` is worth naming. Those 24 rows and 24 columns off the coordinate panel are what made the window a quarter bigger than the 192 by 176 it started at -- an estimated 790 us a redraw against 700, measured on the host as 16.9 us against 14.2. The marker is an **arrowhead rotated to a real yaw** rather than a diamond with a whole-block tick, which is what fixes both of the old one's faults at once -- it pointed eight ways and it was 41 % longer on a diagonal than on a straight. **Items** is the inventory frame, nine across and three rows, drawn empty and not offered in Spectator -- it lost its fourth row, because **the hotbar is a band of its own across the bottom of every player page** in every mode that has one. Creative adds a fourth tab, **Blocks**, which is the block palette and is deliberately not the inventory: a catalogue held by nobody against what a player is carrying. The map lost 32 pixels to that band and got cheaper for it, 208x168 rather than 208x200. **Look** is a pad that hands the drag to the camera, with a compass ribbon over it -- which exists because the bottom screen is both the UI and the only pointing device an old 3DS has, and dragging on a map used to turn the view. **Run on hardware, where a redraw read 5,000 us**; a per-chunk patch cache took that to a copy, and the number is on the Info page. **The HUD itself has not been seen on hardware.** See [map.md](map.md) |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
 | M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, and background music is built but unheard**, both ahead of the rest of M6; mobs and packaging not started. **Music is a1.1.2's `of.c()` transcribed exactly** -- the counter seeded at `nextInt(12000)` and reset to `nextInt(24000)+24000`, and, the part that is easy to lose, *not decremented while a track is playing*, so the period is the track's own length plus 20-40 minutes. It runs on the same `elapsedTicks()` the world does, beside `stepTicks`. Underneath it: `audio::Backend` (the `IAudio` docs/architecture.md always named), an ndsp voice on channel 0 fed by a ring of eight 1024-frame wave buffers in linear memory, and a third `WorkerRole` -- `Audio` -- decoding Ogg Vorbis through Tremor. **On an Old 3DS that decode is on core 0**, because a 3DSX has no other core; it sits below the main thread and the 186 ms ring is what makes that safe, which is a claim only hardware can settle -- the overlay counts underruns and decode microseconds for exactly that reason. Options -> Sound carries the volumes and the one line that says why a console is silent, distinguishing a missing DSP firmware from a DSP something else is holding. **Sound effects are deliberately absent**: nothing in the port can emit one yet, so the machinery arrives with its first caller rather than as dead code. See [audio-a1.1.2.md](audio-a1.1.2.md). Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
@@ -2035,6 +2035,12 @@ Survival and Creative get the screens their hotbar and block palette will be bui
 and list the controls, which today are free flight in all three modes because there is still no
 player body. Spectator gets a map, which is the one with anything in it.
 
+> **Superseded by section 0s.** Every mode has the map now, the hotbar and the palette exist rather
+> than being promised, and the screen is three bands rather than two -- the hotbar has the bottom 32
+> pixels in every mode, which is why the map below is 208x168 and not the 192x192 or the 208x200
+> this section describes. What survives unchanged is the split this section is about: the player's
+> half is the gamemode's and the debug pages are everyone's.
+
 #### The map
 
 192 by 192 blocks at **one pixel per block**, centred on the block the player is standing in, drawn
@@ -2350,16 +2356,29 @@ is on unconditionally, in every pass, set once per frame.
 
 | | |
 |---|---|
-| circle pad | move |
+| circle pad | move. Focused **on the Map page**, it scrolls the map instead and the body stands still — panning and walking at once would be two things fighting over one window |
 | C-stick | look — through `ir:rst`, not `hid`, so a Circle Pad Pro on an **old** 3DS gets it too |
 | touch drag | look. **Yaw was inverted**: the view turned the opposite way from the finger. Both axes now follow the mouse convention, drag right look right, and the reason it is `+=` is that `Camera::look` sends yaw 0 to +Z and positive yaw toward −X — south turning to west, which is right |
-| L / R | down / up |
-| X | sprint, unless SELECT is held |
-| Y + d-pad | tune the 3D, unless SELECT is held |
+| B | Spectator: up. Otherwise **jump** |
+| Y | Spectator: down. Otherwise **sneak**, which walks the move back at a ledge |
+| L / R | **break and place**, repeating every five ticks — M3 §2. Focused (see X), they **change tab** instead — Map, Items, Blocks — and the focus survives the change; break and place are suspended for as long as the focus is on, so one press does one thing |
+| ZL / ZR | **change the held hotbar slot**, wrapping. New 3DS only, which is why the focused d-pad below does the same job |
+| X | Spectator: sprint, unless SELECT is held. Otherwise **focus the bottom screen** — the d-pad drives a cursor over the palette and the hotbar and A picks, while the camera keeps working. A dark banner under the tab strip says so and says what the buttons mean on that page. It exists because the screen is resistive and a player walking has no stylus out |
+| B B (double tap) | Creative: **toggle flight**. A quarter of a second, timed in frames because it is a gesture and not physics |
+| A | focused: pick. Creative and flying: **fly faster**. **X is Spectator's sprint and A is Creative's**, which is not an inconsistency to tidy: X is the bottom screen's focus in every mode that has a hotbar, so it cannot also be a held modifier, and A is the focused screen's pick button and does nothing unfocused |
+| SELECT + d-pad | tune the 3D. **Was Y + d-pad**, which Y being sneak took away; SELECT already claimed only Y and X for the page cycle, so the d-pad under it was free. The map page's d-pad had a matching Y guard, removed with it — left in, the map's zoom would have died whenever the player crouched |
 | SELECT + Y / X | cycle the bottom screen forward / back |
 
-The bottom screen is three pages: the player's screen (empty of diagnostics on purpose — it is
-where the hotbar goes at M3), the debug readout, and a **settings page**. Three settings, all live —
+**Movement is per gamemode from M3 §1.** Spectator keeps frame-rate free flight with no collision,
+which is what it has always been and is now offered under a name that says so. Every other mode
+drives `entity::PlayerBody` on the **world's 20 Hz tick**, because a gravity of 0.08 a tick and a
+drag of 0.98 a tick mean nothing at any other rate. See `docs/physics-a1.1.2.md`. Creative adds a
+third case: `PlayerBody::tickFlying`, which is Spectator's mover with `moveEntity` under it, so
+flight collides. Its speeds are Spectator's own 12 and 40 blocks a second converted to ticks; see
+§0s.
+
+The bottom screen is three pages: the player's screen (the tab strip, a page, and the **hotbar band**
+along the bottom in every mode that has one), the debug readout, and a **settings page**. Three settings, all live —
 one of them a measurement instrument rather than a setting anyone should ship with, which is why the
 page explains itself on screen. A fourth, the cube alpha test, was there and is gone; see below:
 
@@ -3853,6 +3872,217 @@ demands the same picture at every zoom level. Every `memcpy` path in `renderMapW
 when `strideZ == -1`, which the row-major canvas every other test uses can never be, so those paths
 were untested by construction until now. `--map <world> grid zoom=<n>` draws the whole thing to
 `map.pam` for looking at.
+
+### 0s. Creative — a hotbar, a palette that is not an inventory, and flight that collides
+
+**M3 step 3, and the first thing in this project with no oracle behind it.** a1.1.2 has no Creative
+mode: `Minecraft` carries no gamemode field, `EntityPlayer` no capabilities object, and the word
+does not appear in the client. Creative is Beta 1.8's, two years later. So nothing here was
+recovered from a jar, nothing here can be pinned against a reference implementation, and there is no
+`creative_vectors.hpp` — which is also why gamemode has always lived in `<world>/3dalpha.ini` and
+never in `level.dat`. `tests/creative_test.cpp` says so in its header comment, because a suite that
+looks like the oracle suites next to it and is not one is worth labelling.
+
+`settings::gamemodeImplemented` now answers true for Creative. Survival is still false, and the
+reason is specific rather than general: everything it adds — fall damage, block hardness and break
+progress, drops, stack depletion — is a rule on top of the same body, and a mode that is selectable
+but plays exactly like Creative would be a label that lies. The World Settings row was reordered so
+the two live modes are adjacent, because stepping it is one button and a disabled mode between them
+would make every switch pass through a state that refuses.
+
+#### The palette is derived, not curated
+
+Beta's own creative inventory is a hand-written list in `CreativeTabs`. A hand-written list here
+would be 70 block ids typed into a source file, which CONTRIBUTING forbids and for a better reason
+than style: the next version manifest would silently inherit a1.1.2's list. So
+`core/item/creative_palette.hpp` is **every block the registry defines, in id order, minus air** —
+`BlockDef::known` is the column that answers it, and it is already false for the sixteen ids a1.1.2
+leaves empty. 70 blocks, built `constexpr` out of the generated table, 512 bytes of `.rodata` and no
+initialiser at startup.
+
+What it deliberately does not do: no item ids (the `items` slot is empty for this version, and
+saplings, doors and beds are offered as their blocks); no filtering by "would a player ever get
+this" (fire, mob spawners, flowing water and the double slab are all in it, because excluding them
+would be inventing a second table with nothing to check it against); no ordering by category, since
+id order is the one ordering that is stable across builds and derivable from the data.
+
+#### The palette is a separate page from the inventory
+
+They are different things — the palette is a catalogue held by nobody, the inventory is what a
+player is carrying — and drawing a catalogue inside an inventory frame would imply the blocks in it
+were owned. So Creative's tab strip is **Map, Items, Blocks, Look**, which is exactly `kMaxTabs`;
+Survival's is Map, Items, Look; Spectator's is Map, Look. The mapping lives in one function,
+`Overlay::playerPagesFor`, because the strip, the selected index and a tap on a tab used to work it
+out separately and could disagree about which page a mode's third tab was.
+
+The Items page keeps its 27 slots and stays empty. That is not a contradiction with Creative being
+implemented: Creative carries nothing.
+
+#### The hotbar is a band on every page, and the bottom screen grew a third one
+
+`docs/3ds-performance.md` §11 has said since before any of this was written that the hotbar goes on
+the **bottom** screen, so the top screen renders nothing but the world — no HUD overdraw at all on a
+fill-bound device. `docs/todo-m3.md` §3 said "top screen", which was wrong on both counts: it
+contradicts §11, and the top screen has no 2D pass in game at all (no citro2d, no crosshair, only
+the outline pipeline), so it would have meant a new textured screen-space GPU pass and a hardware
+fill-rate measurement to go with it. The bottom screen is also the only one that can be touched.
+
+So the layout is four bands: tab strip 0–24, **the focus banner's band 24–40**, page 40–208,
+**hotbar 208–240**. Both new bands are reserved in *every* gamemode, Spectator included, where they
+are backdrop. A page whose height depended on whether the mode had a hotbar would be two layouts,
+two sets of constants and two map window sizes to measure.
+
+**And the map got cheaper for it.** It was 208×200 — 41,600 pixels against the 36,864 that were
+actually measured at about 700 µs a redraw on a New 3DS, so an estimated 790. It is 208×158 now:
+32,864 pixels, *below* the window the 700 µs was measured on, so the estimate goes the other way to
+roughly **625 µs**. For once a layout change made a measured cost smaller. `--map`'s window and
+`tests/map_test.cpp`'s were moved with it so the harness prints the cost the console pays, and the
+map panel's three readouts moved up with it — the wordmark was one row from landing inside the
+hotbar, which is now a `static_assert` rather than something to notice on hardware.
+
+Two dirty flags rather than one, because the hotbar and the page above it change at completely
+different rates: a shoulder press moves the selection, and the 45-cell palette behind it has not
+changed at all. Redrawing the page for a hotbar move would be 45 slot bevels and 45 icon blits to
+move one white rectangle.
+
+#### A block icon is a flat tile, and that is a deviation
+
+a1.1.2 draws a block in a slot through `RenderBlocks.renderBlockAsItem` — a small three-quarter view
+built by the same block renderer that draws the world. There is no way to do that here: the bottom
+screen has no GPU access at all, it is a CPU blit into libctru's framebuffer. So a cell shows the
+block's `texture` column, blitted 16×16 at 1:1 out of the terrain atlas, which the table already
+defines as "what the block shows anywhere a single tile is wanted". Grass reads as grass from above
+and a log as its bark. Alpha is a cutout rather than a blend, which is what leaves a torch standing
+on the slot instead of in a black box.
+
+The atlas pixels are **borrowed, not copied** — 256 KB is not something the overlay should hold a
+second time — so `Overlay::setAtlas` is called at world open and again after the pause menu's
+Texture Pack screen, and an atlas that has not been built leaves the icons unpainted rather than
+painting the wrong thing.
+
+#### X focuses the bottom screen, and it is not a convenience
+
+The 3DS screen is resistive: it wants a stylus, and a player holding the console to walk does not
+have one out. **X toggles focus.** Focused, the d-pad drives a cursor over the palette grid and the
+hotbar band and A picks; the circle pad and the camera keep working underneath, so the world is not
+paused. The palette grid and the hotbar are both nine columns wide on purpose — `static_assert`ed —
+so the cursor steps straight down from the bottom palette row onto the hotbar slot in the same
+column.
+
+ZL and ZR change the held slot from anywhere, focused or not, which is the New 3DS's shoulder pair
+doing what a mouse wheel does in the original. **They do not exist on an old 3DS**, which is the
+other half of why the focused d-pad is not a convenience — left and right on the hotbar row are an
+old console's only button route to the selection.
+
+While focused, L and R **change tab** and **break and place are suspended**, `main.cpp` reading the
+same `Overlay::uiFocused()` flag the overlay sets. One press does one thing.
+
+L and R were the palette's pager first and that was wrong: a focused screen with no button route
+between Map, Items and Blocks could only be navigated by touching it, which is the one thing the
+focus exists to avoid. The palette pages instead by running the cursor off either end of its grid,
+and by the two arrows on its title row for anyone holding a stylus — a page control invisible to a
+player who never focuses the screen is not a page control.
+
+**The focus survives a tab change**, so filling a hotbar is one press of X and then buttons all the
+way. B lets it go, and so does X again.
+
+#### The banner, and the one thing that made it awkward
+
+A mode with no indicator is the worst kind, so the focus draws one: a near-black label row under the
+tab strip saying `Bottom screen focused` and what the buttons mean *on that page*, with a gradient
+under it fading back into the page.
+
+**The fade darkens the pixels it finds, and that is not an operation you can apply twice.** Drawn
+over the page, the map alone would redraw through it on every block walked and the strip would go a
+shade darker each time — black within a minute. Three fixes were possible and only one is simple:
+give it a band that nothing but the backdrop ever paints. That is `hud::kBannerTop`, 24–40, and
+every page below it now starts at `kPageTop`. So the banner is drawn once per page clear and never
+repaired, everything that changes what it says sets `dirty_`, and leaving the focus is a full redraw
+because there is no way to undo a dim. The cost is 16 pixels of map, and unfocused the band reads as
+the page having a margin.
+
+#### The focused stick scrolls the map
+
+On the Map page, focused, the circle pad pans the window and the body stands still — the two would
+otherwise fight over the same window, and the map would be dragged back under the player every step.
+The pan is added in exactly one place, `MapScreen::windowFor`, so the sampling rings, the redraw
+signature, the picture and the panel's numbers all move together and none of them had to learn about
+panning.
+
+Three details worth having decided:
+
+- **Half a window a second, at every zoom**, expressed in windows rather than blocks — pushing the
+  stick over should take about the same time to cross the picture whether the picture is 104 blocks
+  across or 416, and a fixed blocks-per-second would feel like four different speeds.
+- **The panel's `x` and `z` become the middle of the picture** while it is panned, drawn in the same
+  amber as the focus cursor, with a four-armed cross at the centre that leaves the marked pixel
+  uncovered. `y` stays the player's: a point on a map has no height. The marker stays on the player
+  and simply clips off the edge when they scroll away from it, which is the point of a panned map.
+- **Letting the focus go puts the map back on the player.** A pan is something you did with the
+  focus on; leaving it with the window parked four hundred blocks away would be a mode with no exit,
+  since the stick walks again the moment X is let go.
+
+**The map keeps its own d-pad even focused** — zoom and the grids — because the stick is what moves
+a focused map and there is no cursor on that page to walk over. Which is also why the hotbar draws
+no cursor there: marking a slot no button moves is worse than marking none. ZL and ZR still change
+the held slot, on the map page like everywhere else.
+
+Spectator has no focus and therefore no pan, because X is its sprint and it has no hotbar to focus
+on. That is a consequence rather than a decision, and it is the one place the two modes' controls
+genuinely diverge.
+
+#### Instant break was already true, and nothing is spent
+
+"Instant break" is not something Creative had to add here. Block hardness governs the *progress* of
+a break, accumulated per tick through `Block.getPlayerRelativeBlockHardness`, and that mechanism is
+Survival's and does not exist. So one press is one broken block in every mode — which is Creative's
+rule, and is a thing Survival will have to take away rather than a thing Creative added. The same
+goes for depletion: the hotbar holds a stack of one and the place path never touches the count.
+
+The five-tick repeat stays, in every mode, because it is not hardness — it is
+`Minecraft.runTick`'s own `ticksRan - lastClickTick >= Timer.ticksPerSecond / 4` on both mouse
+buttons, and the timer is built with 20.0f.
+
+#### Flight is Spectator's mover with `moveEntity` under it
+
+`PlayerBody::tickFlying` is invented and says so in its header comment, next to constants that are
+all measured. It clears the motion, sends the stick heading through the original's own `moveFlying`
+so a direction means the same thing flying as walking, takes the vertical from B and Y — the same
+two buttons Spectator rises and falls on — and then sweeps the box through `moveEntity`. **That
+sweep is the whole difference from Spectator**, which has no body to collide with.
+
+The speeds are Spectator's own, converted from frames to ticks: `flyCamera` moves 12 blocks a second
+or 40 held down, which at 20 Hz is 0.6 and 2.0 a tick. A tick of flight is a velocity and not an
+acceleration — no drag term, motion cleared at the end — so letting go stops you dead, which is
+what a camera does and is the point. `fallDistance` is cleared every tick so flight cannot bank a
+fall for Survival to cash in the moment it is switched off over a canyon.
+
+The toggle is a double tap on B inside a quarter of a second, timed in **frames** because it is a
+gesture rather than physics and has to mean the same thing at 30 fps as at 60. Leaving Creative from
+the pause menu without leaving the world switches it off, or the player would be hanging with no way
+to turn it off.
+
+`tests/creative_flight_test.cpp` checks the one property flight is *for*: it does not fall, it
+climbs and descends at the speed it is given, it lands on a floor rather than through it, it stops
+at a ceiling, and a one-block wall stops it **at both speeds** — the sprint speed's two blocks a
+tick is exactly the case a ray would tunnel through and a swept box does not. All of it again across
+the negative axis.
+
+#### What is not done
+
+- **Nothing here has been seen on hardware.** It builds for the 3DS and the host suite is green;
+  the console run has not happened. The same is still true of the selection outline from step 2.
+- **The hotbar is not saved.** a1.1.2 writes the inventory into `level.dat`'s `Player` compound as a
+  list of slot-tagged stacks, and this project preserves that compound verbatim rather than parsing
+  it. Writing one back means going through the `items` slot, which is empty for this version. So the
+  contents live for the session and start from the palette's first nine each time.
+- **Placement is still air-only.** a1.1.2 also replaces water, lava and snow, which wants the
+  replaceable-material test — a Survival-shaped question, unanswered.
+- **A door placed from the palette is half a door.** The palette offers blocks, and the block form
+  of an item-backed block is what gets placed. Honest, and named here rather than discovered.
+- **status.md still has no write-up of M3 steps 1 and 2.** The body and the reach/break/place seam
+  landed before this and their results are in `docs/todo-m3.md` and `docs/physics-a1.1.2.md`; they
+  have not been folded in here. That is a handoff gap and it is this file's, not theirs.
 
 ## Open questions
 

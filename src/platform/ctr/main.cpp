@@ -43,6 +43,9 @@
 #include "core/audio/sound_engine.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/io/volume_info.hpp"
+#include "core/block/collision.hpp"
+#include "core/entity/player_body.hpp"
+#include "core/entity/ray_trace.hpp"
 #include "core/tick/tick_timer.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/util/memory.hpp"
@@ -139,9 +142,13 @@ float axis(s16 raw)
     return value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
 }
 
-// Free flight. There is no collision because there is no player body yet, and
-// pretending otherwise would be the wrong kind of faithful.
-void moveCamera(ctr::Camera& camera, float dt, bool sprint)
+// Free flight, which is now **Spectator's** movement rather than the only one.
+// It stays exactly as honest as it was: no body, no collision, no gravity, and
+// it is offered under a name that says so.
+//
+// Up and down are B and Y rather than R and L, because the shoulders are the
+// two mouse buttons now. See the controls table in docs/status.md.
+void flyCamera(ctr::Camera& camera, float dt, bool sprint)
 {
     circlePosition pad;
     hidCircleRead(&pad);
@@ -164,14 +171,144 @@ void moveCamera(ctr::Camera& camera, float dt, bool sprint)
     camera.z += (fz * pz + fx * px) * speed;
 
     const u32 held = hidKeysHeld();
-    if (held & KEY_R) {
+    if (held & KEY_B) {
         camera.y += speed;
     }
-    if (held & KEY_L) {
+    if (held & KEY_Y) {
         camera.y -= speed;
     }
 
     camera.y = camera.y < 1.0 ? 1.0 : (camera.y > 254.0 ? 254.0 : camera.y);
+}
+
+// The circle pad and the two body buttons, as the original's heading inputs.
+//
+// **Strafe is negated.** `moveFlying` sends a positive strafe to +X at yaw 0,
+// and yaw 0 faces +Z, so +X is the player's *left*; the circle pad's positive x
+// is their right. One of the two has to flip and it is this one.
+mc::entity::PlayerInput readBodyInput(const ctr::Camera& camera, u32 held)
+{
+    circlePosition pad;
+    hidCircleRead(&pad);
+
+    mc::entity::PlayerInput input;
+    input.strafe = -axis(pad.dx);
+    input.forward = axis(pad.dy);
+    input.yawDegrees = camera.yaw * 180.0f / kPi;
+    input.jump = (held & KEY_B) != 0;
+    input.sneak = (held & KEY_Y) != 0;
+    return input;
+}
+
+// Breaking and placing, on the two shoulder buttons.
+//
+// **Held repeats every five ticks, and that has nothing to do with hardness.**
+// `Minecraft.runTick` gates both mouse buttons on
+// `ticksRan - lastClickTick >= Timer.ticksPerSecond / 4`, and the timer is
+// constructed with 20.0f -- so a quarter of a second, the same for breaking and
+// for placing. Block hardness governs something else entirely: the *progress*
+// of a break, accumulated per tick by the controller through
+// `Block.getPlayerRelativeBlockHardness`. That is Survival's, and it is not
+// what paces the repeat.
+//
+// Both paths go through `WorldStreamer::setBlock`, which is what makes the
+// change redraw as well as save -- see the note on that method. Writing through
+// `worldTick()` directly would be invisible until something else touched the
+// section.
+void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
+                const ctr::Camera& camera, const mc::entity::PlayerBody& body,
+                mc::block::BlockId held, u32 down, u32 heldButtons, i64 nowTick,
+                i64* lastEditTick)
+{
+    // An empty hotbar slot still breaks; it just has nothing to place. Checked
+    // at the placement branch rather than here.
+    // a1.1.2's own cadence: Timer.ticksPerSecond / 4, with ticksPerSecond 20.
+    constexpr i64 kRepeatTicks = 5;
+
+    const bool pressed = (down & (KEY_L | KEY_R)) != 0;
+    const bool repeating = (heldButtons & (KEY_L | KEY_R)) != 0
+                           && nowTick - *lastEditTick >= kRepeatTicks;
+    if (!pressed && !repeating) {
+        return;
+    }
+    *lastEditTick = nowTick;
+
+    // A fresh press wins over a repeat, so tapping L while holding R breaks
+    // rather than placing.
+    const u32 acting = pressed ? down : heldButtons;
+    mc::tick::TickWorld* tickWorld = world.worldTick();
+    if (tickWorld == nullptr) {
+        return;
+    }
+
+    float dx = 0.0f;
+    float dy = 0.0f;
+    float dz = 0.0f;
+    camera.look(&dx, &dy, &dz);
+
+    // The camera's y is the eye already -- it is the original's posY -- so this
+    // is the ray the game casts, not one from the player's feet.
+    const mc::entity::RayHit hit = mc::entity::rayTrace(
+        *tickWorld, camera.x, camera.y, camera.z, double(dx), double(dy), double(dz));
+    if (!hit.hit) {
+        return;
+    }
+
+    if ((acting & KEY_L) != 0) {
+        // **Instant, and it always was.** Creative's "instant break" is not a
+        // thing this had to add: block hardness governs the *progress* of a
+        // break, accumulated per tick through
+        // `Block.getPlayerRelativeBlockHardness`, and that mechanism is
+        // Survival's and does not exist yet. So one press is one broken block
+        // in every mode -- which is Creative's rule, and is a thing Survival
+        // will have to take away rather than a thing Creative added.
+        world.setBlock(chunks, hit.x, hit.y, hit.z, mc::block::kAir, 0);
+        return;
+    }
+    if ((acting & KEY_R) == 0) {
+        return;
+    }
+
+    // **Nothing is spent.** There is no stack depletion here and there is no
+    // code that would have done it: the hotbar holds a stack of one and the
+    // place path never touches the count. Survival is where that becomes a
+    // subtraction; see docs/todo-m3.md step 4.
+    if (held == mc::block::kAir) {
+        return;
+    }
+
+    // Place against the struck face.
+    const int placeY = hit.placeY();
+    if (placeY < 0 || placeY >= mcver::kWorldHeight) {
+        return;
+    }
+    const i32 placeX = hit.placeX();
+    const i32 placeZ = hit.placeZ();
+
+    // **Only into air.** a1.1.2 also replaces water, lava and snow; that wants
+    // the replaceable-material test, which is a Survival-shaped question and is
+    // not answered yet.
+    if (tickWorld->blockAt(placeX, placeY, placeZ) != mc::block::kAir) {
+        return;
+    }
+
+    // Not inside the player. Without this a block placed at the feet pushes the
+    // body out of the world, and in Creative -- where nothing stops you looking
+    // straight down -- that is one button press away at all times.
+    mc::AABB boxes[mc::block::kMaxCollisionBoxes];
+    const int count = mc::block::collisionBoxes(held, 0, boxes, mc::block::kMaxCollisionBoxes);
+    for (int i = 0; i < count; ++i) {
+        if (boxes[i].offset(double(placeX), double(placeY), double(placeZ)).intersects(body.box)) {
+            return;
+        }
+    }
+
+    // `onBlockPlaced`, as a table: the struck face is what a torch, a
+    // staircase, a ladder, a furnace and a button orient from. Only the lever
+    // also wants the player's heading, and only on its top face -- see the note
+    // on placementMetadata.
+    world.setBlock(chunks, placeX, placeY, placeZ, held,
+                   mc::block::placementMetadata(held, int(hit.face)));
 }
 
 // Pitch is clamped just short of straight up and straight down, because
@@ -259,11 +396,12 @@ void lookWithCstick(ctr::Camera& camera, float dt)
 // numbers, not a settings menu.
 void tuneStereo(ctr::Renderer& renderer)
 {
-    // SELECT + Y changes the bottom-screen page, so Y with SELECT held is not
-    // this. Without the guard, cycling pages would leave the d-pad live on the
-    // stereo numbers for as long as the finger stayed on Y.
+    // **SELECT + d-pad**, not Y + d-pad: Y is sneak now. SELECT was already the
+    // overlay's modifier and it claims only Y and X for the page cycle, so the
+    // d-pad under it was free. The overlay's own d-pad handling returns early
+    // while SELECT is held, so the two cannot both act on one press.
     const u32 held = hidKeysHeld();
-    if (!(held & KEY_Y) || (held & KEY_SELECT)) {
+    if (!(held & KEY_SELECT)) {
         return;
     }
 
@@ -556,9 +694,57 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // against, with `admit` beside them saying whether it is biting at all.
     world.setMemoryBudget(mc::ctr::heapTotalBytes() / 8 * 5);
 
+    // **The two things spawnPosition can mean, told apart.**
+    //
+    // With a player in level.dat it returns `Pos` verbatim, and a1.1.2's `Pos[1]`
+    // is `posY`, which sits 1.62 above the feet because `yOffset` is 1.62 and
+    // `setPosition` puts the box at `posY - yOffset`. The real world's
+    // 70.62000000476837 is that 1.62 showing. With no player it returns
+    // `spawnY`, which is a block coordinate and therefore the feet.
+    //
+    // Adding 1.62 to both -- which is what this did -- is right for a fresh
+    // world and wrong for a saved one, and because the result was written
+    // straight back out by setPlayerState it compounded: **a saved player rose
+    // 1.62 blocks every time the world was opened and closed.** The body owns
+    // the feet, and both the camera and Pos[1] are derived from it.
+    double spawnX = 0.0;
+    double spawnY = 0.0;
+    double spawnZ = 0.0;
+    world.spawnPosition(&spawnX, &spawnY, &spawnZ);
+    const double feetY = world.level().player.present
+                             ? spawnY - double(mc::entity::kEyeHeight)
+                             : spawnY;
+
+    mc::entity::PlayerBody body;
+    body.setFeet(spawnX, feetY, spawnZ);
+
+    // What the break/place repeat is paced against. Its own count rather than
+    // the world clock, which the pause menu stops: holding R through a pause
+    // should not bank a hundred placements.
+    i64 editTick = 0;
+    i64 lastEditTick = -1000;
+
+    // **Creative flight, and its double tap.** Off at world entry, every time:
+    // it is a state the player asked for with a gesture and there is nowhere to
+    // save it that would not be inventing a `level.dat` key. The tap window is
+    // frames rather than ticks because it is a gesture and not physics -- a
+    // fifth of a second is what a double click is everywhere else on this
+    // console.
+    bool flying = false;
+    float lastJumpTap = -1.0f;
+    float sinceStart = 0.0f;
+    if (world.level().player.present) {
+        body.motionX = world.level().player.motion[0];
+        body.motionY = world.level().player.motion[1];
+        body.motionZ = world.level().player.motion[2];
+        body.onGround = world.level().player.onGround;
+        body.fallDistance = world.level().player.fallDistance;
+    }
+
     ctr::Camera camera;
-    world.spawnPosition(&camera.x, &camera.y, &camera.z);
-    camera.y += 1.62;  // eye height, the original's own number
+    camera.x = body.x;
+    camera.y = body.eyeY();
+    camera.z = body.z;
     if (world.level().player.present) {
         camera.yaw = world.level().player.rotation[0] * kPi / 180.0f;
         camera.pitch = world.level().player.rotation[1] * kPi / 180.0f;
@@ -592,13 +778,16 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     overlay.begin(choice.worldName.c_str(), isNew3DS ? "New 3DS" : "Old 3DS");
     overlay.setAudio(&audio);
     // **The bottom screen is the world's gamemode's**, which is why this is read
-    // off the choice rather than assumed: Spectator gets the map, and the modes
-    // that will have a hotbar get the screens it is going in.
+    // off the choice rather than assumed: Spectator gets the map and no hotbar,
+    // Creative gets the palette page as well, and Survival gets the inventory
+    // frame without one.
     overlay.setGamemode(choice.gamemode);
     overlay.configureMap(isNew3DS);
-    // The same atlas the world is drawn with. `choice` outlives the game loop,
-    // but the palette is copied out of it here and not held.
-    overlay.setMapAtlas(choice.atlas);
+    // The same atlas the world is drawn with, for the map's colours and for the
+    // block icons in the hotbar and the palette. `choice` outlives the game
+    // loop, which is what lets the overlay borrow its pixels rather than hold a
+    // second copy of a quarter of a megabyte.
+    overlay.setAtlas(choice.atlas);
     // ...and the same dirt the menu draws its own backdrop with, behind the
     // panels on the bottom screen. Copied out here too, in the format the
     // framebuffer wants.
@@ -848,7 +1037,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 // The map is drawn from the same pack as the world, so ground
                 // sampled under the old one is recoloured rather than redrawn:
                 // the store holds block ids, not pixels.
-                overlay.setMapAtlas(menu.atlas());
+                overlay.setAtlas(menu.atlas());
                 overlay.setBackdropTile(menu.backgroundTile());
                 // The outline atlas went with the old one and may not have come
                 // back, so the debug page is told what is actually on rather
@@ -923,9 +1112,46 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // suspended, not the player having moved that far.
         dt = dt > 0.25f ? 0.25f : dt;
 
-        // X is sprint and also SELECT + X is a page back, so sprint waits for
-        // SELECT to be let go.
-        moveCamera(camera, dt, (held & KEY_X) != 0 && !(held & KEY_SELECT));
+        // **Spectator flies; everything else has a body.** The body is not
+        // moved here -- it runs on the world's 20 Hz tick further down, because
+        // that is the rate every constant in it was measured at. Free flight is
+        // frame-rate movement and stays that way.
+        if (overlay.gamemode() == settings::Gamemode::Spectator) {
+            // X is sprint and also SELECT + X is a page back, so sprint waits
+            // for SELECT to be let go.
+            flyCamera(camera, dt, (held & KEY_X) != 0 && !(held & KEY_SELECT));
+        }
+
+        // **Creative's flight toggle: double-tap jump.** It is the gesture the
+        // game this is modelled on uses, and on a console it is the only one
+        // going spare -- every face button and both shoulders are spoken for,
+        // and X is the bottom screen's focus.
+        //
+        // Timed in frames rather than ticks because it is a gesture and not
+        // physics: a fifth of a second is a double click everywhere else here,
+        // and it must mean the same thing at 30 fps as at 60.
+        sinceStart += dt;
+        if (overlay.gamemode() == settings::Gamemode::Creative && (down & KEY_B) != 0
+            && !overlay.uiFocused()) {
+            constexpr float kDoubleTapSeconds = 0.25f;
+            if (lastJumpTap >= 0.0f && sinceStart - lastJumpTap < kDoubleTapSeconds) {
+                flying = !flying;
+                // Consumed, so a third tap starts a new gesture rather than
+                // toggling again off the second one.
+                lastJumpTap = -1.0f;
+            } else {
+                lastJumpTap = sinceStart;
+            }
+        }
+        // Leaving Creative -- the pause menu can do it without leaving the
+        // world -- has to put the player back on the ground rather than leave
+        // them hanging with no way to switch it off.
+        flying = flying && overlay.gamemode() == settings::Gamemode::Creative;
+        // **The focused circle pad, before the look.** It scrolls the map when
+        // the map is the focused page and does nothing otherwise; the body's
+        // heading is zeroed to match, further down.
+        overlay.tickFocus(dt);
+
         lookWithTouch(camera, &dragging, &lastTouch, overlay.touchLookTop());
         if (haveCstick) {
             lookWithCstick(camera, dt);
@@ -954,6 +1180,31 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // was created.
         world.setPlayerState(camera.x, camera.y, camera.z, camera.yaw * 180.0f / kPi,
                              camera.pitch * 180.0f / kPi, worldTicks);
+
+        // **What the crosshair is on, for the outline.** Once a frame rather
+        // than once an eye: both eyes look at the same block, and the ray walk
+        // is the same work either way.
+        if (overlay.gamemode() != settings::Gamemode::Spectator) {
+            tick::TickWorld* aimWorld = world.worldTick();
+            if (aimWorld != nullptr) {
+                float lx = 0.0f;
+                float ly = 0.0f;
+                float lz = 0.0f;
+                camera.look(&lx, &ly, &lz);
+                const mc::entity::RayHit aim = mc::entity::rayTrace(
+                    *aimWorld, camera.x, camera.y, camera.z, double(lx), double(ly), double(lz));
+                if (aim.hit) {
+                    renderer.setSelection(
+                        mc::block::selectionBox(aimWorld->blockAt(aim.x, aim.y, aim.z),
+                                                aimWorld->dataAt(aim.x, aim.y, aim.z))
+                            .offset(double(aim.x), double(aim.y), double(aim.z)));
+                } else {
+                    renderer.clearSelection();
+                }
+            }
+        } else {
+            renderer.clearSelection();
+        }
 
         // Each phase timed on its own. The frame period alone cannot tell a
         // console that is at its refresh rate from one that is struggling --
@@ -989,6 +1240,74 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // section out of the draw list a frame before its replacement existed,
         // which is what made edited chunks flash transparent.
         const int ticksDue = tickTimer.elapsedTicks();
+        editTick += i64(ticksDue);
+
+        // **The body runs on the world's ticks, not on frames.** A gravity of
+        // 0.08 a tick and a drag of 0.98 a tick mean nothing at any other rate;
+        // scaling them by a frame time would be a different game that happened
+        // to look similar. A frame spanning no tick moves the player not at
+        // all, and one spanning three moves them three times.
+        if (overlay.gamemode() != settings::Gamemode::Spectator) {
+            // Reach, break and place. Before the body's tick, so the edit and
+            // the movement in one frame see the same world.
+            //
+            // **Suspended while the bottom screen is focused**, because the
+            // shoulders are the palette's pager then. One press does one thing;
+            // see Overlay::handleFocusedInput.
+            if (!overlay.uiFocused()) {
+                editBlocks(world, renderer.chunks(), camera, body,
+                           overlay.hotbar().selectedBlock(), down, held, editTick,
+                           &lastEditTick);
+            }
+
+            tick::TickWorld* tickWorld = world.worldTick();
+            if (tickWorld != nullptr) {
+                mc::entity::PlayerInput bodyInput = readBodyInput(camera, held);
+                // **B belongs to the bottom screen while it is focused**, where
+                // it is the back button. Jumping on the same press would be one
+                // button doing two things, which is the thing the focus exists
+                // to avoid. Y is left alone: nothing focused reads it.
+                if (overlay.uiFocused()) {
+                    bodyInput.jump = false;
+                }
+                // ...and the stick belongs to the map while the map is the
+                // focused page. Walking and panning at once would be two things
+                // fighting over one window, and the map would be dragged back
+                // under the player every step.
+                if (overlay.mapPanActive()) {
+                    bodyInput.strafe = 0.0f;
+                    bodyInput.forward = 0.0f;
+                }
+                for (int i = 0; i < ticksDue; ++i) {
+                    if (flying) {
+                        // B and Y are up and down, which is exactly what they
+                        // are in Spectator's `flyCamera` -- the two movers
+                        // should not disagree about which button rises.
+                        //
+                        // **A is the sprint here and X is the sprint there**,
+                        // and that is not an inconsistency to tidy up: X is the
+                        // bottom screen's focus in every mode that has a
+                        // hotbar, so it cannot also be a held modifier, and
+                        // Spectator -- which has no hotbar and no focus -- is
+                        // the only mode where X is still free. A is free in
+                        // Creative for the mirrored reason: it is the focused
+                        // screen's pick button and does nothing unfocused.
+                        const bool sprint =
+                            (held & KEY_A) != 0 && !overlay.uiFocused();
+                        body.tickFlying(*tickWorld, bodyInput, (held & KEY_B) != 0,
+                                        (held & KEY_Y) != 0,
+                                        sprint ? mc::entity::kFlightSprintSpeed
+                                               : mc::entity::kFlightSpeed);
+                    } else {
+                        body.tick(*tickWorld, bodyInput);
+                    }
+                }
+            }
+            camera.x = body.x;
+            camera.y = body.eyeY();
+            camera.z = body.z;
+        }
+
         const u64 beforeTick = svcGetSystemTick();
         world.stepTicks(renderer.chunks(), ticksDue);
         timing.tickMs = ctr::millisFromTicks(svcGetSystemTick() - beforeTick);

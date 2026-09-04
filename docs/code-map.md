@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**19 directories, 122 modules, 51,401 lines.**
+**20 directories, 129 modules, 54,965 lines.**
 
 ## `src/core/audio/`
 
@@ -27,8 +27,16 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `block_def.{hpp,cpp}` | 303 | What the engine knows about a block. |
-| `registry.hpp` | 30 | Block lookup. |
+| `block_def.{hpp,cpp}` | 373 | What the engine knows about a block. |
+| `collision.{hpp,cpp}` | 207 | What a block is shaped like to something walking into it -- the collision boxes for a (block, metadata) pair, with no world and no allocation. |
+| `registry.hpp` | 42 | Block lookup. |
+
+## `src/core/entity/` -- Entities
+
+| Module | Lines | What it is |
+|---|--:|---|
+| `player_body.{hpp,cpp}` | 632 | The player's body: a 0.6 x 1.8 box that falls, walks, steps up and refuses to go through things. |
+| `ray_trace.{hpp,cpp}` | 308 | What the crosshair is pointing at: a1.1.2's `World.rayTraceBlocks`, which walks the ray block by block and asks each one to intersect itself. |
 
 ## `src/core/gui/` -- GUI primitives shared by the menu and the HUD
 
@@ -49,6 +57,8 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
+| `creative_palette.{hpp,cpp}` | 125 | The Creative block palette -- **and a1.1.2 has no Creative mode at all**. |
+| `hotbar.{hpp,cpp}` | 122 | The nine slots along the bottom of the screen, and which one is in hand. |
 | `item_stack.hpp` | 34 | One stack of items. |
 
 ## `src/core/map/` -- The bottom-screen map
@@ -85,9 +95,10 @@ weight is, not what is important.
 | Module | Lines | What it is |
 |---|--:|---|
 | `chunk_renderer.{hpp,cpp}` | 467 | One frame of the world renderer, with no GPU in it. |
+| `outline.{hpp,cpp}` | 151 | The box drawn around whatever the crosshair is on, as triangles. |
 | `vbo_pool.{hpp,cpp}` | 742 | The bounded pool of vertex memory that section meshes live in. |
 | `visible_set.{hpp,cpp}` | 648 | Deciding what to draw, and -- the part the measurement forced -- what to mesh. |
-| `world_streamer.{hpp,cpp}` | 2757 | The loaded world around the camera: which columns are in memory, which are meshed, and the budget that keeps both off the frame time. |
+| `world_streamer.{hpp,cpp}` | 2800 | The loaded world around the camera: which columns are in memory, which are meshed, and the budget that keeps both off the frame time. |
 
 ## `src/core/settings/` -- INI settings, console-wide and per-world
 
@@ -95,7 +106,7 @@ weight is, not what is important.
 |---|--:|---|
 | `ini.{hpp,cpp}` | 102 | The `key=value` reader both settings files share. |
 | `settings_file.{hpp,cpp}` | 204 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
-| `world_settings.{hpp,cpp}` | 217 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
+| `world_settings.{hpp,cpp}` | 231 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
 
 ## `src/core/texture/` -- Texture packs, atlases, PNG and zip
 
@@ -128,6 +139,7 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
+| `aabb.hpp` | 73 | An axis-aligned box in doubles, and the geometry that does not need a world. |
 | `compress.{hpp,cpp}` | 151 | Deflate wrappers. |
 | `console_text.{hpp,cpp}` | 78 | Fitting text to a fixed-width character console, escape sequences and all. |
 | `coord_text.{hpp,cpp}` | 213 | Parsing a coordinate triple that a person typed. |
@@ -137,6 +149,7 @@ weight is, not what is important.
 | `java_cast.hpp` | 103 | Java's narrowing conversion from floating point to `int`, which is **not** C++'s and is load-bearing at the edge of the world. |
 | `java_random.hpp` | 179 | java.util.Random, reimplemented exactly. |
 | `math.hpp` | 54 | The small amount of linear algebra core needs. |
+| `math_helper.{hpp,cpp}` | 154 | a1.1.2's MathHelper -- class `eo` -- for the parts this project uses. |
 | `memory.{hpp,cpp}` | 59 | How much heap is left, asked of the platform. |
 | `nibble.hpp` | 38 | Packed 4-bit accessors, in Minecraft's packing order. |
 | `seed_text.{hpp,cpp}` | 195 | Turning what a player typed into a world seed. |
@@ -193,7 +206,6 @@ weight is, not what is important.
 | `alpha_nobiome/dungeon.{hpp,cpp}` | 384 | a1.1.2's `cg` -- WorldGenDungeons, the mossy room with a spawner and one or two chests. |
 | `alpha_nobiome/flowers.{hpp,cpp}` | 152 | a1.1.2's `ae` (WorldGenFlowers), which plants **four different things**: dandelions (37), roses (38), brown mushrooms (39) and red mushrooms (40). |
 | `alpha_nobiome/liquids.{hpp,cpp}` | 122 | a1.1.2's liquid springs -- `nn` (WorldGenLiquids), the source blocks that appear in cave walls and hillsides. |
-| `alpha_nobiome/math_helper.{hpp,cpp}` | 135 | a1.1.2's MathHelper -- class `eo` -- for the parts world generation uses. |
 | `alpha_nobiome/noise.{hpp,cpp}` | 358 | a1.1.2's two noise generators, transcribed from the client jar. |
 | `alpha_nobiome/ore.{hpp,cpp}` | 163 | WorldGenMinable -- class `cu`. |
 | `alpha_nobiome/plants.{hpp,cpp}` | 230 | a1.1.2's reeds (`es`, WorldGenReed) and cactus (`da`, WorldGenCactus). |
@@ -210,14 +222,14 @@ weight is, not what is important.
 | `gpu_memory.{hpp,cpp}` | 115 | The two kinds of memory the PICA can fetch vertices from, behind the pool's allocator seam. |
 | `gui_art.{hpp,cpp}` | 383 | What the menu draws with once a pack supplies it: the dirt backdrop and the bitmap font. |
 | `heap.{hpp,cpp}` | 376 | What is left of the heap this file's .cpp carved out at startup. |
-| `hud.{hpp,cpp}` | 526 | The bottom screen's furniture: the tab strip along the top, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
-| `main.cpp` | 1274 | The 3DS entry point. |
-| `map_screen.{hpp,cpp}` | 736 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 3542 | The main menu: the title screen, the world list, and creating a world. |
-| `overlay.{hpp,cpp}` | 1447 | The bottom screen. |
+| `hud.{hpp,cpp}` | 929 | The bottom screen's furniture: the tab strip along the top, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
+| `main.cpp` | 1593 | The 3DS entry point. |
+| `map_screen.{hpp,cpp}` | 871 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
+| `menu.{hpp,cpp}` | 3546 | The main menu: the title screen, the world list, and creating a world. |
+| `overlay.{hpp,cpp}` | 1993 | The bottom screen. |
 | `probe.{hpp,cpp}` | 932 | The M0 hardware probe, reachable by holding SELECT at boot. |
 | `progress_screen.{hpp,cpp}` | 551 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
-| `renderer.{hpp,cpp}` | 2063 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
+| `renderer.{hpp,cpp}` | 2190 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
 | `textures.{hpp,cpp}` | 358 | The three things the world shader samples: the block atlas, the lightmap, and the fog LUT. |
 
 ## `src/platform/host/` -- Linux/SDL2 harness
@@ -225,5 +237,5 @@ weight is, not what is important.
 | Module | Lines | What it is |
 |---|--:|---|
 | `audio_wav.{hpp,cpp}` | 258 | A host `audio::Backend` that writes what it was handed to a .wav instead of to a speaker. |
-| `main.cpp` | 2341 | Host entry point. |
+| `main.cpp` | 2595 | Host entry point. |
 

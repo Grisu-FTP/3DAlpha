@@ -19,7 +19,6 @@
 
 using namespace mc;
 using mc::entity::kFlightSpeed;
-using mc::entity::kFlightSprintSpeed;
 using mc::entity::PlayerBody;
 using mc::entity::PlayerInput;
 using mc::test::SceneWorld;
@@ -100,7 +99,7 @@ TEST(flight_lands_on_a_floor_rather_than_through_it)
     body.setFeet(0.5, 80.0, 0.5);
     PlayerInput idle;
     for (int i = 0; i < 200; ++i) {
-        body.tickFlying(scene.w(), idle, false, true, kFlightSprintSpeed);
+        body.tickFlying(scene.w(), idle, false, true, kFlightSpeed);
     }
     // The floor's top is y = 64, and the feet stop on it.
     CHECK_EQ(body.y, 64.0);
@@ -124,10 +123,14 @@ TEST(flight_stops_at_a_ceiling)
     CHECK(body.collidedVertically);
 }
 
-TEST(flight_is_stopped_by_a_wall_at_both_speeds)
+TEST(flight_is_stopped_by_a_wall_even_faster_than_a_block_a_tick)
 {
     // One block thick, which is the case a swept box handles and a ray would
-    // not at the sprint speed's two blocks a tick.
+    // not. **Creative flight has one speed now** -- A's held boost went when A
+    // became the drop -- but the sweep is what makes a *fast* mover safe, and
+    // an over-speed case is what proves it, so the second pass runs at more
+    // than a block a tick even though nothing in the game asks for it.
+    constexpr double kOverSpeed = 2.0;
     for (int fast = 0; fast < 2; ++fast) {
         SceneWorld scene(0, 0);
         floorAt(scene, 0, 0, 63);
@@ -139,7 +142,7 @@ TEST(flight_is_stopped_by_a_wall_at_both_speeds)
 
         PlayerBody body;
         body.setFeet(0.5, 66.0, 0.5);
-        const double speed = fast != 0 ? kFlightSprintSpeed : kFlightSpeed;
+        const double speed = fast != 0 ? kOverSpeed : kFlightSpeed;
         for (int i = 0; i < 60; ++i) {
             body.tickFlying(scene.w(), forward(0.0f), false, false, speed);
         }

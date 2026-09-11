@@ -63,4 +63,54 @@ constexpr u32 tiledOffsetFlipped(u32 x, u32 row, u32 width, u32 height)
     return tiledOffset(x, height - 1 - row, width);
 }
 
+// **Where one 16x16 tile of a square texture lives, as two runs of memory.**
+//
+// This exists so an animated tile can be pushed to the GPU without re-sending
+// the texture it is part of. The atlas is 256 KB and lives in VRAM, which the
+// CPU cannot store into, so the only way to change a fire tile twenty times a
+// second is a DMA -- and a DMA of the whole atlas at that rate is 5 MB/s of
+// bus for 2 KB of change.
+//
+// The layout makes it cheap. A 16x16 tile is exactly four of the GPU's own 8x8
+// tiles, and two of those -- the pair side by side -- are **adjacent in
+// memory**, because whole tiles advance by 64 words across. So a 16x16 region
+// is two runs of 128 words each, one per half-row of 8x8 tiles, separated by a
+// whole row of them. Two copies of 512 bytes instead of one of 256 KB.
+//
+// Both offsets are in **words**, and both are multiples of 128 words, which is
+// what satisfies the 16-byte alignment the console's texture-copy engine wants.
+// The row is flipped the same way `tiledOffsetFlipped` flips it, so `tileRow`
+// counts from the top of the *image*.
+struct TileRuns {
+    u32 first;
+    u32 second;
+};
+
+// Words in one run, and in a whole tile.
+inline constexpr u32 kTileRunWords = 128;
+inline constexpr u32 kTileWords = kTileRunWords * 2;
+
+constexpr TileRuns tileRunsFlipped(u32 tileColumn, u32 tileRow, u32 edge)
+{
+    // The tile's leftmost column, and its bottom row **in memory** -- which is
+    // its top row in the image, because the texture is stored upside down.
+    const u32 x0 = tileColumn * 16u;
+    const u32 y0 = edge - 16u - tileRow * 16u;
+    const u32 base = x0 * 8u + y0 * edge;
+    return TileRuns{base, base + 8u * edge};
+}
+
+// Where a texel of that tile goes, as an index into the two runs laid end to
+// end -- 0..127 for the first, 128..255 for the second. `column` and `row` are
+// inside the tile, with row 0 at the **top** of the image as every other
+// texture path in this project counts it.
+constexpr u32 tileRunIndex(const TileRuns& runs, u32 tileColumn, u32 tileRow, u32 column,
+                           u32 row, u32 edge)
+{
+    const u32 offset = tiledOffsetFlipped(tileColumn * 16u + column, tileRow * 16u + row, edge,
+                                          edge);
+    return offset < runs.first + kTileRunWords ? offset - runs.first
+                                               : kTileRunWords + (offset - runs.second);
+}
+
 }  // namespace mc::texture

@@ -10,7 +10,10 @@
 #include "core/nbt/preserved.hpp"
 #include "core/util/types.hpp"
 
+#include <memory>
 #include <vector>
+
+namespace mc::entity { struct PersistentEntities; }
 
 namespace mc::world {
 
@@ -69,6 +72,9 @@ struct LevelData {
     bool snowCovered = false;
 
     PlayerData player;
+
+    // Null means this world has never had a port-owned entity snapshot.
+    std::shared_ptr<const entity::PersistentEntities> entities;
 
     nbt::PreservedTags preserved;      // unmodelled tags inside Data
     nbt::PreservedTags preservedRoot;  // unmodelled siblings of Data

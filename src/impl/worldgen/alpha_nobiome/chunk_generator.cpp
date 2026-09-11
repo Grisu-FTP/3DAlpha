@@ -455,13 +455,13 @@ void ChunkGenerator::populate(i32 px, i32 pz)
 
     view_.reset(px - 1, pz - 1, 3, 3, window);
 
-    PopulationSideEffects sideEffects;
-    populateChunk(provider_, view_, px, pz, &sideEffects);
+    // Dungeon tile-entity records have no consumer here: their chest/spawner
+    // blocks are already in the column and the vectors were thrown away below.
+    // Do not allocate those transient records on the generation worker.
+    populateChunk(provider_, view_, px, pz, nullptr);
     ++stats_.populated;
 
     stats_.refusedOutOfWindow += view_.refusedOutOfWindow();
-    stats_.droppedChests += u32(sideEffects.chests.size());
-    stats_.droppedSpawners += u32(sideEffects.spawners.size());
 
     // The finality rule, checked rather than assumed. Population is expected to
     // have written only into the 2x2 quadrant (px..px+1, pz..pz+1); anything

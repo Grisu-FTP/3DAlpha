@@ -54,12 +54,17 @@ TEST(settings_round_trip)
     GameSettings written;
     written.renderDistance = 10;
     written.texturePack = "minecraft-a1.1.2_01-client.zip";
+    written.skin = "file:Steve.png";
     CHECK(settings::saveSettings(fs, path.c_str(), written));
 
     GameSettings read;
     CHECK(settings::loadSettings(fs, path.c_str(), &read));
     CHECK_EQ(read.renderDistance, 10);
     CHECK_EQ(read.texturePack, written.texturePack);
+    // The skin key carries a prefix and a colon, which is the one value in this
+    // file that is not a bare name or a number -- and `key=value` splits on the
+    // first `=`, so the colon has to be nothing special.
+    CHECK_EQ(read.skin, written.skin);
 }
 
 // Dev Art is the empty string, and it has to survive the round trip as one --
@@ -139,6 +144,30 @@ TEST(a_pack_name_with_a_separator_is_ignored)
     writeText(fs, path, "texture_pack=sub\\dir.zip\n");
     CHECK(settings::loadSettings(fs, path.c_str(), &read));
     CHECK(read.texturePack.empty());
+}
+
+// The skin key names a file inside one of two known folders, so it gets the
+// same guard for the same reason.
+TEST(a_skin_key_with_a_separator_is_ignored)
+{
+    TempDir dir;
+    io::PosixFileSystem fs;
+    const std::string path = dir.at("3ds.ini");
+
+    writeText(fs, path, "skin=file:../../../boot.firm\n");
+
+    GameSettings read;
+    CHECK(settings::loadSettings(fs, path.c_str(), &read));
+    CHECK(read.skin.empty());
+
+    writeText(fs, path, "skin=pack:sub\\dir.zip\n");
+    CHECK(settings::loadSettings(fs, path.c_str(), &read));
+    CHECK(read.skin.empty());
+
+    // And an ordinary one still gets through.
+    writeText(fs, path, "skin=pack:Faithful.zip\n");
+    CHECK(settings::loadSettings(fs, path.c_str(), &read));
+    CHECK_EQ(read.skin, std::string("pack:Faithful.zip"));
 }
 
 // Stated in the header so it is a decision rather than a surprise: saving

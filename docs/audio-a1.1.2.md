@@ -131,6 +131,34 @@ freezes.
 `SoundManager`'s method, called when the options screen changes, stops `"BgMusic"` outright when
 `musicVolume` reaches zero and otherwise just resets its volume.
 
+## Positional sounds — `SoundManager`'s method
+
+The other half of the effect path, and it is a different sum rather than the same one scaled:
+
+In order: return if not loaded or the sound volume option is zero; pick a random entry for the
+name; if there is one and the volume is above zero, name a source `sound_` plus a counter that
+wraps at 256. The audible range is 16, widened to 16 times the volume when the volume exceeds
+1.0, and the source is positional in that case (the same rule decides whether it is a
+priority source). Pitch is set; the volume is then clamped to 1.0 and multiplied by the
+sound-volume option; play.
+
+**No `0.25f`.** That factor belongs to the interface path alone, and it is why a footstep at
+`volume * 0.15` is audible at all rather than a twentieth of nothing.
+
+**A volume above 1 does not get louder, it gets further.** It stretches the fade distance and is
+then clamped back to 1 at the source. Nothing in a1.1.2's block sounds uses that, but the
+mechanism is transcribed because leaving it out would make one line of the method a lie.
+
+The `2` in `newSource` is paulscode's `ATTENUATION_LINEAR`: the gain falls linearly to nothing
+across the fade distance. That is a *library* rule rather than a jar one and it is the one part
+of this that could not be read out of the class file — it is transcribed from what the constant
+means, and named as such in `audio::positionalGain`.
+
+**What is not carried across the seam is stereo.** Panning needs a listener *orientation*, and
+`audio::Backend` has only `playSample(id, gain, pitch)`. So a sound here is attenuated by
+distance and centred, and a footstep behind you sounds like a footstep beside you. The seam is
+where that would be fixed, not the caller.
+
 ## Interface sounds — `SoundManager`'s method
 
 The whole of "a button makes a noise", and it is nine lines. Transcribed from `of.class`:
@@ -232,6 +260,84 @@ prints the two gains, so a player's folder can be checked before it is carried t
 the real a1.1.2 resources folder: `random.click` is **12,332 frames, 2 ch, 44,100 Hz — 280 ms**,
 about 49 KB of PCM, and the gains are 0.250 for a choice and 0.075 for a move.
 
+## Footsteps and breaking — `bb`, and the three places it is read
+
+**There is no `dig.*` in a1.1.2.** That is worth saying first, because every later version has
+one and the name is in every wiki: a1.1.2's `StepSound` (`bb`) has two getters and *both* of
+them return `"step." + name` on the base class. Breaking a block plays a footstep. Only two of
+the nine singletons disagree, and they do it by overriding one getter:
+
+| singleton | walked on | broken | volume | pitch |
+|---|---|---|---|---|
+| `Block`'s field (Block's own default) | `step.stone` | `step.stone` | 1.0 | 1.0 |
+| `Block`'s field wood | `step.wood` | `step.wood` | 1.0 | 1.0 |
+| `Block`'s field gravel | `step.gravel` | `step.gravel` | 1.0 | 1.0 |
+| `Block`'s field grass | `step.grass` | `step.grass` | 1.0 | 1.0 |
+| `Block`'s field stone | `step.stone` | `step.stone` | 1.0 | 1.0 |
+| `Block`'s field metal | `step.stone` | `step.stone` | 1.0 | **1.5** |
+| `Block`'s field glass (`u`) | `step.stone` | **`random.glass`** | 1.0 | 1.0 |
+| `Block`'s field cloth | `step.cloth` | `step.cloth` | 1.0 | 1.0 |
+| `Block`'s field sand (`t`) | `step.sand` | **`step.gravel`** | 1.0 | 1.0 |
+
+Which getter is which cannot be read off the bytecode — on the base class they are the same two
+lines — so they are named by their callers and that mapping lives in `extract_blocks.py`'s
+`MEMBER_MAP`. Get it backwards and glass breaks with a footstep instead of a smash, which is
+the sort of thing that would survive a year.
+
+The table is generated. `tools/extract_blocks.py` reads the singletons out of Block's own
+initialiser, resolves the two overrides, follows `setStepSound` through the chained
+constructor calls, and covers the six blocks that never call it: water and lava take Block's
+constructor default, and the two staircases **copy the block they are modelled on** — which is
+what makes wooden stairs sound like wood. All seventy rows were then checked against a running
+jar, field by field.
+
+### The three call sites, and their three sums
+
+| Event | Sound | Volume | Pitch |
+|---|---|---|---|
+| Footstep, `Entity.moveEntity` | `getStepSound()` | `volume * 0.15F` | `pitch` |
+| Break, `PlayerController.onPlayerDestroyBlock` | `getBreakSound()` | `(volume + 1) / 2` | `pitch * 0.8F` |
+| Place, `ItemBlock.onItemUse` | **`getStepSound()`** | `(volume + 1) / 2` | `pitch * 0.8F` |
+
+Placing is the odd one and it is not a slip here: `ItemBlock` plays the *step* getter at the
+*break* loudness, so a block is put down with a footstep. Glass is placed with `step.stone` and
+broken with `random.glass`. A door plays nothing at all, because `ItemDoor` is not an
+`ItemBlock` and never reaches that line.
+
+All three are positional, so none of them gets the interface path's `0.25f`. `core/audio/block_sound.hpp`
+holds the three sums and nothing else.
+
+### The footstep trigger — inside `moveEntity`
+
+Each step, the horizontal distance moved is scaled by 0.6 and added to a running float
+`distanceWalkedModified`. The trigger is skipped for an entity that cannot trigger walking, and for
+one that is on the ground *and* sneaking. Otherwise the block under the feet is found by flooring
+x and z and taking y minus a fixed 0.2 offset (a double literal) minus the entity's `yOffset`. When
+the running distance exceeds the integer `nextStepDistance` and that block is not air, the
+threshold goes up by one and a step plays: if the cell directly above the block is snow, snow's
+step sound is used instead of the block's; otherwise the block's own step sound is used, but only
+when the block's material is not a liquid. Either way the sound's volume is scaled by 0.15 and its
+pitch is passed through. The block's own walked-on hook then runs, liquid or not.
+
+Five things in twelve lines, and each is audible:
+
+- **It measures what was covered, not what was asked for**, so walking into a wall is silent.
+- **The distance accumulates outside the test**, so a sneaking player banks it and pays out the
+  moment they stand up.
+- **Sneaking on the ground is silent**, and that `flag` is read at the *top* of `moveEntity`,
+  before anything has moved.
+- **`nextStepDistance++`, not `= (int)distance + 1`**, so steps that were earned are paid out
+  one at a time.
+- **Snow on top wins outright** — including over a liquid, which the `else if` would otherwise
+  have silenced.
+
+`playSoundAtEntity` passes `posY - yOffset`, which is the feet.
+
+Where it lives here: `PlayerBody::move` decides *which block* earned a step and leaves it in
+`stepSoundDue`; the platform layer, which is the half with a listener, turns that into a cue
+and plays it. `Block.onEntityWalking` is the one line not ported — its only a1.1.2 override is
+redstone ore lighting up when trodden on, and `move()` takes a const world.
+
 ## Where the resources came from, and why they are not downloaded
 
 `bf` (ThreadDownloadResources) fetched an S3 bucket listing from
@@ -275,11 +381,9 @@ an oversight:
 
 | Sound | Blocked on |
 |---|---|
-| `dig.*` (place and break), `random.click` in world | Block placement and breaking — M3 |
-| Everything not preloaded | A decode queue on the audio worker — see *Effects are loaded before they are asked for* |
-| `step.*` | A player body and collision, plus a `stepSound` column in `blocks.json` — M3 |
+| Everything not preloaded | A decode queue on the audio worker — see *Effects are loaded before they are asked for*. Less pressing than it was: the whole a1.1.2 effect set is 35 files and the backend now holds 48 |
 | `random.fizz` | Reachable now; `core/tick/fluid.cpp:230` names the site |
-| `fire.fire`, `fire.ignite` | Reachable now; `core/tick/fire.hpp` ticks |
+| `fire.fire` | Reachable now; `core/tick/fire.hpp` ticks |
 | Ambient cave | Reachable now; the `soundCounter` is transcribed in [tick-a1.1.2.md](tick-a1.1.2.md) but not implemented |
 | Ambient water and lava loops | `randomDisplayTick`, a client display path that does not exist here at all |
 | `random.bow`, `random.explode`, `random.fuse` | No items, no entities, nothing lights TNT |
@@ -288,3 +392,36 @@ an oversight:
 
 The seam they hang off is `audio::Backend` plus the pools above, so each arrives as a call
 site rather than as a subsystem — as the menu click already did.
+
+## What a block behaviour plays, and the seam it plays through
+
+Six of these were on the list above and are not any more. They needed the same thing and it was not
+a decoder: **`core/tick/` has no sound engine and must not grow one.** The tick runs on a worker and
+the mixer does not, so a `SoundEngine&` reaching into a block behaviour would tie the two together.
+`TickWorld::setSoundSink` is a function pointer and a context, set once by the frame loop, on
+exactly the terms `setEntityQuery` and `setDropSink` already had — and unset means silence, which is
+the honest answer for every headless tool here.
+
+Every volume and pitch below is the class file's own:
+
+| Event | Sound | Volume | Pitch | Position |
+|---|---|--:|---|---|
+| A pressure plate arming — a field of another original class | `random.click` | 0.3 | 0.6 | `(i+0.5, j+**0.1**, k+0.5)` |
+| …and disarming | `random.click` | 0.3 | 0.5 | the same |
+| A lever flicked — `BlockLever`'s method | `random.click` | 0.3 | 0.6 on, 0.5 off | `(i+0.5, j+0.5, k+0.5)` |
+| A button pressed — a method of another original class | `random.click` | 0.3 | 0.6 | the same |
+| …and letting itself back out, 20 ticks later | `random.click` | 0.3 | 0.5 | the same |
+| A door — `BlockDoor`'s method | `random.door_open` / `random.door_close` | 1.0 | `rand.nextFloat() * 0.1F + 0.9F` | the same |
+| Flint and steel — `ItemFlintAndSteel`'s field | `fire.ignite` | 1.0 | `rand.nextFloat() * 0.4F + 0.8F` | the cell it lit |
+
+Two details worth keeping:
+
+- **The plate plays from `j + 0.1`**, not `j + 0.5`. It is a quarter of a block tall and the
+  original plays from just above the floor.
+- **The door's pitch comes out of the world's own Random**, so opening a door moves the stream every
+  later random tick reads. Flint and steel's comes out of `Item.itemRand`, a *different* generator —
+  `core/item/use.cpp` keeps its own for exactly that reason.
+
+This was reported as a plate feeling unresponsive rather than as a plate being silent, and that is
+the point: a plate is flush with the floor and its whole state is one bit of metadata, so the click
+**is** the feedback.

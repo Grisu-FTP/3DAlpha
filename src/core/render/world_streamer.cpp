@@ -27,6 +27,9 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
     tick_.reset();
     light_.reset();
     tickDirtyCells_ = 0;
+    player_ = {};
+    entityPools_ = {};
+    entitiesBound_ = false;
 
     cache_.configure(cacheConfig_);
     if (cache_.open(worldDir, nowMillis) != world::OpenResult::Ok) {
@@ -223,6 +226,67 @@ bool WorldStreamer::setBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
     // change callback below has no renderer to invalidate sections through.
     tickRenderer_ = &renderer;
     const bool changed = tick_->setBlockAndDataWithNotify(x, y, z, id, metadata);
+    if (light_ != nullptr) {
+        light_->drain(kLightBudgetPerFrame);
+    }
+    tickRenderer_ = nullptr;
+
+    return changed;
+}
+
+bool WorldStreamer::rightClick(ChunkRenderer& renderer, item::ItemId held,
+                              const entity::RayHit& hit, const AABB& playerBox,
+                              float yawDegrees, const item::Effects& effects)
+{
+    if (tick_ == nullptr) {
+        return false;
+    }
+    if (!tick_->chunkResident(hit.x >> 4, hit.z >> 4)) {
+        return false;
+    }
+
+    tickRenderer_ = &renderer;
+    const bool changed =
+        item::rightClick(*tick_, held, hit, playerBox, yawDegrees, effects);
+    if (light_ != nullptr) {
+        light_->drain(kLightBudgetPerFrame);
+    }
+    tickRenderer_ = nullptr;
+
+    return changed;
+}
+
+item::ItemUse WorldStreamer::useItem(ChunkRenderer& renderer, item::ItemId held, double eyeX,
+                                    double eyeY, double eyeZ, double dirX, double dirY,
+                                    double dirZ, const item::Effects& effects)
+{
+    if (tick_ == nullptr) {
+        return item::ItemUse{false, held};
+    }
+
+    tickRenderer_ = &renderer;
+    const item::ItemUse used =
+        item::useItem(*tick_, held, eyeX, eyeY, eyeZ, dirX, dirY, dirZ, effects);
+    if (light_ != nullptr) {
+        light_->drain(kLightBudgetPerFrame);
+    }
+    tickRenderer_ = nullptr;
+
+    return used;
+}
+
+bool WorldStreamer::breakBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
+                              const item::Effects& effects)
+{
+    if (tick_ == nullptr) {
+        return false;
+    }
+    if (!tick_->chunkResident(x >> 4, z >> 4)) {
+        return false;
+    }
+
+    tickRenderer_ = &renderer;
+    const bool changed = item::destroyBlock(*tick_, x, y, z, effects);
     if (light_ != nullptr) {
         light_->drain(kLightBudgetPerFrame);
     }
@@ -661,7 +725,25 @@ void WorldStreamer::setCubeFormat(mesh::CubeFormat format, ChunkRenderer& render
         return;
     }
     builder_.setCubeFormat(format);
+    republishAll(renderer);
+}
 
+void WorldStreamer::setGreedy(bool on, ChunkRenderer& renderer)
+{
+    if (on == builder_.greedy()) {
+        return;
+    }
+    // Set even while closed, unlike the cube format: the next world opened
+    // should mesh the way the setting says without anyone having to call this
+    // again.
+    builder_.setGreedy(on);
+    if (open_) {
+        republishAll(renderer);
+    }
+}
+
+void WorldStreamer::republishAll(ChunkRenderer& renderer)
+{
     // The grid keeps its columns -- this is a change of geometry, not of what
     // is loaded -- so all that has to happen is that every one of them goes
     // back through the publish gate and gets meshed again.
@@ -687,6 +769,9 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     if (!open_) {
         return;
     }
+    snapshotEntities();
+    entityPools_ = {};
+    entitiesBound_ = false;
     // The worker first, and before anything touches storage: it is the other
     // user of the slot, and joining it is what makes the rest of this function
     // single-threaded again.
@@ -696,8 +781,6 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     // to happen before the grid is torn down, because the columns it reads are
     // the grid's.
     flushTickDirty();
-    tick_.reset();
-    light_.reset();
 
     // Anything the generator finished and has not handed over yet goes to the
     // card now. Dropping it would mean regenerating it next session, and
@@ -740,6 +823,27 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
     }
+
+    // **The tick world outlives the drain, and that is the fix for a hardware
+    // crash rather than tidiness.** It used to be destroyed beside
+    // `flushTickDirty` above, before the loop that has just run -- and that
+    // loop calls back into the caller once per pumped write, which on the 3DS
+    // draws a whole frame of the world behind the progress bar. One of those
+    // passes borrows the `TickWorld` (a cart leans along the *track*, so the
+    // minecart pass is the one entity draw that needs the world), so every
+    // frame of the save screen was reading a freed object: the two words it
+    // reads first are `TickAccess`'s context and function pointer, and in a
+    // freed newlib chunk those two words are the bin's `fd` and `bk`. The
+    // console jumped into `__malloc_av_`. See
+    // crashlogs/009-save-with-a-minecart/.
+    //
+    // Nothing above needed it gone -- `flushTickDirty` has already handed the
+    // tick's changes to the cache, and neither the generator flush nor the
+    // drain asks the tick anything -- so it is released here, after the last
+    // frame the progress callback can draw and before the grid it reads goes
+    // away.
+    tick_.reset();
+    light_.reset();
 
     // close() blocks until the last column is on the card, which is what the
     // "Saving level.." message on the way out is for. Everything the generator
@@ -1616,6 +1720,29 @@ void WorldStreamer::setPlayerState(double x, double y, double z, float yaw, floa
     player_.timeTicks = timeTicks;
 }
 
+void WorldStreamer::bindEntities(const entity::EntityPools& pools)
+{
+    entityPools_ = pools;
+    entitiesBound_ = true;
+    if (level_.entities) level_.entities->restore(pools);
+}
+
+void WorldStreamer::snapshotEntities()
+{
+    if (!entitiesBound_) return;
+    auto state = std::make_shared<entity::PersistentEntities>();
+    // A copy the heap would not hold keeps the last snapshot: an older set of
+    // entities on disk is a save, a partial one is a loss.
+    if (state->capture(entityPools_)) player_.entities = std::move(state);
+}
+
+void WorldStreamer::setPlayerInventory(const std::vector<item::ItemStack>& stacks)
+{
+    player_.valid = true;
+    player_.hasInventory = true;
+    player_.inventory = stacks;
+}
+
 void WorldStreamer::tickSaves(i64 nowMillis)
 {
     if (!open_ || autosaveSeconds_ <= 0) {
@@ -1633,6 +1760,7 @@ void WorldStreamer::saveNow(i64 nowMillis)
         return;
     }
     lastSaveMillis_ = nowMillis;
+    snapshotEntities();
 
     // Whatever the tick changed since the last save becomes the cache's answer
     // for those columns now, so the flush below has something to write.

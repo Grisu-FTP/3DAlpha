@@ -104,7 +104,7 @@ namespace mc::ctr {
 // hotbar slot; the frame's two pixels above put it flush with the page's top.
 inline constexpr int kMapWidth = 208;
 inline constexpr int kMapTop = hud::kPageTop + 2;
-inline constexpr int kMapHeight = hud::kHotbarTop - kMapTop - 8;   // 158
+inline constexpr int kMapHeight = hud::kTabTop - kMapTop - 8;      // 158
 inline constexpr int kMapLeft = 104;
 
 // How many characters wide the column beside it is. The frame around the map
@@ -114,7 +114,7 @@ inline constexpr int kMapTextColumns = 12;
 
 static_assert(kMapTextColumns * hud::kCell + 6 <= kMapLeft,
               "the text column must stop before the map's frame");
-static_assert(kMapTop + kMapHeight <= hud::kHotbarTop, "the map must clear the hotbar");
+static_assert(kMapTop + kMapHeight <= hud::kTabTop, "the map must clear the tab strip");
 static_assert(kMapTop - 2 >= hud::kPageTop, "the map's frame must clear the banner band");
 
 class MapScreen {

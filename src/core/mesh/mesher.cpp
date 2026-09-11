@@ -1,6 +1,10 @@
 #include "core/mesh/mesher.hpp"
 
+#include "core/block/collision.hpp"
 #include "core/block/registry.hpp"
+#include "core/mesh/box.hpp"
+#include "core/mesh/cube_atlas.hpp"
+#include "core/mesh/shapes.hpp"
 #include "core/mesh/fluid.hpp"
 #include "core/mesh/torch.hpp"
 
@@ -15,9 +19,72 @@ using world::BlockId;
 using world::ChunkColumn;
 using world::Section;
 
-void MeshBuilder::addQuad(int x, int y, int z, int face, u16 texture, u8 light)
+namespace {
+
+// A face's (layer, i, j) grid axes, read off kFaceBasis: the layer runs along
+// the face normal, i along e1 and j along e2. A negative edge counts its axis
+// down from 15, so that cell (i, j) is always first + i*e1 + j*e2 -- the
+// property that lets a run found in the grid go straight to addQuad.
+struct FaceAxes {
+    u8 normal;
+    u8 axisI;
+    u8 axisJ;
+    bool flipI;
+    bool flipJ;
+};
+
+constexpr int axisOf(const i8 (&v)[3])
+{
+    return v[0] != 0 ? 0 : (v[1] != 0 ? 1 : 2);
+}
+
+constexpr FaceAxes faceAxes(int face)
+{
+    const FaceBasis& b = kFaceBasis[face];
+    const FaceOffset& n = kFaceOffset[face];
+    const int normal = n.dx != 0 ? 0 : (n.dy != 0 ? 1 : 2);
+    const int i = axisOf(b.e1);
+    const int j = axisOf(b.e2);
+    return {u8(normal), u8(i), u8(j), b.e1[i] < 0, b.e2[j] < 0};
+}
+
+inline constexpr FaceAxes kFaceAxes[kFaceCount] = {
+    faceAxes(0), faceAxes(1), faceAxes(2), faceAxes(3), faceAxes(4), faceAxes(5),
+};
+
+// Each edge is one unit along one axis, and the three axes are all different --
+// the grid above is a relabelling of the section, not a projection of it.
+constexpr bool faceAxesArePermutations()
+{
+    for (int face = 0; face < kFaceCount; ++face) {
+        const FaceBasis& b = kFaceBasis[face];
+        const FaceAxes& a = kFaceAxes[face];
+        if (a.normal == a.axisI || a.normal == a.axisJ || a.axisI == a.axisJ) return false;
+        if (b.e1[a.axisI] * b.e1[a.axisI] != 1 || b.e2[a.axisJ] * b.e2[a.axisJ] != 1) return false;
+    }
+    return true;
+}
+
+static_assert(faceAxesArePermutations(), "each face edge must be one unit along its own axis");
+
+constexpr int kGridEdge = Section::kSize;
+constexpr int kGridCells = kGridEdge * kGridEdge;
+static_assert(kGridEdge == 16, "a grid row is one u16 of face bits");
+static_assert(kCubeSlotCount <= 256, "a face key holds the slot in its high byte");
+
+}  // namespace
+
+void MeshBuilder::addQuad(int x, int y, int z, int face, u16 texture, u8 light, int width,
+                          int height)
+{
+    emitQuad(x, y, z, face, cubeSlotOf(texture), light, width, height);
+}
+
+void MeshBuilder::emitQuad(int x, int y, int z, int face, int slot, u8 light, int width,
+                           int height)
 {
     assert(face >= 0 && face < kFaceCount);
+    assert(width >= 1 && width <= kCubeRepeat && height >= 1 && height <= kCubeRepeat);
 
     // Every pass draws through one shared index buffer sized for
     // kMaxQuadsPerSection, so a stream that runs past it would have the GPU
@@ -29,46 +96,56 @@ void MeshBuilder::addQuad(int x, int y, int z, int face, u16 texture, u8 light)
         return;
     }
 
-    // A texture index outside the atlas can only come from a table we generated
-    // wrong, but a world can name a block we do not know and the unknown entry
-    // has to land somewhere real rather than sample past the atlas.
-    const int tile = texture < kAtlasTileCount ? texture : 0;
-    // Inset by kUvInset at each edge rather than sitting on the tile boundary;
-    // see vertex.hpp for the one texel row of every face that cost.
-    const i16 uLo = tileUvMin(tile % kAtlasTilesPerEdge);
-    const i16 uHi = tileUvMax(tile % kAtlasTilesPerEdge);
-    const i16 vLo = tileUvMin(tile / kAtlasTilesPerEdge);
-    const i16 vHi = tileUvMax(tile / kAtlasTilesPerEdge);
+    // The cube pass samples the cube atlas, not terrain.png -- see
+    // core/mesh/cube_atlas.hpp. A texture index outside the atlas has already
+    // been sent to tile 0's slot by cubeSlotOf: a world can name a block we do
+    // not know, and the unknown entry has to land somewhere real rather than
+    // sample past the texture.
+    const int slotX = slot % kCubeSlotsPerEdge;
+    const int slotY = slot / kCubeSlotsPerEdge;
 
     // One quad, and everything else -- the four corners, their UVs, the face
-    // shade -- is rebuilt on the GPU from kFaceBasis, which is asserted against
-    // the corner tables the branch below reads.
+    // shade, the seam -- is rebuilt on the GPU from kFaceBasis, which is
+    // asserted against the corner tables the branch below reads.
     if (cubeFormat_ == CubeFormat::Quads) {
         QuadVertex q;
         q.x = static_cast<u8>(x);
         q.y = static_cast<u8>(y);
         q.z = static_cast<u8>(z);
         q.face = static_cast<u8>(face);
-        q.tileX = static_cast<u8>(tile % kAtlasTilesPerEdge);
-        q.tileY = static_cast<u8>(tile / kAtlasTilesPerEdge);
+        q.slotX = static_cast<u8>(slotX);
+        q.slotY = static_cast<u8>(slotY);
         q.light = light;
-        q.ao = 0;
+        q.extent = packExtent(width, height);
         quads_.push_back(q);
         return;
     }
 
+    const FaceBasis& b = kFaceBasis[face];
+    const bool merged = width > 1 || height > 1;
     const u8 shade = kFaceShade[face];
 
     for (int c = 0; c < 4; ++c) {
-        const Corner& corner = kFaceCorner[face][c];
+        const int i = kCornerIJ[c][0];
+        const int j = kCornerIJ[c][1];
 
         WorldVertex v;
-        v.u = kFaceCornerUV[face][c][0] != 0 ? uHi : uLo;
-        v.v = kFaceCornerUV[face][c][1] != 0 ? vHi : vLo;
-        v.x = static_cast<u8>(x + corner.x);
-        v.y = static_cast<u8>(y + corner.y);
-        v.z = static_cast<u8>(z + corner.z);
-        v.face = static_cast<u8>(face);
+        // The corner is kFaceCorner's for a single face -- the static_assert
+        // on kFaceBasis says so -- and the run's far corner for a merged one.
+        v.x = static_cast<u8>(x + b.base[0] + i * width * b.e1[0] + j * height * b.e2[0]);
+        v.y = static_cast<u8>(y + b.base[1] + i * width * b.e1[1] + j * height * b.e2[1]);
+        v.z = static_cast<u8>(z + b.base[2] + i * width * b.e1[2] + j * height * b.e2[2]);
+
+        // kFaceCornerUV in tiles, stretched over the run: u follows i and v
+        // follows j the way the table already says, so a merged quad is its
+        // faces' texture laid end to end and not one tile stretched across
+        // them. Inset off the slot boundary at the near end and off the end of
+        // the run at the far one; see kCubeUvInset.
+        const int uTiles = kFaceCornerUV[face][c][0] * width;
+        const int vTiles = kFaceCornerUV[face][c][1] * height;
+        v.u = uTiles == 0 ? cubeUvStart(slotX) : cubeUvEnd(slotX, uTiles);
+        v.v = vTiles == 0 ? cubeUvStart(slotY) : cubeUvEnd(slotY, vTiles);
+        v.seam = seamOf(face, merged, c);
 
         // Face shade alone, and for a1.1.2 that is the whole answer: its
         // Block.colorMultiplier returns white for every block in the game and
@@ -84,6 +161,121 @@ void MeshBuilder::addQuad(int x, int y, int z, int face, u16 texture, u8 light)
 
         cubes_.push_back(v);
     }
+}
+
+void MeshBuilder::ensureFaceGrid()
+{
+    if (faceKeys_.empty()) {
+        faceKeys_.assign(usize(kFaceCount) * kGridEdge * kGridCells, 0);
+        faceRows_.assign(usize(kFaceCount) * kGridCells, 0);
+    }
+}
+
+void MeshBuilder::discardFaces()
+{
+    if (!facesPending_) {
+        return;
+    }
+    std::memset(faceRows_.data(), 0, faceRows_.size() * sizeof(u16));
+    std::memset(faceLayers_, 0, sizeof(faceLayers_));
+    facesPending_ = false;
+}
+
+void MeshBuilder::addFace(int x, int y, int z, int face, u16 texture, u8 light)
+{
+    if (!greedy_) {
+        addQuad(x, y, z, face, texture, light);
+        return;
+    }
+    ensureFaceGrid();
+
+    const FaceAxes& a = kFaceAxes[face];
+    const int cell[3] = {x, y, z};
+    const int layer = cell[a.normal];
+    const int i = a.flipI ? kGridEdge - 1 - cell[a.axisI] : cell[a.axisI];
+    const int j = a.flipJ ? kGridEdge - 1 - cell[a.axisJ] : cell[a.axisJ];
+
+    const usize row = (usize(face) * kGridEdge + usize(layer)) * kGridEdge + usize(j);
+    faceKeys_[row * kGridEdge + usize(i)] = u16((cubeSlotOf(texture) << 8) | light);
+    faceRows_[row] = u16(faceRows_[row] | (1u << i));
+    faceLayers_[face] = u16(faceLayers_[face] | (1u << layer));
+    facesPending_ = true;
+}
+
+// **The merge.** Row by row, the lowest face left in the row starts a run; the
+// run grows along i while the next face is there and has the same key, then
+// along j while the whole of the next row's span is there and matches. Each
+// covered bit is cleared, so every face is drawn exactly once and the grid is
+// empty afterwards.
+//
+// Both directions stop at kCubeRepeat, and that limit is the hardware's and
+// not a tuning choice: past four copies the cube atlas's slot runs out of tile
+// to sample. See core/mesh/cube_atlas.hpp.
+//
+// Plain greedy, widest first, with no search for a better cover. The runs
+// this finds are within a small factor of the best rectangle cover on terrain,
+// and the search that would close the gap costs main-thread time the mesh
+// budget is measured in.
+void MeshBuilder::flushFaces()
+{
+    if (!facesPending_) {
+        return;
+    }
+
+    for (int face = 0; face < kFaceCount; ++face) {
+        const FaceAxes& a = kFaceAxes[face];
+        u32 layers = faceLayers_[face];
+        while (layers != 0) {
+            const int layer = __builtin_ctz(layers);
+            layers &= layers - 1;
+
+            const usize base = (usize(face) * kGridEdge + usize(layer)) * kGridEdge;
+            u16* rows = &faceRows_[base];
+            const u16* keys = &faceKeys_[base * kGridEdge];
+
+            for (int j = 0; j < kGridEdge; ++j) {
+                while (rows[j] != 0) {
+                    const int i0 = __builtin_ctz(rows[j]);
+                    const u16 key = keys[j * kGridEdge + i0];
+
+                    int width = 1;
+                    while (width < kCubeRepeat && i0 + width < kGridEdge
+                           && (rows[j] >> (i0 + width) & 1u) != 0
+                           && keys[j * kGridEdge + i0 + width] == key) {
+                        ++width;
+                    }
+                    const u32 span = ((1u << width) - 1u) << i0;
+
+                    int height = 1;
+                    while (height < kCubeRepeat && j + height < kGridEdge
+                           && (rows[j + height] & span) == span) {
+                        const u16* next = keys + (j + height) * kGridEdge + i0;
+                        bool same = true;
+                        for (int k = 0; k < width; ++k) {
+                            same = same && next[k] == key;
+                        }
+                        if (!same) {
+                            break;
+                        }
+                        ++height;
+                    }
+                    for (int k = 0; k < height; ++k) {
+                        rows[j + k] = u16(rows[j + k] & ~span);
+                    }
+
+                    // Back from the grid to the section: the run's first cell.
+                    int cell[3];
+                    cell[a.normal] = layer;
+                    cell[a.axisI] = a.flipI ? kGridEdge - 1 - i0 : i0;
+                    cell[a.axisJ] = a.flipJ ? kGridEdge - 1 - j : j;
+                    emitQuad(cell[0], cell[1], cell[2], face, key >> 8, u8(key & 0xFF), width,
+                             height);
+                }
+            }
+        }
+        faceLayers_[face] = 0;
+    }
+    facesPending_ = false;
 }
 
 void MeshBuilder::addDetailQuad(const i16 corner[4][3], const i16 uv[4][2], u8 shade, u8 light,
@@ -227,6 +419,117 @@ void addCross(const MeshScratch& scratch, int x, int y, int z, u16 texture, Mesh
     }
 }
 
+// Whether a block's render bounds fill its cell, which is the test that keeps
+// the fast path fast. Exact comparisons on purpose: these come out of a
+// generated table of floats that were 0.0f and 1.0f in the jar, so anything
+// that is not exactly the unit cube was written as something else on purpose.
+bool isUnitCube(const AABB& b)
+{
+    return b.minX == 0.0 && b.minY == 0.0 && b.minZ == 0.0 && b.maxX == 1.0 && b.maxY == 1.0
+           && b.maxZ == 1.0;
+}
+
+// A standard block that does not fill its cell. Same face-culling rule as the
+// cube path with one addition: **a face is only a candidate for culling if the
+// box actually reaches that side of the block.** A slab's top face is at y=0.5
+// and has no neighbour to be hidden by, so it is always drawn; its bottom face
+// is at y=0 and is culled by the block underneath exactly as a full cube's
+// would be.
+void addBoundedCube(const MeshScratch& scratch, int x, int y, int z, const u16 tiles[6],
+                    const AABB& bounds, MeshBuilder& out)
+{
+    const double reach[kFaceCount] = {
+        bounds.minY, 1.0 - bounds.maxY, bounds.minZ, 1.0 - bounds.maxZ,
+        bounds.minX, 1.0 - bounds.maxX,
+    };
+
+    int mask = 0;
+    u8 light = scratch.light(x, y, z);
+    for (int face = 0; face < kFaceCount; ++face) {
+        const FaceOffset& offset = kFaceOffset[face];
+        const int nx = x + offset.dx;
+        const int ny = y + offset.dy;
+        const int nz = z + offset.dz;
+        const bool touchesEdge = reach[face] == 0.0;
+        if (touchesEdge && block::def(scratch.block(nx, ny, nz)).opaque) {
+            continue;
+        }
+        mask |= 1 << face;
+        // Light comes from the cell the face looks into for a face on the
+        // block's own edge, and from the block's own cell for one that sits
+        // inside it -- there is no neighbour to read for the top of a slab.
+        if (touchesEdge) {
+            light = scratch.light(nx, ny, nz);
+        }
+    }
+
+    // **One light for the whole box, and that is a simplification.** The
+    // original lights each face from the cell it faces; sampling six of them
+    // and carrying six lights through addBox would be right and is not what
+    // this does yet. In practice these blocks are thin and their faces see the
+    // same cell, so the visible difference is the underside of a slab in a dark
+    // room. Named here rather than discovered.
+    addBox(x, y, z, bounds, tiles, light, true, mask, out);
+}
+
+// Everything the cube stream cannot draw: the nine render types with their own
+// emitters, the ten shapes.cpp added, and the standard blocks whose bounds are
+// smaller than their cell.
+//
+// Out of line and out of the inner loop on purpose -- it runs for a handful of
+// blocks per section and the loop above runs for four thousand.
+void emitNonCube(const MeshScratch& scratch, int x, int y, int z, BlockId id,
+                 const BlockDef& def, MeshBuilder& out)
+{
+    if (def.render == RenderType::Cube) {
+        const u8 metadata = scratch.metadata(x, y, z);
+        const u16* tiles = block::worldFaces(id, metadata);
+        const AABB bounds = block::selectionBox(id, metadata);
+        if (!isUnitCube(bounds)) {
+            addBoundedCube(scratch, x, y, z, tiles, bounds, out);
+        } else {
+            // A full cube the fast path was told to leave alone: a furnace,
+            // whose mouth is on the side its metadata names and which `faces`
+            // cannot say, or an id past the end of the block table -- drawn
+            // as a full cube, which is what the unknown block is for. Either
+            // way it is the cube stream's own quad, so it lights and shades
+            // exactly as the fast path would.
+            for (int face = 0; face < kFaceCount; ++face) {
+                const FaceOffset& offset = kFaceOffset[face];
+                if (block::def(scratch.block(x + offset.dx, y + offset.dy, z + offset.dz)).opaque) {
+                    continue;
+                }
+                out.addFace(x, y, z, face, tiles[face],
+                            scratch.light(x + offset.dx, y + offset.dy, z + offset.dz));
+            }
+        }
+        return;
+    }
+
+    // Each render type is its own emitter. The ones with no emitter are skipped
+    // rather than drawn as cubes: a missing shape is obvious, a cubic one looks
+    // deliberate. hasEmitter() below lists exactly the cases reached here, and
+    // a test in mesher_test.cpp checks the two agree.
+    switch (def.render) {
+        case RenderType::Cross:
+            addCross(scratch, x, y, z, def.texture, out);
+            break;
+        case RenderType::Fluid:
+            addFluid(scratch, x, y, z, def, out);
+            break;
+        case RenderType::Torch:
+            addTorch(scratch, x, y, z, def, out);
+            break;
+        default:
+            // The other ten, all through one call. See core/mesh/shapes.hpp --
+            // before it, every one of them fell through here and was drawn as
+            // nothing, which stopped being defensible the moment Creative could
+            // place them.
+            addShape(scratch, x, y, z, id, scratch.metadata(x, y, z), out);
+            break;
+    }
+}
+
 }  // namespace
 
 void meshSection(const MeshScratch& scratch, MeshBuilder& out)
@@ -243,27 +546,16 @@ void meshSection(const MeshScratch& scratch, MeshBuilder& out)
 
                 const BlockDef& def = block::def(id);
 
-                // Each render type is its own emitter. The ones with no emitter
-                // yet are skipped rather than drawn as cubes: a missing ladder
-                // is obvious, a cubic one looks deliberate.
-                //
-                // hasEmitter() below lists exactly the cases named here. Adding
-                // one without the other is what a test in mesher_test.cpp
-                // catches.
-                if (def.render != RenderType::Cube) {
-                    switch (def.render) {
-                        case RenderType::Cross:
-                            addCross(scratch, x, y, z, def.texture, out);
-                            break;
-                        case RenderType::Fluid:
-                            addFluid(scratch, x, y, z, def, out);
-                            break;
-                        case RenderType::Torch:
-                            addTorch(scratch, x, y, z, def, out);
-                            break;
-                        default:
-                            break;
-                    }
+                // **One field decides the whole dispatch**, and that is a
+                // measured shape rather than a tidy one. Two things disqualify
+                // a block from the fast cube stream -- a render type that is
+                // not a cube, and bounds that do not fill the cell -- and
+                // asking those as two questions cost 3.3 us a section on the
+                // dev host, because the second answer lives in a second table
+                // and therefore a second cache line. `unitCube` is both, folded
+                // by the generator into the row this loop has already loaded.
+                if (!def.unitCube) {
+                    emitNonCube(scratch, x, y, z, id, def, out);
                     continue;
                 }
 
@@ -287,12 +579,16 @@ void meshSection(const MeshScratch& scratch, MeshBuilder& out)
                     // Per-face, so grass is grass on top and dirt underneath.
                     // Uniform blocks carry six copies, so there is nothing to
                     // branch on here.
-                    out.addQuad(x, y, z, face, def.faces[face],
+                    out.addFace(x, y, z, face, def.faces[face],
                                 scratch.light(nx, ny, nz));
                 }
             }
         }
     }
+
+    // The cube faces were only collected above; this is where they are merged
+    // and written. See MeshBuilder::flushFaces.
+    out.flushFaces();
 
     // Both streams draw through the same index buffer, one draw call each, so
     // each has to fit it -- not their sum. Enforced in addQuad and
@@ -320,7 +616,9 @@ bool hasEmitter(RenderType type)
         case RenderType::Torch:
             return true;
         default:
-            return false;
+            // Everything else is shapes.cpp's, and it answers for itself so the
+            // two lists cannot drift apart.
+            return shapeHasEmitter(type);
     }
 }
 

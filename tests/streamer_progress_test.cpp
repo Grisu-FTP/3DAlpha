@@ -3,6 +3,7 @@
 #include "core/gui/progress.hpp"
 #include "core/render/chunk_renderer.hpp"
 #include "core/render/world_streamer.hpp"
+#include "core/tick/tick_world.hpp"
 #include "core/util/frustum.hpp"
 #include "version_slots.hpp"
 
@@ -304,4 +305,79 @@ TEST(a_world_that_generates_nothing_never_shows_a_column_as_owed)
     CHECK(streamer.progressWithin(0, 0, 2).finished());
 
     streamer.close(kNow);
+}
+
+// **The save screen draws the world, so close() may not have taken it away
+// yet.** `close(nowMillis, ctx, progress)` calls back once per pumped write,
+// and on the 3DS that callback draws a whole frame of the world behind the
+// progress bar -- including the minecart pass, which is the one entity draw
+// that borrows the `TickWorld` (a cart leans along the track, not along its own
+// motion). `tick_` used to be destroyed before the drain started, so every one
+// of those frames read a freed object; the console jumped into newlib's malloc
+// bin array. See crashlogs/009-save-with-a-minecart/.
+//
+// The callback here does exactly what that frame does and no more: ask the
+// streamer for its tick world and read a block through it.
+TEST(the_save_progress_callback_can_still_read_the_world)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("Saving");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 4242LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 2;
+    config.budget = {0, 4 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+    for (int n = 0; n < 20000; ++n) {
+        renderer.beginFrame(u32(n), openFrustum(), 0, 4, 0);
+        streamer.update(renderer, 0, 0, budget);
+        if (streamer.progressWithin(0, 0, 2).finished()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(streamer.progressWithin(0, 0, 2).finished());
+
+    struct Watcher {
+        WorldStreamer* streamer;
+        int calls = 0;
+        int worldLost = 0;
+    } watcher{&streamer};
+
+    streamer.close(kNow, &watcher, [](void* context, u32, u32) {
+        Watcher& w = *static_cast<Watcher*>(context);
+        ++w.calls;
+        const tick::TickWorld* world = w.streamer->worldTick();
+        if (world == nullptr) {
+            ++w.worldLost;
+            return;
+        }
+        // The read the minecart pass makes: what block is the cart sitting on.
+        (void)world->blockAt(0, 64, 0);
+    });
+
+    // The loop reports before it tests, so it always runs at least once --
+    // "this world owed nothing" is an answer the screen gives rather than a
+    // case it skips.
+    CHECK(watcher.calls > 0);
+    CHECK_EQ(watcher.worldLost, 0);
 }

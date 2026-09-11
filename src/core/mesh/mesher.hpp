@@ -44,6 +44,7 @@ public:
         details_.clear();
         translucent_.clear();
         dropped_ = 0;
+        discardFaces();
     }
 
     // Quads refused because the stream had reached kMaxQuadsPerSection. Zero in
@@ -59,7 +60,28 @@ public:
     {
         cubes_.reserve(static_cast<usize>(quads) * 4);
         quads_.reserve(static_cast<usize>(quads));
+        ensureFaceGrid();
     }
+
+    // **Greedy meshing: equal neighbouring cube faces become one quad.** On by
+    // default. "Equal" is the same face direction, the same plane, the same
+    // tile and the same light byte -- everything a cube quad carries -- so a
+    // merged quad draws exactly the texels and the brightness its faces would
+    // have, and only the count changes. Runs stop at kCubeRepeat along either
+    // edge because that is how many copies of a tile the cube atlas holds; see
+    // core/mesh/cube_atlas.hpp.
+    //
+    // Off is the old one-quad-per-face mesh, still through the cube atlas, so
+    // the renderer does not need to know which it is drawing. Like the cube
+    // format, changing it only affects meshes built afterwards:
+    // WorldStreamer::setGreedy is the caller that re-meshes.
+    void setGreedy(bool on)
+    {
+        greedy_ = on;
+        clear();
+    }
+
+    bool greedy() const { return greedy_; }
 
     // Which encoding the cube range comes out in. Both are produced by the same
     // addQuad from the same arguments, which is what lets a test mesh a section
@@ -76,7 +98,23 @@ public:
 
     CubeFormat cubeFormat() const { return cubeFormat_; }
 
-    void addQuad(int x, int y, int z, int face, u16 texture, u8 light);
+    // One cube quad, written straight to the cube stream.
+    //
+    // (x, y, z) is the cell the quad starts at, and it covers `width` cells
+    // along its face's e1 edge and `height` along e2 (kFaceBasis), each at most
+    // kCubeRepeat. **The start is the cell at i = j = 0 of the run, which is not
+    // always its lowest coordinate**: on -Z, e1 is -X, so a run along x starts
+    // at its largest x. That is what lets both formats build the corners as
+    // base + i*width*e1 + j*height*e2 with no special cases.
+    void addQuad(int x, int y, int z, int face, u16 texture, u8 light, int width = 1,
+                 int height = 1);
+
+    // One visible cube face, which greedy meshing may merge with its
+    // neighbours. **Nothing reaches the cube stream until flushFaces()**,
+    // which meshSection calls once the section has been walked; with greedy
+    // meshing off this is addQuad and the flush has nothing to do.
+    void addFace(int x, int y, int z, int face, u16 texture, u8 light);
+    void flushFaces();
 
     // A quad of arbitrary sub-block geometry. Corners are in detail units
     // (1/1024 of a block) relative to the section, wound counter-clockwise seen
@@ -125,7 +163,35 @@ public:
     void copyTo(void* destination) const;
 
 private:
+    // addQuad with the cube-atlas slot already looked up, which is what the
+    // face grid stores.
+    void emitQuad(int x, int y, int z, int face, int slot, u8 light, int width, int height);
+
+    void ensureFaceGrid();
+    void discardFaces();
+
     CubeFormat cubeFormat_ = CubeFormat::Vertices;
+    bool greedy_ = true;
+
+    // **The faces waiting to be merged**, kept apart per face direction and
+    // per layer along its normal, each layer a 16x16 grid in the face's own
+    // (i, j) -- the axes of kFaceBasis's e1 and e2, so a run found here is a
+    // run addQuad can draw without turning it round.
+    //
+    //   faceKeys_   [face][layer][j][i]  (slot << 8) | light; read only where
+    //                                    the row bit says a face is there, so
+    //                                    it is never cleared
+    //   faceRows_   [face][layer][j]     bit i set for a face at (i, j)
+    //   faceLayers_ [face]               bit `layer` set for a layer with any
+    //
+    // 51 KB, on the heap and allocated once: the builder can live wherever its
+    // owner does, and the 3DS main thread has a 32 KB stack. The merge clears
+    // each row bit as it covers it, so a flushed grid is already empty and the
+    // next section starts without a memset.
+    std::vector<u16> faceKeys_;
+    std::vector<u16> faceRows_;
+    u16 faceLayers_[kFaceCount] = {};
+    bool facesPending_ = false;
 
     // Exactly one of these is ever non-empty. Two vectors rather than a union
     // because the capacity of the unused one costs nothing on the console --

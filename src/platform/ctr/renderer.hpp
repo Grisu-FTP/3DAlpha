@@ -8,7 +8,17 @@
 // come from, and skipping the second eye when the slider is at zero.
 
 #include "core/mesh/vertex.hpp"
+#include "core/render/chat_mesh.hpp"
 #include "core/render/chunk_renderer.hpp"
+#include "core/render/falling_block_mesh.hpp"
+#include "core/render/held_item.hpp"
+#include "core/render/item_entity_mesh.hpp"
+#include "core/render/arrow_mesh.hpp"
+#include "core/render/boat_mesh.hpp"
+#include "core/render/minecart_mesh.hpp"
+#include "core/render/sign_mesh.hpp"
+#include "core/render/painting_mesh.hpp"
+#include "core/render/particle_mesh.hpp"
 #include "core/render/outline.hpp"
 #include "core/util/frustum.hpp"
 #include "core/util/types.hpp"
@@ -183,6 +193,20 @@ public:
 
     void setSkyDarken(int subtracted) { lightmap_.setSkyDarken(subtracted); }
 
+    // **Fire, moving.** One 16 x 16 tile replaced in the block atlas -- see
+    // `Atlas::updateTile` for why that is two 512-byte copies and not a
+    // re-upload. Called from the frame loop beside `setSkyDarken` and for the
+    // same reason: both write a texture the draw is about to sample, so both
+    // belong before it rather than inside it.
+    bool setAtlasTile(int tile, const u8* texels) { return atlas_.updateTile(tile, texels); }
+
+    // **The compass, moving**, on the other sheet. A compass lying on the
+    // ground is a `gui/items.png` sprite drawn by the detail pass, so it wants
+    // the same treatment the fire tiles get -- and the items sheet is in
+    // ordinary linear memory, so the two runs are a memcpy rather than a GPU
+    // copy. See core/texture/compass_fx.hpp.
+    bool setItemsTile(int tile, const u8* texels) { return atlas_.updateItemsTile(tile, texels); }
+
     // Render distance in chunks, changed live from the debug settings page.
     //
     // The field, the pool and its size-class table are all sized to it, so this
@@ -211,6 +235,11 @@ public:
     // world stays textured either way, which is the whole reason this does not
     // simply leave the atlas deleted.
     bool setAtlas(const texture::AtlasImage& image);
+
+    // **The pack's bitmap font, for sign text.** Separate from `setAtlas`
+    // because the font is a different file with a different failure: a pack
+    // with no `default.png` is a pack, and its signs show a blank board.
+    bool setFont(const texture::FontImage& font) { return atlas_.initFont(font); }
 
     // **Call this after anything else has *taken* the top screen.**
     //
@@ -257,6 +286,12 @@ public:
     // order, exactly as with setMeshDistance: it republishes its columns into
     // whatever field it finds.
     void setCubeFormat(mesh::CubeFormat format);
+
+    // Throws every mesh away so the streamer builds them all again: what a
+    // change of greedy meshing needs. Unlike setCubeFormat nothing resident is
+    // unreadable -- a flat mesh and a merged one draw the same way -- but a
+    // pool half of each would make the setting's A/B read half of each.
+    void remesh() { rebuildChunks(); }
     mesh::CubeFormat cubeFormat() const { return cubeFormat_; }
 
     // Stereo strength, as the on-screen disparity in pixels that a point at
@@ -290,6 +325,101 @@ public:
     // which is a deviation from a1.1.2's one-pixel `GL_LINE_STRIP` and the only
     // option available. See core/render/outline.hpp.
     void setSelection(const AABB& worldBox);
+
+    // **What the particles are this frame**, handed over once and drawn inside
+    // the world passes where they belong.
+    //
+    // The pointer is borrowed for the frame and may be null, which is what a
+    // world with nothing broken in it looks like. `camera` is the billboard
+    // basis -- see core/render/particle_mesh.hpp -- and the eye is where the
+    // quads are made relative to, because a particle is always within a few
+    // blocks of it and a 16-bit position has no room for a world coordinate.
+    void setParticles(const mc::entity::ParticleSystem* particles,
+                      const mc::render::Billboard& camera,
+                      double eyeX, double eyeY, double eyeZ, float partial);
+
+    // **What is lying on the ground this frame**, on the same terms as the
+    // particles: borrowed for the frame, null for a world with nothing dropped
+    // in it, and made relative to the eye because a 16-bit detail position
+    // reaches 32 blocks and no further.
+    //
+    // `viewYawDegrees` is `playerViewY` -- the sprites are turned to face it,
+    // and the blocks are not, which is `RenderItem`'s own split.
+    void setItemEntities(const mc::entity::ItemEntitySystem* items, float viewYawDegrees,
+                         double eyeX, double eyeY, double eyeZ, float partial);
+
+    // **What is on its way down this frame**, on the same terms again. It
+    // shares the item entities' eye and partial -- both are set from the same
+    // two lines of the frame loop -- so this takes only the pool.
+    void setFallingBlocks(const mc::entity::FallingBlockSystem* blocks)
+    {
+        fallingBlocks_ = blocks;
+    }
+
+    // **What is hanging on the walls**, on the same terms and sharing the same
+    // eye. A painting does not move and does not interpolate, so unlike the two
+    // above it needs neither a yaw nor a partial -- only the pool.
+    void setPaintings(const mc::entity::PaintingSystem* paintings)
+    {
+        paintings_ = paintings;
+    }
+
+    // **What is in flight**, on the item pass's eye and partial. Unlike a
+    // painting an arrow moves, so it interpolates.
+    void setArrows(const mc::entity::ArrowSystem* arrows) { arrows_ = arrows; }
+
+    // **What is floating**, on the same eye and partial. A boat is the first
+    // thing here drawn from a box model -- see core/render/box_model.hpp.
+    void setBoats(const mc::entity::BoatSystem* boats) { boats_ = boats; }
+
+    // **What is on the rails.** Unlike every other entity pass this one needs
+    // the world, because a cart is tilted along the *track* rather than along
+    // its own motion -- see core/render/minecart_mesh.hpp.
+    void setMinecarts(const mc::entity::MinecartSystem* carts, const mc::tick::TickWorld* world)
+    {
+        minecarts_ = carts;
+        minecartWorld_ = world;
+    }
+
+    // **What is written on the walls.** Two passes rather than one: the board
+    // comes off the entity sheet and the text off the pack's font, and the
+    // detail pipeline samples one texture at a time. `font` may be empty, which
+    // is a blank board -- see core/render/sign_mesh.hpp.
+    void setSigns(const mc::world::SignStore* signs, const mc::texture::FontImage* font)
+    {
+        signs_ = signs;
+        signFont_ = font;
+    }
+    // **The lines in the bottom left of the top screen** -- a1.1.2's chat
+    // overlay, which is where a spawn the heap refused is reported. Drawn last
+    // in each eye, at the screen plane, off the pack's font; with no font
+    // there is nothing to draw it with and it is skipped. See
+    // core/gui/chat_log.hpp and core/render/chat_mesh.hpp.
+    void setChat(const mc::gui::ChatLog* chat, const mc::texture::FontImage* font)
+    {
+        chat_ = chat;
+        chatFont_ = font;
+    }
+
+    // **What is in the player's hand**, which is the one thing on the top
+    // screen that is not the world. `equipped` and `swing` come off
+    // `render::HeldItemState`; `light` is the `(sky << 4) | block` byte where
+    // the player is standing. **Item 0 is an empty hand and draws the arm** --
+    // see core/render/held_item.hpp.
+    void setHeldItem(mc::item::ItemId item, float equipped, float swing, u8 light)
+    {
+        heldItem_ = item;
+        heldEquipped_ = equipped;
+        heldSwing_ = swing;
+        heldLight_ = light;
+        heldVisible_ = true;
+    }
+
+    // **No hand at all**, which is Spectator: there is no body to hold anything
+    // and no arm to show either. Distinct from `setHeldItem(0, ...)`, which is
+    // an empty hand and does draw one.
+    void clearHeldItem() { heldVisible_ = false; }
+
     void clearSelection() { hasSelection_ = false; }
 
     using Overlay2D = void (*)(void* context, C3D_RenderTarget* target);
@@ -414,6 +544,17 @@ private:
         C3D_AttrInfo attrs{};
         int uLocMvp = -1;
         int uLocFog = -1;
+
+        // Only the outline program declares this. -1 everywhere else, which is
+        // what `C3D_FVUnifSet` is never called with.
+        int uLocTint = -1;
+
+        // The seam that keeps a greedy-merged quad from cracking against its
+        // neighbours -- see core/mesh/vertex.hpp. Both cube programs declare
+        // `seam`; only the 12-byte one needs the per-corner `seamDir` table,
+        // because the geometry-shader path builds its corners from the basis.
+        int uLocSeam = -1;
+        int uLocSeamDir = -1;
     };
 
     bool buildPipeline(Pipeline* pipeline, const void* shbin, u32 shbinSize, bool detail);
@@ -443,11 +584,137 @@ private:
     // is five kilobytes, rebuilt only when the crosshair moves off the block it
     // was on, and never in the middle of a frame.
     void* outlineVerts_ = nullptr;
+    // The crosshair is submitted after the selection outline, while both draws
+    // remain queued until FrameEnd.  It cannot borrow outlineVerts_: rewriting
+    // that memory would also rewrite the already-recorded selection draw.
+    void* crosshairVerts_ = nullptr;
     AABB selectionBox_{};
     bool hasSelection_ = false;
     bool outlineDirty_ = false;
 
     void drawSelection(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawCrosshair(const C3D_Mtx& viewProjection, const Camera& camera,
+                       i32 originChunkX, i32 originChunkZ);
+
+    // Drawn between the opaque and the translucent terrain passes, which is
+    // where `EntityRenderer.renderWorld` puts `renderParticles`.
+    void drawParticles(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+
+    // **Two draws, because a1.1.2 loads two textures for this.** A block on the
+    // ground samples terrain.png and everything else samples gui/items.png, and
+    // the PICA takes one texture per draw -- so the pool is built once per
+    // sheet and the atlas is rebound in between. Drawn beside the particles,
+    // where `renderEntities` runs.
+    void drawItemEntities(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawFallingBlocks(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawPaintings(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawArrows(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawBoats(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawMinecarts(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+
+    // **The hand, last in the eye and in camera space.** It takes the eye's
+    // interocular separation rather than a view-projection, because it builds
+    // its own projection: the item is placed relative to the camera and never
+    // sees where the camera is. See core/render/held_item.hpp.
+    void drawHeldItem(float iod);
+
+    // **The chat, after the hand**, where `GuiIngame` runs: the hand is drawn
+    // before the whole GUI. Built once a frame by `buildChat`, since both eyes
+    // draw the same lines at the same place, and drawn in each.
+    void buildChat();
+    void drawChat();
+
+    // Four vertices a quad, and the worst case is a stack of 21+ -- four
+    // copies -- of a block, which is six faces. The pool has no cap, so no
+    // buffer holds its worst case; this one is sixty-four items at one block
+    // copy each, 24 KB, and past it `buildItemEntities` draws the **nearest**
+    // (core/render/draw_budget.hpp). What a player sees at the ceiling is the
+    // far edge of a carpet of drops not drawn.
+    static constexpr int kMaxItemVertices = 64 * 24;
+    // **Not every painting there could be.** The pool has no cap; the buffer
+    // holds eight full-size pictures (24 KB) and `buildPaintings` then draws
+    // the nearest -- the same rule every entity pass follows, and what a
+    // player sees at the ceiling is the far end of a very long gallery not
+    // drawn.
+    static constexpr int kMaxPaintingVertices = 8 * mc::render::kPaintingMaxVertices;
+
+    // 128 arrows in range at six quads each, 48 KB; past that, the nearest.
+    static constexpr int kMaxArrowVertices = mc::render::kArrowMaxVertices;
+
+    // Thirty-two boats in range at five boxes each, 60 KB; past that, the
+    // nearest.
+    static constexpr int kMaxBoatVertices = mc::render::kBoatMaxVertices;
+
+    // Thirty-two carts in range at six boxes each, 72 KB; past that, the
+    // nearest.
+    static constexpr int kMaxMinecartVertices = mc::render::kMinecartMaxVertices;
+
+    // **Sized for the text, which is much the larger half.** Sixty-four signs
+    // of two boxes is 6,144 vertices; sixty-four signs of sixty glyphs is
+    // 15,360. The buffer holds the worst of the two and both passes build into
+    // it in turn, because they are drawn one after the other and neither
+    // outlives the draw.
+    static constexpr int kMaxSignVertices = mc::render::kSignMaxVertices;
+
+    // Sixty-four falling blocks in range at six faces each, 24 KB; past that,
+    // the nearest.
+    static constexpr int kMaxFallingVertices = mc::render::kFallingBlockMaxVertices;
+
+    // One item, 66 quads at worst. 4 KB.
+    static constexpr int kMaxHeldVertices = mc::render::kMaxHeldItemVertices;
+
+    void* itemVerts_ = nullptr;
+    const mc::entity::ItemEntitySystem* items_ = nullptr;
+    void* fallingVerts_ = nullptr;
+    const mc::entity::FallingBlockSystem* fallingBlocks_ = nullptr;
+    void* paintingVerts_ = nullptr;
+    const mc::entity::PaintingSystem* paintings_ = nullptr;
+    void* arrowVerts_ = nullptr;
+    const mc::entity::ArrowSystem* arrows_ = nullptr;
+    void* boatVerts_ = nullptr;
+    const mc::entity::BoatSystem* boats_ = nullptr;
+    void* minecartVerts_ = nullptr;
+    const mc::entity::MinecartSystem* minecarts_ = nullptr;
+    const mc::tick::TickWorld* minecartWorld_ = nullptr;
+    void* signVerts_ = nullptr;
+    const mc::world::SignStore* signs_ = nullptr;
+    const mc::texture::FontImage* signFont_ = nullptr;
+    void* heldVerts_ = nullptr;
+    // The glyphs, 64 KB (render::kChatMaxVertices), and the strips behind the
+    // lines, six corners each. Built before the first eye and read by both.
+    void* chatVerts_ = nullptr;
+    void* chatStrips_ = nullptr;
+    const mc::gui::ChatLog* chat_ = nullptr;
+    const mc::texture::FontImage* chatFont_ = nullptr;
+    mc::render::ChatSpan chatSpans_[mc::gui::kChatShownLines];
+    int chatSpanCount_ = 0;
+    bool heldVisible_ = false;
+    mc::item::ItemId heldItem_ = 0;
+    float heldEquipped_ = 0.0f;
+    float heldSwing_ = 0.0f;
+    u8 heldLight_ = 0;
+    float itemViewYaw_ = 0.0f;
+    double itemEyeX_ = 0.0;
+    double itemEyeY_ = 0.0;
+    double itemEyeZ_ = 0.0;
+    float itemPartial_ = 0.0f;
+
+    static constexpr int kMaxParticleVertices = 512 * 4;
+
+    // **A quarter of the section quad budget**, which is 512 particles -- what
+    // the pool holds before it grows -- at four vertices each; past that the
+    // nearest are drawn. One linear allocation for
+    // the life of the renderer; the build writes into it every frame the pool
+    // is not empty, which is the one place in the frame path that is allowed to
+    // because it neither allocates nor touches the card.
+    void* particleVerts_ = nullptr;
+    const mc::entity::ParticleSystem* particles_ = nullptr;
+    mc::render::Billboard particleCamera_{};
+    double particleEyeX_ = 0.0;
+    double particleEyeY_ = 0.0;
+    double particleEyeZ_ = 0.0;
+    float particlePartial_ = 0.0f;
 
     // Where quad.v.pica's faceBasis[18] lives, and the values to put in it.
     // Written on every bind rather than once at init for the same reason the
@@ -523,6 +790,11 @@ private:
     // budget is per frame and nothing gets it back, so a pass that carried on
     // would only be recording past the end of the buffer.
     bool commandBudgetSpent_ = false;
+
+    // Space held back from section draws for the entity, selection and
+    // crosshair passes that follow them in each eye.  Citro3d has no command
+    // buffer bounds check, so this reserve is a memory-safety boundary.
+    u32 commandTailReserve_ = 0;
 
     // Formatted once, at the stall, and then pointed at by the trace. A local
     // would be gone by the time anything read it.

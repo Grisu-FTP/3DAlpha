@@ -32,8 +32,18 @@ include("${GEN_DIR}/version.cmake")
 
 # The data directory is only known after version.cmake defines it, so the
 # generated tables get their own dependency line here rather than above.
+#
+# **Every file configure.py reads, not just blocks.json.** Only that one was
+# listed, so regenerating the placement table left build/gen/placement.hpp
+# holding the old numbers and the test suite failing against a fixture that was
+# right -- which reads as a broken table rather than a stale build.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 	"${CMAKE_SOURCE_DIR}/${MCVER_DATA_DIR}/blocks.json"
+	"${CMAKE_SOURCE_DIR}/${MCVER_DATA_DIR}/drops.json"
+	"${CMAKE_SOURCE_DIR}/${MCVER_DATA_DIR}/items.json"
+	"${CMAKE_SOURCE_DIR}/${MCVER_DATA_DIR}/paintings.json"
+	"${CMAKE_SOURCE_DIR}/${MCVER_DATA_DIR}/placement.json"
+	"${CMAKE_SOURCE_DIR}/${MCVER_DATA_DIR}/selection.json"
 )
 
 project(3DAlpha VERSION 0.1.0 LANGUAGES C CXX)

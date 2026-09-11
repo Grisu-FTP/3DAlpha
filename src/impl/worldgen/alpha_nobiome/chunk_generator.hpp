@@ -168,12 +168,6 @@ public:
         u32 retired = 0;
         u32 retiredLive = 0;
 
-        // Dungeon chests and spawners population produced. They are counted and
-        // dropped: the blocks are placed, the contents are not, because chunk
-        // tile entities round-trip as an opaque blob and have never been
-        // parsed. See docs/status.md.
-        u32 droppedChests = 0;
-        u32 droppedSpawners = 0;
     };
 
     // **How large the cache has to be, from the measurement rather than from

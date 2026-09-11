@@ -32,4 +32,31 @@ void setHeapFreeQuery(HeapFreeQuery query);
 // The platform's answer, or 0 if none was set.
 usize heapFreeBytes();
 
+// **Growable pools ask here before they take another segment** -- see
+// core/util/segmented_pool.hpp. Entities have no count limit (a1.1.2 has none),
+// so what stops them is the heap, and it has to stop them *before* the heap is
+// gone: on the console an `operator new` that fails ends the process, and the
+// chunk cache allocates with it.
+//
+// So a pool may grow only while the heap would still hold, after the growth,
+// a fixed reserve for everything else **plus three more copies of every pool
+// byte** -- a save's snapshot, the NBT it is encoded into and the compressed
+// file -- so the save that follows a spike can always be written. This is the
+// hint being used to size something, which is what it is for; a pool never
+// trusts it alone and still checks `malloc` for null.
+//
+// With no answer from the platform (a host), growth is always allowed and
+// `malloc` returning null is the only refusal.
+bool poolGrowthAllowed(usize bytes);
+
+// Every pool segment taken and handed back, process-wide. Atomic because a
+// save's snapshot is released on the I/O worker.
+void poolBytesTaken(usize bytes);
+void poolBytesReleased(usize bytes);
+usize poolBytes();
+
+// The reserve and the multiplier above, exposed for the tests.
+inline constexpr usize kPoolHeapReserve = 8u << 20;
+inline constexpr usize kPoolSaveCopies = 3;
+
 }  // namespace mc

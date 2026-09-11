@@ -44,6 +44,12 @@ struct PackEntry {
     // listing a folder of packs costs one file read each.
     int textureCount = 0;
     bool hasTerrain = false;
+
+    // **Whether the pack carries a player skin**, which is `char.png` at its
+    // root. Read from the same name list the count above comes from, so it
+    // costs nothing extra -- and it is what the skin screen lists packs from
+    // without opening any of them a second time. See core/texture/skin_list.hpp.
+    bool hasSkin = false;
 };
 
 // Dev Art pinned first, then every pack in packsDir sorted by name.

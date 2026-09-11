@@ -28,4 +28,16 @@ namespace mc::texture {
 // an atlas are interchangeable. Resizes the vector.
 void buildDevArt(std::vector<u8>* rgba);
 
+// The same, for the second sheet: the item icons a pack keeps in
+// `gui/items.png`.
+//
+// **A different shape rather than a different palette**, and that is the whole
+// design. Dev Art's terrain tiles fill their square, so a placeholder item that
+// also filled its square would be indistinguishable from a block in a slot --
+// and telling those two apart is precisely what this sheet exists to make
+// possible now that a door is an item and its block is not. So every item tile
+// is a rounded blob inset from its edges: obviously synthetic, obviously not a
+// cube, and stable per tile the way the terrain hash is.
+void buildDevArtItems(std::vector<u8>* rgba);
+
 }  // namespace mc::texture

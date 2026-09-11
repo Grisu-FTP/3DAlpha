@@ -1,6 +1,7 @@
 #include "framework.hpp"
 
 #include "core/block/registry.hpp"
+#include "core/mesh/cube_atlas.hpp"
 #include "core/mesh/mesher.hpp"
 
 #include <cstring>
@@ -54,28 +55,40 @@ MeshBuilder meshOf(const ChunkColumn& column, int sectionY, CubeFormat format)
 // Deliberately written from the same three inputs the shaders get -- the quad,
 // the face basis and the corner's (i, j) -- rather than from kFaceCorner, or
 // this would be checking the table against itself.
+//
+// **Before the seam.** The shader also grows a merged quad by a fraction of a
+// pixel (see the seam note in vertex.hpp); that depends on the view, so it has
+// no place in a comparison of meshes. What the two formats must agree on is
+// *whether* a corner is grown, which is the `seam` byte below.
 WorldVertex expandCorner(const QuadVertex& q, int corner)
 {
     const mesh::FaceBasis& b = mesh::kFaceBasis[q.face];
     const int i = mesh::kCornerIJ[corner][0];
     const int j = mesh::kCornerIJ[corner][1];
+    const int w = mesh::extentWidth(q.extent);
+    const int h = mesh::extentHeight(q.extent);
 
     WorldVertex v;
-    v.x = u8(q.x + b.base[0] + i * b.e1[0] + j * b.e2[0]);
-    v.y = u8(q.y + b.base[1] + i * b.e1[1] + j * b.e2[1]);
-    v.z = u8(q.z + b.base[2] + i * b.e1[2] + j * b.e2[2]);
-    v.face = q.face;
+    v.x = u8(q.x + b.base[0] + i * w * b.e1[0] + j * h * b.e2[0]);
+    v.y = u8(q.y + b.base[1] + i * w * b.e1[1] + j * h * b.e2[1]);
+    v.z = u8(q.z + b.base[2] + i * w * b.e1[2] + j * h * b.e2[2]);
+    // quad.v.pica's test is `2.5 < w + h`, which is "more than one face".
+    v.seam = mesh::seamOf(q.face, w + h >= 3, corner);
 
-    // u = tileX + i tiles; v = tileY + (1 - uvSign)/2 + j*uvSign tiles -- and
-    // both pulled kUvInset back off the tile boundary, which quad.v.pica does
-    // with `insetP`/`insetN` for u and with uvSign * inset for v. The direction
-    // has to follow which end of the tile the corner is on, or the two formats
+    // u = slot + gutter + i*w copies of the tile; v = slot + gutter +
+    // ((1 - uvSign)/2 + j*uvSign) * h copies -- and both pulled kCubeUvInset in at
+    // the near end and off the end of the run at the far one, which quad.v.pica
+    // does with `nearU`/`farU` for u and with uvSign * inset for v. The
+    // direction has to follow which end the corner is on, or the two formats
     // would texture a block differently and only hardware would say so.
-    const int vTile = (1 - b.uvSign) / 2 + j * b.uvSign;
-    v.u = i16((int(q.tileX) + i) * mesh::kUvUnitsPerTile
-              + (i == 0 ? mesh::kUvInset : -mesh::kUvInset));
-    v.v = i16((int(q.tileY) + vTile) * mesh::kUvUnitsPerTile
-              + (vTile == 0 ? mesh::kUvInset : -mesh::kUvInset));
+    const int uTiles = i * w;
+    const int vTiles = ((1 - b.uvSign) / 2 + j * b.uvSign) * h;
+    v.u = i16(int(q.slotX) * mesh::kCubeUvPerSlot + mesh::kCubeUvGutter
+              + uTiles * mesh::kCubeUvPerTile
+              + (uTiles == 0 ? mesh::kCubeUvInset : -mesh::kCubeUvInset));
+    v.v = i16(int(q.slotY) * mesh::kCubeUvPerSlot + mesh::kCubeUvGutter
+              + vTiles * mesh::kCubeUvPerTile
+              + (vTiles == 0 ? mesh::kCubeUvInset : -mesh::kCubeUvInset));
 
     const u8 shade = mesh::kFaceShade[q.face];
     v.r = shade;
@@ -155,7 +168,7 @@ TEST(the_quad_format_expands_to_exactly_the_vertex_format)
             CHECK_EQ(int(got.x), int(want.x));
             CHECK_EQ(int(got.y), int(want.y));
             CHECK_EQ(int(got.z), int(want.z));
-            CHECK_EQ(int(got.face), int(want.face));
+            CHECK_EQ(int(got.seam), int(want.seam));
             CHECK_EQ(int(got.u), int(want.u));
             CHECK_EQ(int(got.v), int(want.v));
             CHECK_EQ(int(got.r), int(want.r));
@@ -257,8 +270,9 @@ TEST(copying_out_writes_the_quads_the_builder_holds)
         CHECK_EQ(int(copied[q].y), int(quads.quads()[q].y));
         CHECK_EQ(int(copied[q].z), int(quads.quads()[q].z));
         CHECK_EQ(int(copied[q].face), int(quads.quads()[q].face));
-        CHECK_EQ(int(copied[q].tileX), int(quads.quads()[q].tileX));
-        CHECK_EQ(int(copied[q].tileY), int(quads.quads()[q].tileY));
+        CHECK_EQ(int(copied[q].slotX), int(quads.quads()[q].slotX));
+        CHECK_EQ(int(copied[q].slotY), int(quads.quads()[q].slotY));
+        CHECK_EQ(int(copied[q].extent), int(quads.quads()[q].extent));
         CHECK_EQ(int(copied[q].light), int(quads.quads()[q].light));
     }
 
@@ -352,18 +366,38 @@ TEST(a_quad_never_addresses_a_cell_outside_the_section)
 {
     // Positions are the block *cell*, 0..15, not the corner 0..16 the 12-byte
     // format stores -- the corner is the geometry shader's business. A cell of
-    // 16 would be a quad a whole block outside its section.
+    // 16 would be a quad a whole block outside its section, and so would a
+    // merged run that set off from inside it and walked out of the far side.
     const ChunkColumn column = varied();
     const MeshBuilder quads = meshOf(column, 0, CubeFormat::Quads);
 
+    bool sawMerged = false;
     for (usize q = 0; q < quads.quadCount(); ++q) {
         const QuadVertex& v = quads.quads()[q];
         CHECK(v.x < Section::kSize);
         CHECK(v.y < Section::kSize);
         CHECK(v.z < Section::kSize);
         CHECK(v.face < mesh::kFaceCount);
-        CHECK(v.tileX < mesh::kAtlasTilesPerEdge);
-        CHECK(v.tileY < mesh::kAtlasTilesPerEdge);
-        CHECK_EQ(int(v.ao), 0);
+        CHECK(v.slotX < mesh::kCubeSlotsPerEdge);
+        CHECK(v.slotY < mesh::kCubeSlotsPerEdge);
+
+        const int w = mesh::extentWidth(v.extent);
+        const int h = mesh::extentHeight(v.extent);
+        CHECK(w >= 1 && w <= mesh::kCubeRepeat);
+        CHECK(h >= 1 && h <= mesh::kCubeRepeat);
+        sawMerged = sawMerged || w * h > 1;
+
+        const mesh::FaceBasis& b = mesh::kFaceBasis[v.face];
+        const int last[3] = {
+            v.x + (w - 1) * b.e1[0] + (h - 1) * b.e2[0],
+            v.y + (w - 1) * b.e1[1] + (h - 1) * b.e2[1],
+            v.z + (w - 1) * b.e1[2] + (h - 1) * b.e2[2],
+        };
+        for (const int axis : last) {
+            CHECK(axis >= 0 && axis < Section::kSize);
+        }
     }
+    // The grass top of `varied` is six by six, so this section has to have
+    // merged something or it is not testing the run at all.
+    CHECK(sawMerged);
 }

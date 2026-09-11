@@ -3,14 +3,19 @@
 ; Vertex is 12 bytes, laid out to match the attribute loader order exactly
 ; (citro3d derives offsets by accumulating sizes, so field order IS the layout):
 ;
-;   s16 u, v         offset 0   atlas coords, 1/16384 units
-;   u8  x, y, z, n   offset 4   position within a 16^3 section (0..16), face index
+;   s16 u, v         offset 0   cube-atlas coords, 1/16384 units
+;   u8  x, y, z, s   offset 4   position within a 16^3 section (0..16), seam index
 ;   u8  r, g, b, l   offset 8   static colour (face shade x AO), packed light
 ;
 ; Two things make the size 12 rather than 11. The GPU fetches the s16 pair from
 ; an address that must stay 2-byte aligned, and an 11-byte stride would put every
 ; odd vertex on an odd address. The spare byte in the position attribute is the
-; face index, which the geometry-shader path will need.
+; seam index: the face, plus which corner of a merged quad this is.
+;
+; **The UVs are into the cube atlas**, not terrain.png: a greedy-merged quad
+; repeats its tile across several blocks, and the cube atlas stores every tile a
+; cube can show as a 3x3 repeat of itself, inside a gutter, so that it can. See
+; core/mesh/cube_atlas.hpp.
 ;
 ; The packed light byte is (skyLevel << 4) | blockLevel, unpacked here into a
 ; lightmap texture coordinate. This is what makes day/night free: dusk rewrites
@@ -51,6 +56,25 @@
 ; result per-vertex is exact for a quad one block across.
 .fvec fogparam
 
+; **The seam: a merged quad is drawn a fraction of a pixel larger than it is.**
+; Greedy meshing leaves other quads' corners in the middle of a merged quad's
+; edges, and the rasteriser snaps each vertex to 1/16 of a pixel on its own, so
+; those corners come off the edge and open slivers the sky shows through. See
+; core/mesh/vertex.hpp for the whole argument.
+;
+; seamDir[seam] is the corner's outward direction in the face's plane -- zero
+; for a single face, so an unmerged quad is drawn exactly as it was -- and it
+; is scaled by
+;
+;     k = seam.x * max(w, 0) + seam.y
+;
+; blocks, where w is the vertex's view distance. The first term is a constant
+; fraction of a pixel at any distance, which is what closes a crack; the second
+; is a floor for the corners of a large quad close to the camera. Both are set by
+; Renderer::bindPipeline from the projection.
+.fvec seam
+.fvec seamDir[30]
+
 .out out_pos position
 .out out_uv  texcoord0
 .out out_lm  texcoord1
@@ -62,18 +86,36 @@
 
 .entry vmain
 .proc vmain
+	; The seam index addresses seamDir. It arrives as an unsigned byte converted
+	; to float, so it is exactly 0..29 and mova needs no rounding help. First, so
+	; that the UV, colour and w below stand between it and the indexed read --
+	; see quad.v.pica on why this project does not read a0 straight after a mova.
+	mova a0.x, in_xyz.w
+
+	mul out_uv, div16384, in_uv.xy
+
+	mul out_col.xyz, div255, in_rgb
+
 	mov r0.xyz, in_xyz
 	mov r0.w,   ones
+
+	; The seam, before the position is transformed: k from this vertex's own
+	; view distance, then the corner moved by k along its direction. The
+	; distance is clamped at zero first: a merged quad through the near plane
+	; has corners behind the camera, and a negative w there would shrink the
+	; quad -- at the player's feet, where a crack is easiest to see.
+	dp4 r4.x, mvp[3], r0
+	max r4.x, zeros, r4.x
+	mul r4.x, seam.x, r4.x
+	add r4.x, seam.y, r4.x
+	mul r4.xyz, seamDir[a0.x], r4.x
+	add r0.xyz, r4.xyz, r0.xyz
 
 	dp4 out_pos.x, mvp[0], r0
 	dp4 out_pos.y, mvp[1], r0
 	dp4 out_pos.z, mvp[2], r0
 	dp4 r3.w,      mvp[3], r0
 	mov out_pos.w, r3.w
-
-	mul out_uv, div16384, in_uv.xy
-
-	mul out_col.xyz, div255, in_rgb
 
 	; The vertex colour's alpha is the fog amount, which is what carries it to
 	; the texenv: primary colour is the only per-vertex value a combiner stage

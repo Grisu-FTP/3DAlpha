@@ -194,6 +194,64 @@ motionY = 0.41999998688697815;
 
 That is the whole method. a1.1.2 has no sprint and no jump boost.
 
+## Who calls it, and what the button does in a liquid — `EntityLiving`'s method
+
+`EntityLiving.onLivingUpdate` is the only caller, and the branch it sits in is **three-way, not
+one**:
+
+The water test and the lava test are each taken once. While jump is held, being in either liquid
+adds 0.04 (the double literal 0.03999999910593033) to vertical motion, and otherwise a grounded
+entity jumps. Strafe and forward input are then multiplied by 0.98, the random yaw velocity by
+0.9, and the heading-aware move runs with the result.
+
+Two things fall out of that shape:
+
+- **In a liquid the button is not a jump.** It adds a flat `0.03999999910593033` to the motion every
+  tick it is held, the same number in water and in lava, and `jump()` is never reached. Against the
+  swim branch's `0.8` drag and `0.02` sink that settles at `0.06` a tick — a block and a fifth a
+  second — which is what swimming up *is*. A port that reaches `jump()` instead launches the player
+  off the bottom of the pool once and then sinks, which is exactly the bug this section was written
+  for; see the note under the liquid branches below.
+- **There is no jump cooldown.** Later versions gate on a `jumpTicks` counter; a1.1.2 goes straight
+  from `onGround` to `jump()`, so the button fires again the tick you land.
+
+Both liquid predicates are read *before* the branch and read again inside `moveEntityWithHeading`.
+Nothing between the two moves the body, so `PlayerBody::tick` asks each once and uses the answer
+twice.
+
+## Particles are entities — `EntityFX`, `iw`, and `EffectRenderer`'s method
+
+A breaking block's flecks are `EntityDiggingFX`, and `EntityFX extends Entity`: they run the
+*same* `moveEntity` the player does, which is why one lands on the ground, slides along it and
+stops in a corner. That is the whole reason `core/entity/sweep.hpp` exists — the sweep was
+inside `PlayerBody` until a second thing needed it.
+
+`EffectRenderer.addBlockDestroyEffects` cuts the cell into a 4x4x4 grid and starts one particle
+at each sub-cell centre, thrown along the offset from the block's middle:
+
+For each of the 4x4x4 sub-cells, the particle starts at the sub-cell's centre and its initial
+velocity is the vector from the block's middle to that centre.
+
+Sixty-four per block, and it is spawned **before** the block is cleared, because the particle
+takes the block's texture on the way past.
+
+`EntityFX`'s constructor then jitters that velocity, normalises it, scales it by a triangular
+draw and adds `0.1` to y — so most flecks rise before they fall, and the few thrown hardest
+downward do not. `onUpdate` is six lines: age, `motionY -= 0.04 * particleGravity`, `moveEntity`,
+`motion *= 0.98`, and `motionX/Z *= 0.7` once it has landed. `particleGravity` is **1.0 for all
+seventy blocks** in a1.1.2, measured off the constructed blocks rather than assumed.
+
+**Neither of the two random streams can be reproduced**, and that is the original's doing: the
+velocity jitter comes from `Math.random()` and the texture, scale and lifetime from the entity's
+own `new Random()`, both time-seeded. What is copied is the distribution and the order of the
+draws, not the sequence.
+
+One rounding trap is worth recording, because it cost a fall through the world here.
+`moveEntity` clips the **box** and reads the position back out of it; deriving the box from a
+rounded position instead puts its bottom a fraction of an ulp below the block it just landed on,
+and `calculateYOffset`'s `mover.minY >= block.maxY` then declines to stop it on the next tick.
+The box is the authority for the same reason it is in the jar.
+
 ## Collision shapes
 
 Fully derived and implemented — see `src/core/block/collision.hpp` and
@@ -211,6 +269,37 @@ Three results from that measurement are worth repeating here:
   whatever the shared `Block` singleton was left holding by the previous query — ask twice in a
   different order and it answers differently. We answer with the constructor's default, a full cube.
   The game never writes those values.
+
+### The selection box is `getSelectedBoundingBoxFromPool`, not the ray's residue
+
+This one was wrong here for a while and it was visible: **a ladder's outline was a whole block**, and
+a ray could not be aimed past one.
+
+`Block.collisionRayTrace` tests the ray against the block's own `bf..bk` fields and nothing writes
+them for it. A torch gets away with this by overriding `collisionRayTrace` itself and setting its
+bounds inline before delegating — which is why reading the fields *after* a ray trace is the right
+way to learn a torch's shape. Three blocks do the opposite:
+
+| class | overrides `collisionRayTrace` | overrides `getSelectedBoundingBoxFromPool` |
+|---|---|---|
+| `BlockLadder` ladder | — | **yes** |
+| `BlockCactus` cactus | — | **yes** |
+| `BlockStairs` stairs | — | yes, delegating to the model block |
+| `BlockDoor` door | yes | yes |
+| `if` rail, `BlockTorch` | yes | — |
+
+So a generator that restores each block's constructor defaults and then reads what the ray left
+records the ladder's constructor cube, and the cactus's collision box rather than its outline. The
+fixture now asks **both**, in the order a frame asks them — `rayTraceBlocks` and then
+`drawSelectionBox`'s `f` — which keeps the torch's post and gains the ladder's plate. Two blocks
+moved out of 1,120 rows: 65 at metadata 2..5, and 81, whose selection box is inset a sixteenth on x
+and z and is **full height** where its collision box stops at 0.9375.
+
+**The ray-trace oracle had recorded the same litter**, because its scene is a world two statements
+old in which nothing has ever asked a ladder for a box. A running client is never in that state: `f`
+is called on the targeted block every frame and `d` on every block the body overlaps every tick, and
+both leave the real bounds behind. `--raytrace` therefore primes every block in its scene through
+`f` before the sweep, and sixteen rays that stopped on a phantom cube now pass through the ladder.
 
 ## Three things the oracle corrected that reading alone did not
 
@@ -240,8 +329,70 @@ caught on a specific tick by `tests/player_body_vectors.hpp`. They are the argum
   overrides it, so an `EntityPlayer` cannot be made to sneak from outside the game. The ledge
   walk-back is tested by hand in `tests/player_body_test.cpp` against the invariant it exists to
   hold, rather than against a captured number.
-- **Water and lava.** The C++ implements the land branch; the other two are transcribed above and
-  not yet written.
+- **The fluid current.** `World.handleMaterialAcceleration` is fully ported now -- both its answer
+  ("is the body in this material, with the surface reaching the top of the probe") and its side
+  effect, which is asking each fluid cell for a flow vector, normalising the sum and adding
+  **0.004** of it to the motion. The flow field is `core/block/fluid_flow.hpp`, shared with the
+  mesher, which needs the same `BlockFluid`'s method to spin a flowing block's top texture.
+
+  **What the oracle does not cover is the current, not the code.** Every captured case is a
+  **still** pool, and deliberately: a pool of source blocks has no flow at its interior, so the
+  vectors all come out zero and the comparison is of the branches around them. A moving oracle would
+  need a running JVM with a river in it. `tests/fluid_push_test.cpp` pins what is checkable without
+  one -- the direction (downstream is toward the *higher* decay), the magnitude (0.004 of a unit
+  vector, whatever the box), and the cases that must produce nothing: still water, water that does
+  not reach the inset probe, and lava, which in this version has no vector at all.
+
+  Two of the original's own oddities are transcribed rather than tidied. The sum of the cells' unit
+  vectors is **normalised a second time**, so what the cells decide is the direction and never the
+  speed. And a player holding jump in a current is pushed **twice** that tick, because `EntityLiving`'s method and
+  `EntityLiving`'s method each call `handleWaterMovement()` and the method pushes as a side effect of answering.
+
+## The liquid branches, and the four methods behind them
+
+The two branches at the top of `moveEntityWithHeading` are implemented. They are the same code with
+a different drag -- `0.800000011920929` in water, `0.5` in lava -- which is how the class file has
+it, so the port is one function and two constants rather than two near-copies.
+
+What took the reading was not the branches but the predicates under them, and three of the four had
+a surprise in:
+
+- **`Entity`'s method -- `isInWater`.** `world.handleMaterialAcceleration(box.expand(0, -0.4000000059604645,
+  0), Material.water, this)`. Not a plain material test: a cell only counts if the fluid's *surface*
+  reaches the probe, `(double)l >= (y + 1) - BlockFluid.getPercentAir(metadata)` -- and `l` there is
+  the loop's **upper bound**, `floor(maxY + 1)`, not the cell being examined. Reading it as the cell
+  makes every puddle deep enough to swim in.
+
+- **`Entity`'s method -- `isInLava`.** `world.isMaterialInBB(box.expand(0, -0.4000000059604645, 0),
+  Material.lava)`, and that *is* the plain test. **The same inset as water**, despite the shape of
+  the two methods suggesting lava also pulls in horizontally -- it does not, and reading the two
+  side by side is what settles it.
+
+- **`Entity`'s method -- `isOffsetPositionInLiquid`.** Named the opposite way round from what it answers:
+  it returns true when the box moved by that offset is **free**, of collision boxes *and* of liquid.
+  The swimming branch uses it to decide whether pushing into a wall should lift you, which is how a
+  player climbs out of water onto a shore.
+
+- **`World`'s method -- `isAnyLiquid`.** It takes `floor_double` of each minimum and then **decrements it
+  again if the value was negative**, so the probe is one cell wider on the negative side of every
+  axis. That is the original's, not a transcription slip, and it is reproduced -- this project tests
+  negative coordinates on purpose and a quiet disagreement there is exactly the sort that survives
+  for a year.
+
+Seven cases were added to `tests/player_body_vectors.hpp` for it, each run twice as all the others
+are: sinking in water, swimming forward, holding jump to rise, wading out onto a shore, sinking in
+lava, swimming in lava, and a one-block puddle that is deliberately **not** deep enough to swim in.
+All fourteen match a real `EntityPlayer` bit for bit.
+
+**`swim_up_by_holding_jump` did not, for a while, swim up.** The oracle is only as good as the
+harness driving the jar, and `tools/genref.java` drove it with `if (jumping && onGround) jump()` --
+onLivingUpdate's third branch and neither of its first two. So the reference player sank, the port
+sank with it, and fourteen cases agreed bit for bit on the wrong answer. The generator now
+reproduces all three branches (see `EntityLiving`'s method above), the fixture was regenerated, and the only rows
+that moved were that case's two: **240 lines of 13,317**, which is also the evidence that
+regenerating is deterministic. The lesson is a cheap one to reuse -- a fixture whose *name* claims a
+behaviour deserves a test that the rows show it, and there is one now in
+`tests/player_body_test.cpp`.
 
 ## What the crosshair is on -- `World`'s method and `Block`'s method
 
@@ -328,33 +479,128 @@ families, seven of which change with metadata, and 1,120 (id, metadata) pairs ho
 boxes. See `tools/gen_selection.py` and `data/a1.1.2/selection.json` -- about 5 KB in `.rodata`, and
 no number in it was ever typed by a person.
 
+### An entity in front of the block takes the crosshair -- `EntityRenderer`'s method
+
+`EntityRenderer.getMouseOver` runs the block ray above and then a second pass for entities, and an
+entity it finds **replaces** the block as `objectMouseOver`. `clickMouse` then attacks or
+`interact`s with the entity and never touches the block; `drawSelectionBox` outlines tiles only,
+so the outline goes too.
+
+The block hit gives a reach equal to its distance from the eye, or 4.0 when nothing was hit. For
+the creative-mode controller the reach is fixed at 32; for every other controller it is capped
+at 3. The ray runs from the eye along the look direction for that reach. Each entity that can be
+collided with and touches the player's box extended along the ray has its own box grown by 0.1
+and intercepted with the ray; the nearest hit wins, and a best distance of exactly zero counts as
+unset. A found entity becomes the mouse-over target unless the controller is the creative one.
+
+- **Three blocks, and nearer than the block.** The block ray reaches four, the entity pass three,
+  and the segment ends at the block hit. So a cart behind a wall, or three and a half blocks off,
+  leaves the crosshair on the block.
+- **The border is 0.1**, as an inline `ldc 0.1f`, the same for every class. The 0.3 is
+  `EntityArrow`'s sweep. The port's crosshair used 0.3 until 2026-09-11. That border reached
+  the top of a grounded cart's cell, so no shot could put a rail back under it (status.md §21).
+- **Nearest across every entity**, by the intercept point and not the centre. `distanceTo` takes
+  its square root as a float (a method of another original class). `calculateIntercept` picks its face on **squared**
+  distance, unlike `Block.collisionRayTrace`.
+- `canBeCollidedWith` (`c_()`) is `!isDead` for the boat (`EntityBoat`) and the cart (`EntityMinecart`), `true` for
+  the painting (`EntityPainting`), and false for items and the base class. The ridden vehicle is not excluded.
+- `il` is a test controller (it fills the hotbar and keeps a method of another original class's 5.0). The port does not
+  model it, and its Creative uses the single-player rules.
+- The broad-phase filter over the swept player box is not modelled. From the body's eye, the
+  segment is at least 0.18 inside that box, and the border reaches only 0.1.
+
+In the port: `entity::entityPickReach` / `interceptDistance` (core/entity/ray_trace) and
+`item::pickEntity` (core/item/use). `tests/minecart_test.cpp` covers it; search "crosshair".
+
 ## Which way a placed block faces
 
 The sequence, found by following a right-click down rather than guessed:
 
 ```
-av.a(...)   ItemBlock.onItemUse -> world.setBlockWithNotify(x, y, z, id)
+av.a(...)   ItemBlock.onItemUse -> world.setBlockWithNotify(x, y, z, id)   (runs onBlockAdded)
                                 -> block.onBlockPlaced(world, x, y, z, side)
-ia / nj     the controller      -> block.onBlockPlacedBy(world, x, y, z, player)
 ```
 
-**ItemBlock does not call `onBlockPlacedBy`** — the controller does, after `onItemUse` returns true.
+**That is the whole sequence.** a1.1.2 has no `Block.onBlockPlacedBy` at all: `Block` takes an
+`EntityPlayer` in exactly three methods — `a(dm)`, `a(cn,III,dm)` (blockActivated) and
+`b(cn,III,dm)` (onBlockClicked) — and the last of those is reached from
+`PlayerController.clickBlock`, which is the *left* button starting a break.
 
 And the result of sweeping all seventy blocks against all six faces at sixteen player headings:
 
-- **Twelve blocks orient from the struck face**: torch, fire, both staircases, redstone wire, both
-  furnaces, ladder, lever, both redstone torches, button.
-- **Exactly one consults the player's heading** — the lever, and only on its top face.
+- **Twelve blocks vary with the struck face** in the sweep: torch, fire, both staircases, redstone
+  wire, both furnaces, ladder, lever, both redstone torches, button.
+- **None consults the player's heading.** Not one, at any face, at any of the sixteen.
 
-So **a1.1.2 stairs and furnaces do not face the player**; they face according to the block face you
-clicked. That is worth knowing before someone "fixes" it to match a later version. `BlockStairs`
-does declare `onBlockPlacedBy`, but only to forward it to the block it is made of, whose
-implementation is `Block`'s empty one.
+So **a1.1.2 stairs and furnaces do not face the player.** That is worth knowing before someone
+"fixes" it to match a later version (pumpkins bring `onBlockPlacedBy` in a1.2).
 
-The lever's heading rule is **not implemented and not guessed**. Sixteen headings produced
-14, 13, 13, 14, 13, 13, 14, 13, 13, 13, 13, 13, 14, 13, 14, 13 — not a quadrant pattern, so something
-this harness does not supply feeds it. The shipped table is per-face, taken at heading 0, and a
-floor lever gets that. See `tools/gen_selection.py`.
+**But they do not face the struck face either**, and this section used to say they did. The sweep
+measures `onBlockAdded` and `onBlockPlaced` together against a single stone cube, and only **six**
+classes override `onBlockPlaced` (`Block`'s method): the torch (`BlockTorch`, and `bg` through it), the
+ladder (`BlockLadder`), the button (`hu`) and the lever (`BlockLever`). The sweep now asks the jar that directly and
+lists them in `tests/placement_vectors.hpp`. The furnace and the staircases vary by face only
+because `onBlockAdded` turns them from their **neighbours**, and the stone cube was the only
+neighbour there was:
+
+- **Furnace** — `BlockFurnace`'s method, from `BlockFurnace`'s field. Default 3 (mouth on +Z). Then, in this order and the
+  last that holds winning: opaque at −Z and not +Z → 3; +Z and not −Z → 2; −X and not +X → 5; +X and
+  not −X → 4. `Block`'s field is the opaque-cube *array*. The write is `World`'s method, which in a1.1.2 is the
+  bare chunk write. So a furnace faces away from a wall, keeps +Z between two walls, and in a
+  corner answers to the X wall.
+- **Staircase** — `BlockStairs`'s method (onNeighborBlockChange, which `BlockStairs`'s field also calls). With a solid
+  material above, it `setBlockWithNotify`s itself into its **model block**, so wooden stairs become
+  planks and cobblestone stairs cobblestone. That includes being put under a block in the first
+  place. Otherwise `BlockStairs`'s field re-shapes it and the eight staircases one step up and down on each side.
+  `BlockStairs`'s field has three passes, each asked only if the one before found nothing: a staircase one step up
+  on a side (climb towards it), then a solid material on one side and not the other (back onto it),
+  then a staircase one step down (climb away). It uses the bare write again and leaves the metadata
+  alone if nothing fired.
+
+The port had these as face-table rows, which agree with the jar only while the clicked block is the
+only neighbour. They are now `tick::blockAdded`/`neighbourChanged` (`TickBehaviour::Furnace` and
+`::Stairs`), their table rows are 0, and `tests/placement_test.cpp` runs the port's own
+write-then-`blockAdded` for every case of the sweep and gets the jar's metadata back. The model block
+is a generated column (`model` in blocks.json, `block::modelOf`), read by the extractor off `BlockStairs`'s
+Block-typed constructor argument. `BlockStairs` forwards `onBlockClicked` (`b(cn,III,dm)`) to that
+model too. This section once called that override `onBlockPlacedBy`, and it isn't.
+
+**The furnace's mouth was also never drawn where the metadata put it.** The cube stream draws
+`faces`, which is the inventory answer and always has the mouth on +Z. `BlockFurnace`'s method puts it on
+the side equal to the metadata, and a lit furnace's mouth there is `bb + 16` (tile 61), not the
+unlit 44. The extractor now asks that method with a world that answers only the block's own
+metadata, which gives `metadataFaces` in blocks.json. Grass and the chest still probe their
+neighbours and get nothing. A block with that table is not `unitCube`, and the mesher draws it
+through the out-of-line path from `block::worldFaces`. **The chest is still drawn from `faces`**:
+its world texture reads its neighbours (double chests), and that is still to port.
+
+The one thing in the game that *does* read a heading when something is placed is
+`ItemDoor.onItemUse`, and it reads it in the item rather than in the block; `core/item/use.cpp`
+carries that and this table has nothing to do with it.
+
+### The lever's "heading rule", which was neither
+
+This section used to say the lever consulted the player's heading on its top face, and gave the
+sequence 14, 13, 13, 14, 13 … as a pattern the harness could not explain. **Both halves were the
+harness.**
+
+- The `+8` on every row was a *punch*. The sweep called `Block`'s method after each placement,
+  on the mistaken reading that it was `onBlockPlacedBy`; it is `onBlockClicked`, so every block the
+  sweep put down was then hit. A lever flips when hit, a button presses, a door opens and redstone
+  ore lights — which is why the shipped table placed levers switched on (13/14 rather than 5/6),
+  buttons pressed (9…12 rather than 1…4), doors open (4 rather than 0), and refused to place
+  redstone ore at all (it turned into id 74 and the sweep read that as "did not survive").
+- The 13-or-14 alternation was `BlockLever.onBlockAdded`'s `5 + rand.nextInt(2)`, which is which way
+  round a floor lever's handle lies. The sweep now reseeds `World.rand` before every case, so the
+  table is a function of (id, face) the way `placementMetadata` is.
+
+The table therefore says 6 for a floor lever, and **that is not the end of it**. The roll is not
+cosmetic: `BlockLever`'s method names orientations 1 to 5 and not 6, so a floor lever lying the second
+way round hands no *direct* power to the block it stands on — it still powers wire beside it, which
+goes through the indirect answer. Pinning the table at 6 would have given every floor lever in the
+game that quirk. So the roll happens where the original's last one happens: `tick::leverPlaced`,
+which is `BlockLever.onBlockAdded`, off `World.rand`. See `tools/genref.java --place`,
+`tools/gen_selection.py` and `core/tick/redstone.cpp`.
 
 ## Drawing the selection box
 
@@ -368,6 +614,135 @@ drawing the selection at all. The consequence is that our edges have a thickness
 rather than in pixels, so they thin with distance where the original's would not; across a four-block
 reach that is the difference between about two pixels and one. Half-thickness is 1/128 of a block and
 is ours, since a line has no thickness to copy. See `src/core/render/outline.hpp`.
+
+## What a right-click does — a method of another original class
+
+`PlayerController.onPlayerRightClick` is four lines and their order is the whole rule:
+
+`PlayerController.onPlayerRightClick` is short and its order is the whole rule: look up the block at
+the clicked cell; if one exists and its activation handler returns true, stop and report the click
+as used; otherwise, with nothing in hand, report it unused; otherwise hand the click to the held
+item's use routine and return whatever that says.
+
+**The block is asked first, and there is no sneak override** — that is a later version's. A door
+opens rather than taking a block to the face, an empty hand still opens it, and a block that answers
+true has spent the click. Redstone ore is the one that lights *and* lets the click through: its
+override glows and then returns the base class's `false`. See `core/tick/behaviour.hpp` for the four
+activations that are ported and the four containers that are not.
+
+### `ItemBlock.onItemUse` — `ItemBlock`'s method
+
+Offset by the struck face, ask the world, write one block, run `onBlockPlaced`, spend one from the
+stack. Two details are worth naming:
+
+- **A snow layer is replaced rather than built on.** The method's first line: if the clicked block is
+  snow, the side is rewritten to 0 and *no offset happens at all*, so the block lands in the snow's
+  own cell.
+- **The world's test is `canBlockBePlacedAt`, not `Block.canPlaceBlockAt`.** They are different
+  methods and only the first is asked here:
+
+    It runs three checks in order. If the block has a collision box and any blocking entity overlaps
+    it, placement fails: the player is in the way. Otherwise, if the target cell holds water, lava,
+    fire or snow, placement succeeds and the block's own condition is never consulted. Otherwise it
+    succeeds only for a real block id, in an empty cell, where the block's own placement condition
+    agrees.
+
+  That middle line is a rule this port had quietly tightened: a cell holding water, lava, fire or
+  snow takes the block **whatever the block's own condition says**, so a1.1.2 lets you plant a
+  sapling in water and then takes it away on the next tick. `checkIfAABBIsClear` fails on any entity
+  in the box with `preventEntitySpawning` set, which is the player, a boat and a minecart — so you
+  cannot place a block inside yourself, and that is also why a slab cannot be completed into a
+  double slab while you are standing on it.
+
+**The box it asks about is the one the block will actually have**, and this port asked at metadata
+0, which was a bug with one visible symptom. `getCollisionBoundingBoxFromPool` reads the *world's*
+metadata, and at the empty cell a placement is aimed at that is 0 — which for a ladder is outside
+the 2..5 the game writes. a1.1.2 answers that case with whatever the shared `Block` singleton was
+last left holding, an order-dependent value; this port answers with the constructor's full cube (see
+`core/block/collision.hpp`). A full cube in the cell in front of you overlaps the body, so **a ladder
+could not be hung on the wall you were standing against**, which is exactly where a ladder goes.
+Asking with the metadata `onBlockPlaced` is about to write is deterministic, needs no leftover
+state, and agrees with the original everywhere the original is not reading its own litter.
+
+### `ItemFlintAndSteel.onItemUse` — `ItemFlintAndSteel`'s method
+
+**Not an `ItemBlock`**, and the differences are all audible or visible:
+
+The clicked face is turned into an offset to the neighbouring cell. If that cell is empty, the
+ignite sound plays at its centre with a pitch drawn from the item random (0.8 plus up to 0.4), and
+fire is placed with a neighbour notification. Whether or not anything was placed, the item then
+takes one point of damage and the click counts as used.
+
+- **No `canBlockBePlacedAt`.** No clearance test against the player and no `canPlaceBlockAt`, so a
+  fire is lit at your own feet and in a cell whose support is about to refuse it —
+  `BlockFire.onBlockAdded` then removes it on the same call. That sequence is the original's and it
+  is what "the flame went out immediately" is supposed to look like on stone.
+- **Air only.** `ItemBlock` treats water, lava, fire and snow as free space; this tests
+  `getBlockId == 0` and nothing else.
+- **`fire.ignite`, not the block's place cue**, and a pitch drawn from `Item.itemRand` — a *static
+  on Item*, not the world's Random, which is why `core/item/use.cpp` keeps one of its own.
+- **It returns true either way**, because the durability is spent whatever happened.
+
+### `ItemDoor.onItemUse` — a method of another original class
+
+**The one item that places two blocks**, and the reason a door placed by any other path deletes
+itself: `onNeighborBlockChange` destroys a half that cannot find its other half, so half a door
+survives exactly until something beside it changes.
+
+The item refuses unless the top face was clicked. It moves up one cell and refuses if the door
+block cannot go there. Facing is the player's yaw turned into one of four headings, evaluated in
+float. The two cells on either side of the door are then inspected, counting solid cubes on each
+side and noting whether a door already stands on each. If a door is behind and none ahead, or more
+solid cubes lie ahead than behind, the facing is rotated by one and the mirrored-hinge bit (4) is
+set. Both halves are placed with notification; the lower half carries the facing and the upper half
+the facing plus 8.
+
+Three things a player sees: **a door goes on a top face and nowhere else**; the facing is the
+player's heading through a float expression that has to stay in float; and **the hinge mirrors**
+against a door or a wall already on one side, which is what makes a pair meet in the middle.
+
+There is no `checkIfAABBIsClear` on this path — ItemDoor asks the block's own condition and never
+the world's placement test — so a1.1.2 lets you close a door on yourself.
+
+The table below was measured rather than derived, by using a real door item from a real
+`EntityPlayer` at each heading in a real world:
+
+| yaw | 0 | 45 | 90 | 135 | 180 | 270 | -90 |
+|---|---|---|---|---|---|---|---|
+| facing | 1 | 2 | 2 | 3 | 3 | 0 | 0 |
+
+## Ladders — `EntityLiving`'s method, and the two lines that use it
+
+The test floors the entity's x and z and the bottom of its box, then answers true if the cell at
+that position, or the cell directly above it, is a ladder.
+
+**It reads the box's bottom, not `posY`** — `posY` is the eye — and **it looks at two cells**. The
+second is the one that matters to a player: a body is 1.8 tall, so the feet leave a ladder's top
+cell before the chest does, and without it the last block of every climb drops you and the first
+block cannot be got on to.
+
+The land branch of `moveEntityWithHeading` asks it twice:
+
+Before the move, while on a ladder, fall distance is zeroed and vertical speed is clamped so it is
+never faster than -0.15 downward. The move runs. After it, if the entity hit something
+horizontally and is still on a ladder, vertical speed is set to +0.2.
+
+Which is: **a clamped fall, and a wall you can push into.** There is no separate climb input in
+a1.1.2 — the ladder's collision box is two sixteenths thick, so walking at it is what makes
+`isCollidedHorizontally` true, and letting go slides you back down at the clamp. Both constants are
+written as double literals in the class file, so neither is a widened float.
+
+**There is one here, and it is jump.** On a mouse the wall-press costs nothing, because the hand
+holding W is not the hand that aims; on a 3DS the circle pad both steers and looks, so a player who
+turns their head to see where they are going stops pressing the wall and slides back down. Jump is
+otherwise dead on a ladder and means "up" everywhere else in the game, so `PlayerBody::tick` takes it
+as a climb at `kLadderClimb` — the *same* 0.2 a tick the wall-press gives, so neither route is faster
+than the other. It is tested before `onGround`, so standing at the foot of a ladder climbs rather
+than jumps; a ladder whose bottom rung is a jump you have to land on first is one you fall off. This
+is an invented input, like Creative flight below, and it is the only one in the land branch.
+
+**The ladder is drawn as one flat quad**, `0.05F` off the wall — `RenderBlocks`'s field writes four vertices and
+stops. Drawing its collision box instead put a face inside the wall it hangs on, which z-fought.
 
 ## Creative flight — ours, and the only invented thing in this file
 
@@ -408,11 +783,12 @@ speeds and again across the negative axis.
 ## What is not derived yet
 
 - Fall damage, and everything else that belongs to Survival rather than to the body.
-- `isOnLadder`, `isInWater` and `isInLava` as predicates over our own world reads.
-- The block-walked callback at the end of `moveEntity` (step sounds, and pressure plates).
+- ~~`isOnLadder`, `isInWater` and `isInLava`~~ — **all three are written**, and the ladder is the
+  last of them. See *Ladders* below.
 - ~~`Block.onBlockPlaced`~~ — **derived**, as a generated table: `tools/genref.java --place` sweeps
   every block against every face at sixteen headings, and `block::placementMetadata` reads the
-  result. The one gap left is the lever's top face, which came out non-quadrant-shaped under that
-  harness and is documented rather than guessed. See *Which way a placed block faces* above.
+  result. Nothing varies with the heading, so the table is per-face and complete. The one thing a
+  `(id, face)` table cannot hold is the floor lever's `5 + rand.nextInt(2)`, and that is rolled in
+  `tick::leverPlaced` instead. See *Which way a placed block faces* above.
 - The replaceable-material test. Placement goes into air only; a1.1.2 also replaces water, lava and
   snow, and answering that properly is a Survival-shaped question.

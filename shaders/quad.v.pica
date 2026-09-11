@@ -5,46 +5,62 @@
 ; docs/3ds-performance.md section 2, and core/mesh/vertex.hpp for what the
 ; format gives up to get there.
 ;
-;   u8 x, y, z, face      offset 0   the block cell inside the section, and which
-;                                    of its six faces this quad is
-;   u8 tileX, tileY       offset 4   the atlas tile, already split into column and
-;                                    row so the shader does not have to divide
+;   u8 x, y, z, face      offset 0   the quad's first cell inside the section, and
+;                                    which of its six faces this quad is
+;   u8 slotX, slotY       offset 4   the cube-atlas slot, already split into column
+;                                    and row so the shader does not have to divide
 ;   u8 light              offset 6   (skyLevel << 4) | blockLevel
-;   u8 ao                 offset 7   reserved, zero
+;   u8 extent             offset 7   faces merged along e1 and e2, as w + 16*h
 ;
 ; **Everything that can be done once per quad is done here rather than in the
 ; geometry shader**, because the two are not equally cheap: enabling the
 ; geometry stage costs the vertex stage one of its four shader units, so work
 ; here is divided by three and work there is not divided at all. The geometry
-; shader is left with four adds, four swizzles and four emits.
+; shader is left with four adds, four swizzles and four emits -- unchanged by
+; greedy meshing, which lives entirely in this file.
 ;
 ; The face table is the one non-obvious piece. Each face's four corners are
 ; base + i*e1 + j*e2 over (i,j) = (0,0), (1,0), (1,1), (0,1); the shader
 ; transforms the base point and the two edge vectors and lets the geometry
-; shader add them, which is exact because a projection is linear. The table is
-; uploaded from mesh::kFaceBasis, which is static_asserted to rebuild
-; kFaceCorner and kFaceCornerUV -- the same tables the 12-byte path reads -- so
-; the two paths cannot disagree about winding or texture orientation.
+; shader add them, which is exact because a projection is linear. A merged quad
+; is the same with the edges lengthened to w*e1 and h*e2. The table is uploaded
+; from mesh::kFaceBasis, which is static_asserted to rebuild kFaceCorner and
+; kFaceCornerUV -- the same tables the 12-byte path reads -- so the two paths
+; cannot disagree about winding or texture orientation.
 
 .constf consts(0.0, 1.0, 3.0, 0.0625)
 .alias zeros consts.xxxx
 .alias ones  consts.yyyy
 .alias three consts.zzzz
-.alias div16 consts.wwww   ; one atlas tile, and one light level
+.alias div16 consts.wwww   ; one light level, and the extent's h digit
 
-; kUvInset from core/mesh/vertex.hpp, in the shader's normalised units: 8 of
-; the 16384 that span the atlas. The 12-byte path pulls a quad's UVs off the
-; tile boundary in the mesher; this path builds them here, so it has to do the
-; same or the two formats would texture differently -- which is the one thing
-; the static_asserts around kFaceBasis exist to prevent.
-.constf uvinset(0.00048828125, -0.00048828125, 0.0, 0.0)
-.alias insetP uvinset.xxxx
-.alias insetN uvinset.yyyy
+; The cube atlas (core/mesh/cube_atlas.hpp): 8 slots to an edge, and in each
+; slot an 8-texel gutter, three copies of the tile and another gutter -- so one
+; slot is 1/8 of the texture, one copy 1/32 and a gutter 1/64. The inset is
+; kCubeUvInset, an eighth of a texel: 4 of the 16384 units that span the atlas.
+; The 12-byte path builds a quad's UVs in the mesher; this path builds them
+; here, so it has to arrive at the same numbers or the two formats would texture
+; differently -- which is the one thing the static_asserts around kFaceBasis
+; exist to prevent.
+;
+; u's two ends take the gutter and the inset in one constant each, gutter plus
+; inset at the near end and gutter less inset at the far one, so the gutter
+; costs u nothing. v's inset direction depends on uvSign, so v adds its gutter
+; on its own.
+.constf cubeconst(0.125, 0.03125, 0.015869140625, 0.015380859375)
+.alias div8     cubeconst.xxxx
+.alias div32    cubeconst.yyyy
+.alias nearU    cubeconst.zzzz   ; gutter + inset
+.alias farU     cubeconst.wwww   ; gutter - inset
+.constf cubeconst2(0.015625, 0.000244140625, 0.0, 0.0)
+.alias gutter   cubeconst2.xxxx
+.alias inset    cubeconst2.yyyy
 
-.constf lightconst(16.0, 0.03125, 0.5, 0.0)
-.alias mul16   lightconst.xxxx
-.alias halftex lightconst.yyyy   ; 0.5/16: the centre of a lightmap texel
-.alias half    lightconst.zzzz
+.constf lightconst(16.0, 0.03125, 0.5, 2.5)
+.alias mul16    lightconst.xxxx
+.alias halftex  lightconst.yyyy   ; 0.5/16: the centre of a lightmap texel
+.alias half     lightconst.zzzz
+.alias oneface  lightconst.wwww   ; w + h above this is more than one face
 
 .fvec mvp[4]
 
@@ -52,6 +68,14 @@
 ; it and for the same reason: the PICA's own fog unit indexes its LUT by window
 ; depth, which is 1/d, and the whole ramp lands in the first two entries.
 .fvec fogparam
+
+; The seam, as world.v.pica has it: a merged quad grows by
+; k = seam.x * max(w, 0) + seam.y blocks on every side, w being the view
+; distance. Here w is corner 0's for all four corners -- the geometry shader
+; could take each corner's own, but only at four instructions it cannot share
+; across units, and the seam.y floor is there for exactly the corners that come
+; out short. See core/mesh/vertex.hpp for why it exists at all.
+.fvec seam
 
 ; Three vec4 per face, 18 in all, indexed by face*3:
 ;   [0] = (base.x, base.y, base.z, faceShade)
@@ -65,12 +89,12 @@
 .out o_p0  dummy   ; corner 0, in clip space
 .out o_d1  dummy   ; the e1 edge, in clip space
 .out o_d2  dummy   ; the e2 edge, in clip space
-.out o_uv  dummy   ; (u0, v0, u1, v1): the tile's two u and two v, ready to pick
+.out o_uv  dummy   ; (u0, v0, u1, v1): the run's two u and two v, ready to pick
 .out o_col dummy   ; face shade in rgb, fog amount in a
 .out o_lm  dummy   ; lightmap texel centre
 
 .alias in_pos v0   ; x, y, z, face
-.alias in_tex v1   ; tileX, tileY, light, ao
+.alias in_tex v1   ; slotX, slotY, light, extent
 
 .entry qmain
 .proc qmain
@@ -80,15 +104,15 @@
 	mul r0.x, three, in_pos.w
 	mova a0.x, r0.x
 
-	; The lightmap unpack sits here, between the mova and the first indexed
-	; read, and not because it belongs here.
+	; The two unpacks sit here, between the mova and the first indexed read,
+	; and not because they belong here.
 	;
 	; **Whether a0 can be read in the instruction straight after a mova is not
 	; something this project has established, and picasso supplies no delay**:
 	; the assembled vertex shader is exactly the instructions this file writes,
 	; counted out of the shbin, so nothing is being inserted on our behalf. The
 	; one devkitPro example that indexes uniforms happens to have four
-	; instructions in between. Six unrelated ones cost nothing here and settle
+	; instructions in between. Ten unrelated ones cost nothing here and settle
 	; the question by not asking it.
 	;
 	; Unpacking (sky << 4) | block: there are no integer ops in the PICA vertex
@@ -102,63 +126,95 @@
 	add o_lm.xy, halftex, r10.xy  ; texel centres, so nearest filtering cannot
 	mov o_lm.zw, zeros            ; pick up a neighbouring level
 
-	; Corner 0 = the block cell plus the face's base offset. Positions are
+	; The extent, w + 16*h, by the same divide, floor and subtract.
+	mul r11.x, div16, in_tex.w
+	flr r11.y, r11.x              ; h
+	mul r11.z, mul16, r11.y
+	add r11.x, in_tex.w, -r11.z   ; w
+
+	; Corner 0 = the first cell plus the face's base offset. Positions are
 	; section-local, 0..16 in blocks; the section's world origin is in mvp.
 	; The uniform goes first: the PICA lets src1 be a uniform and src2 not, so
 	; an operand order that reads naturally does not assemble.
 	add r1.xyz, faceBasis[a0.x], in_pos
 	mov r1.w, ones
 
-	dp4 o_p0.x, mvp[0], r1
-	dp4 o_p0.y, mvp[1], r1
-	dp4 o_p0.z, mvp[2], r1
-	dp4 r5.w,   mvp[3], r1
-	mov o_p0.w, r5.w
+	dp4 r5.x, mvp[0], r1
+	dp4 r5.y, mvp[1], r1
+	dp4 r5.z, mvp[2], r1
+	dp4 r5.w, mvp[3], r1
 
-	; The two edges, as direction vectors -- w = 0, so the matrix's translation
-	; column does not contribute and adding them to a transformed point is the
-	; same as transforming the sum.
+	; The two unit edges, as direction vectors -- w = 0, so the matrix's
+	; translation column does not contribute and adding them to a transformed
+	; point is the same as transforming the sum.
 	mov r2.xyz, faceBasis[a0.x + 1]
 	mov r2.w,   zeros
-	dp4 o_d1.x, mvp[0], r2
-	dp4 o_d1.y, mvp[1], r2
-	dp4 o_d1.z, mvp[2], r2
-	dp4 o_d1.w, mvp[3], r2
+	dp4 r6.x, mvp[0], r2
+	dp4 r6.y, mvp[1], r2
+	dp4 r6.z, mvp[2], r2
+	dp4 r6.w, mvp[3], r2
 
 	mov r3.xyz, faceBasis[a0.x + 2]
 	mov r3.w,   zeros
-	dp4 o_d2.x, mvp[0], r3
-	dp4 o_d2.y, mvp[1], r3
-	dp4 o_d2.z, mvp[2], r3
-	dp4 o_d2.w, mvp[3], r3
+	dp4 r7.x, mvp[0], r3
+	dp4 r7.y, mvp[1], r3
+	dp4 r7.z, mvp[2], r3
+	dp4 r7.w, mvp[3], r3
 
-	; The tile's four texture coordinates, packed so the geometry shader picks
+	; The seam. k is zero unless more than one face was merged -- slt gives 1
+	; for 2.5 < w + h -- so a single face comes out exactly as it did before
+	; greedy meshing. Then corner 0 moves back by k along both edges and each
+	; edge grows by 2k, which moves every corner outward by k along both.
+	add r8.x, r11.x, r11.y
+	slt r8.x, oneface, r8.x       ; merged: 1 or 0
+	max r8.y, zeros, r5.w         ; corner 0's distance, never negative: behind
+	mul r8.y, seam.x, r8.y        ; the camera it would shrink the quad
+	add r8.y, seam.y, r8.y        ; k for corner 0's distance
+	mul r8.x, r8.x, r8.y          ; k, or zero
+
+	add r12, r6, r7
+	mul r12, r8.xxxx, r12
+	add o_p0, r5, -r12            ; corner 0 - k*(e1 + e2)
+
+	add r8.z, r8.x, r8.x          ; 2k
+	add r13.x, r11.x, r8.z        ; w + 2k
+	add r13.y, r11.y, r8.z        ; h + 2k
+	mul o_d1, r13.xxxx, r6
+	mul o_d2, r13.yyyy, r7
+
+	; The run's four texture coordinates, packed so the geometry shader picks
 	; each corner's pair with a swizzle instead of an add: corner (i,j) is
-	; (u0 or u1, v0 or v1).
+	; (u0 or u1, v0 or v1). Neither the lengthened edges nor the seam touch
+	; them -- the seam's growth is a fraction of a pixel, and it shows the
+	; texel at the edge, which is the one that belongs there.
 	;
-	; u is i for every face. v is j for the bottom face and 1-j for the other
-	; five, which is the one number uvSign carries: the tile-local v of corner
-	; j is (1 - uvSign)/2 + j*uvSign. terrain.png's first row being its top is
-	; the whole reason five faces differ from one.
-	mul r4.x, div16, in_tex.x     ; u0 = tileX / 16
-	add r4.z, div16, r4.x         ; u1 = u0 + one tile
-	add r4.x, insetP, r4.x        ; and in off both ends of the tile
-	add r4.z, insetN, r4.z
+	; u is i*w copies past the gutter for every face. v is j*h copies for the bottom face and
+	; (1-j)*h for the other five, which is the one number uvSign carries: the
+	; v of corner j is ((1 - uvSign)/2 + j*uvSign) * h copies. terrain.png's
+	; first row being its top is the whole reason five faces differ from one.
+	mul r4.x, div8, in_tex.x      ; slotX / 8
+	mul r14.x, div32, r11.x       ; w copies
+	add r4.z, r4.x, r14.x         ; ... + w copies
+	add r4.x, nearU, r4.x         ; u0: past the gutter, in off the run's start
+	add r4.z, farU, r4.z          ; u1: past the gutter, in off the run's end
 
-	mov r6.x, faceBasis[a0.x + 1].wwww  ; uvSign, +1 or -1
-	add r6.y, ones, -r6.x
-	mul r6.y, half, r6.y          ; (1 - uvSign)/2, i.e. 0 or 1 tiles
-	add r6.z, in_tex.y, r6.y
-	mul r4.y, div16, r6.z         ; v0
-	mul r6.w, div16, r6.x
-	add r4.w, r4.y, r6.w          ; v1 = v0 + uvSign tiles
+	mov r15.x, faceBasis[a0.x + 1].wwww  ; uvSign, +1 or -1
+	add r15.y, ones, -r15.x
+	mul r15.y, half, r15.y        ; (1 - uvSign)/2, i.e. 0 or 1
+	mul r14.y, div32, r11.y       ; h copies
+	mul r15.z, r15.y, r14.y       ; (1 - uvSign)/2 * h copies
+	mul r4.y, div8, in_tex.y      ; slotY / 8
+	add r4.y, gutter, r4.y        ; past the gutter
+	add r4.y, r4.y, r15.z         ; v0
+	mul r15.w, r15.x, r14.y
+	add r4.w, r4.y, r15.w         ; v1 = v0 + uvSign * h copies
 
 	; v runs the other way for the bottom face, so the inset has to follow
 	; uvSign: v0 moves by +uvSign*inset and v1 by -uvSign*inset, which brings
 	; them together whichever way round they are.
-	mul r7.x, insetP, r6.x
-	add r4.y, r7.x, r4.y
-	add r4.w, r4.w, -r7.x
+	mul r14.z, inset, r15.x
+	add r4.y, r14.z, r4.y
+	add r4.w, r4.w, -r14.z
 	mov o_uv, r4
 
 	; Face shade, from the table rather than from the vertex: this format has no
@@ -168,12 +224,12 @@
 	mov o_col.xyz, faceBasis[a0.x].wwww
 
 	; Fog in the colour's alpha, because primary colour is the only per-vertex
-	; value a texenv stage can read. out_pos.w is -z_view, which is what
+	; value a texenv stage can read. Corner 0's w is -z_view, which is what
 	; GL_LINEAR fog is defined against.
-	mul r8.x, fogparam.x, r5.w
-	add r8.x, fogparam.y, r8.x
-	max r8.x, zeros, r8.x
-	min o_col.w, ones, r8.x
+	mul r9.x, fogparam.x, r5.w
+	add r9.x, fogparam.y, r9.x
+	max r9.x, zeros, r9.x
+	min o_col.w, ones, r9.x
 
 	end
 .end

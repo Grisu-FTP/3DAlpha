@@ -235,6 +235,11 @@ void tilePixel(u8* dst, int tile, const TileGroups& groups, int px, int py)
 
 }  // namespace
 
+// How far in from the tile's edge the blob starts, in texels. Two leaves a
+// 12x12 shape inside a 16x16 tile, which reads as "smaller than a block" at the
+// sixteen pixels a slot actually draws.
+constexpr int kItemInset = 2;
+
 void buildDevArt(std::vector<u8>* rgba)
 {
     rgba->assign(kAtlasBytes, 0);
@@ -246,6 +251,49 @@ void buildDevArt(std::vector<u8>* rgba)
             const int tile = (y / kAtlasTilePixels) * kAtlasTilesPerEdge + (x / kAtlasTilePixels);
             tilePixel(rgba->data() + (usize(y) * kAtlasEdge + usize(x)) * 4, tile, groups,
                       x % kAtlasTilePixels, y % kAtlasTilePixels);
+        }
+    }
+}
+
+void buildDevArtItems(std::vector<u8>* rgba)
+{
+    rgba->assign(kAtlasBytes, 0);
+
+    const int radius = kAtlasTilePixels / 2 - kItemInset;
+    const int centre = kAtlasTilePixels / 2;
+
+    for (int y = 0; y < kAtlasEdge; ++y) {
+        for (int x = 0; x < kAtlasEdge; ++x) {
+            const int tile = (y / kAtlasTilePixels) * kAtlasTilesPerEdge + (x / kAtlasTilePixels);
+            const int px = x % kAtlasTilePixels;
+            const int py = y % kAtlasTilePixels;
+
+            // A disc, measured from between the two centre texels so it comes
+            // out symmetric on an even-sized tile.
+            const int dx = px - centre;
+            const int dy = py - centre;
+            const int inside = dx * dx + dy * dy;
+            u8* dst = rgba->data() + (usize(y) * kAtlasEdge + usize(x)) * 4;
+            if (inside > radius * radius) {
+                writeTexel(dst, 0, 0, 0, 0);
+                continue;
+            }
+
+            u8 r, g, b;
+            // The same hash the terrain placeholder uses, offset so an item and
+            // the block of the same index are not the same colour -- a door
+            // item that matched the door block would hide exactly the mistake
+            // this sheet was added to make visible.
+            hashedColour(tile + kAtlasTilesPerEdge * kAtlasTilesPerEdge, &r, &g, &b);
+            // A highlight towards the top left, so a round blob reads as an
+            // object rather than as a dot.
+            const bool lit = dx + dy < -radius / 2;
+            const auto lift = [](u8 v) { return u8(v > 195 ? 255 : v + 60); };
+            if (lit) {
+                writeTexel(dst, lift(r), lift(g), lift(b), 255);
+            } else {
+                writeTexel(dst, r, g, b, 255);
+            }
         }
     }
 }

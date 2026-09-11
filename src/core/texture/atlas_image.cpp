@@ -1,6 +1,8 @@
 #include "core/texture/atlas_image.hpp"
 
 #include "core/texture/dev_art.hpp"
+#include "core/texture/entity_skins.hpp"
+#include "core/texture/texture_fx.hpp"
 #include "core/texture/zip_archive.hpp"
 
 #include <cstring>
@@ -11,6 +13,10 @@ namespace {
 
 // The one file in a pack that anything samples today.
 constexpr char kTerrainName[] = "terrain.png";
+// The pre-1.5 jar layout, which is what "an a1.1.2 texture pack" means -- see
+// core/texture/jar_import.hpp. Forward slashes because that is what a zip
+// stores, and the loose-directory reader joins with the same separator.
+constexpr char kItemsName[] = "gui/items.png";
 
 std::string join(std::string_view dir, std::string_view name)
 {
@@ -213,13 +219,38 @@ PackError readPackFile(io::FileSystem& fs, std::string_view packPath, std::strin
     return PackError::Ok;
 }
 
-PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+namespace {
+
+// gui/items.png into the second plane. **Every failure here is silent and
+// leaves the plane empty**, which is the point: an absent, unreadable or
+// oddly-sized items.png costs the icons their sprites and costs the pack
+// nothing else. Only terrain.png can make a pack invalid.
+void itemsToAtlas(const std::vector<u8>& png, AtlasImage* out)
 {
-    out->rgba.clear();
-    out->sourceEdge = 0;
+    Image image;
+    if (decodePng(png, &image, kMaxTerrainPixels) != PngError::Ok) {
+        return;
+    }
+    if (image.width != image.height || image.width % kAtlasTilesPerEdge != 0) {
+        return;
+    }
+    out->itemsRgba.assign(kAtlasBytes, 0);
+    scaleToAtlas(image, &out->itemsRgba);
+}
+
+PackError buildAtlasInner(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+{
+    // **Always built, for every pack and for Dev Art.** Unlike the two planes
+    // above, these two are never absent: `buildEntitySkins` lays the generated
+    // stand-ins down first and paints whatever the pack carries over them, so
+    // a pack with no `item/boat.png` gets a boat with a placeholder skin rather
+    // than a boat with no skin. See core/texture/entity_skins.hpp.
+    buildEntitySkins(fs, packPath, &out->entityRgba);
+    buildArtSheet(fs, packPath, &out->artRgba);
 
     if (packPath.empty()) {
         buildDevArt(&out->rgba);
+        buildDevArtItems(&out->itemsRgba);
         return PackError::Ok;
     }
 
@@ -235,7 +266,40 @@ PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* 
     if (read != PackError::Ok) {
         return read;
     }
-    return terrainToAtlas(png, out);
+    const PackError built = terrainToAtlas(png, out);
+    if (built != PackError::Ok) {
+        return built;
+    }
+
+    // **The tiles the original generates rather than reads.** A real jar's fire
+    // tile is a placeholder that literally says so, and the client overwrites
+    // it at startup; a pack that drew its own gets overwritten too, because
+    // that is what the original does with it. See core/texture/texture_fx.hpp.
+    //
+    // Dev Art is left alone: its tiles are already ours and already synthetic,
+    // and the whole point of that pack is that a wrong texture index is visible.
+    applyAnimatedTiles(&out->rgba);
+
+    // A second card read, and the same trade readPackFile already makes: the
+    // pack is opened once more rather than held open across two files the
+    // player waits on once.
+    std::vector<u8> itemsPng;
+    if (readPackFile(fs, packPath, kItemsName, &itemsPng) == PackError::Ok) {
+        itemsToAtlas(itemsPng, out);
+    }
+    return PackError::Ok;
+}
+
+}  // namespace
+
+PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+{
+    out->rgba.clear();
+    out->itemsRgba.clear();
+    out->entityRgba.clear();
+    out->artRgba.clear();
+    out->sourceEdge = 0;
+    return buildAtlasInner(fs, packPath, out);
 }
 
 }  // namespace mc::texture

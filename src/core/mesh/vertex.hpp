@@ -167,10 +167,52 @@ constexpr i16 tileUvMax(int tileAxis)
     return static_cast<i16>((tileAxis + 1) * kUvUnitsPerTile - kUvInset);
 }
 
+// ---------------------------------------------------------------------------
+// Seams: what keeps a merged quad from cracking against its neighbours
+// ---------------------------------------------------------------------------
+//
+// Greedy meshing puts vertices in the middle of other quads' edges: a 4x1 run
+// beside four single faces has their three inner corners on its long side. In
+// exact arithmetic that is the same line. On the PICA it is not, because the
+// rasteriser snaps every vertex to **1/16 of a pixel** (12.4 fixed point, as
+// the emulators model it) independently -- so the middle corners land up to
+// 1/32 of a pixel off the long edge, and the pixel centres in the sliver
+// between belong to neither quad. What shows through is whatever is behind the
+// surface, which for terrain is the inside of the ground and therefore the sky
+// colour: a sparkle along every seam, moving with the camera. Unmerged faces
+// never do this -- they meet corner to corner on the block grid, and shared
+// corners snap identically.
+//
+// So **a merged quad is drawn a fraction of a pixel larger than it is**, and
+// the overlap covers the sliver. Only merged quads: the long edge that has the
+// foreign corners on it always belongs to one, and growing single faces as
+// well would change a mesh that is already watertight. The growth is done by
+// the vertex shader, in view space, sized to a constant fraction of a pixel --
+// a fixed amount in blocks would be a visible lip at arm's length and too
+// little at the far edge of the world. See `seam` in shaders/world.v.pica and
+// shaders/quad.v.pica, and `Renderer::bindPipeline` for the size.
+//
+// The 12-byte vertex has to tell its shader which way is "out" for each
+// corner, and it does it in the byte that used to be only the face index:
+//
+//     seam = face + kFaceCount * code
+//     code 0            a single face: no growth, drawn exactly as before
+//     code 1 + corner   a merged quad's corner, grown along -e1/+e1 and -e2/+e2
+//
+// `seam % kFaceCount` is still the face. The shader indexes kSeamTableSize
+// uniforms with the byte directly, so there is no arithmetic on it at all.
+inline constexpr int kSeamCodes = 5;
+inline constexpr int kSeamTableSize = kFaceCount * kSeamCodes;
+
+constexpr u8 seamOf(int face, bool merged, int corner)
+{
+    return u8(face + kFaceCount * (merged ? 1 + corner : 0));
+}
+
 struct WorldVertex {
     i16 u, v;    // atlas coordinates, 1/16384 units
     u8 x, y, z;  // position inside a 16^3 section, 0..16
-    u8 face;     // face index; the geometry-shader path needs it, the rest is padding
+    u8 seam;     // face index, plus which corner of a merged quad this is -- see above
     // Static colour, never time-dependent. Face shade today; face shade x AO once
     // smooth lighting lands.
     //
@@ -185,6 +227,11 @@ struct WorldVertex {
 };
 
 static_assert(sizeof(WorldVertex) == 12, "the vertex format is load-bearing; see world.v.pica");
+
+constexpr int faceOf(const WorldVertex& v)
+{
+    return v.seam % kFaceCount;
+}
 
 // ---------------------------------------------------------------------------
 // The third format: one 8-byte vertex per quad, expanded by a geometry shader
@@ -211,23 +258,40 @@ static_assert(sizeof(WorldVertex) == 12, "the vertex format is load-bearing; see
 //     face, so every quad of a given face direction is the same brightness.
 //     Exact for a1.1.2 -- its Block.colorMultiplier is white for every block --
 //     and wrong for any version with biome tint, which is Beta onward.
-//   * **Per-corner anything**, so smooth lighting and AO are out. `ao` below is
-//     a reserved byte, not an implementation.
+//   * **Per-corner anything**, so smooth lighting and AO are out. The byte that
+//     was reserved for AO carries the merged extent instead: a format that
+//     cannot vary across a quad had no use for it.
 //   * **Sub-block geometry**, the same limit WorldVertex has. Cubes only.
 struct QuadVertex {
-    u8 x, y, z;  // block position inside the section, 0..15 (not 0..16: this is a cell)
+    // The quad's first cell inside the section, 0..15 (not 0..16: this is a
+    // cell). For a merged quad, the cell at i = j = 0 of the run, so the rest
+    // of it lies along +e1 and +e2 -- see MeshBuilder::addQuad.
+    u8 x, y, z;
     u8 face;     // face index, which selects the corner basis and the shade
 
-    // The tile split into its atlas row and column rather than left as one
-    // index, because the shader would otherwise have to divide by 16 and floor
-    // it -- three instructions per quad to undo an arithmetic the mesher did
-    // for free.
-    u8 tileX, tileY;
+    // The quad's slot in the cube atlas (core/mesh/cube_atlas.hpp), split into
+    // column and row rather than left as one index, because the shader would
+    // otherwise have to divide by 8 and floor it -- three instructions per quad
+    // to undo an arithmetic the mesher did for free.
+    u8 slotX, slotY;
     u8 light;  // (skyLevel << 4) | blockLevel, exactly as WorldVertex carries it
-    u8 ao;     // reserved; zero. See the note above about per-corner values
+
+    // Faces merged along e1 and e2, 1..kCubeRepeat each, as `w + 16 * h`. One
+    // byte for two numbers costs the vertex shader a divide, a floor and a
+    // subtract -- the light byte's unpack, once more -- where a ninth byte
+    // would cost the format its whole point.
+    u8 extent;
 };
 
 static_assert(sizeof(QuadVertex) == 8, "8 bytes per quad is the entire point; see quad.v.pica");
+
+constexpr u8 packExtent(int width, int height)
+{
+    return u8(width + 16 * height);
+}
+
+constexpr int extentWidth(u8 extent) { return extent % 16; }
+constexpr int extentHeight(u8 extent) { return extent / 16; }
 
 // The corner basis a geometry shader expands a quad from.
 //
@@ -281,6 +345,44 @@ constexpr bool faceBasisMatchesCorners()
 
 static_assert(faceBasisMatchesCorners(),
               "the geometry shader's basis must rebuild kFaceCorner and kFaceCornerUV exactly");
+
+// Which way a merged quad's corner is grown: back along e1 at i = 0 and on
+// along it at i = 1, and the same for e2 and j, so each corner moves out along
+// both edges it sits on and the quad grows on all four sides. Zero for a
+// single face (code 0). The renderer uploads these as world.v.pica's `seamDir`
+// table, indexed by WorldVertex::seam; quad.v.pica reaches the same corners
+// through -(e1 + e2) at corner 0 and the edges lengthened by twice the growth.
+struct SeamDirection {
+    i8 x, y, z;
+};
+
+constexpr SeamDirection seamDirection(int seam)
+{
+    const int face = seam % kFaceCount;
+    const int code = seam / kFaceCount;
+    if (code == 0 || code >= kSeamCodes) {
+        return {0, 0, 0};
+    }
+    const FaceBasis& b = kFaceBasis[face];
+    const int si = 2 * kCornerIJ[code - 1][0] - 1;
+    const int sj = 2 * kCornerIJ[code - 1][1] - 1;
+    return {i8(si * b.e1[0] + sj * b.e2[0]), i8(si * b.e1[1] + sj * b.e2[1]),
+            i8(si * b.e1[2] + sj * b.e2[2])};
+}
+
+// Growth stays in the face's plane, or a quad would leave its plane and
+// z-fight the block behind it.
+constexpr bool seamsStayInPlane()
+{
+    for (int seam = 0; seam < kSeamTableSize; ++seam) {
+        const SeamDirection d = seamDirection(seam);
+        const FaceOffset& n = kFaceOffset[seam % kFaceCount];
+        if (d.x * n.dx + d.y * n.dy + d.z * n.dz != 0) return false;
+    }
+    return true;
+}
+
+static_assert(seamsStayInPlane(), "a seam must grow a quad within its own plane");
 
 // Which of the two cube encodings a section's cube range is written in. Carried
 // in MeshRanges rather than kept as a global, so a mesh describes itself and the

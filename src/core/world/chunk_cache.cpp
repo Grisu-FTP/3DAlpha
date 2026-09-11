@@ -558,16 +558,23 @@ bool ChunkCache::idle() const
 
 void ChunkCache::applyPlayerState(const PlayerState& player)
 {
+    world::LevelData& level = storage_.level();
+    if (player.entities) level.entities = player.entities;
     if (!player.valid) {
         return;
     }
-    world::LevelData& level = storage_.level();
     level.time = player.timeTicks;
     level.player.pos[0] = player.pos[0];
     level.player.pos[1] = player.pos[1];
     level.player.pos[2] = player.pos[2];
     level.player.rotation[0] = player.rotation[0];
     level.player.rotation[1] = player.rotation[1];
+    // **Only when it was set**, which is what keeps a world opened in a mode
+    // with no inventory from writing an empty one over what the real client
+    // left there. See PlayerState::hasInventory.
+    if (player.hasInventory) {
+        level.player.inventory = player.inventory;
+    }
     // A world a server made has no Player compound, and now somebody has stood
     // in it. Writing one is what the original client does the first time you
     // play such a world; what must not happen is inventing one for a world

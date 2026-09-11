@@ -1,8 +1,8 @@
 #pragma once
 
-// The bottom screen's furniture: the tab strip along the top, the panels and
-// slots the pages are built out of, and the two pages that are nothing but
-// furniture -- the inventory and the look pad.
+// The bottom screen's furniture: the hotbar along the top, the tab strip along
+// the bottom, the panels and slots the pages are built out of, and the two
+// pages that are nothing but furniture -- the inventory and the look pad.
 //
 // **It is drawn into libctru's console framebuffer, and that is still
 // deliberate.** The bottom screen belongs to the console -- every message this
@@ -22,19 +22,37 @@
 // label here is printed that way, which is why nothing in the layout has to
 // route around the character grid.
 //
-// The layout is 320 x 240, in three bands:
+// The layout is 320 x 240, in four bands:
 //
 //     +----------------------------------------+  y = 0
-//     |  [ Map ] [ Items ] [ Blocks ] [ Look ] |  the tab strip, rows 1-3
-//     +----------------------------------------+  y = 24
+//     |  the hotbar, nine slots edge to edge    |  the hand
+//     +----------------------------------------+  y = 32
 //     |  " Bottom screen focused "  + a fade    |  the focus banner, or backdrop
-//     +----------------------------------------+  y = 40
+//     +----------------------------------------+  y = 48
 //     |                                        |
-//     |               the page                 |  rows 6-26
+//     |               the page                 |
 //     |                                        |
-//     +----------------------------------------+  y = 208
-//     |  the hotbar, on every player page      |
+//     +----------------------------------------+  y = 216
+//     |  [ Map ] [ Items ] [ Blocks ] [ Look ] |  the tab strip
 //     +----------------------------------------+  y = 240
+//
+// **The hotbar and the tab strip changed places**, and the hotbar grew to the
+// full width of the screen while it was at it. Both were asked for and both are
+// improvements on what was there, for reasons worth writing down:
+//
+//   * The hotbar is the one control on this screen that is read while the
+//     player is looking at the *top* screen -- it is what is in your hand. At
+//     the top of the bottom screen it is as close to the world as a second
+//     screen can put it; at the bottom it was as far away as it could be.
+//   * The tab strip is a control you look at deliberately, so the bottom is
+//     where it costs least, and it is now next to the thumbs rather than under
+//     the eyes.
+//   * Nine slots across 320 pixels is 35.55, which does not divide. The slots
+//     are therefore **not all the same width**: `hotbarSlotX` is
+//     `i * 320 / 9`, so the widths come out 35 or 36 and the row lands exactly
+//     on both edges with no leftover margin. A row of nine 35s centred would
+//     have left five pixels of nothing, and five pixels of nothing at the edge
+//     of a touch target is five pixels a finger can miss.
 //
 // **There was a third band once and it said what the buttons did.** It is gone:
 // the hints were the same three lines on every page and they were spending a
@@ -42,12 +60,10 @@
 // theirs, which is where SELECT + Y is worth naming -- it is the one binding
 // that is not discoverable by touching the screen.
 //
-// **The band at the bottom now is the hotbar, and it is reserved in every
-// gamemode.** A page whose height depended on whether the mode had a hotbar
-// would be two layouts, two sets of constants and two map window sizes to
-// measure against the console; Spectator gets 32 pixels of backdrop instead.
-// What that costs is a slightly shorter map and what it buys is that the hotbar
-// never moves and the page above it never resizes.
+// **The hotbar band is reserved in every gamemode.** A page whose height
+// depended on whether the mode had a hotbar would be two layouts, two sets of
+// constants and two map window sizes to measure against the console; Spectator
+// gets 32 pixels of backdrop instead.
 //
 // **It is here rather than over the world**, which is docs/3ds-performance.md
 // section 11 and not a new decision: the top screen draws nothing but the
@@ -56,7 +72,8 @@
 
 #include "core/block/block_def.hpp"
 #include "core/gui/paint.hpp"
-#include "core/item/hotbar.hpp"
+#include "core/gui/item_icon.hpp"
+#include "core/item/inventory.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::ctr::hud {
@@ -68,50 +85,57 @@ inline constexpr int kScreenHeight = 240;
 inline constexpr int kColumns = kScreenWidth / kCell;   // 40
 inline constexpr int kRows = kScreenHeight / kCell;     // 30
 
-// The three bands. The tab strip is three character rows so a label sits in the
-// middle of it with a row of pixels either side; the page is what is left once
-// the hotbar has taken the bottom 32.
-inline constexpr int kTabTop = 0;
-inline constexpr int kTabHeight = 24;
-inline constexpr int kBodyTop = kTabTop + kTabHeight;   // 24
+// **The hotbar band, at the top.** 32 pixels: a 28-pixel slot with two either
+// side, which is what a 24-pixel icon needs with a bevel that is still visible
+// on a 320-pixel screen.
+inline constexpr int kHotbarHeight = 32;
+inline constexpr int kHotbarTop = 0;
+inline constexpr int kHotbarSlotY = kHotbarTop + 2;
+inline constexpr int kHotbarSlotHeight = kHotbarHeight - 4;   // 28
+inline constexpr int kHotbarColumns = item::kHotbarSlots;
 
-// **Sixteen pixels under the tab strip that nothing but the backdrop draws
-// into**, and that is a load-bearing promise rather than spare margin. The
-// focus banner *darkens* what is under it, which is an operation that cannot be
-// applied twice to the same pixels -- so it has to sit somewhere that is
-// painted exactly once, on a page clear, and never repainted underneath it. The
-// map alone would otherwise redraw through it on every block the player walks
-// and darken the strip a shade further each time, down to black over a minute
-// or so.
+// Where slot `i` starts, and where it ends -- **not a fixed width**, because
+// nine does not divide 320. `hotbarSlotX(kHotbarColumns)` is the screen's right
+// edge exactly, which is the property the row is built on.
+constexpr int hotbarSlotX(int index)
+{
+    return index * kScreenWidth / kHotbarColumns;
+}
+constexpr int hotbarSlotWidth(int index)
+{
+    return hotbarSlotX(index + 1) - hotbarSlotX(index);
+}
+static_assert(hotbarSlotX(0) == 0, "the hotbar starts at the left edge");
+static_assert(hotbarSlotX(kHotbarColumns) == kScreenWidth,
+              "the hotbar ends at the right edge");
+
+// **Sixteen pixels under the hotbar that nothing but the backdrop draws into**,
+// and that is a load-bearing promise rather than spare margin. The focus banner
+// *darkens* what is under it, which is an operation that cannot be applied
+// twice to the same pixels -- so it has to sit somewhere that is painted
+// exactly once, on a page clear, and never repainted underneath it. The map
+// alone would otherwise redraw through it on every block the player walks and
+// darken the strip a shade further each time, down to black over a minute or so.
 //
 // Unfocused it is backdrop, and reads as the page having a margin.
-inline constexpr int kBannerTop = kBodyTop;                    // 24
+inline constexpr int kBannerTop = kHotbarHeight;               // 32
 inline constexpr int kBannerHeight = 16;
-inline constexpr int kPageTop = kBannerTop + kBannerHeight;    // 40
+inline constexpr int kPageTop = kBannerTop + kBannerHeight;    // 48
 
-// **The hotbar band, and the slot size every grid here is built from.** 24
-// pixels is what a 16-pixel atlas tile needs with a border either side that is
-// still visible on a 320-pixel screen -- so an icon is blitted at 1:1 and never
-// resampled, which with a nearest-neighbour copy is the difference between a
-// readable block and a smear. Nine of them is 216 pixels, centred with 52
-// either side.
+// The tab strip, at the bottom. Three character rows so a label sits in the
+// middle of it with a row of pixels either side.
+inline constexpr int kTabHeight = 24;
+inline constexpr int kTabTop = kScreenHeight - kTabHeight;     // 216
+
+inline constexpr int kBodyTop = kBannerTop;                    // 32
+inline constexpr int kBodyHeight = kTabTop - kBodyTop;         // 184
+inline constexpr int kPageHeight = kTabTop - kPageTop;         // 168
+
+// The slot size the palette grid is built from. 24 pixels is what a 16-pixel
+// atlas tile needs with a border either side that is still visible on a
+// 320-pixel screen.
 inline constexpr int kSlotPixels = 24;
-inline constexpr int kHotbarHeight = 32;
-inline constexpr int kHotbarTop = kScreenHeight - kHotbarHeight;    // 208
-inline constexpr int kHotbarSlotY = kHotbarTop + 4;
-inline constexpr int kHotbarColumns = item::kHotbarSlots;
-inline constexpr int kHotbarWidth = kHotbarColumns * kSlotPixels;   // 216
-inline constexpr int kHotbarX = (kScreenWidth - kHotbarWidth) / 2;  // 52
 
-inline constexpr int kBodyHeight = kHotbarTop - kBodyTop;           // 184
-inline constexpr int kPageHeight = kHotbarTop - kPageTop;          // 168
-
-// **a1.1.2's own GUI colours, and only its own.** A panel is the face plus a
-// light bevel and a dark one; a slot is the same two bevels the other way
-// round. The dark readout is not the original's -- the original has no
-// second screen to put one on -- and it is the one place a colour here was
-// chosen rather than read: it is what makes a number legible over a picture of
-// terrain without a border thick enough to eat the picture.
 inline constexpr u32 kBackdrop = 0x2B2B2B;
 inline constexpr u32 kPanelFace = 0xC6C6C6;
 inline constexpr u32 kPanelLight = 0xFFFFFF;
@@ -189,47 +213,77 @@ void drawTabs(const gui::Surface& surface, const TabStrip& tabs);
 // the strip, which is what keeps a drag on the page from changing the page.
 int tabAt(const TabStrip& tabs, int touchX, int touchY);
 
-// **The inventory, still drawn empty -- and Creative is why that is not a
-// contradiction.** Creative has a palette and a hotbar, and neither of them is
-// an inventory: nothing is carried, nothing is picked up and nothing is stored,
-// so there is no content for these 27 slots until Survival puts some there.
-// What the page is today is the frame they will be dealt into, nine across and
-// three rows, at the size and spacing they will keep.
+// **The inventory, and it is no longer drawn empty.** It used to be twenty-seven
+// blank slots and a line of text reading "carried items: Survival", on the
+// argument that Creative carries nothing. That argument was wrong in the way
+// that matters: a1.1.2 writes all thirty-six slots into `level.dat` whatever
+// mode you are in, so there was always something to show and somewhere to put
+// it -- the only thing missing was an item table to name it with.
+//
+// So these are slots 9..35 of `Inventory`, nine across and three rows, drawn
+// from the same stacks the hotbar band above is drawing 0..8 of, **with the
+// four armour slots beside them** -- slots 100..103, which the save file has
+// always carried and the screen had nowhere to show. `cursor` is the cell the
+// bottom-screen focus is on, or -1; `held` is the slot a stack has been picked
+// up from and is following the cursor, or -1, and is drawn hollow so a move in
+// progress is visible.
 //
 // **It lost its own hotbar row**, because the hotbar is a band of its own on
 // every page now. Two hotbars on one screen would have had to agree about which
 // slot was selected, and the way they agree is by there being one.
-void drawItemsPage(const gui::Surface& surface);
+//
+// **And it fills the page rather than sitting in a small panel in the middle of
+// it.** The old frame was 232 x 112 with the pack's darkened dirt showing on
+// every side of it, which reads as an unfinished screen; there is nothing else
+// on this page, so the panel is the page. That is what pays for the 30-pixel
+// slots -- 56 % more area than the 24-pixel ones, on a resistive screen where
+// that is the difference between aiming and prodding. 30 rather than 32 because
+// nine columns and an armour column have to share 320 pixels: nine 32s is 288
+// and leaves no room beside them for the armour at all.
+inline constexpr int kItemsColumns = 9;
+inline constexpr int kItemsRows = item::kBackpackSlots / kItemsColumns;
+inline constexpr int kItemsSlotPixels = 30;
 
-// **One block as a 16 x 16 icon, blitted at 1:1 out of the terrain atlas.**
-//
-// `atlasRgba` is `texture::AtlasImage::rgba` -- 256 x 256, RGBA8, top row
-// first -- or null, in which case nothing is drawn and the cell stays an empty
-// slot rather than a wrong one. `tile` is the block's own atlas index, which is
-// `BlockDef::texture`.
-//
-// **A flat tile and not a cube, which is a deviation worth naming.** a1.1.2
-// draws a block in a slot through `RenderBlocks.renderBlockAsItem` -- a small
-// three-quarter view built by the same block renderer that draws the world.
-// Doing that here would mean a second geometry path on a screen that has no GPU
-// access at all: this is a CPU blit into libctru's framebuffer. So a cell shows
-// the block's `texture` column, which the table already defines as "what the
-// block shows anywhere a single tile is wanted". Grass reads as grass from
-// above and a log as its bark.
-//
-// Alpha is a cutout rather than a blend -- a texel under the threshold is
-// skipped -- which is what leaves a torch or a sapling standing on the slot
-// instead of in a black box. The atlas carries no partial alpha worth blending.
-inline constexpr int kIconPixels = 16;
-inline constexpr u8 kIconAlphaCutoff = 128;
-void drawBlockIcon(const gui::Surface& surface, int x, int y, const u8* atlasRgba, int tile);
+// The cursor space of the Items page: the backpack, and then the armour. So
+// cell `kBackpackSlots + n` is armour slot `n`, and `itemsSlotForCell` is the
+// one place that arithmetic lives.
+inline constexpr int kItemsArmourCells = item::kArmourSlots;
+inline constexpr int kItemsCells = item::kBackpackSlots + kItemsArmourCells;
 
-// **The hotbar, on every player page.** `cursor` is the slot the bottom-screen
-// focus is sitting on, or -1 when the focus is off or on the palette above --
-// drawn differently from `hotbar.selected`, because the two are different
-// questions: one is what is in your hand and the other is what A would act on.
-void drawHotbar(const gui::Surface& surface, const item::Hotbar& hotbar, const u8* atlasRgba,
-                int cursor);
+// The save-file slot number a cell addresses -- 9..35 for the backpack and
+// 100..103 for the armour, which is `Inventory::at`'s numbering and not a
+// second one.
+int itemsSlotForCell(int cell);
+
+void drawItemsPage(const gui::Surface& surface, const item::Inventory& inventory,
+                   const gui::IconSheets& sheets, int cursor, int held);
+
+// Which cell of the Items page a touch landed on, or -1. Covers the armour
+// column as well as the backpack grid; put it through `itemsSlotForCell`.
+int itemsCellAt(int touchX, int touchY);
+
+// How big an icon is drawn inside a slot. The drawing itself is
+// core/gui/item_icon.hpp's -- a cube seen from the corner for a plain block, a
+// flat sprite for everything else -- and it lives in core rather than here so
+// it can be exercised on the host, which is where the geometry is worth
+// checking.
+//
+// **24 rather than 16, and that is a trade rather than a free win.** A flat
+// sprite is a 16-pixel tile and `drawFlat` is nearest-neighbour, so 24 doubles
+// every other row; 16 was 1:1 and crisp. What it buys is that the icon fills
+// the slot -- a 16-pixel picture in a 32-pixel cell reads as a mostly empty
+// box. The cube path does not pay it at all: `drawBox` inverse-maps each
+// destination pixel and is exact at any size, and cubes are most of what a
+// slot holds.
+inline constexpr int kIconPixels = 24;
+
+// **The hotbar, on every player page**, across the whole width of the screen.
+// `cursor` is the slot the bottom-screen focus is sitting on, or -1 when the
+// focus is off or on the grid below -- drawn differently from
+// `inventory.selected`, because the two are different questions: one is what is
+// in your hand and the other is what A would act on.
+void drawHotbar(const gui::Surface& surface, const item::Inventory& inventory,
+                const gui::IconSheets& sheets, int cursor, int held);
 
 // Which hotbar slot a touch landed on, or -1 -- including every touch outside
 // the band, so a page can pass it every press it sees.
@@ -241,8 +295,9 @@ int hotbarSlotAt(int touchX, int touchY);
 // Drawing a catalogue inside an inventory frame would imply the blocks in it
 // were owned, which in Creative is exactly the confusion worth avoiding.
 //
-// Nine columns by five rows, so a page is 45 cells and a1.1.2's 70 blocks are
-// two pages. `page` is 0-based; `cursor` is the cell the focus is on within
+// Nine columns by five rows, so a page is 45 cells and a1.1.2's 147 offered
+// items are four pages -- the palette offers the whole item table now, not only
+// the two thirds of it that place a block. See core/item/creative_palette.hpp. `page` is 0-based; `cursor` is the cell the focus is on within
 // this page, or -1; `selected` is the block in hand, outlined wherever on this
 // page it appears. `caption` is the line under the grid -- the name of whatever
 // the player is pointing at, which is the only place a block's name fits.
@@ -253,8 +308,8 @@ inline constexpr int kPalettePerPage = kPaletteColumns * kPaletteRows;
 // How many pages the palette fills, at least one.
 int palettePageCount();
 
-void drawBlocksPage(const gui::Surface& surface, const u8* atlasRgba, int page, int cursor,
-                    block::BlockId selected, const char* caption);
+void drawBlocksPage(const gui::Surface& surface, const gui::IconSheets& sheets, int page,
+                    int cursor, item::ItemId selected, const char* caption);
 
 // Which cell of the drawn page a touch landed on, or -1. The index is
 // page-relative: add `page * kPalettePerPage` for a palette index.

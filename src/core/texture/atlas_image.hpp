@@ -2,11 +2,17 @@
 
 // Turning a texture pack into the one image the renderer samples.
 //
-// Only `terrain.png` has a consumer today. A pack's `gui/`, `mob/`,
-// `default.png` and the other 57 files are carried, counted and left alone:
-// the menu draws with the 3DS system font, there is no GUI sheet and there are
-// no mobs, so there is nothing to point them at yet. That gap is stated on the
+// Two of a pack's files have consumers: `terrain.png`, which the world is drawn
+// with, and `gui/items.png`, which the slots on the bottom screen are. A pack's
+// `mob/`, its `default.png` and the other 56 files are carried, counted and
+// left alone -- the menu draws with the 3DS system font and there are no mobs,
+// so there is nothing to point them at yet. That gap is stated on the
 // texture-pack screen rather than papered over.
+//
+// **items.png is optional and terrain.png is not.** A pack without one is a
+// pack; every icon that would have come from it falls back to the terrain tile
+// of the block the item places, which is what this project drew before the
+// second sheet existed. A pack without a terrain.png is not a texture pack.
 //
 // **The atlas is always 256x256**, whatever the pack's tiles are. That is a
 // decision with a measurement behind it: VRAM is 6 MB, render targets already
@@ -83,7 +89,33 @@ struct AtlasImage {
     // answer on the same line as the pack's name.
     int sourceEdge = 0;
 
+    // `gui/items.png`, scaled the same way into the same 16x16 tile grid.
+    // **Empty for a pack that has none**, which is not an error -- see the
+    // header. Nothing on the GPU ever sees this one: the icons it feeds are
+    // drawn by the CPU into the bottom screen's framebuffer, so it costs 256 KB
+    // of heap and no VRAM at all.
+    std::vector<u8> itemsRgba;
+
+    // **The entity sheet**, 256 x 64, holding `item/boat.png`,
+    // `item/cart.png`, `item/sign.png`, `item/arrows.png` and the player skin
+    // `char.png` in five fixed pages. See core/texture/entity_skins.hpp for the
+    // layout and for why the page size is 64 x 32 rather than anything chosen
+    // here.
+    //
+    // Unlike the two above it this one is **never empty for a valid pack**: a
+    // page a pack does not carry keeps its generated stand-in, so the sheet is
+    // always whole. A boat with no texture would be a black boat -- and the
+    // player's page is the one that *is* black on purpose when a pack has no
+    // skin in it, which that header argues.
+    std::vector<u8> entityRgba;
+
+    // **The painting sheet**, `art/kz.png`, 256 x 256 and its own plane
+    // because it already is one -- `er` indexes it in absolute texels. Also
+    // never empty; the stand-in is a grid of framed cells.
+    std::vector<u8> artRgba;
+
     bool empty() const { return rgba.size() != kAtlasBytes; }
+    bool hasItems() const { return itemsRgba.size() == kAtlasBytes; }
 };
 
 // Rescales a square source into an `edge` x `edge` RGBA buffer.

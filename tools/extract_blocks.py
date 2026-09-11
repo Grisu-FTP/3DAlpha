@@ -348,6 +348,136 @@ def material_classes(workdir, material_cls):
     return materials
 
 
+def step_sound_fields(workdir, block_class):
+    """(StepSound class, Block's own field of that type, its singletons).
+
+    Derived rather than named, from `javap`'s field list alone. Block declares
+    its footstep singletons as a run of `public static final <C> <letter>;` and
+    holds the one it uses in a single instance field of the same type, so the
+    class is the type with the most static finals **among those Block also has
+    exactly one instance field of**. Both halves of that test are needed: Block
+    has 78 static finals of its own type and no instance field of it, and four
+    of another type with none either.
+    """
+    statics = {}
+    instance = None
+    for line in disassemble(workdir, block_class).splitlines():
+        match = re.match(r"^\s+public static final (\w+) (\w+);", line)
+        if match:
+            statics.setdefault(match.group(1), []).append(match.group(2))
+            continue
+        match = re.match(r"^\s+public (\w+) (\w+);", line)
+        if match:
+            instance = instance or {}
+            instance.setdefault(match.group(1), []).append(match.group(2))
+    fields = instance or {}
+    candidates = [name for name in statics
+                  if name != block_class and len(fields.get(name, [])) == 1]
+    if not candidates:
+        return None, None, ()
+    step_cls = max(candidates, key=lambda name: len(statics[name]))
+    return step_cls, fields[step_cls][0], tuple(statics[step_cls])
+
+
+def step_sounds(workdir, block_class, static_fields, break_method, step_method):
+    """{field: {step, break, volume, pitch}} for every footstep singleton.
+
+    The singletons are built in Block's own initialiser as
+    `new <C>("stone", 1.0F, 1.0F)` -- name, volume, pitch -- and two of the nine
+    are *subclasses* that override one getter to return a constant instead:
+    sand breaks like gravel and glass breaks with `random.glass`. Both getters
+    are read off the concrete class, so an override is picked up and a plain
+    singleton falls back to the base class's `"step." + name`.
+
+    Which getter is which cannot be told from the bytecode -- on the base class
+    they are the same two lines -- so the pair comes from MEMBER_MAP, where the
+    note says which caller named them.
+    """
+    wanted = set(static_fields)
+    sounds = {}
+    pending = None
+    for opcode, operand, comment in parse_instructions(disassemble(workdir, block_class)):
+        if opcode == "new":
+            pending = {"class": comment.replace("class ", "").strip(), "args": []}
+            continue
+        if pending is None:
+            continue
+        if opcode == "putstatic":
+            field = comment.replace("Field ", "").strip().split(":")[0].split(".")[-1]
+            args = pending["args"]
+            if (field in wanted and len(args) == 3 and isinstance(args[0], str)
+                    and not isinstance(args[1], str) and not isinstance(args[2], str)):
+                name, volume, pitch = args
+                sounds[field] = {
+                    "step": constant_string(workdir, pending["class"], step_method)
+                            or f"step.{name}",
+                    "break": constant_string(workdir, pending["class"], break_method)
+                             or f"step.{name}",
+                    "volume": float(volume),
+                    "pitch": float(pitch),
+                }
+            pending = None
+            continue
+        value = literal(opcode, operand, comment)
+        if value is not None:
+            pending["args"].append(value)
+    return sounds
+
+
+def constructor_default(workdir, block_class, step_cls, step_field):
+    """The StepSound singleton Block's own constructor installs.
+
+    `Block(int, Material)` opens by writing one of the singletons into the
+    field, which is what a block that never calls the setter ends up with.
+    """
+    text = disassemble(workdir, block_class)
+    pending = None
+    for line in text.splitlines():
+        match = INSTRUCTION.match(line)
+        if not match:
+            continue
+        opcode, comment = match.group(2), (match.group(4) or "").strip()
+        if opcode == "getstatic" and comment.endswith(f":L{step_cls};"):
+            pending = comment.replace("Field ", "").split(":")[0].split(".")[-1]
+        elif opcode == "putfield" and comment.endswith(f":L{step_cls};") and pending:
+            return pending
+    return None
+
+
+def constant_string(workdir, class_name, method):
+    """The String an override returns outright, or None if it does not.
+
+    Only reads a body that is literally `ldc "..."; areturn` -- anything else is
+    the base class's concatenation, which this deliberately does not try to
+    evaluate.
+    """
+    if method is None:
+        return None
+    text = disassemble(workdir, class_name)
+    inside = False
+    pushed = None
+    for line in text.splitlines():
+        if re.match(rf"^\s+(?:public |final )*java\.lang\.String {method}\(\);", line):
+            inside = True
+            pushed = None
+            continue
+        if not inside:
+            continue
+        match = INSTRUCTION.match(line)
+        if not match:
+            if line.strip().startswith("}") or (line and not line[0].isspace()):
+                break
+            continue
+        opcode, operand, comment = match.group(2), match.group(3), (match.group(4) or "").strip()
+        if opcode.startswith("ldc"):
+            pushed = literal(opcode, operand, comment)
+        elif opcode == "areturn":
+            return pushed if isinstance(pushed, str) else None
+        else:
+            return None
+    return None
+
+
 def material_solidity(workdir, material_cls, solid_method, cache):
     """{field name: isSolid} for every Material singleton.
 
@@ -419,7 +549,37 @@ def face_textures(machine, block, block_class, texture_field):
     return faces, world_dependent, metadata_dependent
 
 
-def add_textures(workdir, block_class, records):
+def metadata_faces(machine, block, metadata_method):
+    """The six face textures at each of the sixteen metadata values, for a block
+    whose world overload reads **its own metadata and nothing else** -- or None.
+
+    This is the furnace: `ku`'s getBlockTexture(world, ...) draws the mouth on
+    the side whose index equals the cell's metadata, and the no-world answer
+    `faces` holds always puts it on +Z. So `face_textures` can only report it
+    as world-dependent. Asking again with a world that answers
+    getBlockMetadata at the block's own cell, and probes anywhere else, turns
+    "depends on the world" into a table wherever that is the whole dependency.
+    A block that looks at a neighbour -- the chest, grass under snow -- still
+    probes and still gets None, so nothing here is a guess.
+
+    A block whose sixteen rows all agree gets None too: the staircase forwards
+    to its model block, whose world overload reads the metadata and then
+    ignores it.
+    """
+    rows = []
+    for meta in METADATA_VALUES:
+        world = javap.Probe("world", {(metadata_method, (0, 0, 0)): meta})
+        row = [attempt(machine, block.class_name, "a", "(Lnm;IIII)I", block,
+                       [world, 0, 0, 0, face]) for face in range(FACE_COUNT)]
+        if any(value is None for value in row):
+            return None
+        rows.append(row)
+    if all(row == rows[0] for row in rows):
+        return None
+    return rows
+
+
+def add_textures(workdir, block_class, records, metadata_method=None):
     """Fill in `texture` and `faces` on records the initialiser pass produced.
 
     The two passes agree on which blocks exist and what class each one is; that
@@ -460,14 +620,23 @@ def add_textures(workdir, block_class, records):
         if len(set(faces)) > 1:
             varied += 1
         if needs_world:
-            world.append(record["id"])
-            record["worldDependentFaces"] = needs_world
+            by_metadata = (metadata_faces(machine, block, metadata_method)
+                           if metadata_method else None)
+            if by_metadata is not None:
+                record["metadataFaces"] = by_metadata
+            else:
+                world.append(record["id"])
+                record["worldDependentFaces"] = needs_world
         if needs_metadata:
             metadata.append(record["id"])
             record["metadataDependentFaces"] = needs_metadata
 
     print(f"textures interpreted for {len(records)} blocks; "
           f"{varied} have per-face textures", file=sys.stderr)
+    by_metadata = sorted(r["id"] for r in records if "metadataFaces" in r)
+    if by_metadata:
+        print(f"faces of {by_metadata} follow their own metadata in the world; "
+              "tabled per metadata as `metadataFaces`", file=sys.stderr)
     if world:
         print(f"note: faces of {sorted(world)} depend on the surrounding world "
               "(orientation, snow cover); metadata 0 and no neighbours assumed",
@@ -717,6 +886,21 @@ MEMBER_MAP = {
         # by its one caller: the fluid renderer's corner-height helper asks it
         # whether a neighbouring cell dilutes the surface.
         "materialSolid": "a",
+        # StepSound's two getters. On the base class they are the same two
+        # lines -- both return "step." + name -- so nothing in the bytecode
+        # separates them and they are named by their callers:
+        # PlayerController.onPlayerDestroyBlock plays a(), while
+        # Entity.moveEntity's footstep trigger and ItemBlock.onItemUse both
+        # play d(). The pair only diverges on the two subclasses, which is
+        # exactly why getting it backwards would be invisible until glass
+        # broke with a footstep.
+        "breakSound": "a",
+        "stepSound": "d",
+        # IBlockAccess.getBlockMetadata, on the world interface. Named by
+        # Block's own world overload of getBlockTexture, which is the single
+        # line `a(face, world.e(x, y, z))` -- the one call it makes on the
+        # world is the metadata read.
+        "blockMetadata": "e(III)I",
     },
 }
 
@@ -783,6 +967,14 @@ def verify(records, table_path, version):
             problems.append(
                 f"id {bid} ({mine.get('name', '?')}): has a faces list, but "
                 f"the jar gives every face texture {jar['faces'][0]}")
+        # Present only where the jar has them, exactly as `faces` is.
+        for optional in ("metadataFaces", "model"):
+            if optional in jar:
+                expected[optional] = jar[optional]
+            elif optional in mine:
+                problems.append(
+                    f"id {bid} ({mine.get('name', '?')}): has {optional}, "
+                    "but the jar gives none")
 
         for key, want in expected.items():
             got = mine.get(key, False) if key == "translucent" else mine.get(key)
@@ -848,7 +1040,33 @@ def main():
             })
 
         material_cls, material_field, interpreted = add_textures(
-            workdir, block_class, records)
+            workdir, block_class, records,
+            MEMBER_MAP.get(version, {}).get("blockMetadata"))
+
+        # **The block a block is modelled on** -- a Block-typed constructor
+        # argument, which in a1.1.2 only BlockStairs takes: `new km(53,
+        # Block.planks)`. A staircase with something solid put on top of it
+        # turns into that block (`km.a(Lcn;IIII)V`), so the runtime needs the
+        # id and not just the sound the step-sound pass below copies from it.
+        # The argument lands in the raw parse's `material` slot for the reason
+        # given there -- but so does `Block.stone` in `new BlockButton(77,
+        # Block.stone.blockIndexInTexture)`, which is a texture read off a
+        # block. Only the constructor's own descriptor tells the two apart, so
+        # it has to take a Block.
+        id_by_field = {r["field"]: r["id"] for r in records if r.get("field")}
+        raw_by_field = {b["field"]: b for b in blocks if b.get("field")}
+        for record in records:
+            params = record["signature"].partition(")")[0]
+            if f"L{block_class};" not in params:
+                continue
+            raw = raw_by_field.get(record["field"], {})
+            for arg in [raw.get("material")] + list(raw.get("args", [])):
+                if isinstance(arg, str) and arg.endswith(f":L{block_class};"):
+                    model = id_by_field.get(arg.split(":")[0].split(".")[-1])
+                    if model is None:
+                        sys.exit(f"extract_blocks: id {record['id']} is modelled "
+                                 f"on {arg}, which is no block in the table")
+                    record["model"] = model
 
         cache = {}
         classes = sorted({r["class"] for r in records} | {block_class})
@@ -920,6 +1138,83 @@ def main():
             for record in records:
                 if record.get("material") in solidity:
                     record["solid"] = solidity[record["material"]]
+
+        # The footstep and break sound, which is one field on the block and a
+        # nine-entry table beside it. Emitted as the singleton's own field
+        # letter, exactly as `material` is, so the json says which of the
+        # jar's objects a block points at rather than inventing a name for it.
+        step_cls, step_field, step_statics = step_sound_fields(workdir, block_class)
+        if step_field is None:
+            print("warning: could not identify Block's StepSound field; "
+                  "step sounds left unset", file=sys.stderr)
+        else:
+            member = MEMBER_MAP.get(version, {})
+            table = step_sounds(workdir, block_class, step_statics,
+                                member.get("breakSound"), member.get("stepSound"))
+            print(f"step sound is {block_class}.{step_field} of type {step_cls}:",
+                  file=sys.stderr)
+            for field in sorted(table):
+                entry = table[field]
+                print(f"    {block_class}.{field:<2} step {entry['step']:<12} "
+                      f"break {entry['break']:<12} "
+                      f"volume {entry['volume']} pitch {entry['pitch']}",
+                      file=sys.stderr)
+            print("    (paste the table above into blocks.json's stepSounds "
+                  "map when it changes)", file=sys.stderr)
+            # Read off the *setter call* rather than off the interpreted
+            # object. `setStepSound` is one of the chained calls in the
+            # initialiser -- `new BlockStone(1, 1).setHardness(1.5F)
+            # .setResistance(10F).setStepSound(Block.soundStoneFootstep)` --
+            # and the singleton it is handed is an argument the raw parse
+            # already records by name. The interpreter cannot help here: it
+            # never constructs the `bb` objects, so the field it would read
+            # holds an unknown rather than an identity.
+            setter = f"a(L{step_cls};)L{block_class};"
+            for record in records:
+                for name, value in record["setters"]:
+                    if name == setter and isinstance(value, str):
+                        record["stepSound"] = value.split(":")[0].split(".")[-1]
+                        break
+            # Two ways a block can have a sound without calling the setter
+            # in the initialiser, and both are real:
+            #
+            #   * **Block's own constructor sets one**, so a block that never
+            #     asks -- water and lava -- gets that. It is read off the
+            #     constructor rather than assumed.
+            #   * **A block built from another block copies it.** Stairs are
+            #     `new BlockStairs(id, Block.planks)` and the subclass
+            #     constructor forwards the model's sound, which the initialiser
+            #     cannot show because the argument is a field read. Resolving
+            #     the Block-typed constructor argument is what makes wooden
+            #     stairs sound like wood instead of like stone.
+            default = constructor_default(workdir, block_class, step_cls, step_field)
+            by_field = {b["field"]: b for b in blocks if b.get("field")}
+            sound_by_field = {}
+            for record in records:
+                if "stepSound" in record:
+                    sound_by_field[record["field"]] = record["stepSound"]
+            for record in records:
+                if "stepSound" in record:
+                    continue
+                raw = by_field.get(record["field"], {})
+                # A Block-typed constructor argument lands in the raw parse's
+                # `material` slot, because a getstatic before the constructor
+                # is the material for every other block in the table. The type
+                # in the descriptor is what tells the two apart.
+                candidates = [raw.get("material")] + list(raw.get("args", []))
+                model = None
+                for arg in candidates:
+                    if isinstance(arg, str) and arg.endswith(f":L{block_class};"):
+                        model = sound_by_field.get(arg.split(":")[0].split(".")[-1])
+                if model is not None:
+                    record["stepSound"] = model
+                    print(f"note: id {record['id']} copies its step sound from "
+                          f"the block it is modelled on: {model}", file=sys.stderr)
+                elif default is not None:
+                    record["stepSound"] = default
+                    print(f"note: id {record['id']} never calls {setter}; it "
+                          f"takes {block_class}'s own default, {default}",
+                          file=sys.stderr)
 
     records.sort(key=lambda r: r["id"])
     print(f"recovered {len(records)} blocks, "

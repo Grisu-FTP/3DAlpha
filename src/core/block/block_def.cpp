@@ -66,15 +66,19 @@ const char* tickBehaviourName(TickBehaviour behaviour)
     case TickBehaviour::RedstoneWire:  return "redstone_wire";
     case TickBehaviour::RedstoneOre:   return "redstone_ore";
     case TickBehaviour::Button:        return "button";
-    case TickBehaviour::PressurePlate: return "pressure_plate";
+    case TickBehaviour::PressurePlateAll:  return "pressure_plate_all";
+    case TickBehaviour::PressurePlateMobs: return "pressure_plate_mobs";
     case TickBehaviour::Lever:         return "lever";
     case TickBehaviour::Door:          return "door";
     case TickBehaviour::Rail:          return "rail";
     case TickBehaviour::Ladder:        return "ladder";
-    case TickBehaviour::Sign:          return "sign";
+    case TickBehaviour::SignPost:      return "sign_post";
+    case TickBehaviour::SignWall:      return "sign_wall";
     case TickBehaviour::Tnt:           return "tnt";
     case TickBehaviour::Sponge:        return "sponge";
     case TickBehaviour::Stairs:        return "stairs";
+    case TickBehaviour::Slab:          return "slab";
+    case TickBehaviour::Furnace:       return "furnace";
     case TickBehaviour::Count:         break;
     }
     return "unknown";

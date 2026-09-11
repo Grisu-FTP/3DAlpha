@@ -499,6 +499,13 @@ void Menu::ensureAtlas()
         texture::buildAtlas(fs_, std::string(), &atlas_);
     }
 
+    // **After the atlas and not inside it.** `buildAtlas` fills the player's
+    // page from the *active pack*, which is what Default means; a saved choice
+    // of anything else is one extra file read on top, and only the file it
+    // names. That is the whole reason the key carries a name rather than an
+    // index -- applying it here must not cost a walk of the packs folder.
+    applySavedSkin();
+
     loadPackArt(/*force=*/false);
 }
 
@@ -542,6 +549,11 @@ bool Menu::selectPack(int index)
     atlas_ = std::move(loaded);
     packName_ = pack.builtIn ? std::string() : pack.name;
     ++packRevision_;
+    // **The new pack brought its own `char.png` with it**, which is right for
+    // Default and wrong for every other choice: a player who picked a skin
+    // should keep it across a pack change. One file read, and nothing at all
+    // when the choice is Default.
+    applySavedSkin();
     message_ = nullptr;
     consoleDirty_ = true;
 
@@ -682,6 +694,7 @@ void Menu::loadSettings()
     }
     renderDistance_ = saved.renderDistance;
     packName_ = saved.texturePack;
+    skinKey_ = saved.skin;
     autosaveSeconds_ = saved.autosaveSeconds;
     chunkCacheMB_ = saved.chunkCacheMB;
 
@@ -710,6 +723,7 @@ void Menu::saveSettings()
     settings::GameSettings current;
     current.renderDistance = renderDistance_;
     current.texturePack = packName_;
+    current.skin = skinKey_;
     current.autosaveSeconds = autosaveSeconds_;
     current.chunkCacheMB = chunkCacheMB_;
     current.audio = audioEnabled_ ? 1 : 0;
@@ -860,10 +874,30 @@ void Menu::printConsoleHelp()
         std::printf("A  convert it\n");
         std::printf("B  leave it alone\n");
         break;
+    case Screen::Skins:
+        std::printf("Up/Down     choose a skin\n");
+        std::printf("A           use it\n");
+        std::printf("B           back\n\n");
+        std::printf("The arm you see holding nothing is\n");
+        std::printf("the only thing a1.1.2 draws a player\n");
+        std::printf("skin on, so this is what it changes.\n\n");
+        std::printf("\x1b[33mDefault\x1b[0m is the texture pack's own\n");
+        std::printf("char.png, or a black silhouette when\n");
+        std::printf("the pack has none.\n\n");
+        std::printf("Drop skins as .png in:\n");
+        std::printf("  \x1b[33m%s/\x1b[0m\n\n", texture::kSkinsDir);
+        std::printf("64x32 and 64x64 are both read; the\n");
+        std::printf("lower half of a 64x64 is a later\n");
+        std::printf("version's and is not drawn. A skin\n");
+        std::printf("made for the \x1b[33mslim\x1b[0m body is marked as\n");
+        std::printf("such and still drawn on the wide arm\n");
+        std::printf("-- the narrow one is 1.8's, not this\n");
+        std::printf("version's.\n");
+        break;
     case Screen::Options:
         std::printf("Left/Right  change the value\n");
         std::printf("Up/Down     choose a row\n");
-        std::printf("A           open Texture Pack or Sound\n");
+        std::printf("A           open a sub-screen\n");
         std::printf("B           back\n\n");
         std::printf("Render distance is what a player is\n");
         std::printf("offered; the debug page (SELECT+Y in\n");
@@ -978,6 +1012,9 @@ MenuChoice Menu::run()
         case Screen::TexturePacks:
             handleTexturePacks(down);
             break;
+        case Screen::Skins:
+            handleSkins(down);
+            break;
         case Screen::PickJar:
             handlePickJar(down);
             break;
@@ -1074,6 +1111,9 @@ PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int ren
             break;
         case Screen::TexturePacks:
             handleTexturePacks(down);
+            break;
+        case Screen::Skins:
+            handleSkins(down);
             break;
         case Screen::PickJar:
             handlePickJar(down);
@@ -1341,7 +1381,7 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
 
 void Menu::handleOptions(u32 down)
 {
-    constexpr int kRows = 5;  // distance, autosave, texture pack, sound, back
+    constexpr int kRows = 6;  // distance, autosave, texture pack, skin, sound, back
     optionsCursor_ = step(down, optionsCursor_, kRows);
 
     if (optionsCursor_ == 0) {
@@ -1385,12 +1425,20 @@ void Menu::handleOptions(u32 down)
     if ((down & KEY_A) != 0 && optionsCursor_ == 3) {
         message_ = nullptr;
         playClick();
+        refreshSkins();
+        setScreen(Screen::Skins);
+        return;
+    }
+
+    if ((down & KEY_A) != 0 && optionsCursor_ == 4) {
+        message_ = nullptr;
+        playClick();
         soundCursor_ = 0;
         setScreen(Screen::Sound);
         return;
     }
 
-    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 4)) {
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 5)) {
         if ((down & KEY_A) != 0) {
             playClick();  // the Back button. B is Escape, and Escape is silent.
         }
@@ -2150,6 +2198,9 @@ void Menu::drawScreen()
     case Screen::TexturePacks:
         drawTexturePacks();
         break;
+    case Screen::Skins:
+        drawSkins();
+        break;
     case Screen::PickJar:
         drawPickJar();
         break;
@@ -2488,13 +2539,15 @@ void Menu::drawOptions()
     // is a button with a clipped label on it rather than a centred one that
     // would draw off both edges of the screen.
     //
-    // **Five rows now**, which is what a 34-pixel pitch from y=44 buys: 240
-    // pixels still does not stretch, and the alternative -- a scrolling options
-    // screen -- would be a second list idiom for the sake of one more row.
-    // Sound is a sub-screen for the same reason Texture Pack is: it has a
-    // sentence to say as well as values to edit.
-    constexpr float kRowTop = 44.0f;
-    constexpr float kRowPitch = 34.0f;
+    // **Six rows now, and that is what the pitch pays for.** 240 pixels still
+    // does not stretch: six 26-pixel buttons from y=42 at a 30-pixel pitch end
+    // at 218, which leaves the console label four pixels and no more. The
+    // alternative -- a scrolling options screen -- would be a second list idiom
+    // for the sake of one row. Skin and Sound are sub-screens for the same
+    // reason Texture Pack is: their rows come off a card, or they have a
+    // sentence to say as well as a value to show.
+    constexpr float kRowTop = 42.0f;
+    constexpr float kRowPitch = 30.0f;
     const float x = (kScreenWidth - kButtonWidth) * 0.5f;
     const auto rowY = [](int row) { return kRowTop + float(row) * kRowPitch; };
 
@@ -2510,6 +2563,14 @@ void Menu::drawOptions()
     drawLabelClipped(packLabel(), packRow.x + 96.0f, packRow.y + 5.0f, 0.5f, kInk,
                      packRow.w - 104.0f);
 
+    // The same shape as the pack row above, and for the same reason: a skin's
+    // name is a file name off a card.
+    const Rect skinRow{x, rowY(3), kButtonWidth, kButtonHeight};
+    drawButton(skinRow, "", optionsCursor_ == 3, true);
+    drawLabel("Skin:", skinRow.x + 8.0f, skinRow.y + 6.0f, 0.5f, kInkDim, C2D_AlignLeft, true);
+    drawLabelClipped(skinLabel(), skinRow.x + 96.0f, skinRow.y + 5.0f, 0.5f, kInk,
+                     skinRow.w - 104.0f);
+
     // The row says what the screen behind it is set to, so the common case --
     // "is the music on?" -- is answered without opening it.
     char soundRow[48];
@@ -2518,13 +2579,13 @@ void Menu::drawOptions()
     } else {
         std::snprintf(soundRow, sizeof(soundRow), "Sound...  music %d%%", musicVolume_);
     }
-    drawButton(Rect{x, rowY(3), kButtonWidth, kButtonHeight}, soundRow, optionsCursor_ == 3,
+    drawButton(Rect{x, rowY(4), kButtonWidth, kButtonHeight}, soundRow, optionsCursor_ == 4,
                true);
 
-    drawButton(Rect{x, rowY(4), kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 4,
+    drawButton(Rect{x, rowY(5), kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 5,
                true);
 
-    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 218.0f, 0.45f,
+    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 224.0f, 0.45f,
                       kInkDim, true);
 }
 
@@ -2620,6 +2681,173 @@ void Menu::drawSound()
 const char* Menu::packLabel() const
 {
     return packName_.empty() ? "Dev Art" : packName_.c_str();
+}
+
+// **Off the key rather than off the list**, because the Options row is drawn
+// long before anything has listed the card -- and listing it to put a name on a
+// button would be a full read of every zip for a label. The key already carries
+// the name; this only has to drop the prefix and, for a file, the extension.
+const char* Menu::skinLabel() const
+{
+    if (skinKey_.empty()) {
+        return "Default";
+    }
+    const usize colon = skinKey_.find(':');
+    if (colon == std::string::npos) {
+        return skinKey_.c_str();
+    }
+    skinLabel_.assign(skinKey_, colon + 1, std::string::npos);
+    if (skinKey_.compare(0, colon, "file") == 0) {
+        const usize dot = skinLabel_.rfind('.');
+        if (dot != std::string::npos) {
+            skinLabel_.erase(dot);
+        }
+    }
+    return skinLabel_.c_str();
+}
+
+void Menu::refreshSkins()
+{
+    // **Made, not just listed.** The console help on this screen tells the
+    // player which folder to drop skins into, and a path that does not exist is
+    // a worse instruction than one that does -- a card mounted on a PC shows an
+    // empty `skins/` and there is nothing left to work out. It costs one
+    // directory create on the way into a screen a player opens rarely.
+    fs_.makeDirectories(texture::kSkinsDir);
+
+    // The pack list first, because a skin row exists for every pack carrying a
+    // `char.png` and `hasSkin` is filled in there. Costly on the console -- see
+    // the header -- and paid once, on the way into this screen.
+    refreshPacks();
+    texture::listSkins(fs_, packs_, texture::kSkinsDir, &skins_);
+
+    skinCursor_ = texture::findSkin(skins_, skinKey_);
+    // A saved skin that is no longer on the card falls back to Default, and the
+    // *setting* follows the fallback rather than being left pointing at
+    // something that is gone.
+    if (skinCursor_ == 0 && !skinKey_.empty()) {
+        skinKey_.clear();
+        saveSettings();
+        applySavedSkin();
+    }
+    skinScroll_ = 0;
+    if (skinCursor_ >= kVisibleRows) {
+        skinScroll_ = skinCursor_ - kVisibleRows + 1;
+    }
+}
+
+void Menu::applySavedSkin()
+{
+    if (atlas_.entityRgba.empty()) {
+        return;
+    }
+    std::string path;
+    bool fromPack = false;
+    // Default: `buildEntitySkins` has already put the active pack's own
+    // `char.png` -- or the black silhouette -- in the page, so there is nothing
+    // to do and nothing to read.
+    if (!texture::skinPathForKey(skinKey_, texture::kPacksDir, texture::kSkinsDir, &path,
+                                 &fromPack)) {
+        return;
+    }
+    if (!texture::applyPlayerSkin(fs_, path, fromPack, &atlas_.entityRgba)) {
+        // The file went away between being chosen and being read. The page
+        // keeps the Default that is already in it, which is a skin rather than
+        // a hole, and the row will fall back the next time the screen is opened.
+        return;
+    }
+    // The renderer holds its own upload of this sheet, so it has to be told
+    // that the bytes behind it changed even though the pack did not.
+    ++packRevision_;
+}
+
+void Menu::handleSkins(u32 down)
+{
+    const int rows = int(skins_.size());
+    if (rows > 0) {
+        skinCursor_ = step(down, skinCursor_, rows);
+        if (skinCursor_ < skinScroll_) {
+            skinScroll_ = skinCursor_;
+        }
+        if (skinCursor_ >= skinScroll_ + kVisibleRows) {
+            skinScroll_ = skinCursor_ - kVisibleRows + 1;
+        }
+    }
+
+    if (down & KEY_B) {
+        message_ = nullptr;
+        setScreen(Screen::Options);
+        return;
+    }
+    if ((down & KEY_A) == 0 || rows == 0) {
+        return;
+    }
+    playClick();
+
+    // **The atlas is rebuilt rather than patched**, and that is not laziness.
+    // The page currently holds whatever the *last* choice put there, so going
+    // from one skin back to Default has nothing to restore it from: Default is
+    // the active pack's own file, and the only thing that reads it is
+    // `buildEntitySkins`. Rebuilding is one pack read on a button press a
+    // player makes a handful of times.
+    skinKey_ = skins_[usize(skinCursor_)].key;
+    const std::string path =
+        packName_.empty() ? std::string() : texture::packPath(texture::kPacksDir, packName_);
+    texture::AtlasImage rebuilt;
+    if (texture::buildAtlas(fs_, path, &rebuilt) == texture::PackError::Ok) {
+        atlas_ = std::move(rebuilt);
+        ++packRevision_;
+    }
+    applySavedSkin();
+    saveSettings();
+    consoleDirty_ = true;
+}
+
+void Menu::drawSkins()
+{
+    drawLabelCentered("Skin", kScreenWidth * 0.5f, 16.0f, 0.7f, kInk, true);
+
+    const int rows = int(skins_.size());
+    const float rowX = 20.0f;
+    const float rowWidth = kScreenWidth - 2.0f * rowX;
+
+    const int visible = drawListChrome(rows, skinScroll_);
+    for (int i = 0; i < visible; ++i) {
+        const int index = skinScroll_ + i;
+        const texture::SkinEntry& skin = skins_[usize(index)];
+        const Rect rect{rowX, kRowsTop + float(i) * (kRowHeight + kRowGap), rowWidth,
+                        kRowHeight};
+        drawButton(rect, "", index == skinCursor_, true);
+
+        // Which skin is live, as a mark on the row: "selected" is the cursor,
+        // and the player needs to see both at once. The same idiom the pack
+        // list uses.
+        if (skin.key == skinKey_) {
+            drawLabel("*", rect.x + 8.0f, rect.y + 5.0f, 0.55f, kInkWarn, C2D_AlignLeft, true);
+        }
+
+        // **What the row says about itself**, and the slim mark is the one that
+        // earns its place: a player whose Alex skin looks a texel too wide
+        // should be told why on the screen that offered it, not left to guess.
+        char detail[40];
+        switch (skin.source) {
+        case texture::SkinSource::Default:
+            std::snprintf(detail, sizeof(detail), "%s",
+                          packName_.empty() ? "black" : "texture pack");
+            break;
+        case texture::SkinSource::Pack:
+        case texture::SkinSource::File:
+            std::snprintf(detail, sizeof(detail), "%dx%d%s", skin.width, skin.height,
+                          skin.model == texture::SkinModel::Slim ? "  slim" : "");
+            break;
+        }
+
+        constexpr float kDetailWidth = 84.0f;
+        drawLabelClipped(skin.name.c_str(), rect.x + 22.0f, rect.y + 3.0f, 0.55f, kInk,
+                         rect.w - 32.0f - kDetailWidth);
+        drawLabel(detail, rect.x + rect.w - 10.0f, rect.y + 6.0f, 0.4f, kInkDim,
+                  C2D_AlignRight, true);
+    }
 }
 
 void Menu::drawTexturePacks()

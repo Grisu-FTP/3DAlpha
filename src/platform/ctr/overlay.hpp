@@ -76,11 +76,13 @@
 // panels behind the text are drawn once on a page change and the text over them
 // only when the number in it moved.
 
+#include "core/entity/item_entity.hpp"
 #include "core/gui/paint.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/background.hpp"
+#include "core/world/sign_store.hpp"
 #include "platform/ctr/hud.hpp"
 #include "platform/ctr/map_screen.hpp"
 #include "platform/ctr/audio.hpp"
@@ -184,6 +186,17 @@ struct DebugSettings {
     // before reading the numbers back.
     bool geometryQuads = true;
 
+    // Greedy meshing: equal neighbouring cube faces drawn as one quad, runs of
+    // up to 3x3. See MeshBuilder::setGreedy and core/mesh/cube_atlas.hpp.
+    //
+    // **On by default.** The real 1119-column world meshes to 2.02x fewer cube
+    // quads with it, and about half the pool memory, for ~2 % more mesh time;
+    // on a console, runs of 4x4 took a frame from 34 ms GPU / 44 ms CPU to
+    // 22 / 25 (docs/status.md §22). This row is the A/B: flip it and read the
+    // Info page. Like the cube format it re-meshes everything resident, so give
+    // the world a moment before reading.
+    bool greedyMeshing = true;
+
     bool wireframe = false;
 
     // Bounds for the render distance, set once by the caller.
@@ -253,12 +266,92 @@ public:
     // the icons unpainted rather than painting the wrong thing.
     void setAtlas(const texture::AtlasImage& atlas);
 
-    // What is in the player's hand, for the placement path. **Held here because
-    // the hotbar is HUD state**: it is drawn, touched and cursored on this
-    // screen and nowhere else, and nothing outside reads it but the one line in
-    // the edit path that asks what to place. It is not saved -- see
-    // core/item/hotbar.hpp.
-    const item::Hotbar& hotbar() const { return hotbar_; }
+    // What the player is carrying. **Held here because it is what this screen
+    // is**: every slot in it is drawn, touched and cursored on the bottom
+    // screen and nowhere else, and the only thing outside that reads it is the
+    // one line in the edit path asking what to place.
+    //
+    // It *is* saved now -- see core/item/inventory.hpp -- which is why the two
+    // methods below exist: `setInventory` hands the world's own stacks in at
+    // world open, and `takeInventoryChange` tells the caller when to hand them
+    // back. Polling the whole thing every frame would be a forty-stack compare
+    // for a thing that changes when a button is pressed.
+    const item::Inventory& inventory() const { return inventory_; }
+
+    // **The live compass face, handed down from the world tick.**
+    //
+    // `texels` is 16 x 16 RGBA or null, and `tile` is which items-sheet tile it
+    // stands in for. See core/texture/compass_fx.hpp for why a compass is a
+    // texture; the override itself is `gui::IconSheets::animatedItems`.
+    //
+    // **It marks the screen dirty only when something visible draws that
+    // tile.** A compass in a chest twenty blocks away must not cost a bottom
+    // screen redraw twenty times a second, and a player carrying none must
+    // cost nothing at all -- so this scans the nine hotbar slots and, when a
+    // page that shows slots is open, that page's, and returns without touching
+    // a dirty flag when none of them is it.
+    void setAnimatedItemsTile(int tile, const u8* texels);
+
+    // **The sign editor**, which is `GuiEditSign` and is the half of "signs
+    // don't work" that is not the renderer: a sign placed with no keyboard can
+    // never say anything.
+    //
+    // **One keyboard for all four lines, not four keyboards.** The original
+    // edits a sign in place with the arrow keys moving between lines; a console
+    // has a system keyboard applet and opening it four times to write one sign
+    // would be worse than the thing it replaces. So this is a multi-line
+    // keyboard and the lines come back split on newline, truncated to fifteen
+    // characters each -- which is the editor's own limit.
+    //
+    // Returns whether anything was confirmed. Must not be called between
+    // C3D_FrameBegin and C3D_FrameEnd, for the reason `teleportViaKeyboard`
+    // gives at length.
+    bool editSignViaKeyboard(world::SignStore* store, int index);
+
+    // The stacks a world was loaded with. Called once, after `begin`. An empty
+    // list means a player who has never carried anything, and gets the
+    // palette's opening hand instead of an empty screen -- which is what
+    // Creative wants and is not something that can be saved as "no inventory".
+    void setInventory(const std::vector<item::ItemStack>& stacks);
+
+    // **One item off the held stack**, which is `InventoryPlayer.decrStackSize`
+    // and the half of a drop that is not the entity. Returns what came off, or
+    // 0 for an empty hand.
+    //
+    // **Called after the entity exists, never before.** The pool that holds
+    // dropped items can be full, and an item taken off the hand for an entity
+    // that was refused is an item destroyed; the caller spawns first and spends
+    // the stack only once that succeeded.
+    //
+    // Here rather than at the call site because the inventory is this screen's
+    // and the hotbar it redraws is too: a caller reaching through `inventory()`
+    // could not mark either dirty, and the slot would empty without the bottom
+    // screen noticing.
+    item::ItemId dropHeldItem();
+
+    // **What the held stack turns into**, which is one item in a1.1.2 and it is
+    // the bucket: emptied it becomes full, poured it becomes empty. `id` is
+    // `item::ItemUse::becomes`, so passing back what was already there is a
+    // no-op rather than a case the caller has to filter.
+    //
+    // The count and the damage are left alone deliberately. A bucket stacks to
+    // one, so there is nothing to split, and this build spends nothing --
+    // Survival is where a stack of buckets has to decide whether the filled one
+    // goes back into the same slot. Here for the same reason `dropHeldItem` is:
+    // it writes the inventory, so it is what marks the bottom screen dirty.
+    void replaceHeldItem(item::ItemId id);
+
+    // `dx.b(dm)` from the player's side -- **walking over what is lying about**.
+    // Returns how many entities were taken whole, so the caller can make the
+    // noise; this has no sound engine and no listener to attenuate against.
+    //
+    // Here for the same reason `dropHeldItem` is: it writes to the inventory,
+    // so it is what marks the screen dirty.
+    int collectItems(mc::entity::ItemEntitySystem& items, const AABB& playerBox);
+
+    // True once after anything in the inventory changed, and false until it
+    // changes again. The caller writes it back to the world on a true.
+    bool takeInventoryChange();
 
     // Whether this gamemode has a hotbar at all. Spectator does not: it has no
     // body, no reach and nothing to hold.
@@ -411,7 +504,33 @@ private:
 
     // Where the palette cursor is, as a palette index rather than a cell.
     int paletteIndex() const { return palettePage_ * hud::kPalettePerPage + paletteCursor_; }
-    void showBlockInPalette(block::BlockId id);
+
+    // **Whether the page up has cells for the focused d-pad to walk over.** Two
+    // do now -- the palette's 45 and the backpack's 27 -- so every place that
+    // used to test for the Blocks page asks this instead. A page added later
+    // that forgets to answer here gets a cursor that cannot be moved, which is
+    // visible; the alternative was four copies of the same comparison drifting
+    // apart, which is not.
+    bool pageHasGrid() const
+    {
+        return playerPage_ == PlayerPage::Blocks || playerPage_ == PlayerPage::Items;
+    }
+    void showItemInPalette(item::ItemId id);
+
+    // Picking a stack up and putting it down, which is the only edit the
+    // inventory takes. `slot` is an inventory slot number, so the hotbar band
+    // and the backpack grid go through the same two lines.
+    //
+    // **One click picks up and the next puts down**, rather than a drag. A
+    // resistive screen sampled once a frame reports a drag as a sequence of
+    // jumps, and the d-pad has no drag at all -- so a gesture that works with
+    // one press is the only one both input routes can make.
+    void touchSlot(int slot);
+    void cancelHeld();
+
+    // Fills the selected hand slot from the palette cursor's cell. A copy
+    // rather than a move -- the palette holds nothing to take away.
+    void takeFromPalette();
 
     const NdspBackend* audio_ = nullptr;
 
@@ -434,26 +553,43 @@ private:
 
     // Render distance, cube format, wireframe, teleport. The map's grids were a
     // fifth; they are under the d-pad on the map page now.
-    static constexpr int kSettingCount = 4;
+    static constexpr int kSettingCount = 5;
 
     settings::Gamemode gamemode_ = settings::Gamemode::Spectator;
     MapScreen map_;
 
-    // The nine slots, and where the palette and the focus are looking.
-    item::Hotbar hotbar_;
+    // The forty slots, and where the palette, the backpack grid and the focus
+    // are looking.
+    item::Inventory inventory_;
     int palettePage_ = 0;
     int paletteCursor_ = 0;
+    int itemsCursor_ = 0;
+
+    // The slot a stack has been lifted out of, or -1. It is a slot number and
+    // not a copy of the stack, so nothing can be duplicated or lost by a page
+    // change: the stack never leaves the array, and putting it down is a swap.
+    int heldSlot_ = -1;
+
+    // Set by every edit, cleared by takeInventoryChange.
+    bool inventoryChanged_ = false;
 
     // **Focus is two booleans and not a mode enum**, because there are exactly
     // three states and the third is not reachable: the screen is unfocused, or
-    // it is focused on the hotbar row, or it is focused on the palette grid --
-    // and the last is only possible on the Blocks page, which is enforced where
-    // the page changes rather than represented here.
+    // it is focused on the hotbar row, or it is focused on the grid above it --
+    // and the last is only possible on a page that has a grid, which is
+    // enforced where the page changes rather than represented here.
+    //
+    // `focusGrid_` used to be `focusPalette_`, when the Blocks page was the only
+    // one with cells to walk over. The Items page has twenty-seven of them now
+    // and the cursor behaves identically on both, so the flag says "the grid"
+    // and the page says which grid.
     bool focus_ = false;
-    bool focusPalette_ = false;
+    bool focusGrid_ = false;
 
-    // The atlas's pixels, borrowed. Null until a pack has been handed over.
-    const u8* atlasRgba_ = nullptr;
+    // The two sheets' pixels, borrowed. Null until a pack has been handed over;
+    // the items one stays null for a pack that has no gui/items.png, which
+    // core/gui/item_icon.hpp falls back from rather than fails on.
+    gui::IconSheets sheets_;
 
     // **Two dirty flags rather than one**, because the hotbar and the page
     // above it change at completely different rates: a shoulder press moves the

@@ -122,6 +122,18 @@ public class genref {
             emitPlacement(args[1], args[3]);
             return;
         }
+        if (args.length == 4 && args[0].equals("--jar") && args[2].equals("--items")) {
+            emitItems(args[1], args[3]);
+            return;
+        }
+        if (args.length == 3 && args[0].equals("--jar") && args[2].equals("--drops")) {
+            emitDrops(args[1]);
+            return;
+        }
+        if (args.length == 3 && args[0].equals("--jar") && args[2].equals("--art")) {
+            emitArt(args[1]);
+            return;
+        }
         System.err.println("       java tools/genref.java --jar <client.jar> --generate <scratch-dir>");
         System.err.println("usage: java tools/genref.java --random     > tests/java_random_vectors.hpp");
         System.err.println("       java tools/genref.java --strictmath > tests/strict_math_vectors.hpp");
@@ -135,6 +147,9 @@ public class genref {
         System.err.println("       java tools/genref.java --jar <client.jar> --player <scratch-dir> > tests/player_body_vectors.hpp");
         System.err.println("       java tools/genref.java --jar <client.jar> --raytrace <scratch-dir> > tests/ray_trace_vectors.hpp");
         System.err.println("       java tools/genref.java --jar <client.jar> --place <scratch-dir> > tests/placement_vectors.hpp");
+        System.err.println("       java tools/genref.java --jar <client.jar> --items <scratch-dir> > data/a1.1.2/items.json");
+        System.err.println("       java tools/genref.java --jar <client.jar> --drops > data/a1.1.2/drops.json");
+        System.err.println("       java tools/genref.java --jar <client.jar> --art > data/a1.1.2/paintings.json");
         System.exit(2);
     }
 
@@ -4184,11 +4199,33 @@ public class genref {
             java.lang.reflect.Method collisionRayTrace = blockClass.getMethod(
                 "a", worldClass, int.class, int.class, int.class,
                 loader.loadClass("aj"), loader.loadClass("aj"));
+            // **getSelectedBoundingBoxFromPool, and it is the one the outline
+            // is actually drawn around.** `RenderGlobal.drawSelectionBox` asks
+            // this and nothing else, and three blocks in a1.1.2 -- the ladder
+            // (`br`), the cactus (`hy`) and the staircase (`km`) -- override it
+            // while overriding `collisionRayTrace` not at all. Reading the ray
+            // trace's residue alone therefore recorded **a ladder as a full
+            // cube**, because `br` sets its two-sixteenths box in `d` and `f`
+            // and never on the path a ray takes.
+            //
+            // It is called *after* collisionRayTrace and not instead of it, so
+            // the sequence matches the frame's: `Block.f` falls through to the
+            // block's own bf..bk for everything that does not override it, and
+            // for a torch those are what its collisionRayTrace just set. Doing
+            // only one of the two loses one shape or the other.
+            java.lang.reflect.Method selectedBox = blockClass.getMethod(
+                "f", worldClass, int.class, int.class, int.class);
             Class<?> vecClass = loader.loadClass("aj");
             java.lang.reflect.Method makeVec = vecClass.getMethod(
                 "a", double.class, double.class, double.class);
             // canCollideCheck(metadata, hitLiquids) -- whether the ray sees it
             // at all.
+            // canCollideCheck(metadata, hitLiquids) -- asked **both ways**.
+            // `hitLiquids` is the flag `ItemBucket` passes when it looks for
+            // something to scoop, and exactly one class reads it: `jp`,
+            // BlockFluid, whose whole override is `hitLiquids && metadata == 0`.
+            // So the answer varies with metadata in the true case and not in
+            // the false one, and the two need separate columns.
             java.lang.reflect.Method canCollideCheck = blockClass.getMethod(
                 "a", int.class, boolean.class);
             // AxisAlignedBB.getBoundingBox -- the unpooled factory, so the mask
@@ -4254,6 +4291,11 @@ public class genref {
             p("//     holding by the previous query. The generator restores each block's own");
             p("//     constructor bounds before every query, so what is recorded here is that");
             p("//     default rather than an artefact of iteration order.");
+            p("//   * **The selection box comes from getSelectedBoundingBoxFromPool**, which is");
+            p("//     the method the outline is drawn around -- not from the bounds a ray trace");
+            p("//     leaves behind. Three blocks override one and not the other, and reading");
+            p("//     only the ray's residue reported a ladder as a full cube and a cactus as");
+            p("//     its collision box. See kSelectionBoxes below.");
             p("//");
             p("// Regenerate with:");
             p("//   java tools/genref.java --jar <client.jar> --collision /tmp/genref-scratch");
@@ -4280,6 +4322,7 @@ public class genref {
             StringBuilder table = new StringBuilder();
             StringBuilder selection = new StringBuilder();
             StringBuilder targets = new StringBuilder();
+            StringBuilder liquidTargets = new StringBuilder();
             int cases = 0;
             int empty = 0;
             int multi = 0;
@@ -4332,16 +4375,27 @@ public class genref {
                     collisionRayTrace.invoke(blocks[id], world, bx, by, bz,
                         makeVec.invoke(null, bx - 2.0, by + 0.5, bz + 0.5),
                         makeVec.invoke(null, bx + 3.0, by + 0.5, bz + 0.5));
+                    // Then the outline's own question, on top of that state.
+                    // The answer comes back in **world** coordinates, so the
+                    // block's corner comes off each edge to leave the local box
+                    // the rest of this fixture is written in.
+                    Object picked = selectedBox.invoke(blocks[id], world, bx, by, bz);
+                    final double[] corner = {bx, by, bz, bx, by, bz};
                     StringBuilder pick = new StringBuilder();
                     for (int e = 0; e < 6; e++) {
-                        pick.append(e == 0 ? "" : ", ").append(dbl(bound[e].getDouble(blocks[id])));
+                        pick.append(e == 0 ? "" : ", ")
+                            .append(dbl(edge[e].getDouble(picked) - corner[e]));
                     }
                     final boolean targetable =
                         ((Boolean) canCollideCheck.invoke(blocks[id], meta, Boolean.FALSE))
                             .booleanValue();
+                    final boolean targetableLiquid =
+                        ((Boolean) canCollideCheck.invoke(blocks[id], meta, Boolean.TRUE))
+                            .booleanValue();
                     selection.append("    {").append(pick).append("},   // ")
                              .append(id).append(" meta ").append(meta).append("\n");
                     targets.append(targetable ? "    true,\n" : "    false,\n");
+                    liquidTargets.append(targetableLiquid ? "    true,\n" : "    false,\n");
                     if (targetable) {
                         targetableCases++;
                     }
@@ -4411,11 +4465,19 @@ public class genref {
             p("");
             p("inline constexpr int kCollisionCaseCount = " + cases + ";");
             p("");
-            p("// The **selection** box, in the same order as kCollisionCases: the block's own");
-            p("// bounds after setBlockBoundsBasedOnState, which is what Block.collisionRayTrace");
-            p("// reads. It is not the collision box -- a torch has no collision box at all and");
-            p("// still has one of these, which is why a torch can be aimed at and broken but");
-            p("// not stood on.");
+            p("// The **selection** box, in the same order as kCollisionCases: what");
+            p("// `Block.getSelectedBoundingBoxFromPool` answers once a ray trace has run over");
+            p("// the block, which is exactly the sequence a frame performs -- rayTraceBlocks");
+            p("// first, then drawSelectionBox. It is not the collision box: a torch has no");
+            p("// collision box at all and still has one of these, which is why a torch can be");
+            p("// aimed at and broken but not stood on.");
+            p("//");
+            p("// **Both calls are needed and neither alone is right.** `Block.f` falls through");
+            p("// to the block's own bf..bk, and a torch's are set by its own collisionRayTrace");
+            p("// override -- so asking only `f` loses the torch's post. The ladder (`br`), the");
+            p("// cactus (`hy`) and the staircase (`km`) instead override `f` and leave");
+            p("// collisionRayTrace alone -- so asking only the ray loses the ladder's two");
+            p("// sixteenths and reported it, wrongly, as a full cube.");
             p("inline constexpr CollisionBox kSelectionBoxes[kCollisionCaseCount] = {");
             System.out.print(selection);
             p("};");
@@ -4424,6 +4486,15 @@ public class genref {
             p("// whether the ray notices the block before it looks at its shape.");
             p("inline constexpr bool kTargetable[kCollisionCaseCount] = {");
             System.out.print(targets);
+            p("};");
+            p("");
+            p("// The same question with **hitLiquids true**, which is the flag ItemBucket passes");
+            p("// when it goes looking for something to scoop. One class in a1.1.2 reads it --");
+            p("// `jp`, BlockFluid, whose entire override is `hitLiquids && metadata == 0` -- so");
+            p("// this differs from kTargetable only for water and lava, and only at metadata 0.");
+            p("// **That is why an empty bucket fills from a source block and not from a stream.**");
+            p("inline constexpr bool kTargetableWithLiquids[kCollisionCaseCount] = {");
+            System.out.print(liquidTargets);
             p("};");
             p("");
             p("inline constexpr int kTargetableCases = " + targetableCases + ";");
@@ -4504,6 +4575,20 @@ public class genref {
         return out.toArray(new int[0][]);
     }
 
+    // A solid volume of one block, `y0` to `y1` inclusive above the plate. Used
+    // for the liquid cases; `plate` only makes a single layer.
+    private static int[][] pool(int id, int x0, int x1, int z0, int z1, int y0, int y1) {
+        java.util.List<int[]> out = new java.util.ArrayList<int[]>();
+        for (int x = x0; x <= x1; x++) {
+            for (int z = z0; z <= z1; z++) {
+                for (int y = y0; y <= y1; y++) {
+                    out.add(new int[]{x, y, z, id, 0});
+                }
+            }
+        }
+        return out.toArray(new int[0][]);
+    }
+
     private static int[][] concat(int[][] a, int[][] b) {
         int[][] out = new int[a.length + b.length][];
         System.arraycopy(a, 0, out, 0, a.length);
@@ -4561,6 +4646,11 @@ public class genref {
                 livingClass.getMethod("b", float.class, float.class);
             java.lang.reflect.Method jumpMethod = livingClass.getDeclaredMethod("C");
             jumpMethod.setAccessible(true);
+            // `kh.g_()` -- isInWater, and `kh.G()` -- handleLavaMovement. The
+            // jump branch of onLivingUpdate asks both before it decides that
+            // holding the button means "jump" rather than "rise".
+            java.lang.reflect.Method inWaterMethod = entityClass.getMethod("g_");
+            java.lang.reflect.Method inLavaMethod = entityClass.getMethod("G");
 
             java.lang.reflect.Field posX = entityField(entityClass, "ak");
             java.lang.reflect.Field posY = entityField(entityClass, "al");
@@ -4585,6 +4675,8 @@ public class genref {
             final int SLAB = 44;
             final int ICE = 79;
             final int FENCE = 85;
+            final int WATER = 9;
+            final int LAVA = 11;
 
             // {name, scene, yaw, strafe, forward, jump, startFeetAbove, steps}
             //
@@ -4625,6 +4717,40 @@ public class genref {
                 {"strafe_and_forward_together_do_not_go_faster",
                  plate(STONE, -10, 10, -10, 10),
                  0.0f, 1.0f, 1.0f, false, 0.0, 30},
+
+                // **The liquid branches**, which `moveEntityWithHeading` takes
+                // before it ever looks at the ground. Still water and still
+                // lava only, and that is a deliberate restriction rather than
+                // laziness: `handleMaterialAcceleration` also pushes the player
+                // along a fluid's flow vector, and the port does not implement
+                // that push yet. A pool of source blocks has no flow at its
+                // interior, so these cases compare the parts that *are*
+                // implemented and would stop comparing the moment the pool
+                // started running. See core/entity/player_body.cpp.
+                {"sink_in_still_water", concat(plate(STONE, -4, 4, -4, 4),
+                     pool(WATER, -4, 4, -4, 4, 1, 5)),
+                 0.0f, 0.0f, 0.0f, false, 3.0, 60},
+                {"swim_forward_in_still_water", concat(plate(STONE, -4, 4, -4, 12),
+                     pool(WATER, -4, 4, -4, 12, 1, 5)),
+                 0.0f, 0.0f, 1.0f, false, 3.0, 60},
+                {"swim_up_by_holding_jump", concat(plate(STONE, -4, 4, -4, 4),
+                     pool(WATER, -4, 4, -4, 4, 1, 6)),
+                 0.0f, 0.0f, 0.0f, true, 2.0, 60},
+                {"wade_out_of_water_onto_a_shore",
+                 concat(concat(plate(STONE, -4, 4, -4, 12),
+                     pool(WATER, -4, 4, -4, 4, 1, 3)),
+                     new int[][]{{-1,1,5,STONE,0},{0,1,5,STONE,0},{1,1,5,STONE,0},
+                                 {-1,2,5,STONE,0},{0,2,5,STONE,0},{1,2,5,STONE,0}}),
+                 0.0f, 0.0f, 1.0f, false, 2.0, 60},
+                {"sink_in_still_lava", concat(plate(STONE, -4, 4, -4, 4),
+                     pool(LAVA, -4, 4, -4, 4, 1, 5)),
+                 0.0f, 0.0f, 0.0f, false, 3.0, 60},
+                {"swim_forward_in_still_lava", concat(plate(STONE, -4, 4, -4, 12),
+                     pool(LAVA, -4, 4, -4, 12, 1, 5)),
+                 0.0f, 0.0f, 1.0f, false, 3.0, 60},
+                {"a_puddle_is_not_deep_enough_to_swim_in",
+                 concat(plate(STONE, -4, 4, -4, 12), pool(WATER, -4, 4, -4, 12, 1, 1)),
+                 0.0f, 0.0f, 1.0f, false, 0.0, 40},
             };
 
             // Two origins, so every case is run once in positive coordinates
@@ -4777,10 +4903,22 @@ public class genref {
 
                     StringBuilder rows = new StringBuilder();
                     for (int s = 0; s < steps; s++) {
-                        // The order onLivingUpdate uses: jump first, if the
-                        // button is held and there is something underfoot.
-                        if (jumping && onGround.getBoolean(player)) {
-                            jumpMethod.invoke(player);
+                        // `ge.j()` -- the jump branch of onLivingUpdate, and
+                        // it is three-way rather than one. **Holding the
+                        // button in a liquid does not jump**: water and lava
+                        // each add a flat 0.03999999910593033 to motionY and
+                        // the jump is never reached, which is what swimming up
+                        // is. Only the third branch, on the ground and in
+                        // neither liquid, calls `C()`.
+                        if (jumping) {
+                            if (((Boolean) inWaterMethod.invoke(player)).booleanValue()
+                                || ((Boolean) inLavaMethod.invoke(player)).booleanValue()) {
+                                motionY.setDouble(player,
+                                                  motionY.getDouble(player)
+                                                      + 0.03999999910593033D);
+                            } else if (onGround.getBoolean(player)) {
+                                jumpMethod.invoke(player);
+                            }
                         }
                         moveWithHeading.invoke(player, strafe, forward);
 
@@ -4885,6 +5023,8 @@ public class genref {
             Class<?> worldClass = loader.loadClass(WORLD);
             Class<?> vecClass = loader.loadClass("aj");
             Class<?> hitClass = loader.loadClass("mf");
+            Class<?> blockClass = loader.loadClass("ly");
+            Object[] blocks = (Object[]) blockClass.getField("n").get(null);
 
             java.lang.reflect.Constructor<?> worldCtor =
                 worldClass.getConstructor(java.io.File.class, String.class, long.class);
@@ -4967,6 +5107,45 @@ public class genref {
                              .append(dz).append(", ").append(id).append(", ").append(meta)
                              .append("},\n");
                         placements++;
+                    }
+                }
+            }
+
+            // **Warm every block singleton the way a played frame leaves it.**
+            //
+            // `Block.collisionRayTrace` tests the ray against the block's own
+            // `bf..bk` fields, and three blocks in a1.1.2 never write those on
+            // the ray's path: the ladder, the cactus and the staircase set
+            // their bounds in `getCollisionBoundingBoxFromPool` and
+            // `getSelectedBoundingBoxFromPool` instead. On a world built two
+            // statements ago those fields still hold the constructor's default
+            // -- so a cold sweep records **a ladder as a full cube**, which is
+            // not what any running client does: `RenderGlobal.drawSelectionBox`
+            // calls `f` on the targeted block every frame, and
+            // `Entity.moveEntity` calls `d` on every block the body overlaps
+            // every tick, and both leave the real box behind. A player is
+            // therefore looking at the two-sixteenths box from the first frame
+            // after the first time anything touched that ladder, which is
+            // always.
+            //
+            // Priming with `f` over the scene puts the singletons in that state
+            // before the sweep rather than recording the litter of an
+            // untouched JVM. It is deterministic here because the scene holds
+            // one of each -- in a world with two ladders facing different ways
+            // the original genuinely answers with whichever was asked last,
+            // which is a bug this port does not reproduce. See
+            // docs/physics-a1.1.2.md.
+            java.lang.reflect.Method blockSelectedBox = blockClass.getMethod(
+                "f", worldClass, int.class, int.class, int.class);
+            for (int dx = -10; dx <= 10; dx++) {
+                for (int dz = -10; dz <= 10; dz++) {
+                    for (int dy = -3; dy <= 10; dy++) {
+                        final int id = ((Integer) getId.invoke(world, ox + dx, oy + dy, oz + dz))
+                                           .intValue();
+                        if (id == 0 || blocks[id] == null) {
+                            continue;
+                        }
+                        blockSelectedBox.invoke(blocks[id], world, ox + dx, oy + dy, oz + dz);
                     }
                 }
             }
@@ -5164,8 +5343,17 @@ public class genref {
                 "e", int.class, int.class, int.class);
             java.lang.reflect.Method onPlaced = blockClass.getMethod(
                 "d", worldClass, int.class, int.class, int.class, int.class);
-            java.lang.reflect.Method onPlacedBy = blockClass.getMethod(
-                "b", worldClass, int.class, int.class, int.class, playerClass);
+            // **`ly.b(Lcn;IIILdm;)V` is `onBlockClicked`, and it is not part of
+            // placing anything.** This sweep used to call it here, on the theory
+            // that a1.1.2 had an `onBlockPlacedBy` the controller ran after
+            // `ItemBlock.onItemUse`. It does not: `Block` takes an `EntityPlayer`
+            // in exactly three methods, and that one is reached from
+            // `PlayerController.clickBlock` -- the *left* button, the start of
+            // mining. Calling it after each placement punched every block the
+            // sweep had just put down, and the lever noticed: a punch flips it,
+            // so every lever row came out with bit 3 set and the shipped table
+            // placed levers already switched on.
+            java.lang.reflect.Field worldRandom = worldClass.getField("n");
 
             Object player = playerClass.getConstructor(worldClass).newInstance(world);
             java.lang.reflect.Method setPosition = entityClass.getMethod(
@@ -5194,10 +5382,21 @@ public class genref {
             int oriented = 0;
             java.util.TreeSet<Integer> sideVaries = new java.util.TreeSet<Integer>();
             java.util.TreeSet<Integer> yawVaries = new java.util.TreeSet<Integer>();
+            // **Which blocks have an onBlockPlaced at all.** The sweep sees the
+            // sum of onBlockAdded and onBlockPlaced, and with one stone cube
+            // for a neighbour the two can look alike: a furnace turns its
+            // mouth away from the stone in onBlockAdded, and so appears to
+            // "take the struck face" when it takes nothing of the kind. Asked
+            // of the class rather than inferred from the results.
+            java.util.TreeSet<Integer> hooked = new java.util.TreeSet<Integer>();
 
             for (int id = 0; id < 256; id++) {
                 if (id >= blocks.length || blocks[id] == null) {
                     continue;
+                }
+                if (blocks[id].getClass().getMethod("d", worldClass, int.class, int.class,
+                        int.class, int.class).getDeclaringClass() != blockClass) {
+                    hooked.add(Integer.valueOf(id));
                 }
                 int[][] result = new int[6][yaws.length];
                 for (int side = 0; side < 6; side++) {
@@ -5220,9 +5419,18 @@ public class genref {
                         setPosition.invoke(player, cx + 0.5, cy + 3.0, cz + 0.5);
                         yawField.setFloat(player, yaws[y]);
 
+                        // **The world's Random, reset before every case.** One
+                        // block reaches for it while being placed --
+                        // `BlockLever.onBlockAdded` writes `5 + nextInt(2)`, which
+                        // is which way round a floor lever's handle lies -- and an
+                        // unseeded sweep therefore reports that block as varying
+                        // for reasons that have nothing to do with the case being
+                        // swept. Reseeding makes the table a function of (id, face)
+                        // again, which is the shape `placementMetadata` has.
+                        worldRandom.set(world, new Random(1234567890L));
+
                         setWithNotify.invoke(world, tx, ty, tz, id);
                         onPlaced.invoke(blocks[id], world, tx, ty, tz, side);
-                        onPlacedBy.invoke(blocks[id], world, tx, ty, tz, player);
 
                         final int landedId = ((Integer) getId.invoke(world, tx, ty, tz)).intValue();
                         result[side][y] = landedId == id
@@ -5265,11 +5473,19 @@ public class genref {
             p("// Do not edit by hand.");
             p("//");
             p("// **What metadata a block ends up with when a player places it**, swept over every");
-            p("// face of a clicked stone cube and eight player headings.");
+            p("// face of a clicked stone cube and sixteen player headings.");
             p("//");
             p("// The sequence is the one a1.1.2 runs, found by following a right-click down:");
-            p("// ItemBlock.onItemUse does setBlockWithNotify then onBlockPlaced(side), and the");
-            p("// *controller* -- not ItemBlock -- calls onBlockPlacedBy(player) afterwards.");
+            p("// ItemBlock.onItemUse does setBlockWithNotify -- which runs onBlockAdded -- and");
+            p("// then onBlockPlaced(side). That is the whole of it. a1.1.2 has no");
+            p("// onBlockPlacedBy: Block takes an EntityPlayer in three methods and none of");
+            p("// them is on the placement path, so **nothing in this version orients from the");
+            p("// player's heading**. (ItemDoor is the one thing that does, and it reads the");
+            p("// heading in the *item*, never in the block.)");
+            p("//");
+            p("// The world's Random is reseeded before every case, because BlockLever.");
+            p("// onBlockAdded rolls nextInt(2) for which way a floor lever lies and an");
+            p("// unseeded sweep reports that as variation.");
             p("//");
             p("// -1 means the block did not survive being placed there at all: it deleted");
             p("// itself, the way a torch does with nothing to hang on.");
@@ -5313,10 +5529,22 @@ public class genref {
             System.out.print(rows);
             p("};");
             p("");
+            p("// Blocks whose class overrides onBlockPlaced (`ly.d(Lcn;IIII)V`). For every");
+            p("// other block the metadata above is onBlockAdded's alone -- a furnace or a");
+            p("// staircase reading its neighbours, which in this sweep are the one stone cube");
+            p("// -- and onBlockPlaced leaves it as it found it.");
+            StringBuilder hookList = new StringBuilder();
+            for (Integer id : hooked) {
+                hookList.append(hookList.length() == 0 ? "" : ", ").append(id);
+            }
+            p("inline constexpr int kPlacementHookCount = " + hooked.size() + ";");
+            p("inline constexpr u16 kPlacementHooks[kPlacementHookCount] = {" + hookList + "};");
+            p("");
             p("}  // namespace mc::test");
 
             System.err.println("side-varying ids: " + sideVaries);
             System.err.println("yaw-varying ids:  " + yawVaries);
+            System.err.println("onBlockPlaced:    " + hooked);
         } catch (Exception e) {
             System.err.println("genref --place failed: " + e);
             e.printStackTrace();
@@ -5328,5 +5556,741 @@ public class genref {
 
     private static void p(String line) {
         System.out.println(line);
+    }
+
+    // ---------------------------------------------------------------------
+    // The item table
+    // ---------------------------------------------------------------------
+    //
+    // Emits data/<version>/items.json: every entry of `Item.itemsList`, with
+    // the columns the engine actually needs -- the icon it draws, the sheet
+    // that icon is on, how high it stacks, how much damage it takes, and which
+    // block it puts into the world.
+    //
+    // **The last column is measured rather than read.** Three of the classes
+    // that place a block do not name it in a field: ItemRedstone, ItemSign and
+    // ItemDoor decide inside `onItemUse`, and ItemDoor's answer depends on the
+    // material it was constructed with. Rather than pattern-match three
+    // bytecodes, this builds a real World, stands a real EntityPlayer in it and
+    // uses each item on the top face of a real block, then reads back what
+    // appeared. That is the same "run it, do not guess it" arrangement as
+    // --collision and --player, and it is why doors and sugar cane come out
+    // right without anything here knowing what a door is.
+    //
+    // Five grounds are tried in turn because placement has preconditions: seeds
+    // want farmland, cactus wants sand, and reeds want sand or dirt with water
+    // beside it. Five faces are tried for the same reason -- a ladder and a
+    // wall torch go on the *side* of a block and refuse the top -- and the top
+    // face is tried first so a block that would take either is recorded the way
+    // a player would place it. The first combination that produces a block
+    // wins, and an item that places nothing on any of them -- a sword, an
+    // ingot -- reports 0.
+    //
+    // **A bucket reports 0 and that is correct.** `ItemBucket` does its work in
+    // `onItemRightClick` off a ray trace rather than in `onItemUse`, so there
+    // is no face to hand it and nothing here to measure. It is a real gap in
+    // what a Creative hand can do and it is named rather than papered over.
+    //
+    // **The sheet is a1.1.2's own rule and not a guess.** `RenderItem` picks
+    // between terrain.png and gui/items.png on `itemID < 256`, which is exactly
+    // the boundary between the ItemBlocks the Item static initialiser builds
+    // for every block and the items declared after them.
+    //
+    // **Names are ours**, exactly as they are in blocks.json, and for the same
+    // reason: a1.1.2 predates `setItemName` and its Item class carries no
+    // strings at all. They are the one column this tool cannot check. Ids below
+    // 256 take the block's name straight out of blocks.json rather than
+    // repeating it here, so the two files cannot drift.
+    //
+    // **The palette column, which is the one place a judgement is recorded.**
+    // `palette` says whether an item is offered in the Creative hand. Two rules
+    // decide it and only the second is invented:
+    //
+    //   1. **Derived.** An ItemBlock is hidden when some item above 255 places
+    //      the same block, because that item is the form a player holds: the
+    //      door you carry is item 324, not block 64, and offering the block
+    //      form is what put the *lower half of a door* in the hotbar instead of
+    //      a door. This is read out of the measured `places` column, so it
+    //      needs no list -- it covers signs, doors, reeds, seeds and redstone
+    //      without naming any of them.
+    //
+    //   2. **Ours, and seven ids long.** Each of these is a block *state* the
+    //      engine writes rather than a thing a player holds, and each has a
+    //      resting form already in the palette:
+    //
+    //        8, 10  flowing water and flowing lava -- water and lava stay
+    //        51     fire, which is what flint and steel is for
+    //        62     the burning furnace, beside the furnace
+    //        74     the lit redstone ore, beside the ore
+    //        75     the *unlit* redstone torch -- the one you carry is 76, the
+    //               lit one, which is why this pair is the way round it is
+    //        43     the double slab, which is not placed but *made*: two slabs
+    //               stacked merge into one, which the placement path does
+    //               because the jar does. Offering it directly would be a
+    //               shortcut past the only interesting thing about slabs.
+    //
+    //      a1.1.2 has no Creative mode and therefore no list to check this
+    //      against -- see core/item/creative_palette.hpp -- so it is spelled out
+    //      here rather than dressed up as a derivation. Everything else stays:
+    //      the mob spawner and bedrock are both reachable, because a Creative
+    //      mode with opinions about what you should want is worse than one
+    //      without.
+    private static final int[] PALETTE_HIDDEN = {8, 10, 43, 51, 62, 74, 75};
+
+    private static final String[] ITEM_NAMES_FROM_256 = {
+        "iron_shovel", "iron_pickaxe", "iron_axe", "flint_and_steel", "apple",
+        "bow", "arrow", "coal", "diamond", "iron_ingot", "gold_ingot",
+        "iron_sword", "wooden_sword", "wooden_shovel", "wooden_pickaxe",
+        "wooden_axe", "stone_sword", "stone_shovel", "stone_pickaxe",
+        "stone_axe", "diamond_sword", "diamond_shovel", "diamond_pickaxe",
+        "diamond_axe", "stick", "bowl", "mushroom_stew", "golden_sword",
+        "golden_shovel", "golden_pickaxe", "golden_axe", "string", "feather",
+        "gunpowder", "wooden_hoe", "stone_hoe", "iron_hoe", "diamond_hoe",
+        "golden_hoe", "seeds", "wheat", "bread", "leather_helmet",
+        "leather_chestplate", "leather_leggings", "leather_boots",
+        "chainmail_helmet", "chainmail_chestplate", "chainmail_leggings",
+        "chainmail_boots", "iron_helmet", "iron_chestplate", "iron_leggings",
+        "iron_boots", "diamond_helmet", "diamond_chestplate",
+        "diamond_leggings", "diamond_boots", "golden_helmet",
+        "golden_chestplate", "golden_leggings", "golden_boots", "flint",
+        "raw_porkchop", "cooked_porkchop", "painting", "golden_apple", "sign",
+        "wooden_door", "bucket", "water_bucket", "lava_bucket", "minecart",
+        "saddle", "iron_door", "redstone", "snowball", "boat", "leather",
+        "milk_bucket", "brick", "clay", "sugar_cane", "paper", "book",
+        "slimeball", "storage_minecart", "powered_minecart", "egg", "compass",
+        "fishing_rod",
+    };
+
+    // ---------------------------------------------------------------------
+    // What a block leaves behind -- Block.idDropped and Block.quantityDropped
+    // ---------------------------------------------------------------------
+    //
+    // Both take a `java.util.Random`, so neither can be read as a constant and
+    // neither can be *sampled* honestly either: a table built from one draw
+    // would say gravel drops flint. What they can be is **characterised**, by
+    // handing them a Random that answers every `nextInt(bound)` with the lowest
+    // value once and the highest value once and writes down the bounds it was
+    // asked for. Every one of a1.1.2's twenty-four overrides draws at most once,
+    // so two calls pin the whole distribution:
+    //
+    //   * no draw at all, and the two answers agree -- a constant;
+    //   * one draw, low answer < high answer -- `min + nextInt(bound)`, which is
+    //     redstone ore's 4..5;
+    //   * one draw, low answer > high answer -- `nextInt(bound) == 0 ? v : 0`,
+    //     which is a leaf block's one sapling in twenty;
+    //   * for `idDropped`, one draw with two different ids -- gravel's flint.
+    //
+    // The generator asserts the "at most one draw" property rather than
+    // assuming it, so a version whose block draws twice fails here instead of
+    // shipping a table that is quietly wrong.
+    //
+    // **`Block.dropBlockAsItemWithChance` does not call `damageDropped`.** It
+    // builds `new ItemStack(id)`, which is one item at damage zero -- so wool
+    // does not keep its colour and a log does not keep its kind, in this
+    // version. There is no damage column here because there is nothing to put
+    // in it.
+    private static final int DROP_MAX_BLOCK = 256;
+
+    // A Random that reports what it was asked for and answers at one end of the
+    // range or the other. `mode` 0 is the low end and 1 the high end.
+    private static final class DropProbe extends Random {
+        int mode = 0;
+        int draws = 0;
+        int lastBound = 0;
+
+        DropProbe() { super(0L); }
+
+        @Override public int nextInt(int bound) {
+            draws++;
+            lastBound = bound;
+            return mode == 0 ? 0 : bound - 1;
+        }
+        @Override public int nextInt() { return nextInt(Integer.MAX_VALUE); }
+        @Override public float nextFloat() { draws++; return mode == 0 ? 0.0f : 0.9999999f; }
+    }
+
+    // ---------------------------------------------------------------------
+    // The paintings, out of `er` -- EnumArt
+    // ---------------------------------------------------------------------
+    //
+    // Twenty-four rows of five values, and every one of them is a literal in
+    // one static initialiser. This still goes through a generator rather than
+    // being typed into a header, for the reason every other table here does: a
+    // number that was read out of the class file cannot be a number somebody
+    // remembered wrong, and a version whose art sheet differs regenerates
+    // instead of being re-checked by eye.
+    //
+    // The five fields are `y` (the name, which is the game's own and is what a
+    // save file stores), `z` and `A` (the size in texels), and `B` and `C` (the
+    // offset into art/kz.png). Read by *type and order* rather than by name --
+    // the four ints are declared in that order and there is nothing else in the
+    // class to confuse them with.
+    private static void emitArt(String jarPath) {
+        try {
+            java.net.URLClassLoader loader = new java.net.URLClassLoader(
+                new java.net.URL[]{new java.io.File(jarPath).toURI().toURL()},
+                genref.class.getClassLoader());
+
+            Class<?> artClass = loader.loadClass("er");
+            Object[] arts = (Object[]) artClass.getMethod("values").invoke(null);
+
+            java.lang.reflect.Field nameField = artClass.getField("y");
+            java.lang.reflect.Field sizeX = artClass.getField("z");
+            java.lang.reflect.Field sizeY = artClass.getField("A");
+            java.lang.reflect.Field offsetX = artClass.getField("B");
+            java.lang.reflect.Field offsetY = artClass.getField("C");
+
+            p("{");
+            p("  \"$comment\": [");
+            p("    \"GENERATED by tools/genref.java --art from a running a1.1.2 client jar.\",");
+            p("    \"Do not edit by hand -- regenerate instead. This is `er` (EnumArt) read by\",");
+            p("    \"reflection: `name` is the game's own string and is what a painting's NBT\",");
+            p("    \"stores, `width`/`height` are the size in texels of art/kz.png, and\",");
+            p("    \"`u`/`v` are where in that 256 x 256 sheet the picture begins.\",");
+            p("    \"Order is EnumArt's declaration order, which is what EntityPainting's\",");
+            p("    \"constructor draws from when it picks one at random.\"");
+            p("  ],");
+            p("  \"version\": \"a1.1.2\",");
+            p("  \"paintings\": [");
+            for (int i = 0; i < arts.length; i++) {
+                Object art = arts[i];
+                p("    {\"name\": \"" + nameField.get(art) + "\""
+                  + ", \"width\": " + sizeX.getInt(art)
+                  + ", \"height\": " + sizeY.getInt(art)
+                  + ", \"u\": " + offsetX.getInt(art)
+                  + ", \"v\": " + offsetY.getInt(art) + "}"
+                  + (i + 1 < arts.length ? "," : ""));
+            }
+            p("  ]");
+            p("}");
+        } catch (Throwable t) {
+            t.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    private static void emitDrops(String jarPath) {
+        java.io.PrintStream realOut = System.out;
+        try {
+            java.net.URLClassLoader loader = new java.net.URLClassLoader(
+                new java.net.URL[]{new java.io.File(jarPath).toURI().toURL()},
+                genref.class.getClassLoader());
+
+            Class<?> blockClass = loader.loadClass("ly");
+            Object[] blocks = (Object[]) blockClass.getField("n").get(null);
+            java.lang.reflect.Method idDropped =
+                blockClass.getMethod("a", int.class, Random.class);
+            java.lang.reflect.Method quantityDropped =
+                blockClass.getMethod("a", Random.class);
+
+            java.util.Map<Integer, String> blockNames = blockNamesFromJson();
+            java.util.List<String> rows = new java.util.ArrayList<String>();
+            java.util.List<String> notes = new java.util.ArrayList<String>();
+
+            DropProbe probe = new DropProbe();
+
+            // **`BlockCrops.idDropped` prints to stdout**, which is where the
+            // JSON goes. That `System.out.println("Get resource: " + l)` is a
+            // debug line left in the shipped jar; silencing it for the length
+            // of the probe is the only way to read the method at all.
+            java.io.ByteArrayOutputStream swallowed = new java.io.ByteArrayOutputStream();
+            System.setOut(new java.io.PrintStream(swallowed, true, "UTF-8"));
+
+            for (int id = 0; id < DROP_MAX_BLOCK && id < blocks.length; id++) {
+                Object block = blocks[id];
+                if (block == null) {
+                    continue;
+                }
+
+                probe.mode = 0; probe.draws = 0;
+                int qLow = ((Integer) quantityDropped.invoke(block, probe)).intValue();
+                int qLowDraws = probe.draws;
+                int qBound = probe.lastBound;
+                probe.mode = 1; probe.draws = 0;
+                int qHigh = ((Integer) quantityDropped.invoke(block, probe)).intValue();
+
+                if (qLowDraws > 1 || probe.draws > 1) {
+                    notes.add("block " + id + " draws " + qLowDraws + " times for its count");
+                }
+
+                int countMin;
+                int countSpread;   // nextInt(spread) added to countMin; 0 for none
+                int countOneIn;    // nextInt(countOneIn) == 0 ? countMin : 0
+                if (qLowDraws == 0) {
+                    countMin = qLow; countSpread = 0; countOneIn = 0;
+                } else if (qLow <= qHigh) {
+                    countMin = qLow; countSpread = qBound; countOneIn = 0;
+                } else {
+                    countMin = qLow; countSpread = 0; countOneIn = qBound;
+                }
+
+                int[] byMeta = new int[16];
+                int altItem = 0;
+                int altOneIn = 0;
+                boolean varies = false;
+                for (int m = 0; m < 16; m++) {
+                    probe.mode = 1; probe.draws = 0;
+                    int high = ((Integer) idDropped.invoke(block, Integer.valueOf(m), probe))
+                        .intValue();
+                    int highDraws = probe.draws;
+                    int bound = probe.lastBound;
+                    probe.mode = 0; probe.draws = 0;
+                    int low = ((Integer) idDropped.invoke(block, Integer.valueOf(m), probe))
+                        .intValue();
+
+                    if (highDraws > 1 || probe.draws > 1) {
+                        notes.add("block " + id + " draws " + highDraws + " times for its id");
+                    }
+                    byMeta[m] = high < 0 ? 0 : high;
+                    if (highDraws > 0 && low != high) {
+                        int alt = low < 0 ? 0 : low;
+                        if (altItem != 0 && altItem != alt) {
+                            notes.add("block " + id + " has two different alternate drops");
+                        }
+                        altItem = alt;
+                        altOneIn = bound;
+                    }
+                    if (byMeta[m] != byMeta[0]) {
+                        varies = true;
+                    }
+                }
+                if (varies && altOneIn != 0) {
+                    notes.add("block " + id + " both varies by metadata and rolls for its id");
+                }
+
+                String name = blockNames.get(Integer.valueOf(id));
+                StringBuilder row = new StringBuilder();
+                row.append("    {\"id\": ").append(id);
+                if (name != null) {
+                    row.append(", \"name\": \"").append(name).append("\"");
+                }
+                row.append(", \"item\": ").append(byMeta[0]);
+                if (varies) {
+                    row.append(", \"itemByMetadata\": [");
+                    for (int m = 0; m < 16; m++) {
+                        row.append(m == 0 ? "" : ", ").append(byMeta[m]);
+                    }
+                    row.append("]");
+                }
+                if (altOneIn != 0) {
+                    row.append(", \"altItem\": ").append(altItem)
+                       .append(", \"altOneIn\": ").append(altOneIn);
+                }
+                row.append(", \"countMin\": ").append(countMin);
+                if (countSpread != 0) {
+                    row.append(", \"countSpread\": ").append(countSpread);
+                }
+                if (countOneIn != 0) {
+                    row.append(", \"countOneIn\": ").append(countOneIn);
+                }
+                row.append("}");
+                rows.add(row.toString());
+            }
+
+            System.setOut(realOut);
+
+            p("{");
+            p("  \"$comment\": [");
+            p("    \"GENERATED by tools/genref.java --drops from a running a1.1.2 client jar.\",");
+            p("    \"Do not edit by hand -- regenerate instead. Every row is Block.idDropped and\",");
+            p("    \"Block.quantityDropped characterised by a Random that answers at both ends of\",");
+            p("    \"its range and records the bounds it was asked for; see that tool's emitDrops.\",");
+            p("    \"`item` is what the block leaves behind, 0 for nothing. `itemByMetadata` is\",");
+            p("    \"present only when the answer depends on the metadata -- a door's upper half\",");
+            p("    \"drops nothing, a crop drops only when it is grown. `altItem`/`altOneIn` is\",");
+            p("    \"the second answer and its odds: nextInt(altOneIn) == 0 picks it, which is\",");
+            p("    \"gravel's flint and nothing else in this version. `countMin` is how many drop,\",");
+            p("    \"`countSpread` adds nextInt(countSpread) to it, and `countOneIn` is the other\",");
+            p("    \"form -- nextInt(countOneIn) == 0 ? countMin : 0, which is a leaf block.\",");
+            p("    \"There is no damage column: dropBlockAsItemWithChance builds new ItemStack(id),\",");
+            p("    \"so a1.1.2 drops every block at damage zero.\"");
+            p("  ],");
+            p("  \"version\": \"a1.1.2\",");
+            if (!notes.isEmpty()) {
+                p("  \"$warnings\": [");
+                for (int i = 0; i < notes.size(); i++) {
+                    p("    \"" + notes.get(i) + "\"" + (i + 1 < notes.size() ? "," : ""));
+                }
+                p("  ],");
+            }
+            p("  \"drops\": [");
+            for (int i = 0; i < rows.size(); i++) {
+                p(rows.get(i) + (i + 1 < rows.size() ? "," : ""));
+            }
+            p("  ]");
+            p("}");
+        } catch (Throwable t) {
+            System.setOut(realOut);
+            t.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    // The names `spawns` is emitted as, indexed by the code emitItems assigns.
+    private static final String[] SPAWN_NAMES = {"none", "painting", "boat", "minecart", "arrow"};
+
+    private static void emitItems(String jarPath, String scratchDir) {
+        java.io.File dir = new java.io.File(scratchDir, "items");
+        try {
+            java.net.URLClassLoader loader = new java.net.URLClassLoader(
+                new java.net.URL[]{new java.io.File(jarPath).toURI().toURL()},
+                genref.class.getClassLoader());
+
+            Class<?> itemClass = loader.loadClass("di");
+            // **ItemArmor, and the field the game itself validates against.**
+            // `lj` is SlotArmor and its `isItemValid` is the whole rule:
+            // `stack.getItem() instanceof ItemArmor && armorType == this.slotType`.
+            // So "which armour slot does this item belong in" is not a judgement
+            // to be made from a name -- it is one field, and this reads it.
+            Class<?> armorClass = loader.loadClass("mr");
+            java.lang.reflect.Field armorType = armorClass.getField("aX");
+            // **ItemBucket, and the one int that says what it is.** `ac`'s
+            // private `a` is 0 for the empty bucket, the **flowing** block id
+            // for a full one -- 8 and 10, not the still 9 and 11 -- and -1 for
+            // milk. `onItemRightClick` branches on all three, so the column
+            // carries the field verbatim rather than splitting it up.
+            Class<?> bucketClass = loader.loadClass("ac");
+            java.lang.reflect.Field bucketFill = bucketClass.getDeclaredField("a");
+            bucketFill.setAccessible(true);
+            // **The items that spawn an entity instead of placing a block.**
+            //
+            // Four of them in a1.1.2, and they are the reason four things on a
+            // play-session list did nothing at all: `onItemUse` and
+            // `onItemRightClick` on these build an entity and hand it to
+            // `World.entityJoinedWorld`, so a build with nowhere to put an
+            // entity performs the whole click and produces nothing. The
+            // `places` column below measures them as 0, correctly, and that is
+            // exactly why a second column is needed -- "places no block" and
+            // "does nothing" are not the same answer.
+            //
+            // Read as `instanceof` against the item classes, which is the same
+            // shape the armour and bucket columns above already use and is the
+            // one place in this project where obfuscated names live. `jo`
+            // carries a public `a` as well: 0 a plain minecart, 1 a chest, 2 a
+            // furnace, which is the constructor argument and not a guess.
+            Class<?> paintingItem = loader.loadClass("od");
+            Class<?> boatItem = loader.loadClass("me");
+            Class<?> minecartItem = loader.loadClass("jo");
+            Class<?> bowItem = loader.loadClass("jg");
+            java.lang.reflect.Field minecartType = minecartItem.getField("a");
+            Class<?> worldClass = loader.loadClass(WORLD);
+            Class<?> playerClass = loader.loadClass("dm");
+            Class<?> stackClass = loader.loadClass("ev");
+            Class<?> entityClass = loader.loadClass("kh");
+
+            // **The animated icon, asked of the class that animates it.**
+            // a1.1.2 does not draw a compass; `RenderEngine` registers an `aa`
+            // -- TextureCompassFX -- and overwrites one 16 x 16 tile of one
+            // sheet every frame. So "which item is the compass" is the wrong
+            // question and this does not ask it: it constructs the FX and reads
+            // the two fields `z` gives every one of them, `b` (the tile it
+            // owns) and `f` (0 for terrain.png, 1 for gui/items.png). Any item
+            // whose icon is that tile on that sheet shows the animation,
+            // because the animation is a property of the *tile*.
+            //
+            // `aa`'s constructor takes a Minecraft and null does for it: the
+            // reference is only stored, and the two things it reads at
+            // construction -- Item.compass's icon index, and the tile's pixels
+            // out of /gui/items.png -- come off the jar and the class loader.
+            //
+            // The other five `z` subclasses in this jar are water, flowing
+            // water, lava, flowing lava and the two flames, all on terrain.png;
+            // **there is no clock in a1.1.2**, which is why this looks for one
+            // FX rather than a list.
+            int compassTile = -1;
+            int compassSheet = -1;
+            try {
+                Class<?> fxBase = loader.loadClass("z");
+                Class<?> compassFx = loader.loadClass("aa");
+                Class<?> mcClass = loader.loadClass("net.minecraft.client.Minecraft");
+                Object fx = compassFx.getConstructor(mcClass).newInstance(new Object[]{null});
+                compassTile = fxBase.getField("b").getInt(fx);
+                compassSheet = fxBase.getField("f").getInt(fx);
+            } catch (Throwable t) {
+                System.err.println("genref --items: no compass FX in this jar (" + t + ")");
+            }
+
+            Object[] items = (Object[]) itemClass.getField("c").get(null);
+
+            // maxStackSize, maxDamage, bFull3D. Read as fields rather than
+            // through their getters because two of the getters are overridden
+            // per item and this wants the constructed value.
+            java.lang.reflect.Field maxStack = itemClass.getDeclaredField("aT");
+            java.lang.reflect.Field maxDamage = itemClass.getDeclaredField("aU");
+            maxStack.setAccessible(true);
+            maxDamage.setAccessible(true);
+
+            // getIconIndex(ItemStack) rather than the iconIndex field: armour
+            // and tools answer per stack, and the stack is what the UI holds.
+            java.lang.reflect.Method iconOf = itemClass.getMethod("a", stackClass);
+            // onItemUse(stack, player, world, x, y, z, face)
+            java.lang.reflect.Method onItemUse = itemClass.getMethod(
+                "a", stackClass, playerClass, worldClass,
+                int.class, int.class, int.class, int.class);
+
+            java.lang.reflect.Constructor<?> stackCtor =
+                stackClass.getConstructor(int.class, int.class, int.class);
+            java.lang.reflect.Constructor<?> worldCtor =
+                worldClass.getConstructor(java.io.File.class, String.class, long.class);
+            java.lang.reflect.Constructor<?> playerCtor = playerClass.getConstructor(worldClass);
+
+            java.lang.reflect.Method getChunk = worldClass.getMethod("b", int.class, int.class);
+            java.lang.reflect.Method setBlock = worldClass.getMethod(
+                "a", int.class, int.class, int.class, int.class, int.class);
+            java.lang.reflect.Method getBlockId =
+                worldClass.getMethod("a", int.class, int.class, int.class);
+            java.lang.reflect.Method setPosition =
+                entityClass.getMethod("a", double.class, double.class, double.class);
+            java.lang.reflect.Field yawField = entityField(entityClass, "aq");
+
+            deleteTree(dir);
+            dir.mkdirs();
+            Object world = worldCtor.newInstance(dir, "genref", 1234567890L);
+            getChunk.invoke(world, 0, 0);
+            Object player = playerCtor.newInstance(world);
+
+            final int bx = 8;
+            final int by = 100;
+            final int bz = 8;
+
+            // Stone, dirt, sand, farmland, grass -- enough between them to
+            // satisfy every precondition a1.1.2's placeable items have.
+            final int[] grounds = {1, 3, 12, 60, 2};
+            final int WATER_STILL = 9;
+            // Top first, then the four sides. a1.1.2's face numbering, and the
+            // offset each one places into.
+            final int[] faces = {1, 2, 3, 4, 5};
+            final int[][] faceOffset = {
+                {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0},
+            };
+
+            // Far from the block being used, so nothing an item places lands
+            // inside the player and gets refused, and with a fixed heading so
+            // the blocks that orient from it are reproducible.
+            setPosition.invoke(player, bx + 16.5, by + 4.0, bz + 16.5);
+            yawField.setFloat(player, 0.0f);
+
+            java.util.Map<Integer, String> blockNames = blockNamesFromJson();
+
+            // Two passes: the palette rule needs the whole `places` column
+            // before any row can be written.
+            java.util.List<int[]> measured = new java.util.ArrayList<int[]>();
+            java.util.List<String> names = new java.util.ArrayList<String>();
+            java.util.List<java.util.Set<Integer>> placedByItem =
+                new java.util.ArrayList<java.util.Set<Integer>>();
+            java.util.List<String> rows = new java.util.ArrayList<String>();
+            for (int id = 0; id < items.length; id++) {
+                Object it = items[id];
+                if (it == null) {
+                    continue;
+                }
+                Object sample = stackCtor.newInstance(id, 64, 0);
+                int icon = ((Integer) iconOf.invoke(it, sample)).intValue();
+                int stack = maxStack.getInt(it);
+                int damage = maxDamage.getInt(it);
+
+                // `places` is the first block this item puts down with the
+                // top face preferred, and `alsoPlaces` is every block it can
+                // put down at all. The second is what the palette rule needs: a
+                // sign is item 323 on a post *and* on a wall, and recording
+                // only the post would leave the wall sign's block form offered
+                // in the hand.
+                int places = 0;
+                java.util.Set<Integer> alsoPlaces = new java.util.TreeSet<Integer>();
+                for (int ground : grounds) {
+                    for (int face : faces) {
+                        clearScene(setBlock, world, bx, by, bz);
+                        // One block to click on, standing clear of everything
+                        // so all five of its exposed faces place into air, on a
+                        // floor a block below so nothing that needs support
+                        // falls off the moment it lands.
+                        setBlock.invoke(world, bx, by, bz, ground, 0);
+                        for (int x = bx - 2; x <= bx + 2; x++) {
+                            for (int z = bz - 2; z <= bz + 2; z++) {
+                                setBlock.invoke(world, x, by - 1, z, ground, 0);
+                            }
+                        }
+                        // Beside the floor, which is where reeds look for it.
+                        setBlock.invoke(world, bx + 2, by - 1, bz, WATER_STILL, 0);
+                        Object using = stackCtor.newInstance(id, 64, 0);
+                        try {
+                            onItemUse.invoke(it, using, player, world, bx, by, bz, face);
+                        } catch (Throwable ignored) {
+                            // An item that needs something this scene does not
+                            // have -- an entity to hit, a boat to float -- is an
+                            // item that places nothing, which is the answer.
+                        }
+                        int[] off = faceOffset[face];
+                        int landed = ((Integer) getBlockId.invoke(
+                            world, bx + off[0], by + off[1], bz + off[2])).intValue();
+                        if (landed != 0) {
+                            alsoPlaces.add(Integer.valueOf(landed));
+                            if (places == 0) {
+                                places = landed;
+                            }
+                        }
+                    }
+                }
+
+                String name = id < 256
+                    ? blockNames.get(Integer.valueOf(id))
+                    : (id - 256 < ITEM_NAMES_FROM_256.length
+                        ? ITEM_NAMES_FROM_256[id - 256] : null);
+                if (name == null) {
+                    // The two records, and anything a later version adds. Named
+                    // by id so the row is still readable, and flagged below so
+                    // the table generator can leave it out.
+                    name = "item_" + id;
+                }
+
+                // 0 helmet, 1 chestplate, 2 leggings, 3 boots; -1 for
+                // anything that is not armour at all.
+                final int armour = armorClass.isInstance(items[id])
+                    ? armorType.getInt(items[id]) : -1;
+                // -2 for "not a bucket", which is the one value the field
+                // itself can never hold: see core/item/item_def.hpp.
+                final int bucket = bucketClass.isInstance(items[id])
+                    ? bucketFill.getInt(items[id]) : -2;
+
+                // Which entity this item puts into the world, as a name rather
+                // than a class: the obfuscated one means nothing outside this
+                // jar and the next version's would differ. 0 none, 1 painting,
+                // 2 boat, 3 minecart, 4 arrow.
+                int spawns = 0;
+                int spawnVariant = 0;
+                if (paintingItem.isInstance(items[id])) {
+                    spawns = 1;
+                } else if (boatItem.isInstance(items[id])) {
+                    spawns = 2;
+                } else if (minecartItem.isInstance(items[id])) {
+                    spawns = 3;
+                    spawnVariant = minecartType.getInt(items[id]);
+                } else if (bowItem.isInstance(items[id])) {
+                    spawns = 4;
+                }
+
+                // 1 when this item's icon is the tile the compass FX owns on
+                // the sheet it owns it on, 0 otherwise. See compassTile above.
+                final int fx = (compassTile >= 0 && icon == compassTile
+                                && compassSheet == (id < 256 ? 0 : 1)) ? 1 : 0;
+
+                measured.add(new int[]{id, icon, stack, damage, places, armour, bucket, fx,
+                                      spawns, spawnVariant});
+                names.add(name);
+                placedByItem.add(alsoPlaces);
+            }
+
+            // Rule 1: a block placed by an item above 255 has a carried form
+            // already, so its ItemBlock is not offered.
+            java.util.Set<Integer> supersededBlocks = new java.util.HashSet<Integer>();
+            for (int i = 0; i < measured.size(); i++) {
+                if (measured.get(i)[0] >= 256) {
+                    supersededBlocks.addAll(placedByItem.get(i));
+                }
+            }
+            java.util.Set<Integer> hidden = new java.util.HashSet<Integer>();
+            for (int id : PALETTE_HIDDEN) {
+                hidden.add(Integer.valueOf(id));
+            }
+
+            for (int i = 0; i < measured.size(); i++) {
+                int[] row = measured.get(i);
+                int id = row[0];
+                // **Everything the version defines, minus the two kinds of
+                // duplicate.** The palette used to require `places != 0`, on
+                // the argument that a sword does nothing this build can
+                // perform. That was the wrong test: a Creative hand is also
+                // how you put a sword, an ingot or a helmet into a chest, into
+                // a save, or on the ground -- and a catalogue that silently
+                // omits two thirds of the item table reads as a table with
+                // holes in it, which is what it was reported as. The two
+                // exclusions that remain are both about the *same* thing
+                // appearing twice, and neither hides anything a player could
+                // otherwise not reach.
+                boolean inPalette = !hidden.contains(Integer.valueOf(id))
+                    && !(id < 256 && supersededBlocks.contains(Integer.valueOf(id)));
+                rows.add("    {\"id\": " + id + ", \"name\": \"" + names.get(i) + "\""
+                         + ", \"sheet\": \"" + (id < 256 ? "terrain" : "items") + "\""
+                         + ", \"icon\": " + row[1]
+                         + ", \"stack\": " + row[2]
+                         + ", \"durability\": " + row[3]
+                         + ", \"places\": " + row[4]
+                         + ", \"armour\": " + row[5]
+                         + ", \"bucket\": " + row[6]
+                         + ", \"fx\": " + row[7]
+                         + ", \"spawns\": \"" + SPAWN_NAMES[row[8]] + "\""
+                         + ", \"spawnVariant\": " + row[9]
+                         + ", \"palette\": " + inPalette + "}");
+            }
+
+            p("{");
+            p("  \"$comment\": [");
+            p("    \"GENERATED by tools/genref.java --items from a running a1.1.2 client jar.\",");
+            p("    \"Do not edit by hand -- regenerate instead. Every column but `name` was read\",");
+            p("    \"or measured out of the jar; see that tool's emitItems for how, and for why\",");
+            p("    \"`places` is measured by using each item in a real world rather than read.\",");
+            p("    \"`sheet` is which image the icon indexes: RenderItem picks terrain.png for\",");
+            p("    \"ids below 256 and gui/items.png above, so the column is that rule applied.\",");
+            p("    \"`places` is the block id the item puts down, or 0 for one that places none.\",");
+            p("    \"`armour` is ItemArmor.armorType -- 0 helmet, 1 chestplate, 2 leggings,\",");
+            p("    \"3 boots -- and -1 for everything that is not armour. It is the field\",");
+            p("    \"SlotArmor.isItemValid compares against, so it is the game's own answer to\",");
+            p("    \"which of the four slots a piece goes in rather than a reading of its name.\",");
+            p("    \"`bucket` is ItemBucket.isFull: 0 for the empty bucket, the flowing block id\",");
+            p("    \"for a full one (8 and 10, not the still 9 and 11), -1 for milk, and -2 for\",");
+            p("    \"everything that is not a bucket at all.\",");
+            p("    \"`fx` is 1 for an item whose icon tile a TextureFX rewrites every tick --\",");
+            p("    \"the compass, and nothing else in this version. It is read off the FX\",");
+            p("    \"class rather than matched by name; see emitItems.\",");
+            p("    \"`spawns` is the entity this item puts into the world instead of a block:\",");
+            p("    \"painting, boat, minecart or arrow, and `none` for everything else. It is\",");
+            p("    \"why four items measure `places` as 0 and still do something. `spawnVariant`\",");
+            p("    \"is ItemMinecart's own type field -- 0 cart, 1 chest, 2 furnace.\",");
+            p("    \"`palette` is whether the Creative hand offers it: everything this version\",");
+            p("    \"defines except an ItemBlock whose block already has a carried form, and a\",");
+            p("    \"handful of engine-only ids named in emitItems.\"");
+            p("  ],");
+            p("  \"version\": \"a1.1.2\",");
+            p("  \"items\": [");
+            for (int i = 0; i < rows.size(); i++) {
+                p(rows.get(i) + (i + 1 < rows.size() ? "," : ""));
+            }
+            p("  ]");
+            p("}");
+        } catch (Throwable t) {
+            t.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    // Everything in the 5x4x5 box the placement probe uses, back to air.
+    private static void clearScene(java.lang.reflect.Method setBlock, Object world,
+                                   int bx, int by, int bz) throws Exception {
+        for (int x = bx - 2; x <= bx + 2; x++) {
+            for (int z = bz - 2; z <= bz + 2; z++) {
+                for (int y = by - 2; y <= by + 3; y++) {
+                    setBlock.invoke(world, x, y, z, 0, 0);
+                }
+            }
+        }
+    }
+
+    // The block names out of data/a1.1.2/blocks.json, read as text rather than
+    // parsed: the two keys wanted sit next to each other on their own lines and
+    // pulling in a JSON library for them would be the tail wagging the dog. The
+    // names are ours in the first place -- see the note above.
+    private static java.util.Map<Integer, String> blockNamesFromJson() throws Exception {
+        java.util.Map<Integer, String> out = new java.util.HashMap<Integer, String>();
+        java.io.File file = new java.io.File("data/a1.1.2/blocks.json");
+        if (!file.isFile()) {
+            return out;
+        }
+        String text = new String(java.nio.file.Files.readAllBytes(file.toPath()), "UTF-8");
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+            "\"id\"\\s*:\\s*(\\d+),\\s*\"name\"\\s*:\\s*\"([a-z0-9_]+)\"").matcher(text);
+        while (m.find()) {
+            out.put(Integer.valueOf(m.group(1)), m.group(2));
+        }
+        return out;
     }
 }

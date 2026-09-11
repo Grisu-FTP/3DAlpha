@@ -40,14 +40,31 @@
 #include "platform/ctr/probe.hpp"
 #include "platform/ctr/progress_screen.hpp"
 #include "platform/ctr/renderer.hpp"
+#include "core/audio/block_sound.hpp"
 #include "core/audio/sound_engine.hpp"
+#include "core/entity/falling_block.hpp"
+#include "core/gui/chat_log.hpp"
+#include "core/entity/item_entity.hpp"
+#include "core/entity/arrow.hpp"
+#include "core/entity/boat.hpp"
+#include "core/entity/minecart.hpp"
+#include "core/world/sign_store.hpp"
+#include "core/entity/painting.hpp"
+#include "core/entity/particle.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/io/volume_info.hpp"
 #include "core/block/collision.hpp"
 #include "core/entity/player_body.hpp"
+#include "core/entity/sprint_gesture.hpp"
+#include "core/item/registry.hpp"
+#include "core/tick/behaviour.hpp"
 #include "core/entity/ray_trace.hpp"
+#include "core/texture/compass_fx.hpp"
+#include "core/texture/texture_fx.hpp"
 #include "core/tick/tick_timer.hpp"
+#include "core/render/held_item.hpp"
 #include "core/render/world_streamer.hpp"
+#include "core/util/math_helper.hpp"
 #include "core/util/memory.hpp"
 #include "core/util/worker.hpp"
 #include "core/world/chunk_cache.hpp"
@@ -60,6 +77,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <memory>
 
 namespace {
 
@@ -200,7 +218,28 @@ mc::entity::PlayerInput readBodyInput(const ctr::Camera& camera, u32 held)
     return input;
 }
 
-// Breaking and placing, on the two shoulder buttons.
+// The sprint gesture, fed the same stick the body is walking on.
+//
+// **Read once a frame and applied to every tick the frame owes**, which is the
+// same treatment `readBodyInput` already gets: the gesture is frame-timed
+// because a double tap is, and the acceleration it selects is per tick because
+// the physics is. A frame owing three ticks sprints for all three.
+//
+// Sneaking cancels rather than merely suppressing, so letting go of Y does not
+// drop the player straight back into a sprint they last asked for a minute ago.
+bool readSprint(mc::entity::SprintGesture& gesture, const mc::entity::PlayerInput& input,
+                float now, bool suppressed)
+{
+    if (suppressed || input.sneak) {
+        gesture.cancel();
+        return false;
+    }
+    return gesture.update(input.forward, now);
+}
+
+// Breaking and placing, on the two shoulder buttons: **L places and R breaks.**
+//
+// This is the established control mapping used by the game build.
 //
 // **Held repeats every five ticks, and that has nothing to do with hardness.**
 // `Minecraft.runTick` gates both mouse buttons on
@@ -215,10 +254,124 @@ mc::entity::PlayerInput readBodyInput(const ctr::Camera& camera, u32 held)
 // change redraw as well as save -- see the note on that method. Writing through
 // `worldTick()` directly would be invisible until something else touched the
 // section.
+// **What the world can see of the entities in it**, which in a1.1.2 is one
+// question asked by one block: `al.h` wants to know whether anything is
+// standing in the quarter-block box above a pressure plate.
+//
+// The two pools live here rather than in core -- the body is a local and the
+// dropped items are a `unique_ptr` beside it -- so this is where the answer
+// has to come from. `TickWorld` takes it as a function pointer and a context,
+// the same shape it reaches chunks through.
+struct EntityScene {
+    const mc::entity::PlayerBody* body = nullptr;
+    const mc::entity::ItemEntitySystem* items = nullptr;
+
+    // The same pool again, writable, and the world the drop lands in. Two
+    // fields rather than casting the const away, because the two seams really
+    // do ask different things: the plate wants to *read* what is standing on
+    // it and a broken torch wants to *add* to the pool.
+    mc::entity::ItemEntitySystem* mutableItems = nullptr;
+    const mc::tick::TickWorld* world = nullptr;
+    mc::entity::FallingBlockSystem* falling = nullptr;
+};
+
+bool anyEntityIn(void* ctx, const mc::AABB& box, mc::tick::EntityFilter filter)
+{
+    const EntityScene* scene = static_cast<const EntityScene*>(ctx);
+
+    // **The player answers to all three.** `EntityPlayer` extends
+    // `EntityLiving`, which is what `js.b` ("mobs") selects on, so a stone
+    // plate is pressed by a player as well as by a mob -- and `js.c`
+    // ("players") is the narrowest of the three and still includes them. There
+    // is nothing in this build that is a mob and not the player, so the
+    // filters differ only in what they *exclude*, below.
+    if (scene->body != nullptr && scene->body->box.intersects(box)) {
+        return true;
+    }
+
+    // **A dropped item is neither a mob nor a player**, which is the whole
+    // observable difference between the two plates: a stack of dirt thrown on
+    // to a wooden plate presses it and the same stack on a stone plate does
+    // nothing.
+    if (filter != mc::tick::EntityFilter::Everything || scene->items == nullptr) {
+        return false;
+    }
+    for (int i = 0; i < scene->items->count(); ++i) {
+        if ((*scene->items)[i].box.intersects(box)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// `cn.a(Lkh;)Z` -- spawnEntityInWorld, for the one entity a block behaviour
+// spawns. The other half of the same seam: `TickWorld` knows how many of what
+// to drop and where, and nothing in core owns the pool it goes into.
+//
+// **A full pool loses the drop and says nothing**, which is
+// `ItemEntitySystem::spawn`'s own rule and is why nothing here checks. A
+// refusal is counted there and shown on the debug page.
+void spawnDroppedItem(void* ctx, double x, double y, double z, mc::u16 item, int count)
+{
+    EntityScene* scene = static_cast<EntityScene*>(ctx);
+    if (scene->mutableItems == nullptr || scene->world == nullptr) {
+        return;
+    }
+    scene->mutableItems->spawn(*scene->world, x, y, z, mc::item::ItemId(item), count, 0,
+                               mc::entity::kBlockDropPickupDelay);
+}
+
+// `cn.a(DDDLjava/lang/String;FF)V` -- what a block behaviour asks the mixer
+// for. The engine outlives the world, so the context is the engine itself
+// rather than the scene.
+void playTickSound(void* ctx, const char* key, double x, double y, double z, float volume,
+                   float pitch)
+{
+    static_cast<mc::audio::SoundEngine*>(ctx)->playSoundAt(key, x, y, z, volume, pitch);
+}
+
+// `dh.h(Lcn;III)V`'s `new ff(...)`, refused when the pool is full -- and a
+// refusal is not a lost block: `tick::fallingTick` falls through to the instant
+// path, which puts the block where the entity would have put it. See
+// core/entity/falling_block.hpp.
+bool spawnFallingBlock(void* ctx, mc::i32 x, int y, mc::i32 z, mc::u16 block)
+{
+    EntityScene* scene = static_cast<EntityScene*>(ctx);
+    if (scene->falling == nullptr || scene->world == nullptr) {
+        return false;
+    }
+    return scene->falling->spawn(*scene->world, x, y, z, mc::block::BlockId(block));
+}
+
+// `cn.l(III)V` -- World.removeBlockTileEntity. Signs are the only tile entities
+// with a store, so the context is the store itself.
+void removeSign(void* ctx, mc::i32 x, int y, mc::i32 z)
+{
+    static_cast<mc::world::SignStore*>(ctx)->erase(x, y, z);
+}
+
+// **Where the player is told a spawn was refused**: the chat lines on the top
+// screen, in Legacy Console Edition's words. `widths` is the pack font's
+// advance table, which the wrap measures with -- null when there is no font,
+// and then there is nothing to draw the line with either.
+struct ChatSink {
+    mc::gui::ChatLog* log = nullptr;
+    const mc::u8* widths = nullptr;
+
+    void limitReached(mc::item::LimitedEntity which) const
+    {
+        const char* message = mc::item::limitMessage(which);
+        if (log != nullptr && message != nullptr) {
+            log->post(widths, message);
+        }
+    }
+};
+
 void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                 const ctr::Camera& camera, const mc::entity::PlayerBody& body,
-                mc::block::BlockId held, u32 down, u32 heldButtons, i64 nowTick,
-                i64* lastEditTick)
+                ctr::Overlay& overlay, u32 down, u32 heldButtons, i64 nowTick,
+                i64* lastEditTick, const mc::item::Effects& effects,
+                mc::render::HeldItemState* hand, const ChatSink& chat)
 {
     // An empty hotbar slot still breaks; it just has nothing to place. Checked
     // at the placement branch rather than here.
@@ -233,7 +386,7 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     }
     *lastEditTick = nowTick;
 
-    // A fresh press wins over a repeat, so tapping L while holding R breaks
+    // A fresh press wins over a repeat, so tapping R while holding L breaks
     // rather than placing.
     const u32 acting = pressed ? down : heldButtons;
     mc::tick::TickWorld* tickWorld = world.worldTick();
@@ -250,11 +403,31 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // is the ray the game casts, not one from the player's feet.
     const mc::entity::RayHit hit = mc::entity::rayTrace(
         *tickWorld, camera.x, camera.y, camera.z, double(dx), double(dy), double(dz));
-    if (!hit.hit) {
-        return;
-    }
+    // `getMouseOver`'s second half: an entity nearer than that block, and
+    // within three, is what the crosshair is on instead. See core/item/use.hpp.
+    const mc::item::EntityTarget target = mc::item::pickEntity(
+        effects.entities, camera.x, camera.y, camera.z, double(dx), double(dy), double(dz), hit);
 
-    if ((acting & KEY_L) != 0) {
+    const mc::item::ItemId heldItem = overlay.inventory().selectedItem();
+
+    if ((acting & KEY_R) != 0) {
+        // **The arm swings whether or not the block gives**, which is
+        // `Minecraft.clickMouse`'s own order: button 0 calls `swingItem`
+        // before it looks at what is under the crosshair -- and before it
+        // knows whether there is anything under it at all.
+        hand->swing();
+        // **An entity in the way is hit instead of the block behind it**, the
+        // same precedence the right-click branch below already gives one. This
+        // is the only way to break a boat, a cart or a painting, which is why
+        // none of the three left anything on the ground before it existed. See
+        // core/item/use.hpp.
+        if (target.found()) {
+            mc::item::attackEntity(*tickWorld, target, effects);
+            return;
+        }
+        if (!hit.hit) {
+            return;
+        }
         // **Instant, and it always was.** Creative's "instant break" is not a
         // thing this had to add: block hardness governs the *progress* of a
         // break, accumulated per tick through
@@ -262,53 +435,84 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
         // Survival's and does not exist yet. So one press is one broken block
         // in every mode -- which is Creative's rule, and is a thing Survival
         // will have to take away rather than a thing Creative added.
-        world.setBlock(chunks, hit.x, hit.y, hit.z, mc::block::kAir, 0);
+        // The tile entity goes with the block inside the write, through
+        // `TickWorld::removeTileEntity` -- see core/tick/behaviour.cpp.
+        world.breakBlock(chunks, hit.x, hit.y, hit.z, effects);
         return;
     }
-    if ((acting & KEY_R) == 0) {
-        return;
-    }
-
-    // **Nothing is spent.** There is no stack depletion here and there is no
-    // code that would have done it: the hotbar holds a stack of one and the
-    // place path never touches the count. Survival is where that becomes a
-    // subtraction; see docs/todo-m3.md step 4.
-    if (held == mc::block::kAir) {
+    if ((acting & KEY_L) == 0) {
         return;
     }
 
-    // Place against the struck face.
-    const int placeY = hit.placeY();
-    if (placeY < 0 || placeY >= mcver::kWorldHeight) {
-        return;
-    }
-    const i32 placeX = hit.placeX();
-    const i32 placeZ = hit.placeZ();
-
-    // **Only into air.** a1.1.2 also replaces water, lava and snow; that wants
-    // the replaceable-material test, which is a Survival-shaped question and is
-    // not answered yet.
-    if (tickWorld->blockAt(placeX, placeY, placeZ) != mc::block::kAir) {
+    // **An entity in the way is asked instead of the block**, which is
+    // `Minecraft.clickMouse`'s own order: `objectMouseOver` is the entity, so
+    // `interact` runs and the block behind it is never clicked -- even when
+    // `interact` refuses, as a chest cart does here. A boat or a plain cart
+    // takes the player aboard, and that ends the click.
+    if (target.found() && mc::item::interactWithEntity(target, effects.entities)) {
         return;
     }
 
-    // Not inside the player. Without this a block placed at the feet pushes the
-    // body out of the world, and in Creative -- where nothing stops you looking
-    // straight down -- that is one button press away at all times.
-    mc::AABB boxes[mc::block::kMaxCollisionBoxes];
-    const int count = mc::block::collisionBoxes(held, 0, boxes, mc::block::kMaxCollisionBoxes);
-    for (int i = 0; i < count; ++i) {
-        if (boxes[i].offset(double(placeX), double(placeY), double(placeZ)).intersects(body.box)) {
-            return;
+    // **Everything the right hand does, and it is not only placing.**
+    // `PlayerController.onPlayerRightClick` asks the block first -- which is
+    // what opens a door, flicks a lever and presses a button -- and only then
+    // hands the click to the item. All of it is `item::rightClick`, in core and
+    // under test; what is left here is the button and the renderer.
+    //
+    // **Nothing is spent.** There is no stack depletion in that path and no
+    // code that would have done it; Survival is where it becomes a
+    // subtraction. See docs/todo-m3.md step 4.
+    // **Marked before either entry point runs**, so a click the heap turned
+    // down can be told apart from one that simply had nowhere to go. See
+    // item::RefusalMark.
+    const mc::item::RefusalMark refusals = mc::item::markRefusals(effects.entities);
+
+    if (hit.hit && !target.found()
+        && world.rightClick(chunks, heldItem, hit, body.box, camera.yaw * 180.0f / kPi,
+                            effects)) {
+        // **Only when the click was taken**, which is the other half of
+        // `clickMouse`'s split: `if (onPlayerRightClick(...)) swingItem()`.
+        // Waving at a wall that refuses the block does not swing.
+        hand->swing();
+        // **The keyboard, which is the other half of "signs don't work".**
+        // `ItemSign.onItemUse` ends with `displayGUIEditSign`, and a sign
+        // placed with no way to type into it can never say anything. The store
+        // hands the index back once and clears it, so this fires on the
+        // placement and not on every click afterwards.
+        //
+        // **Outside the frame**, which the applet requires -- input is handled
+        // at the top of the loop, well before C3D_FrameBegin.
+        if (effects.entities.signs != nullptr) {
+            const int placedSign = effects.entities.signs->takeJustPlaced();
+            if (placedSign >= 0) {
+                overlay.editSignViaKeyboard(effects.entities.signs, placedSign);
+            }
         }
+        return;
     }
 
-    // `onBlockPlaced`, as a table: the struck face is what a torch, a
-    // staircase, a ladder, a furnace and a button orient from. Only the lever
-    // also wants the player's heading, and only on its top face -- see the note
-    // on placementMetadata.
-    world.setBlock(chunks, placeX, placeY, placeZ, held,
-                   mc::block::placementMetadata(held, int(hit.face)));
+    // **The second entry point, and it runs whether or not the crosshair found
+    // anything.** `Minecraft.clickMouse` tries the block first and then hands
+    // the same press to `Item.onItemRightClick`, which casts its own ray -- so
+    // a bucket aimed at water works even though the crosshair's ray is not
+    // allowed to see water at all, and that is the whole reason this is here
+    // rather than folded into the call above. See core/item/use.hpp.
+    const mc::item::ItemUse used = world.useItem(chunks, heldItem, camera.x, camera.y,
+                                                 camera.z, double(dx), double(dy),
+                                                 double(dz), effects);
+    // Either entry point may have been the one refused -- a cart or a sign
+    // goes through the first, a boat or an arrow through the second -- and
+    // both have run by here whenever neither was taken.
+    chat.limitReached(mc::item::refusedSince(effects.entities, refusals));
+    // **`onItemRightClick` raises the item again and never swings the arm.**
+    // Both are in `clickMouse`'s tail: it calls `ItemRenderer.resetEquippedProgress`
+    // when the stack it got back is not the stack it handed in -- a bucket
+    // becoming a water bucket -- and there is no `swingItem` on this path at
+    // all.
+    if (used.becomes != heldItem) {
+        hand->reequip();
+    }
+    overlay.replaceHeldItem(used.becomes);
 }
 
 // Pitch is clamped just short of straight up and straight down, because
@@ -718,11 +922,162 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     mc::entity::PlayerBody body;
     body.setFeet(spawnX, feetY, spawnZ);
 
+    // **The particle pool and the two things a click can set off.** Both are
+    // stack objects with the lifetime of the world, which is what lets the core
+    // side take borrowed pointers and a headless build pass neither. The seed
+    // is a clock because the original's two particle generators are both
+    // time-seeded and nothing about a spray of dirt is meant to repeat.
+    //
+    // **On the heap, and that is not a style choice.** The pool is 512
+    // particles and a 3DSX main thread has 32 KB of stack that nothing in the
+    // binary can enlarge -- `-Werror=stack-usage` caught it the moment it was a
+    // local. One allocation when a world opens is what the streamer already
+    // does; what the rule forbids is allocating on a *frame*, and this never
+    // does.
+    auto particles = std::make_unique<mc::entity::ParticleSystem>(i64(ctr::nowMillis()));
+
+    // **What is hanging on the walls.** Thirty-two, on the heap for the same
+    // stack reason the particles are, and time-seeded because the art a
+    // painting comes out as is drawn at random from the ones that fit -- see
+    // core/entity/painting.hpp. Declared before `effects` because the click
+    // path reaches it through there.
+    auto paintings = std::make_unique<mc::entity::PaintingSystem>(
+        i64(ctr::nowMillis()) ^ 0x9a17);
+
+    // **What is in flight.** Thirty-two arrows, time-seeded because the launch
+    // scatter is `nextGaussian` in the original and nothing about a shot is
+    // meant to repeat. See core/entity/arrow.hpp.
+    auto arrows = std::make_unique<mc::entity::ArrowSystem>(i64(ctr::nowMillis()) ^ 0xa770);
+
+    // **What is floating.** Eight boats, and the pool owns which one is being
+    // ridden -- see core/entity/boat.hpp.
+    auto boats = std::make_unique<mc::entity::BoatSystem>(i64(ctr::nowMillis()) ^ 0xb0a7);
+
+    // **What is on the rails.** Eight carts; only the plain one can be ridden.
+    auto minecarts =
+        std::make_unique<mc::entity::MinecartSystem>(i64(ctr::nowMillis()) ^ 0xca27);
+
+    // **What is written on the walls.** A tile entity rather than an entity --
+    // see core/world/sign_store.hpp. Sign text still needs tile entity
+    // persistence, separate from the entity snapshot below.
+    auto signs = std::make_unique<mc::world::SignStore>();
+
+    // **What the game says to the player**, bottom left of the top screen --
+    // a1.1.2's chat lines, which is where a spawn the heap refused is
+    // reported. Two kilobytes, on the heap for the stack reason below.
+    auto chat = std::make_unique<mc::gui::ChatLog>();
+
+    const mc::item::Effects effects{
+        particles.get(), &sound,
+        mc::item::EntityPools{paintings.get(), arrows.get(), boats.get(),
+                              minecarts.get(), signs.get()}};
+
+    // **What is lying on the ground.** Sixty-four entities, on the heap for the
+    // same stack reason the particles are, and time-seeded for the same reason
+    // too: `EntityItem`'s scatter comes off `Math.random()` in the original and
+    // nothing about a thrown item is meant to repeat.
+    auto droppedItems = std::make_unique<mc::entity::ItemEntitySystem>(
+        i64(ctr::nowMillis()) ^ 0x5eed);
+    // **What is on its way down.** Sixteen entities, no random of its own --
+    // `EntityFallingSand`'s constructor draws nothing. See
+    // core/entity/falling_block.hpp for why the pool is this small and what
+    // happens when it is full.
+    auto fallingBlocks = std::make_unique<mc::entity::FallingBlockSystem>();
+
+    world.bindEntities(mc::entity::EntityPools{paintings.get(), arrows.get(), boats.get(),
+        minecarts.get(), droppedItems.get(), fallingBlocks.get()});
+
+    // `random.pop`'s pitch, which is `((r - r) * 0.7 + 1) * 2` per pickup. Its
+    // own generator so that drawing a pitch cannot shift the scatter on the
+    // next thing thrown.
+    mc::JavaRandom pickupRand(i64(ctr::nowMillis()));
+
+    // **The fire tiles, still running.** `applyAnimatedTiles` baked a settled
+    // flame into the atlas when the pack loaded, which is what the bottom
+    // screen and the map read; this is the same two simulations kept going so
+    // the flame in the *world* moves. On the heap for the stack reason above --
+    // two 16 x 20 float fields each is 7 KB, and a 3DSX main thread has 32.
+    auto flames = std::make_unique<mc::texture::FlameAnimation>();
+
+    // **The compass, which is a texture and not an item.** See
+    // core/texture/compass_fx.hpp: a1.1.2's item 345 is a plain `di` with no
+    // behaviour at all, and the whole of a working compass is `aa` rewriting
+    // one 16 x 16 tile of gui/items.png every tick with a needle aimed at the
+    // world's spawn. "The compass doesn't work" was that FX never being ported.
+    //
+    // Two consumers, because the same tile is read two ways: the bottom screen
+    // rasterises it out of the pack's decoded pixels, and a compass lying on
+    // the ground is a sprite the GPU samples out of the uploaded items sheet.
+    // Neither reads the other's copy, so both are pushed.
+    auto compass = std::make_unique<mc::texture::CompassTexture>();
+    const int compassTile = mc::texture::compassTile();
+    // The pack's own compass face, which the needle is drawn over each tick.
+    // Re-seeded whenever the pack changes; see the atlasChanged branch below.
+    auto seedCompass = [&compass, compassTile](const mc::texture::AtlasImage& atlas) {
+        if (compassTile < 0 || !atlas.hasItems()) {
+            return;
+        }
+        const int column = compassTile % mc::texture::kAtlasTilesPerEdge;
+        const int row = compassTile / mc::texture::kAtlasTilesPerEdge;
+        mc::u8 tile[16 * 16 * 4];
+        for (int y = 0; y < 16; ++y) {
+            const mc::usize src = (mc::usize(row * 16 + y) * mc::texture::kAtlasEdge
+                                   + mc::usize(column * 16)) * 4;
+            std::memcpy(tile + mc::usize(y) * 16 * 4, atlas.itemsRgba.data() + src, 16 * 4);
+        }
+        compass->setBase(tile);
+    };
+    seedCompass(choice.atlas);
+
+    // The world can ask about both of them from here on. `tick_` is built when
+    // the world opens and torn down when it closes, neither of which happens
+    // inside this loop, so this is set once.
+    EntityScene scene{&body,           droppedItems.get(), droppedItems.get(),
+                      world.worldTick(), fallingBlocks.get()};
+    if (mc::tick::TickWorld* entityWorld = world.worldTick()) {
+        entityWorld->setEntityQuery(anyEntityIn, &scene);
+        // **And what a block leaves behind when it falls off a wall.** Without
+        // this every `dropBlockAsItem` in core is a draw from the world's random
+        // and nothing else, which is what it was before there was a pool to put
+        // the answer in. See core/tick/drop.hpp.
+        entityWorld->setDropSink(spawnDroppedItem, &scene);
+        // **And the sand that is falling rather than teleporting.** Setting
+        // this is what turns `BlockSand.fallInstantly` off for the parts of the
+        // world a player is watching; nothing else in the process sets it, so
+        // world generation and the headless tools keep the instant path. See
+        // core/entity/falling_block.hpp.
+        entityWorld->setFallingBlockSink(spawnFallingBlock, &scene);
+        // **And the click a plate makes.** A pressure plate is flush with the
+        // floor and its whole state is one bit of metadata, so without this the
+        // only way to know it had armed was to look at what it was wired to --
+        // which is why it was reported as feeling unresponsive rather than as
+        // being silent. The lever, the button and the door were in the same
+        // position. See core/tick/tick_world.hpp.
+        entityWorld->setSoundSink(playTickSound, &sound);
+        // **And the text that goes with a sign.** Every removal of a sign
+        // block reaches this -- the player's break, and a sign dropped because
+        // the block it stood or hung on went. See core/tick/tick_world.hpp.
+        entityWorld->setTileEntityRemovedSink(removeSign, signs.get());
+    }
+
     // What the break/place repeat is paced against. Its own count rather than
     // the world clock, which the pause menu stops: holding R through a pause
     // should not bank a hundred placements.
     i64 editTick = 0;
     i64 lastEditTick = -1000;
+
+    // **What the hand is showing, which is not always what the hotbar
+    // selects.** `ItemRenderer`'s equip animation and the arm swing, both on
+    // the 20 Hz clock -- see core/render/held_item.hpp. Per world rather than
+    // per process: entering a world should raise the first item rather than
+    // inherit the last one's progress.
+    mc::render::HeldItemState hand;
+
+    // **The renderer outlives the world and this state does not.** Its held
+    // item is whatever the last world left, and the generation loop below draws
+    // frames before anything sets it -- so a second world would open with one
+    // frame of the first one's hand over the terrain being made.
+    renderer.clearHeldItem();
 
     // **Creative flight, and its double tap.** Off at world entry, every time:
     // it is a state the player asked for with a gesture and there is nowhere to
@@ -733,6 +1088,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     bool flying = false;
     float lastJumpTap = -1.0f;
     float sinceStart = 0.0f;
+    // Off at world entry for the same reason flight is: it is a gesture, not a
+    // saved state. See core/entity/sprint_gesture.hpp for why it is not
+    // a1.1.2's at all.
+    mc::entity::SprintGesture sprintGesture;
     if (world.level().player.present) {
         body.motionX = world.level().player.motion[0];
         body.motionY = world.level().player.motion[1];
@@ -782,12 +1141,18 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // Creative gets the palette page as well, and Survival gets the inventory
     // frame without one.
     overlay.setGamemode(choice.gamemode);
+    // **What the world says the player is carrying.** After setGamemode,
+    // because a mode with no hotbar still loads it -- Spectator must not empty
+    // a hand the real client filled -- and after begin(), which clears it.
+    overlay.setInventory(world.level().player.inventory);
     overlay.configureMap(isNew3DS);
     // The same atlas the world is drawn with, for the map's colours and for the
     // block icons in the hotbar and the palette. `choice` outlives the game
     // loop, which is what lets the overlay borrow its pixels rather than hold a
     // second copy of a quarter of a megabyte.
     overlay.setAtlas(choice.atlas);
+    // ...and the same pack's font, which is what sign text is drawn with.
+    renderer.setFont(menu.fontImage());
     // ...and the same dirt the menu draws its own backdrop with, behind the
     // panels on the bottom screen. Copied out here too, in the format the
     // framebuffer wants.
@@ -822,6 +1187,9 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                                                  : mesh::CubeFormat::Vertices;
         renderer.setCubeFormat(startFormat);
         world.setCubeFormat(startFormat, renderer.chunks());
+        // Greedy meshing the same way, and for the same reason: it has to be
+        // what the page says before the first section is meshed.
+        world.setGreedy(settings.greedyMeshing, renderer.chunks());
     }
 
     render::WorldStreamer::Budget budget;
@@ -955,28 +1323,9 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         const u32 down = hidKeysDown();
         const u32 held = hidKeysHeld();
         if (down & KEY_START) {
-            // **Save now, but only what is owed.** Everything the autosave
-            // timer would write: dirty columns, level.dat with the position and
-            // the world clock, and the session.lock refresh. The world stops
-            // dead while the menu is up, so the I/O thread has the whole of it
-            // to itself and is finished long before the player resumes --
-            // nothing here waits for it. It is also more than the original
-            // does: a1.1.2 only writes everything out on Save and quit to
-            // title.
-            //
-            // **Nothing dirty means nothing written at all**, which is what
-            // makes opening the pause menu twice in a row, or opening it and
-            // leaving, cost one save rather than two. What is given up is the
-            // level.dat refresh that would have ridden along with it -- the
-            // position and the world clock -- and that is covered twice over
-            // already: the autosave timer writes it on its own interval, and
-            // close() writes it on the way out. `dirtyColumns` is read from the
-            // cache rather than from the frame's copy of its counters, which is
-            // as old as the last update().
-            const bool owed = world.dirtyColumns() > 0;
-            if (owed) {
-                world.saveNow(ctr::nowMillis());
-            }
+            // Entity changes do not dirty block columns. Snapshot them on
+            // pause too, including removal of the last entity in the world.
+            world.saveNow(ctr::nowMillis());
 
             // **No target, no screen taken, nothing read off the card.** The
             // menu draws into this loop's own frames, over the world, so all
@@ -1027,18 +1376,58 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
 
             // The world settings screen can change the gamemode without leaving
             // the world, and the gamemode is which bottom screen this is.
+            //
+            // **It is also which of the two movers owns the position**, and
+            // that hand-over has to be made explicitly. Spectator flies a bare
+            // camera and never touches the body; every other mode reads the
+            // camera straight off the body. So a mode change that did not carry
+            // the position across left the body wherever it was last ticked --
+            // at the spawn point, usually -- and re-entering Creative teleported
+            // the player back to it, frequently inside terrain. That is the
+            // "changing gamemode puts you in the ground" bug.
+            //
+            // Only one direction needs work. Leaving Spectator puts the body
+            // under the camera; entering it needs nothing, because the camera is
+            // already at the eye the body was handing it.
+            const settings::Gamemode previousMode = overlay.gamemode();
             overlay.setGamemode(paused.gamemode);
+            if (previousMode == settings::Gamemode::Spectator
+                && paused.gamemode != settings::Gamemode::Spectator) {
+                // `camera.y` is the eye, which is what `eyeY()` hands out, so
+                // the feet are that minus the offset -- the same conversion
+                // world entry makes from a saved `Pos[1]`.
+                body.setFeet(camera.x, camera.y - double(mc::entity::kEyeHeight), camera.z);
+                // A camera that was flying has no velocity worth inheriting,
+                // and a banked `fallDistance` would be cashed in the moment the
+                // body touched down. `setFeet` has already snapped the
+                // interpolation, so the first frame back draws where the camera
+                // already was rather than sliding there.
+                body.motionX = 0.0;
+                body.motionY = 0.0;
+                body.motionZ = 0.0;
+                body.fallDistance = 0.0f;
+                body.onGround = false;
+                sprintGesture.cancel();
+            }
 
             if (paused.atlasChanged) {
                 if (!renderer.setAtlas(menu.atlas())) {
                     std::printf("\x1b[31mcould not upload that pack\x1b[0m\n");
                     overlay.invalidate();
                 }
+                // The font is its own file with its own absence, so it is
+                // uploaded separately -- a pack with no `default.png` leaves
+                // signs blank rather than leaving the world untextured.
+                renderer.setFont(menu.fontImage());
                 // The map is drawn from the same pack as the world, so ground
                 // sampled under the old one is recoloured rather than redrawn:
                 // the store holds block ids, not pixels.
                 overlay.setAtlas(menu.atlas());
                 overlay.setBackdropTile(menu.backgroundTile());
+                // The needle is drawn over the pack's own compass face, so a
+                // new pack means a new base. Without this the compass keeps the
+                // old pack's dial for the rest of the session.
+                seedCompass(menu.atlas());
                 // The outline atlas went with the old one and may not have come
                 // back, so the debug page is told what is actually on rather
                 // than what was asked for -- the same read-back the page does
@@ -1086,6 +1475,13 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // the breadcrumb before it.
                     ctr::geoTrace("republished; first quad frame next");
                 }
+            }
+            // Greedy meshing, pool first for the same reason: the streamer
+            // republishes into whatever it finds, and a pool still holding the
+            // other kind of mesh would make the A/B read half of each.
+            if (settings.greedyMeshing != world.greedy()) {
+                renderer.remesh();
+                world.setGreedy(settings.greedyMeshing, renderer.chunks());
             }
             // Refuses if there was no room for the outline atlas, so the
             // setting is read back from the renderer rather than assumed.
@@ -1178,7 +1574,28 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // pause menu opens, and close() on the way out all read it. Before this
         // a world always reopened where it was first entered and at the time it
         // was created.
-        world.setPlayerState(camera.x, camera.y, camera.z, camera.yaw * 180.0f / kPi,
+        //
+        // **The body's position, not the camera's, wherever there is a body.**
+        // The camera is interpolated between two ticks now (see the body tick
+        // below), and a position part way through a tick is a picture rather
+        // than a state: saving one writes a `Pos` the physics never produced,
+        // and reloading it starts the world a fraction of a block off. In
+        // Spectator there is no body and the camera is the whole truth.
+        // **Written back on the frame it changed, not every frame.** The
+        // streamer copies up to forty stacks and the NBT each one preserved, so
+        // this is on the edit rather than in the frame path -- see
+        // WorldStreamer::setPlayerInventory. The next autosave, the pause
+        // menu's flush and close() all pick it up from there.
+        if (overlay.takeInventoryChange()) {
+            std::vector<mc::item::ItemStack> stacks;
+            overlay.inventory().save(&stacks);
+            world.setPlayerInventory(stacks);
+        }
+
+        const bool hasBody = overlay.gamemode() != settings::Gamemode::Spectator;
+        world.setPlayerState(hasBody ? body.x : camera.x,
+                             hasBody ? body.eyeY() : camera.y,
+                             hasBody ? body.z : camera.z, camera.yaw * 180.0f / kPi,
                              camera.pitch * 180.0f / kPi, worldTicks);
 
         // **What the crosshair is on, for the outline.** Once a frame rather
@@ -1193,7 +1610,15 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 camera.look(&lx, &ly, &lz);
                 const mc::entity::RayHit aim = mc::entity::rayTrace(
                     *aimWorld, camera.x, camera.y, camera.z, double(lx), double(ly), double(lz));
-                if (aim.hit) {
+                // **An entity in front of the block takes the crosshair**, and
+                // `drawSelectionBox` outlines tiles only -- so the outline goes
+                // rather than promising a block the click will not reach.
+                const bool onEntity =
+                    aim.hit
+                    && mc::item::pickEntity(effects.entities, camera.x, camera.y, camera.z,
+                                            double(lx), double(ly), double(lz), aim)
+                           .found();
+                if (aim.hit && !onEntity) {
                     renderer.setSelection(
                         mc::block::selectionBox(aimWorld->blockAt(aim.x, aim.y, aim.z),
                                                 aimWorld->dataAt(aim.x, aim.y, aim.z))
@@ -1204,6 +1629,47 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             }
         } else {
             renderer.clearSelection();
+        }
+
+        // **The billboard basis, once a frame.** `EntityFX.renderParticle` is
+        // handed five products of the camera's yaw and pitch; two vectors say
+        // the same thing and can be checked against the camera's own `look()`
+        // by eye -- both are perpendicular to it and to each other.
+        //
+        // The eye rather than the body: a particle is drawn relative to where
+        // the camera is, and in Creative the two are not the same place.
+        {
+            const float sy = std::sin(camera.yaw);
+            const float cy = std::cos(camera.yaw);
+            const float sp = std::sin(camera.pitch);
+            const float cp = std::cos(camera.pitch);
+            const mc::render::Billboard basis{cy, 0.0f, sy, -sy * sp, cp, cy * sp};
+            renderer.setParticles(particles.get(), basis, camera.x, camera.y, camera.z,
+                                  tickTimer.partialTicks());
+            // The item sprites turn to face the camera about the vertical axis
+            // only -- `playerViewY` in the original, which is the same yaw the
+            // basis above is built from, in degrees.
+            renderer.setItemEntities(droppedItems.get(), camera.yaw * 180.0f / kPi,
+                                     camera.x, camera.y, camera.z,
+                                     tickTimer.partialTicks());
+            // Full-size cubes, not turned to face anybody -- see
+            // core/render/falling_block_mesh.hpp. It rides the item pass's eye
+            // and partial, which the call above just set.
+            renderer.setFallingBlocks(fallingBlocks.get());
+            // Paintings do not move and do not interpolate, so this is the pool
+            // and nothing else -- it uses the eye the item pass just set.
+            renderer.setPaintings(paintings.get());
+            // Arrows ride the item pass's eye and partial too; unlike a
+            // painting they do interpolate, because they move.
+            renderer.setArrows(arrows.get());
+            renderer.setBoats(boats.get());
+            // The only entity pass that needs the world: a cart leans along the
+            // track rather than along its own motion.
+            renderer.setMinecarts(minecarts.get(), world.worldTick());
+            // Two textures and therefore two passes: the board off the entity
+            // sheet and the text off the pack's font.
+            renderer.setSigns(signs.get(), &menu.fontImage());
+            renderer.setChat(chat.get(), &menu.fontImage());
         }
 
         // Each phase timed on its own. The frame period alone cannot tell a
@@ -1255,9 +1721,40 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // shoulders are the palette's pager then. One press does one thing;
             // see Overlay::handleFocusedInput.
             if (!overlay.uiFocused()) {
-                editBlocks(world, renderer.chunks(), camera, body,
-                           overlay.hotbar().selectedBlock(), down, held, editTick,
-                           &lastEditTick);
+                const ChatSink chatSink{
+                    chat.get(), menu.fontImage().empty() ? nullptr : menu.fontImage().widths};
+                editBlocks(world, renderer.chunks(), camera, body, overlay, down, held,
+                           editTick, &lastEditTick, effects, &hand, chatSink);
+
+                // **A drops one of what is in the hand.** a1.1.2 has no drop
+                // key at all -- `dropOneItem` does not exist in it and the only
+                // callers of `dropPlayerItem` in the jar are the inventory
+                // screens spilling the stack on the cursor -- so the button is
+                // ours and the throw underneath it is the game's. A is the one
+                // going spare out here: focused, it is the bottom screen's
+                // pick, and this branch is the unfocused one. It used to be
+                // flight's held boost as well; that is gone.
+                //
+                // **The entity first, the stack second.** The pool can be full,
+                // and taking the item off the hand for an entity that was
+                // refused would destroy it. See Overlay::dropHeldItem.
+                if ((down & KEY_A) != 0) {
+                    if (mc::tick::TickWorld* dropWorld = world.worldTick()) {
+                        const mc::item::Inventory& inv = overlay.inventory();
+                        const mc::item::ItemId held = inv.selectedItem();
+                        const mc::u32 refusedBefore = droppedItems->refused();
+                        if (held != 0
+                            && droppedItems->dropFromPlayer(
+                                   *dropWorld, body.x, body.posY, body.z,
+                                   camera.yaw * 180.0f / kPi,
+                                   camera.pitch * 180.0f / kPi, held, 1,
+                                   inv.at(inv.selected).damage)) {
+                            overlay.dropHeldItem();
+                        } else if (droppedItems->refused() != refusedBefore) {
+                            chatSink.limitReached(mc::item::LimitedEntity::DroppedItem);
+                        }
+                    }
+                }
             }
 
             tick::TickWorld* tickWorld = world.worldTick();
@@ -1278,35 +1775,183 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     bodyInput.strafe = 0.0f;
                     bodyInput.forward = 0.0f;
                 }
+                // **The double-tap sprint**, read once a frame off the same
+                // stick and handed to every tick this frame owes.
+                //
+                // **Creative only, because a1.1.2 has no sprint at all.** The
+                // gesture is the console editions' and the speed is Beta's, so
+                // it belongs with the other thing in this build that is openly
+                // not this version's -- Creative itself. Survival gets a1.1.2's
+                // walk, unmodified, which is the whole point of Survival here.
+                //
+                // Suppressed wherever the stick is not the player's -- a
+                // focused bottom screen, a panned map -- and while flying,
+                // which has one flat speed and nothing for a gesture to change.
+                bodyInput.sprint = readSprint(
+                    sprintGesture, bodyInput, sinceStart,
+                    overlay.gamemode() != settings::Gamemode::Creative || flying
+                        || overlay.uiFocused() || overlay.mapPanActive());
                 for (int i = 0; i < ticksDue; ++i) {
+                    // **The hand, first and unconditionally.** `Minecraft.i()`
+                    // runs `ItemRenderer.updateEquippedItem` once a tick with a
+                    // world open, and `EntityPlayer.onUpdate` runs the arm
+                    // swing -- neither cares whether the player is walking,
+                    // flying or in a boat, and the riding branch below returns
+                    // early. See core/render/held_item.hpp.
+                    hand.tick(overlay.inventory().selectedItem());
+
+                    // **Riding, which is neither walking nor flying.**
+                    //
+                    // The body keeps turning the stick into motion exactly as
+                    // it would on foot -- `EntityLiving` never checks whether
+                    // it is riding -- and the vehicle reads that motion and
+                    // hands back a seat. See PlayerBody::tickRiding.
+                    //
+                    // **Y dismounts**, which is the sneak button and is what
+                    // the original uses. It is tested before the tick so that
+                    // the tick the button is pressed on is a walking one.
+                    const bool inBoat = boats->riddenIndex() >= 0;
+                    const bool inCart = minecarts->riddenIndex() >= 0;
+                    if (inBoat || inCart) {
+                        if ((held & KEY_Y) != 0) {
+                            boats->dismount();
+                            minecarts->dismount();
+                        } else {
+                            mc::entity::VehicleRider seat;
+                            seat.present = true;
+                            seat.motionX = body.motionX;
+                            seat.motionZ = body.motionZ;
+                            mc::entity::RiderSeat where;
+                            if (inBoat) {
+                                boats->tick(*tickWorld, seat);
+                                where = boats->seat();
+                            } else {
+                                minecarts->tick(*tickWorld, seat);
+                                where = minecarts->seat();
+                            }
+                            if (where.valid) {
+                                body.tickRiding(bodyInput, where.x, where.y, where.z);
+                                continue;
+                            }
+                            // The vehicle went -- broken on a wall, or streamed
+                            // out from under us. Fall through to walking, which
+                            // is what being thrown clear looks like.
+                        }
+                    }
                     if (flying) {
                         // B and Y are up and down, which is exactly what they
                         // are in Spectator's `flyCamera` -- the two movers
                         // should not disagree about which button rises.
                         //
-                        // **A is the sprint here and X is the sprint there**,
-                        // and that is not an inconsistency to tidy up: X is the
-                        // bottom screen's focus in every mode that has a
-                        // hotbar, so it cannot also be a held modifier, and
-                        // Spectator -- which has no hotbar and no focus -- is
-                        // the only mode where X is still free. A is free in
-                        // Creative for the mirrored reason: it is the focused
-                        // screen's pick button and does nothing unfocused.
-                        const bool sprint =
-                            (held & KEY_A) != 0 && !overlay.uiFocused();
+                        // **One speed.** A used to be a held boost here, copied
+                        // from Spectator's X; it is the drop now. See
+                        // core/entity/player_body.hpp for why Spectator keeps
+                        // its boost and Creative does not.
                         body.tickFlying(*tickWorld, bodyInput, (held & KEY_B) != 0,
-                                        (held & KEY_Y) != 0,
-                                        sprint ? mc::entity::kFlightSprintSpeed
-                                               : mc::entity::kFlightSpeed);
+                                        (held & KEY_Y) != 0, mc::entity::kFlightSpeed);
                     } else {
                         body.tick(*tickWorld, bodyInput);
                     }
+
+                    // `moveEntity`'s tail, which `PlayerBody` cannot run
+                    // itself because it moves against a const world. This is
+                    // what arms a pressure plate the moment it is stood on;
+                    // see tick::entityCollidedWithBlocks.
+                    mc::tick::entityCollidedWithBlocks(*tickWorld, body.box);
+
+                    // A flying Creative player still has the ordinary player
+                    // body, so it must participate in minecart collisions.
+                    // The cart supplies the equal-and-opposite impulse; the
+                    // body carries it into its next movement tick.
+                    minecarts->collideWithPlayer(body.box, body.x, body.z,
+                                                  &body.motionX, &body.motionZ);
+
+                    // **Walking over what is lying about**, once per tick.
+                    // `EntityPlayer.onUpdate` expands its own box by a block on
+                    // the two horizontal axes and by nothing on y before it
+                    // asks the world what is inside -- so an item is reached
+                    // from a step away sideways and never from a floor below.
+                    const AABB reach = body.box.expand(1.0, 0.0, 1.0);
+                    const int picked = overlay.collectItems(*droppedItems, reach);
+                    for (int p = 0; p < picked; ++p) {
+                        // `random.pop` at volume 0.2, and the pitch is the
+                        // original's expression rather than a constant: two
+                        // draws subtracted, so most pickups land near 2.0 and
+                        // few at the edges.
+                        const float pitch =
+                            ((pickupRand.nextFloat() - pickupRand.nextFloat()) * 0.7f
+                             + 1.0f) * 2.0f;
+                        sound.playSoundAt("random.pop", body.x,
+                                          body.posY - double(mc::entity::kEyeHeight),
+                                          body.z, 0.2f, pitch);
+                    }
+
+                    // **The footstep, once per tick and not once per frame.**
+                    // `move()` decides whether this tick earned one and which
+                    // block it belongs to; all that is left here is a listener
+                    // and a pool key, which is the half core cannot have. The
+                    // position is the feet -- `posY - yOffset` --  because
+                    // that is what `playSoundAtEntity` passes.
+                    const mc::audio::SoundCue step =
+                        mc::audio::stepCue(body.stepSoundDue);
+                    if (step.playable()) {
+                        sound.playSoundAt(step.key, body.x,
+                                          body.posY - double(mc::entity::kEyeHeight),
+                                          body.z, step.volume, step.pitch);
+                    }
                 }
             }
-            camera.x = body.x;
-            camera.y = body.eyeY();
-            camera.z = body.z;
+            // **Between two ticks, not on the last one.** The body runs at
+            // 20 Hz and this screen draws at 30 or 60, so pinning the camera to
+            // `body.x` left it still for one or two frames and then jumping a
+            // whole tick's travel -- a fifth of a block at a walk, which reads
+            // as moving in steps rather than walking. This is
+            // `EntityRenderer.orientCamera`'s own line: the position the body
+            // was at when the tick began, plus the fraction of a tick the frame
+            // is being drawn at. See PlayerBody::renderX.
+            const float partial = tickTimer.partialTicks();
+            camera.x = body.renderX(partial);
+            camera.y = body.renderEyeY(partial);
+            camera.z = body.renderZ(partial);
         }
+
+        // **The one thing on the top screen that is not the world**, and the
+        // one renderer hand-over that is *after* the ticks rather than before
+        // them. Every pass above takes a pool that the tick loop then advances,
+        // which costs a frame of latency nobody can see on a boat; the hand's
+        // whole animation is five ticks long and a frame behind on it reads as
+        // the item lagging the button. It needs no eye and no origin either --
+        // it is drawn in camera space -- so there is nothing tying it to that
+        // block.
+        //
+        // **Spectator has no hand**, for the same reason it has no hotbar:
+        // there is no body to hold anything.
+        {
+            u8 handLight = 0;
+            if (const mc::tick::TickWorld* lit = world.worldTick()) {
+                const i32 hx = mc::MathHelper::floorDouble(body.x);
+                const int hy = int(mc::MathHelper::floorDouble(body.posY));
+                const i32 hz = mc::MathHelper::floorDouble(body.z);
+                handLight = u8((lit->skyLightAt(hx, hy, hz) << 4)
+                               | lit->blockLightAt(hx, hy, hz));
+            }
+            const float handPartial = tickTimer.partialTicks();
+            if (overlay.gamemode() == settings::Gamemode::Spectator) {
+                // **Not an empty hand -- no hand.** An empty hand draws the
+                // player's arm, which is exactly what a camera with no body
+                // should not have.
+                renderer.clearHeldItem();
+            } else {
+                renderer.setHeldItem(hand.item(), hand.equippedProgress(handPartial),
+                                     hand.swingProgress(handPartial), handLight);
+            }
+        }
+
+        // **The ears go where the camera is**, once a frame, as
+        // `SoundManager.setListener` does off the render view entity. Every
+        // positional sound is attenuated against this; without it they would
+        // all play at full volume from the origin.
+        sound.setListener(camera.x, camera.y, camera.z);
 
         const u64 beforeTick = svcGetSystemTick();
         world.stepTicks(renderer.chunks(), ticksDue);
@@ -1325,6 +1970,115 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // file open handed to the decode thread -- never a decode.
         sound.tick(ticksDue);
         sound.update();
+
+        // `lu.a()` -- the chat lines age on the world's clock too, so a line
+        // lasts its ten seconds of game time at any frame rate and waits out a
+        // pause.
+        chat->tick(ticksDue);
+
+        // The particles are entities and run on the world's clock, not the
+        // frame's -- so a console at 24 fps sees the same cloud a console at 60
+        // does, only sampled less often.
+        if (mc::tick::TickWorld* fxWorld = world.worldTick()) {
+            for (int i = 0; i < ticksDue; ++i) {
+                particles->tick(*fxWorld);
+                droppedItems->tick(*fxWorld);
+                // **The one entity here that writes blocks**, which is why it
+                // takes the world by reference where the other two do not: it
+                // empties the cell it came from and fills the one it lands in.
+                fallingBlocks->tick(*fxWorld);
+                // **Cheap and not skippable.** A painting's tick is a light
+                // sample and, one tick in a hundred, the check that its wall is
+                // still there -- which is what makes a picture fall when the
+                // block behind it is mined.
+                paintings->tick(*fxWorld);
+                // **Boats that nobody is in.** The ridden one is ticked in the
+                // body loop above, because it needs the rider's motion from
+                // that same tick; this covers the rest. `present` false is what
+                // tells it there is nothing steering.
+                if (boats->riddenIndex() < 0) {
+                    boats->tick(*fxWorld, mc::entity::VehicleRider{});
+                }
+                if (minecarts->riddenIndex() < 0) {
+                    minecarts->tick(*fxWorld, mc::entity::VehicleRider{});
+                }
+                // A tile entity does not tick, but its light does: a torch put
+                // beside a sign has to brighten it, and the store is the only
+                // thing that knows where the signs are.
+                signs->refreshLight(*fxWorld);
+                // **Arrows, which move by ray rather than by sweep.** One
+                // `rayTraceBlocks` per live arrow per tick, and a stuck one
+                // costs a block read and nothing else -- see
+                // core/entity/arrow.hpp.
+                arrows->tick(*fxWorld, mc::entity::ArrowTargets{paintings.get(), boats.get(),
+                                                                minecarts.get()});
+                for (int n = 0; n < arrows->struckLastTick(); ++n) {
+                    // `random.drr`, once per arrow that landed. The pitch is
+                    // the original's `1.2F / (rand * 0.2F + 0.9F)`.
+                    sound.playSoundAt("random.drr", body.x, body.eyeY(), body.z, 1.0f,
+                                      1.2f / (pickupRand.nextFloat() * 0.2f + 0.9f));
+                }
+                // Same tail, per item: a wooden plate is pressed by a dropped
+                // stack and a stone one is not. Particles are not entities in
+                // the original's sense and never run it.
+                for (int n = 0; n < droppedItems->count(); ++n) {
+                    mc::tick::entityCollidedWithBlocks(*fxWorld, (*droppedItems)[n].box);
+                }
+            }
+        }
+
+        // **Fire, on the world's clock and pushed once a frame.**
+        //
+        // The original steps its `TextureFX` list once per *frame* from
+        // `RenderEngine.updateDynamicTextures`; this steps it once per tick and
+        // uploads once per frame, which is the same split the particles and the
+        // music counter already use -- a console at 24 fps and one at 60 see
+        // the same flame, only sampled differently. `tick(0)` is the common
+        // case at 30 fps and costs a compare.
+        //
+        // **Before the draw, never inside it.** The two tiles are 2 KB of a
+        // texture the GPU samples for every fragment of every chunk; the copy
+        // has to land while nothing is reading it, which is what this position
+        // -- beside `stepTicks` and ahead of `drawFrame` -- buys.
+        if (ticksDue > 0 && flames->present()) {
+            flames->tick(ticksDue);
+            for (int which = 0; which < mc::texture::kFlameCount; ++which) {
+                const int tile = flames->tile(which);
+                if (tile >= 0) {
+                    renderer.setAtlasTile(tile, flames->texels(which));
+                }
+            }
+        }
+
+        // **And the compass, on the same clock and in the same place.**
+        //
+        // Stepped `ticksDue` times rather than once so that a console dropping
+        // frames sees the needle swing at the same rate as one that is not --
+        // the spring is a per-step thing and skipping steps would make a slow
+        // console's compass lag its player. It is nine sines and cosines a
+        // step; the loop is not the cost, the two tile pushes are, and those
+        // happen once however many steps ran.
+        if (ticksDue > 0 && compassTile >= 0) {
+            // **And only when a texel moved.** `tick` answers that; see
+            // core/texture/compass_fx.hpp. The spring converges long after the
+            // needle has stopped moving on a 16 x 16 tile, and pushing anyway
+            // meant the overlay repainted the whole hotbar band -- or the
+            // inventory panel -- twenty times a second for a picture that was
+            // already on the screen, straight into the buffer the LCD is
+            // scanning out of. The `|| moved` is after the call on purpose: the
+            // step has to run for every tick due, whatever the last one said.
+            bool moved = false;
+            for (int i = 0; i < ticksDue; ++i) {
+                moved = compass->tick(world.level().spawnX, world.level().spawnZ,
+                                      hasBody ? body.x : camera.x, hasBody ? body.z : camera.z,
+                                      camera.yaw * 180.0f / kPi)
+                        || moved;
+            }
+            if (moved) {
+                renderer.setItemsTile(compassTile, compass->texels());
+                overlay.setAnimatedItemsTile(compassTile, compass->texels());
+            }
+        }
         // The autosave timer. It writes level.dat and refreshes session.lock,
         // neither of which had any trigger but close() before, and hands
         // anything still dirty to the I/O thread. Generated columns do not wait
@@ -1391,6 +2145,15 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     } else {
         world.close(ctr::nowMillis());
     }
+    // **The one thing the renderer borrows from the world, given back the
+    // moment the world is gone.** Every other entity pass borrows a pool that
+    // is still on this stack; the cart pass also holds the `TickWorld`, which
+    // `close()` has just destroyed. Nothing draws between here and
+    // `shutdown()` today, so this is the invariant written down rather than a
+    // second fix -- the first is that `close()` now keeps the tick world alive
+    // until after the last frame the save screen draws. See
+    // crashlogs/009-save-with-a-minecart/.
+    renderer.setMinecarts(nullptr, nullptr);
     renderer.shutdown();
     return 0;
 }
@@ -1410,7 +2173,24 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
 // not concurrency, it is borrowing a stack. See the call site.
 void preloadOnWorker(void* arg)
 {
-    static_cast<mc::audio::SoundEngine*>(arg)->preloadSound("random.click");
+    auto& sound = *static_cast<mc::audio::SoundEngine*>(arg);
+    sound.preloadSound("random.click");
+    // **The five other keys a block behaviour can name**, all of them cued
+    // from `core/tick/` through `TickWorld::playSoundAt` or from
+    // `core/item/use.cpp`. They are listed rather than derived because there
+    // is nothing to derive them from: a sound a *behaviour* plays has no
+    // column in the block table, unlike a footstep. A key the player has no
+    // files for costs nothing, so a short list that is slightly too long is
+    // free and one that is too short is a silence.
+    sound.preloadSound("random.door_open");
+    sound.preloadSound("random.door_close");
+    sound.preloadSound("random.pop");
+    sound.preloadSound("random.fizz");
+    sound.preloadSound("fire.ignite");
+    // **Every footstep and break sound the block table can name.** Bounded by
+    // the table rather than by the card -- nine singletons name six distinct
+    // keys in a1.1.2 -- and a key the player has no files for costs nothing.
+    mc::audio::preloadBlockSounds(sound);
 }
 
 void preloadInterfaceSounds(mc::audio::SoundEngine& sound)

@@ -9,7 +9,12 @@ using namespace mc;
 using texture::kAtlasEdge;
 using texture::mortonInterleave;
 using texture::tiledOffset;
+using texture::kTileRunWords;
+using texture::kTileWords;
+using texture::TileRuns;
 using texture::tiledOffsetFlipped;
+using texture::tileRunIndex;
+using texture::tileRunsFlipped;
 
 namespace {
 
@@ -139,3 +144,113 @@ TEST(tiling_an_image_round_trips)
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// One tile on its own
+// ---------------------------------------------------------------------------
+//
+// **The claim these pin is a performance one, and it is only true because of
+// the layout.** Fire animates by replacing two atlas tiles twenty times a
+// second, and the atlas is 256 KB in VRAM that the CPU cannot store into -- so
+// the update has to be a DMA of exactly those tiles or it is a re-upload of
+// the whole texture. `tileRunsFlipped` says it is two runs of 512 bytes; if
+// that is wrong the failure on hardware is not a slow frame but a corrupted
+// atlas, which is why the arithmetic lives in core where it can be checked.
+
+TEST(a_tile_is_exactly_two_runs_of_a_hundred_and_twenty_eight_words)
+{
+    // Every texel of the tile lands somewhere in the two runs, no texel lands
+    // twice, and nothing outside the tile lands in them.
+    for (u32 tile = 0; tile < 256; tile += 37) {
+        const u32 column = tile % 16;
+        const u32 row = tile / 16;
+        const TileRuns runs = tileRunsFlipped(column, row, u32(kAtlasEdge));
+
+        bool filled[kTileWords] = {};
+        for (u32 y = 0; y < 16; ++y) {
+            for (u32 x = 0; x < 16; ++x) {
+                const u32 at = tileRunIndex(runs, column, row, x, y, u32(kAtlasEdge));
+                CHECK(at < kTileWords);
+                CHECK(!filled[at]);
+                filled[at] = true;
+            }
+        }
+        for (u32 i = 0; i < kTileWords; ++i) {
+            CHECK(filled[i]);
+        }
+    }
+}
+
+TEST(a_tiles_runs_hold_only_that_tile)
+{
+    // The other direction, and the one that matters: a run that reached past
+    // its tile would overwrite a neighbouring texture every time fire ticked.
+    for (u32 tile : {0u, 15u, 31u, 47u, 240u, 255u}) {
+        const u32 column = tile % 16;
+        const u32 row = tile / 16;
+        const TileRuns runs = tileRunsFlipped(column, row, u32(kAtlasEdge));
+
+        for (u32 y = 0; y < u32(kAtlasEdge); ++y) {
+            for (u32 x = 0; x < u32(kAtlasEdge); ++x) {
+                const u32 offset = tiledOffsetFlipped(x, y, kAtlasEdge, kAtlasEdge);
+                const bool inRuns =
+                    (offset >= runs.first && offset < runs.first + kTileRunWords)
+                    || (offset >= runs.second && offset < runs.second + kTileRunWords);
+                const bool inTile = x / 16 == column && y / 16 == row;
+                CHECK_EQ(inRuns, inTile);
+            }
+        }
+    }
+}
+
+TEST(both_runs_are_aligned_for_the_consoles_copy_engine)
+{
+    // GX_TextureCopy wants 16-byte alignment at both ends and a size that is a
+    // multiple of 16. A run is 512 bytes and both offsets are multiples of 128
+    // words, so all three hold -- but only because a tile column advances by
+    // 128 words and a tile row by a multiple of that.
+    for (u32 tile = 0; tile < 256; ++tile) {
+        const TileRuns runs = tileRunsFlipped(tile % 16, tile / 16, u32(kAtlasEdge));
+        CHECK_EQ(runs.first % kTileRunWords, 0u);
+        CHECK_EQ(runs.second % kTileRunWords, 0u);
+        CHECK_EQ(runs.second - runs.first, 8u * u32(kAtlasEdge));
+        CHECK(runs.second + kTileRunWords <= u32(kAtlasEdge) * u32(kAtlasEdge));
+    }
+}
+
+TEST(writing_a_tile_through_its_runs_matches_writing_it_texel_by_texel)
+{
+    // The whole update path, in the small: build the two runs the way
+    // platform/ctr/textures.cpp does, splice them into an atlas, and check the
+    // result against the same tile written through the general map.
+    const usize count = usize(kAtlasEdge) * kAtlasEdge;
+    std::vector<u32> byTexel(count, 0u);
+    std::vector<u32> byRun(count, 0u);
+
+    const u32 tile = 31;  // fire's own, in this version
+    const u32 column = tile % 16;
+    const u32 row = tile / 16;
+    const auto value = [](u32 x, u32 y) { return (y << 16) | x | 0x80000000u; };
+
+    for (u32 y = 0; y < 16; ++y) {
+        for (u32 x = 0; x < 16; ++x) {
+            byTexel[tiledOffsetFlipped(column * 16 + x, row * 16 + y, kAtlasEdge, kAtlasEdge)] =
+                value(x, y);
+        }
+    }
+
+    const TileRuns runs = tileRunsFlipped(column, row, u32(kAtlasEdge));
+    u32 staging[kTileWords] = {};
+    for (u32 y = 0; y < 16; ++y) {
+        for (u32 x = 0; x < 16; ++x) {
+            staging[tileRunIndex(runs, column, row, x, y, u32(kAtlasEdge))] = value(x, y);
+        }
+    }
+    for (u32 i = 0; i < kTileRunWords; ++i) {
+        byRun[runs.first + i] = staging[i];
+        byRun[runs.second + i] = staging[kTileRunWords + i];
+    }
+
+    CHECK(byRun == byTexel);
+}
+

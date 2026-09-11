@@ -50,6 +50,52 @@ int collisionBoxes(BlockId id, u8 metadata, AABB* out, int max);
 // Generated data rather than a switch: seventy blocks make eighteen families,
 // seven of which change with metadata, and hand-transcribing that is how a
 // wrong number survives a year. See tools/gen_selection.py.
+namespace detail {
+
+// **Which ids are a unit cube whatever their metadata**, folded at compile time
+// out of the generated selection index.
+//
+// This exists for one reason and it is a measured one. The mesher has to know
+// whether a standard block fills its cell before it can pick between the cube
+// stream and the box path, and asking `selectionBox` per block cost **13.6 us a
+// section** on the dev host -- 22.8 to 36.4 in face emit, a 60 % rise for the
+// 36 extra quads a whole 1,119-column world produced. The question is almost
+// always "yes, a unit cube", it depends only on the id for all but one block in
+// a1.1.2, and a bool per id answers it with one load.
+//
+// Shape 0 is the unit cube -- `tools/configure.py` refuses to emit a table
+// where it is not -- so "every metadata maps to shape 0" is the whole test.
+struct UnitCubeTable {
+    bool always[mcver::kSelectionIndexSize];
+};
+
+constexpr UnitCubeTable buildUnitCubeTable()
+{
+    UnitCubeTable table{};
+    for (int id = 0; id < mcver::kSelectionIndexSize; ++id) {
+        bool all = true;
+        for (int metadata = 0; metadata < 16; ++metadata) {
+            if (mcver::kSelectionIndex[id][metadata] != 0) {
+                all = false;
+            }
+        }
+        table.always[id] = all;
+    }
+    return table;
+}
+
+inline constexpr UnitCubeTable kUnitCubeTable = buildUnitCubeTable();
+
+}  // namespace detail
+
+// Whether this block's render bounds fill its cell for every metadata value.
+// True for an id past the table, which is the unknown block and is drawn as a
+// full cube everywhere else too.
+constexpr bool selectionIsAlwaysUnitCube(BlockId id)
+{
+    return id >= mcver::kSelectionIndexSize || detail::kUnitCubeTable.always[id];
+}
+
 inline AABB selectionBox(BlockId id, u8 metadata)
 {
     const int shape = id < mcver::kSelectionIndexSize
@@ -60,15 +106,15 @@ inline AABB selectionBox(BlockId id, u8 metadata)
                 double(b[3]), double(b[4]), double(b[5])};
 }
 
-// **Which way a block ends up facing when a player puts it down.**
+// **What the struck face makes of a block a player puts down.**
 // `Block.onBlockPlaced`, which `ItemBlock.onItemUse` runs straight after
-// `setBlockWithNotify` -- so a torch clicked onto a wall becomes a wall torch
-// and a staircase faces the way it was clicked.
+// `setBlockWithNotify` -- so a torch clicked onto a wall becomes a wall torch.
 //
-// **The face, not the player.** Measured, and it surprised: only the lever
-// consults the player's heading in a1.1.2, and only on its top face. Stairs,
-// furnaces, ladders and buttons all take the struck face and nothing else,
-// which is why this needs no yaw. See docs/physics-a1.1.2.md.
+// Six blocks have one: the torch, both redstone torches, the ladder, the lever
+// and the button. Every other row is 0. **A furnace and a staircase are not
+// here**: they turn from their neighbours in onBlockAdded, which is
+// `tick::blockAdded`, and nothing in a1.1.2 reads the player's heading. See
+// docs/physics-a1.1.2.md.
 inline u8 placementMetadata(BlockId id, int face)
 {
     if (id >= mcver::kPlacementTableSize || face < 0 || face > 5) {

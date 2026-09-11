@@ -63,6 +63,13 @@ struct GameSettings {
     // becomes 100: a1.1.2 defaults both volumes to 1.0F.
     int musicVolume = -1;
     int soundVolume = -1;
+
+    // **Which player skin the arm of an empty hand is drawn with**, as
+    // `SkinEntry::key`: empty for Default -- the active pack's `char.png`, or
+    // the black silhouette when it has none -- `pack:<name>` for another pack's
+    // skin, `file:<name.png>` for one in `skins/`. See
+    // core/texture/skin_list.hpp for why it is a name and not a path.
+    std::string skin;
 };
 
 // **Ours, not the original's.** a1.1.2 has no timed autosave: it writes a chunk

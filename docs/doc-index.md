@@ -14,7 +14,7 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/3ds-performance.md`
 
-1,565 lines, ~23,767 tokens.
+1,568 lines, ~23,888 tokens.
 
 - **6-35** The hardware you are actually targeting
 - **36-70** 1. Vertex format: 12 bytes, 4 vertices per quad
@@ -34,35 +34,35 @@ grep -n 'geometry shader' docs/*.md   # find which section first
   - **485-551** The third hardware failure: the watchdog was watching the wrong frame
   - **552-633** The fourth hardware failure: three ways the third fix stopped one call short
   - **634-746** The heap split, and the bound under the render distance
-  - **747-766** What is still unknown, and it is the part that matters
-- **767-808** 2b. Take control of the heap split (implemented)
-- **809-860** 3. Put hot VBOs in VRAM
-  - **861-896** The size-class ratio, measured rather than picked
-  - **897-932** What the pool does through a full turn
-  - **933-948** One sharp edge, found by fuzzing rather than by reading
-- **949-977** 4. Visibility: flood-fill graph culling, front-to-back
-  - **978-1015** Measured: the search has to drive meshing, not just drawing (M2)
-  - **1016-1034** Measured again: reachability is not the fix, and the first conclusion here was wrong
-  - **1035-1075** What actually bounds it: a budgeted pool, with the walk supplying priority
-  - **1076-1131** The walk's constant factor: ARMv6k cannot divide (measured, fixed)
-- **1132-1203** 5. Hardware fog does the distance fade for free — **reversed, it cannot do this one**
-- **1204-1229** 6. Fill-rate knobs
-- **1230-1240** 7. Storage: palette sections and taming the Alpha file layout
-  - **1241-1283** Storage I/O: what the devoptab actually costs
-  - **1284-1310** What was built: core/world/chunk_cache.hpp
-  - **1311-1341** Packed worlds: the operation count, measured
-- **1342-1352** 8. Faster inflate
-- **1353-1368** 9. Texture memory
-- **1369-1394** 10. Stereo 3D done cheaply
-- **1395-1405** 11. Two screens means zero HUD overdraw
-- **1406-1424** 12. New 3DS
-- **1425-1437** 13. Build flags
-- **1438-1462** Options contract
-- **1463-1488** Debug overlay
-- **1489-1506** Performance gates
-- **1507-1510** Measurements
-  - **1511-1527** Hardware readings (M0 probe, New 3DS, 3DSX via Homebrew Launcher)
-  - **1528-1565** Fragment pipeline (M0b overdraw pass, New 3DS, two textures bound)
+  - **747-769** What is still unknown, and it is the part that matters
+- **770-811** 2b. Take control of the heap split (implemented)
+- **812-863** 3. Put hot VBOs in VRAM
+  - **864-899** The size-class ratio, measured rather than picked
+  - **900-935** What the pool does through a full turn
+  - **936-951** One sharp edge, found by fuzzing rather than by reading
+- **952-980** 4. Visibility: flood-fill graph culling, front-to-back
+  - **981-1018** Measured: the search has to drive meshing, not just drawing (M2)
+  - **1019-1037** Measured again: reachability is not the fix, and the first conclusion here was wrong
+  - **1038-1078** What actually bounds it: a budgeted pool, with the walk supplying priority
+  - **1079-1134** The walk's constant factor: ARMv6k cannot divide (measured, fixed)
+- **1135-1206** 5. Hardware fog does the distance fade for free — **reversed, it cannot do this one**
+- **1207-1232** 6. Fill-rate knobs
+- **1233-1243** 7. Storage: palette sections and taming the Alpha file layout
+  - **1244-1286** Storage I/O: what the devoptab actually costs
+  - **1287-1313** What was built: core/world/chunk_cache.hpp
+  - **1314-1344** Packed worlds: the operation count, measured
+- **1345-1355** 8. Faster inflate
+- **1356-1371** 9. Texture memory
+- **1372-1397** 10. Stereo 3D done cheaply
+- **1398-1408** 11. Two screens means zero HUD overdraw
+- **1409-1427** 12. New 3DS
+- **1428-1440** 13. Build flags
+- **1441-1465** Options contract
+- **1466-1491** Debug overlay
+- **1492-1509** Performance gates
+- **1510-1513** Measurements
+  - **1514-1530** Hardware readings (M0 probe, New 3DS, 3DSX via Homebrew Launcher)
+  - **1531-1568** Fragment pipeline (M0b overdraw pass, New 3DS, two textures bound)
 
 ## `docs/architecture.md`
 
@@ -77,28 +77,29 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/assets.md`
 
-434 lines, ~6,977 tokens.
+461 lines, ~7,451 tokens.
 
 - **7-27** What the player has to supply: nothing
 - **28-66** What "an a1.1.2 texture pack" actually is
   - **67-80** What a jar's zip actually looks like
-- **81-112** Choosing and importing a pack, from the console
-- **113-144** What a pack actually changes today
-  - **145-159** Dev Art
-- **160-185** Where the code is
-- **186-218** Sounds
-- **219-248** SD card layout
-- **249-278** What the import pipeline turned out to be
-- **279-293** HD packs and the VRAM budget
-- **294-309** Tinting
-- **310-339** Fonts
-- **340-353** Audio and DSP firmware
-- **354-367** Licensing rules
-  - **368-434** Provenance of the generated tables
+- **81-91** Choosing and importing a pack, from the console
+- **92-139** Choosing a player skin
+- **140-171** What a pack actually changes today
+  - **172-186** Dev Art
+- **187-212** Where the code is
+- **213-245** Sounds
+- **246-275** SD card layout
+- **276-305** What the import pipeline turned out to be
+- **306-320** HD packs and the VRAM budget
+- **321-336** Tinting
+- **337-366** Fonts
+- **367-380** Audio and DSP firmware
+- **381-394** Licensing rules
+  - **395-461** Provenance of the generated tables
 
 ## `docs/audio-a1.1.2.md`
 
-320 lines, ~4,070 tokens.
+474 lines, ~6,205 tokens.
 
 - **22-58** The music ticker — `of.i`, `of.c()`
   - **59-71** The rule that is easy to get wrong
@@ -107,13 +108,18 @@ grep -n 'geometry shader' docs/*.md   # find which section first
   - **95-110** Key derivation — `eb.a(String, File)`
   - **111-134** The pool is the folder
 - **135-152** Volumes and attenuation
-- **153-186** Interface sounds — `of.a(String, float, float)`
-  - **187-213** Where the menu click comes from
-  - **214-234** What this port does with it
-  - **235-263** Effects are loaded before they are asked for
-- **264-274** Where the resources came from, and why they are not downloaded
-- **275-299** Where this port differs, and why
-- **300-320** Not yet ported
+- **153-188** Positional sounds — `of.b(String, float, float, float, float, float)`
+- **189-222** Interface sounds — `of.a(String, float, float)`
+  - **223-249** Where the menu click comes from
+  - **250-270** What this port does with it
+  - **271-299** Effects are loaded before they are asked for
+- **300-330** Footsteps and breaking — `bb`, and the three places it is read
+  - **331-346** The three call sites, and their three sums
+  - **347-386** The footstep trigger — inside `moveEntity`
+- **387-397** Where the resources came from, and why they are not downloaded
+- **398-422** Where this port differs, and why
+- **423-441** Not yet ported
+- **442-474** What a block behaviour plays, and the seam it plays through
 
 ## `docs/build-versions.md`
 
@@ -134,6 +140,42 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 - **261-281** SD card layout
 - **282-309** CI
 - **310-318** Rules
+
+## `docs/current-work.md`
+
+364 lines, ~5,735 tokens.
+
+- **6-13** Checkout context
+- **14-34** Greedy meshing is in, through a cube atlas and a seam
+- **35-48** The crosshair's entity pick is `getMouseOver`'s now
+- **49-61** Furnaces and stairs face their neighbours, and a furnace draws its mouth where it faces
+- **62-70** A sign whose support is broken now goes
+- **71-80** A minecart stack no longer overflows to NaN; a NaN entity no longer bricks a save
+- **81-119** Entity pools have no cap
+- **120-132** Breaking entities, and the crop's seeds
+- **133-148** Entity persistence
+- **149-175** The held item
+- **176-199** Skins
+- **200-231** Hardware save crash — cause found, previous verdict corrected
+- **232-252** Dungeons after the null-side-effects tweak
+- **253-273** Minecart placement and the crosshair, checked rather than assumed
+- **274-302** The crosshair was being back-face culled
+- **303-329** The compass no longer repaints a screen that has not changed
+- **330-350** Arrow and minecart follow-up
+- **351-364** Verification evidence
+
+## `docs/entity-render-a1.1.2.md`
+
+179 lines, ~2,683 tokens.
+
+- **24-34** What is actually left
+  - **35-53** The texture problem, stated
+  - **54-76** The decision: two more 256 x 256 sheets, and no new pipeline
+  - **77-101** Cost, stated as a budget
+- **102-127** The box model
+- **128-152** Caps
+- **153-171** What this did not decide, and what happened next
+- **172-179** One thing the budget above got wrong
 
 ## `docs/licences.md`
 
@@ -182,7 +224,7 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/physics-a1.1.2.md`
 
-468 lines, ~5,990 tokens.
+880 lines, ~12,440 tokens.
 
 - **13-27** The classes
 - **28-50** Fields
@@ -194,16 +236,27 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 - **180-220** `EntityLiving.moveEntityWithHeading` — `ge.b(FF)`
 - **221-237** `Entity.moveFlying` — `kh.a(FFF)`
 - **238-245** `EntityLiving.jump` — `ge.C()`
-- **246-263** Collision shapes
-- **264-285** Three things the oracle corrected that reading alone did not
-- **286-294** What the oracle does not cover
-- **295-338** What the crosshair is on -- `cn.a(aj,aj,Z)` and `ly.a(cn,III,aj,aj)`
-  - **339-355** What paces a held button
-  - **356-379** The selection shape is not the collision shape
-- **380-407** Which way a placed block faces
-- **408-420** Drawing the selection box
-- **421-456** Creative flight — ours, and the only invented thing in this file
-- **457-468** What is not derived yet
+- **246-277** Who calls it, and what the button does in a liquid — `ge.j()`
+- **278-314** Particles are entities — `nq`, `iw`, and `bq.a(III)V`
+- **315-332** Collision shapes
+  - **333-363** The selection box is `getSelectedBoundingBoxFromPool`, not the ray's residue
+- **364-385** Three things the oracle corrected that reading alone did not
+- **386-410** What the oracle does not cover
+- **411-456** The liquid branches, and the four methods behind them
+- **457-500** What the crosshair is on -- `cn.a(aj,aj,Z)` and `ly.a(cn,III,aj,aj)`
+  - **501-517** What paces a held button
+  - **518-541** The selection shape is not the collision shape
+  - **542-578** An entity in front of the block takes the crosshair -- `iq.a(F)`
+- **579-644** Which way a placed block faces
+  - **645-668** The lever's "heading rule", which was neither
+- **669-681** Drawing the selection box
+- **682-698** What a right-click does — `hq.a(Ldm;Lcn;Lev;IIII)Z`
+  - **699-732** `ItemBlock.onItemUse` — `av.a(Lev;Ldm;Lcn;IIII)Z`
+  - **733-757** `ItemFlintAndSteel.onItemUse` — `nx.a(Lev;Ldm;Lcn;IIII)Z`
+  - **758-789** `ItemDoor.onItemUse` — `ec.a(Lev;Ldm;Lcn;IIII)Z`
+- **790-831** Ladders — `ge.A()`, and the two lines that use it
+- **832-867** Creative flight — ours, and the only invented thing in this file
+- **868-880** What is not derived yet
 
 ## `docs/porting-to-other-versions.md`
 
@@ -248,104 +301,206 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/status.md`
 
-4,143 lines, ~77,014 tokens.
+6,351 lines, ~114,547 tokens.
 
-- **16-53** Milestones
-- **54-112** Environment facts worth not rediscovering
-- **113-154** What exists in the tree
-- **155-260** Decisions that are settled
-  - **261-270** Reversed, and why (keep this — the reasoning matters)
-- **271-548** Measured numbers (do not re-derive)
-- **549-726** Facts recovered from the client jar
-- **727-728** Next steps, in order
-  - **729-747** 0. The chunk worker — built, and the world it makes is the same world
-    - **748-803** The world must not depend on the clock, and making that true was most of the work
-    - **804-864** What is not closed
-  - **865-963** 0b. The main menu — the game starts from it now
-  - **964-1054** 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
-  - **1055-1084** 0d. The pause menu — START stops the world instead of leaving it
-    - **1085-1130** The pause menu draws into the game's frame, not into one of its own
-    - **1131-1166** The finding: citro3d holds one target per screen output, and a menu takes it
-    - **1167-1192** Opening it costs a frame, not two seconds
-    - **1193-1209** "Saving level.." says how far along it is
-    - **1210-1224** Deviations from `ie.class`
-  - **1225-1275** 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
-    - **1276-1308** When anything is actually written — and one reversal
-    - **1309-1323** How it is held honest
-    - **1324-1344** What to read on the console
-  - **1345-1411** 0f. Revisited chunks not drawing — a stale `published` flag
-  - **1412-1443** 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
-    - **1444-1464** Why that is a correction rather than a deviation
-    - **1465-1497** What that costs, stated plainly
-    - **1498-1507** Considered and rejected: clamping the camera at the frontier
-    - **1508-1538** And the throughput cap it was hiding: one column per rendered frame
-  - **1539-1545** 0h. The freeze while moving — classification off the render thread, and the queue that went with it
-    - **1546-1565** The mechanism
-    - **1566-1596** Why deferring was said to be impossible, and why it is not
-    - **1597-1625** The ordering traps, all three found by the test that exists for them
-    - **1626-1647** And the queue is gone
-    - **1648-1678** Measured
-    - **1679-1696** The dirty cap follows the free heap
-    - **1697-1712** What holds it
-  - **1713-1733** 0i. Generation stopping, and "Saving level.." never going away
-    - **1734-1773** 1. Nothing bounded what was owed to the card
-    - **1774-1785** 2. A blocking flush could wait for ever
-    - **1786-1793** 3. …and it was waiting for the wrong thing anyway
-    - **1794-1803** 4. A sweep that cannot finish is now visible
-    - **1804-1817** What holds it
-  - **1818-1949** 0j. Packed worlds, per-world settings, and the world options screen
-  - **1950-2001** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
-    - **2002-2024** Modelling the console's card, so this class of bug stops needing hardware
-  - **2025-2043** 0l. A bottom screen per gamemode, and a map on the spectator one
-    - **2044-2075** The map
-    - **2076-2137** What it cost -- **and the hardware number that changed the design**
-  - **2138-2727** 1. Run it on a console
-  - **2728-2794** 2. The M2 gate — **half measured, and the baseline fails**
-    - **2795-2877** Why it is the default before the gate is measured
-  - **2878-2953** Deferred but not forgotten
-  - **2954-3045** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
-  - **3046-3087** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
-    - **3088-3112** The generation wait now covers the whole render distance
-    - **3113-3133** What holds it
-  - **3134-3208** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
-    - **3209-3240** The fluids, and the one thing about them that matters on this console
-    - **3241-3262** Fire, and three tables that are not one table
-    - **3263-3302** Redstone: the power model, the wire and the torch
-    - **3303-3372** What of redstone needs a player, and what turned out not to
-  - **3373-3535** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
-  - **3536-3544** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
-    - **3545-3582** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
-    - **3583-3609** The crash: the tick recursed with no bound, on a 32 KB stack
-    - **3610-3637** The frame drops: three costs, one of them quadratic
-    - **3638-3653** Found while looking: tick edits were silently lost
-    - **3654-3683** The lava: there was no runtime lighting at all
-    - **3684-3699** The flash: "needs remeshing" was encoded as "has no mesh"
-    - **3700-3730** Two follow-ups from the first hardware run, and one of them was mine
-    - **3731-3751** What the retirement rule costs, measured
-    - **3752-3765** What is measured and what is not
-  - **3766-3771** 0r. The map's d-pad — a zoom, and the grids taken off the debug page
-    - **3772-3783** The grids moved because the reasoning that put them on the debug page was half right
-    - **3784-3813** The zoom is four levels, and the range is asymmetric on purpose
-    - **3814-3866** What it costs to draw — **and the 3,283 µs that found a much older bug**
-    - **3867-3875** Where it is checked
-  - **3876-3892** 0s. Creative — a hotbar, a palette that is not an inventory, and flight that collides
-    - **3893-3908** The palette is derived, not curated
-    - **3909-3920** The palette is a separate page from the inventory
-    - **3921-3947** The hotbar is a band on every page, and the bottom screen grew a third one
-    - **3948-3962** A block icon is a flat tile, and that is a deviation
-    - **3963-3988** X focuses the bottom screen, and it is not a convenience
-    - **3989-4003** The banner, and the one thing that made it awkward
-    - **4004-4033** The focused stick scrolls the map
-    - **4034-4045** Instant break was already true, and nothing is spent
-    - **4046-4070** Flight is Spectator's mover with `moveEntity` under it
-    - **4071-4086** What is not done
-- **4087-4090** Open questions
-  - **4091-4132** Answered
-- **4133-4143** Standing constraints
+- **25-62** Milestones
+- **63-121** Environment facts worth not rediscovering
+- **122-163** What exists in the tree
+- **164-269** Decisions that are settled
+  - **270-279** Reversed, and why (keep this — the reasoning matters)
+- **280-557** Measured numbers (do not re-derive)
+- **558-735** Facts recovered from the client jar
+- **736-737** Next steps, in order
+  - **738-756** 0. The chunk worker — built, and the world it makes is the same world
+    - **757-812** The world must not depend on the clock, and making that true was most of the work
+    - **813-873** What is not closed
+  - **874-972** 0b. The main menu — the game starts from it now
+  - **973-1063** 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
+  - **1064-1093** 0d. The pause menu — START stops the world instead of leaving it
+    - **1094-1139** The pause menu draws into the game's frame, not into one of its own
+    - **1140-1175** The finding: citro3d holds one target per screen output, and a menu takes it
+    - **1176-1201** Opening it costs a frame, not two seconds
+    - **1202-1218** "Saving level.." says how far along it is
+    - **1219-1233** Deviations from `ie.class`
+  - **1234-1284** 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
+    - **1285-1317** When anything is actually written — and one reversal
+    - **1318-1332** How it is held honest
+    - **1333-1353** What to read on the console
+  - **1354-1420** 0f. Revisited chunks not drawing — a stale `published` flag
+  - **1421-1452** 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
+    - **1453-1473** Why that is a correction rather than a deviation
+    - **1474-1506** What that costs, stated plainly
+    - **1507-1516** Considered and rejected: clamping the camera at the frontier
+    - **1517-1547** And the throughput cap it was hiding: one column per rendered frame
+  - **1548-1554** 0h. The freeze while moving — classification off the render thread, and the queue that went with it
+    - **1555-1574** The mechanism
+    - **1575-1605** Why deferring was said to be impossible, and why it is not
+    - **1606-1634** The ordering traps, all three found by the test that exists for them
+    - **1635-1656** And the queue is gone
+    - **1657-1687** Measured
+    - **1688-1705** The dirty cap follows the free heap
+    - **1706-1721** What holds it
+  - **1722-1742** 0i. Generation stopping, and "Saving level.." never going away
+    - **1743-1782** 1. Nothing bounded what was owed to the card
+    - **1783-1794** 2. A blocking flush could wait for ever
+    - **1795-1802** 3. …and it was waiting for the wrong thing anyway
+    - **1803-1812** 4. A sweep that cannot finish is now visible
+    - **1813-1826** What holds it
+  - **1827-1958** 0j. Packed worlds, per-world settings, and the world options screen
+  - **1959-2010** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
+    - **2011-2033** Modelling the console's card, so this class of bug stops needing hardware
+  - **2034-2052** 0l. A bottom screen per gamemode, and a map on the spectator one
+    - **2053-2084** The map
+    - **2085-2146** What it cost -- **and the hardware number that changed the design**
+  - **2147-2737** 1. Run it on a console
+  - **2738-2804** 2. The M2 gate — **half measured, and the baseline fails**
+    - **2805-2888** Why it is the default before the gate is measured
+  - **2889-2963** Deferred but not forgotten
+  - **2964-3055** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
+  - **3056-3097** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
+    - **3098-3122** The generation wait now covers the whole render distance
+    - **3123-3143** What holds it
+  - **3144-3218** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
+    - **3219-3250** The fluids, and the one thing about them that matters on this console
+    - **3251-3272** Fire, and three tables that are not one table
+    - **3273-3312** Redstone: the power model, the wire and the torch
+    - **3313-3382** What of redstone needs a player, and what turned out not to
+  - **3383-3545** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
+  - **3546-3554** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
+    - **3555-3592** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
+    - **3593-3619** The crash: the tick recursed with no bound, on a 32 KB stack
+    - **3620-3647** The frame drops: three costs, one of them quadratic
+    - **3648-3663** Found while looking: tick edits were silently lost
+    - **3664-3693** The lava: there was no runtime lighting at all
+    - **3694-3709** The flash: "needs remeshing" was encoded as "has no mesh"
+    - **3710-3740** Two follow-ups from the first hardware run, and one of them was mine
+    - **3741-3761** What the retirement rule costs, measured
+    - **3762-3775** What is measured and what is not
+  - **3776-3781** 0r. The map's d-pad — a zoom, and the grids taken off the debug page
+    - **3782-3793** The grids moved because the reasoning that put them on the debug page was half right
+    - **3794-3823** The zoom is four levels, and the range is asymmetric on purpose
+    - **3824-3876** What it costs to draw — **and the 3,283 µs that found a much older bug**
+    - **3877-3885** Where it is checked
+  - **3886-3902** 0s. Creative — a hotbar, a palette that is not an inventory, and flight that collides
+    - **3903-3920** The palette is derived, not curated
+    - **3921-3934** The palette is a separate page from the inventory
+    - **3935-3961** The hotbar is a band on every page, and the bottom screen grew a third one
+    - **3962-3981** A block icon was a flat tile, and "there is no way to do that here" was wrong
+    - **3982-4007** X focuses the bottom screen, and it is not a convenience
+    - **4008-4022** The banner, and the one thing that made it awkward
+    - **4023-4052** The focused stick scrolls the map
+    - **4053-4064** Instant break was already true, and nothing is spent
+    - **4065-4089** Flight is Spectator's mover with `moveEntity` under it
+    - **4090-4102** What is not done
+  - **4103-4109** 4. The item table, the inventory, and five things the first Creative pass got wrong
+    - **4110-4127** The camera was drawn where the body was, not where it is
+    - **4128-4136** Changing gamemode put you in the ground
+    - **4137-4165** The item table, which is what the other four bugs were
+    - **4166-4182** The inventory is real, and it is saved
+    - **4183-4197** Two sheets, and a cube in the slot
+    - **4198-4219** Fire's texture really does say "fire"
+  - **4220-4227** 5. Ten shapes that drew nothing, a slab that drew as a cube, and swimming
+    - **4228-4246** The cube vertex formats cannot express a slab
+    - **4247-4270** Ten emitters, and `renderItemIn3d`
+    - **4271-4288** Measured: +0.9 µs a section, and the two attempts before it
+    - **4289-4303** The placement rules were already written; nobody asked them
+    - **4304-4321** Swimming
+    - **4322-4333** Smaller things from the same list
+    - **4334-4346** What is not done in step 5
+    - **4347-4366** What is not done in step 4
+  - **4367-4371** 6. Holding jump in water, and a slab a1.1.2 will not let you finish
+    - **4372-4401** Holding jump in water jumped instead of swimming up
+    - **4402-4426** "Slabs cannot be placed on the top half of a block" -- and in a1.1.2 they cannot
+    - **4427-4483** A door arrived as half a door, and nothing could be opened
+    - **4484-4497** What is not done in step 6
+  - **4498-4502** 7. Footsteps, breaking, and sixty-four flecks of dirt
+    - **4503-4528** There is no `dig.*` in a1.1.2, and that is the finding
+    - **4529-4547** The positional sound path
+    - **4548-4559** The footstep trigger, and the four ways to get it wrong
+    - **4560-4584** The particles, and a rounding trap that ate them
+    - **4585-4597** What is not done in step 7
+  - **4598-4603** 8. Four things a play session found: a lever that deleted itself, wire that never connected, footsteps from the sky, and a drop button
+    - **4604-4646** The lever deleted itself when flicked, and the placement table put it down switched on
+    - **4647-4663** Redstone wire drew the crossing tile, always, unlit
+    - **4664-4677** The lever's handle was broken at the top, and it was the UVs
+    - **4678-4690** Flying paid out a burst of footsteps over low ground
+    - **4691-4700** A drops one of what is in the hand
+    - **4701-4715** What is not done in step 8
+  - **4716-4720** 9. One flight speed, and something to pick back up
+    - **4721-4734** The held boost went, and A is only the drop now
+    - **4735-4767** `EntityItem`, transcribed
+    - **4768-4789** Picking one up
+    - **4790-4815** Drawing it, and the second texture that needed
+    - **4816-4832** What is not done in step 9
+  - **4833-4841** 10. Six things a play session found: plates, currents, heaps, and fire that stood still
+    - **4842-4876** Pressure plates -- the seam a block behaviour needed and no other has
+    - **4877-4905** The flow field had one reader and needed two
+    - **4906-4928** Fire had one shape and needed three
+    - **4929-4949** ...and it stood still, because the atlas is in VRAM
+    - **4950-4967** Dropped items: heaps, and a clock that only runs while somebody is there
+    - **4968-4975** The palette's page arrows
+    - **4976-4987** What is not done in step 10
+  - **4988-4996** 11. Nine things a play session found, and one of them was two years of Minecraft history
+    - **4997-5020** Ladders: three faults on one block
+    - **5021-5056** Rails: `mk`, the largest block behaviour in the version
+    - **5057-5093** What a block leaves behind, and the table that had to be generated for it
+    - **5094-5115** Sand that falls rather than teleports
+    - **5116-5134** The bottom screen: the two bands changed places
+    - **5135-5153** The inventory: the whole page, and the armour
+    - **5154-5162** The palette offers the whole table now
+    - **5163-5183** Two reports that were a1.1.2 being itself
+    - **5184-5203** A pressure plate that felt unresponsive was a pressure plate with no sound
+    - **5204-5223** What is not done in step 11
+  - **5224-5229** 12. Six things a play session found: a ladder measured from the wrong method, and dropped items drawn from a buffer written twice
+    - **5230-5272** The ladder's selection box was a full cube, and the generator was reading the wrong method
+    - **5273-5291** Many dropped items were invisible, and no icon was missing
+    - **5292-5307** Any armour piece went in any armour slot
+    - **5308-5333** The bucket, which is the first item to go down `Item.onItemRightClick`
+    - **5334-5343** Jump climbs a ladder
+    - **5344-5349** The tab strip's labels sat on the top edge of their buttons
+    - **5350-5379** The other seven, classified
+  - **5380-5385** 13. The compass was a texture, and the entity renderer was already half-built
+    - **5386-5423** The compass is not an item
+    - **5424-5454** The entity renderer, which was mostly already there
+    - **5455-5487** Paintings
+    - **5488-5509** What is left, and what it now needs
+  - **5510-5514** 14. The other four: an arrow, a boat, a minecart and a sign
+    - **5515-5532** `yOffset` is computed in float, and a minecart written with a double simply does not go
+    - **5533-5544** `EntityLiving` has no idea it is riding anything
+    - **5545-5552** A head-on boat does not break
+    - **5553-5595** The four features
+    - **5596-5604** A shared-sheet consequence worth knowing
+  - **5605-5612** 15. The held item, and three things about a screen that is not a 4:3 window
+    - **5613-5643** The class file, in two halves
+    - **5644-5684** The empty hand is the arm, and the skin is a pack file
+    - **5685-5711** Three numbers that are the screen's and not the game's
+    - **5712-5732** And a stereo number, which is the one that wants hardware
+    - **5733-5750** The hand was invisible, and the crosshair is why
+    - **5751-5773** The skin is a pack file, and there is a screen for it
+    - **5774-5793** The narrow body belongs to 1.8, and the build says so
+    - **5794-5811** Coverage
+  - **5812-5893** 16. Nothing could be hit, and one hook was never called
+  - **5894-5927** 17. Arrows hit every collidable entity, and a full item pool stops eating drops
+  - **5928-5998** 18. The entity pools have no cap; the heap decides, and the draw is nearest-first
+    - **5999-6050** The refusal is said on the top screen
+    - **6051-6093** What an entity costs in memory, and what a mob farm will
+  - **6094-6137** 19. A minecart stack overflowed to NaN, and took its rider and the save with it
+  - **6138-6165** 20. "Placed blocks don't face the way I'm looking": furnaces and stairs face their neighbours
+  - **6166-6196** 21. Entity hitboxes were the arrow's, and the outline ignored what the click would hit
+  - **6197-6294** 22. Greedy meshing: a cube atlas to repeat tiles in, and a seam for the rasteriser
+- **6295-6298** Open questions
+  - **6299-6340** Answered
+- **6341-6351** Standing constraints
+
+## `docs/task-map.md`
+
+48 lines, ~1,561 tokens.
+
+- **34-48** Bounded discovery
 
 ## `docs/tick-a1.1.2.md`
 
-597 lines, ~8,199 tokens.
+715 lines, ~10,055 tokens.
 
 - **19-55** The clock -- `ir`
 - **56-74** `World.tick` -- `cn.g()`
@@ -359,25 +514,26 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 - **410-431** Redstone -- the power model, `kf` and `bg`
   - **432-479** The wire -- `kf`
   - **480-502** The torch -- `bg`
-  - **503-537** The switches and the door
-- **538-553** One surprising rule, pinned rather than smoothed over
-- **554-570** Material predicates
-- **571-584** Where this port differs, and why
-- **585-597** Not yet ported
+  - **503-583** The switches and the door
+- **584-655** Rails -- `if` and `mk`
+- **656-671** One surprising rule, pinned rather than smoothed over
+- **672-688** Material predicates
+- **689-703** Where this port differs, and why
+- **704-715** Not yet ported
 
 ## `docs/todo-m3.md`
 
-264 lines, ~4,673 tokens.
+376 lines, ~7,196 tokens.
 
-- **12-29** Where things actually stand
-- **30-49** 0. Block collision shapes — **done**
-- **50-78** 1. The player body — the actual unlock
-  - **79-111** The 1.62 bug this closed
-- **112-155** 2. Reach, break and place
-- **156-232** 3. Creative — **done, except on hardware**
-- **233-238** 4. Survival
-- **239-252** 5. Entities — last, and split
-- **253-264** Standing rules that will bite here
+- **12-30** Where things actually stand
+- **31-50** 0. Block collision shapes — **done**
+- **51-79** 1. The player body — the actual unlock
+  - **80-112** The 1.62 bug this closed
+- **113-163** 2. Reach, break and place
+- **164-243** 3. Creative — **done, except on hardware**
+- **244-249** 4. Survival
+- **250-364** 5. Entities — last, and split
+- **365-376** Standing rules that will bite here
 
 ## `docs/toolchain-setup.md`
 
@@ -391,6 +547,17 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 - **88-120** Packaging: the RSF file
 - **121-132** Running
 - **133-143** Debugging
+
+## `docs/working-guide.md`
+
+139 lines, ~2,116 tokens.
+
+- **11-31** Finding things without reading everything
+- **32-68** Commands
+- **69-85** Layout
+- **86-102** Rules that are review-blocking
+- **103-126** Environment facts
+- **127-139** Working habits for this project
 
 ## `docs/world-format.md`
 

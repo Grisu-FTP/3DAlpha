@@ -49,37 +49,95 @@ inline constexpr float kPlayerWidth = 0.6f;
 inline constexpr float kPlayerHeight = 1.8f;
 inline constexpr float kEyeHeight = 1.62f;                 // Entity.yOffset
 inline constexpr float kStepHeight = 0.5f;
+// **A ladder, and the two numbers it costs.** `ge.b(FF)`'s land branch asks
+// `isOnLadder()` twice: once before the move, to clamp a fall to a slow slide,
+// and once after, to turn "pressed into a wall" into "climbing". Both are
+// doubles in the class file and neither is 0.15f or 0.2f widened -- they are
+// written as double literals, so they are exact.
+inline constexpr double kLadderSlide = -0.15;
+inline constexpr double kLadderClimb = 0.2;
+
 inline constexpr double kGravity = 0.08;
 inline constexpr double kVerticalDrag = 0.9800000190734863;   // (double)0.98f
 inline constexpr double kJumpVelocity = 0.41999998688697815;  // (double)0.42f
 inline constexpr float kAirFriction = 0.91f;
+
 inline constexpr float kGroundFrictionBase = 0.54600006f;     // stored, not 0.6*0.91
 inline constexpr float kAccelNormaliser = 0.16277136f;
 inline constexpr float kGroundAcceleration = 0.1f;
+// 0.1f + 0.1f * 0.3f, computed the way Beta computes it rather than written as
+// 0.13f: the sum of two floats is what the game holds, and 0.13f is a different
+// number in the last bits. Not a1.1.2's -- see PlayerInput::sprint.
+inline constexpr float kSprintAcceleration = kGroundAcceleration + kGroundAcceleration * 0.3f;
 inline constexpr float kAirAcceleration = 0.02f;
+
+// **What a rider accelerates at**, and it is `kAirAcceleration` rather than a
+// number of its own: a rider is never `onGround` as far as `EntityLiving` is
+// concerned -- it is standing in an entity, not on a block -- so
+// `moveEntityWithHeading` takes its air branch.
+//
+// It matters more than it looks. A boat takes a fifth of the rider's motion and
+// drags at 0.99, so its steady speed is about twenty times the rider's; at 0.02
+// under 0.91 friction the rider settles near 0.22, and the boat is pinned at
+// its own 0.4 cap whenever the stick is held. That is a boat at full speed,
+// which is what a boat does.
+inline constexpr float kRiderAcceleration = kAirAcceleration;
 inline constexpr double kSneakProbe = 0.05;
 inline constexpr float kYSizeDecay = 0.4f;
 inline constexpr float kHeadingPi = 3.1415927f;               // the float literal in moveFlying
+
+// **Swimming**, and every one of these did come out of the jar --
+// `EntityLiving.moveEntityWithHeading` takes a liquid branch before it reaches
+// land, and docs/physics-a1.1.2.md has the listing. The two branches are the
+// same code with a different drag, which is why there is one function and two
+// constants rather than two functions.
+//
+// Note what swimming does *not* consult: ground friction, the acceleration
+// normaliser, slipperiness, the jump. A swimming player accelerates at a flat
+// 0.02 whatever is under them, sinks at 0.02 a tick, and keeps 80 % of their
+// motion in water or 50 % in lava.
+inline constexpr float kSwimAcceleration = 0.02f;
+inline constexpr double kSwimSink = 0.02;
+inline constexpr double kWaterDrag = 0.800000011920929;  // (double)0.8f
+inline constexpr double kLavaDrag = 0.5;
+// **What holding jump does in a liquid, and it is not a jump.** `ge.j()` --
+// `EntityLiving.onLivingUpdate` -- reaches `jump()` only when the player is in
+// neither water nor lava; in either, it adds this flat amount to the motion
+// every tick the button is held. That is the whole of swimming up, and the
+// same number for both liquids. Held against the swim branch's 0.8 drag and
+// 0.02 sink it settles at 0.06 a tick, which is a block and a fifth a second.
+inline constexpr double kLiquidRise = 0.03999999910593033;
+// How far above the eye the way out has to be clear before a swimmer pushing
+// against a wall is lifted, and how hard they are lifted.
+inline constexpr double kSwimLedgeReach = 0.6000000238418579;
+inline constexpr double kSwimLedgeLift = 0.30000001192092896;
 
 // **Creative flight, and neither of these numbers came out of a jar.**
 // a1.1.2 has no Creative mode and no flight of any kind; see
 // core/item/creative_palette.hpp for the whole of that argument. They are
 // derived from two things this project already had rather than picked:
 //
-//   * The speeds are Spectator's, converted from frames to ticks. `flyCamera`
-//     moves 12 blocks a second, or 40 held down, and at 20 Hz that is 0.6 and
-//     2.0 blocks a tick. Creative flight that felt different from the free
-//     flight next to it would be a second set of numbers to explain.
+//   * The speed is Spectator's, converted from frames to ticks. `flyCamera`
+//     moves 12 blocks a second, and at 20 Hz that is 0.6 blocks a tick.
+//     Creative flight that felt different from the free flight next to it would
+//     be a second number to explain.
 //   * Vertical is the same speed as horizontal, because there is no gravity to
 //     make the two differ and a flight that rises slower than it flies reads as
 //     broken rather than as heavy.
+//
+// **There is one speed, and there used to be two.** Spectator's `flyCamera`
+// has a held boost and Creative's flight copied it onto A -- which put a
+// modifier on the one face button Creative had going spare, and A is now the
+// drop. A held boost is also the wrong shape for this mode in a way it is not
+// for Spectator: Spectator is a camera with nothing to hit, and Creative
+// flight collides, places and breaks. Spectator keeps its boost; see
+// `flyCamera` in platform/ctr/main.cpp.
 //
 // A tick of flight is a *velocity*, not an acceleration: there is no drag term
 // and motion is cleared at the end of the tick, so letting go stops you dead.
 // That is Spectator's behaviour and it is the point -- flight here is a camera
 // that collides, and a camera with momentum is a camera you fight.
 inline constexpr double kFlightSpeed = 0.6;
-inline constexpr double kFlightSprintSpeed = 2.0;
 
 // What the player is asking for this tick. Angles are **degrees**, as the
 // original stores them, because `moveFlying` multiplies by 3.1415927f/180 and
@@ -90,6 +148,20 @@ struct PlayerInput {
     float yawDegrees = 0.0f;
     bool jump = false;
     bool sneak = false;
+
+    // **Sprint, and a1.1.2 has none.** `EntityPlayer` in this jar carries no
+    // `sprinting` field, no `setSprinting`, and `moveEntityWithHeading` reads a
+    // constant 0.1f where later versions read `landMovementFactor` -- so there
+    // is nothing here to transcribe and nothing to check this against. It is in
+    // for the same reason Creative is: the console editions sprint on a
+    // double-tapped stick and a player arriving from one expects it.
+    //
+    // The multiplier is not invented, though. Beta's `EntityPlayer.onLivingUpdate`
+    // does `landMovementFactor += landMovementFactor * 0.3F` while sprinting,
+    // which turns 0.1 into 0.13 -- so sprint here is the same 30 % on the same
+    // term, applied at the same point in the same tick. See
+    // `kSprintAcceleration` and core/entity/sprint_gesture.hpp.
+    bool sprint = false;
 };
 
 // A floor to int that agrees with Java's, for the three helpers below. The
@@ -127,6 +199,23 @@ struct PlayerBody {
     // Read by `move` for the ledge check, and set from the input each tick.
     bool sneaking = false;
 
+    // **Where the body was when this tick began**, which is `Entity.prevPosX`,
+    // `prevPosY` and `prevPosZ` and is stored for exactly the original's
+    // reason: the body moves 20 times a second and the screen is drawn 30 or 60
+    // times a second, so the camera has to be told where the player is
+    // *between* two ticks. `EntityRenderer.orientCamera` reads
+    // `prevPos + (pos - prevPos) * partialTicks`, and `renderX` below is that
+    // line.
+    //
+    // Without it the camera stands still for one or two frames and then jumps a
+    // whole tick's travel, which at a walking pace is a fifth of a block --
+    // visible as stepping rather than walking, and the reason this was added.
+    //
+    // `prevEyeY` follows `posY` rather than `y`, because `posY` is what the
+    // camera wants and it carries the step-up smoothing (`ySize`) that makes a
+    // half-block step glide instead of snap.
+    double prevX = 0.0, prevEyeY = 0.0, prevZ = 0.0;
+
     AABB box{};
 
     // Places the body with its feet at (x, y, z) and rebuilds the box.
@@ -135,6 +224,29 @@ struct PlayerBody {
     // Where the camera goes, and what `level.dat`'s `Pos[1]` holds -- the same
     // number, and the same one the original keeps in `posY`.
     double eyeY() const { return posY; }
+
+    // The same three, `partial` of the way from the last tick to this one.
+    // **This is what the camera reads and `eyeY()` is what the save file
+    // reads**: an interpolated position is a picture of a moment between two
+    // ticks and is not a state the world was ever in, so writing one into
+    // `Pos` would round-trip a position the physics never produced.
+    double renderX(float partial) const { return prevX + (x - prevX) * double(partial); }
+    double renderEyeY(float partial) const
+    {
+        return prevEyeY + (posY - prevEyeY) * double(partial);
+    }
+    double renderZ(float partial) const { return prevZ + (z - prevZ) * double(partial); }
+
+    // Forgets where the body was, so the next frame draws it where it is. Every
+    // teleport needs this -- a body moved without it is drawn sliding from the
+    // old place to the new one over the following tick, which is the smearing
+    // `setFeet` used to produce when the gamemode changed.
+    void snapRenderPosition()
+    {
+        prevX = x;
+        prevEyeY = posY;
+        prevZ = z;
+    }
 
     // Which column the body is standing in. **An arithmetic shift, not a
     // divide**: -1 / 16 is 0 and -1 >> 4 is -1, and the difference is a whole
@@ -155,8 +267,95 @@ struct PlayerBody {
     // `Entity.moveFlying`: turns a stick heading into an acceleration.
     void applyHeading(float strafe, float forward, float yawDegrees, float acceleration);
 
+    // ---- footsteps ----------------------------------------------------
+    //
+    // **`distanceWalkedModified` and `nextStepDistance`**, and they are
+    // `Entity`'s rather than the player's: `moveEntity` banks the distance
+    // actually covered and pays out one footstep per whole block of it.
+    //
+    // The counter starts at 1 and is *incremented* rather than reset, which is
+    // the original's and is what makes a long fall across ground pay its steps
+    // out one at a time instead of all at once.
+    float distanceWalked = 0.0f;
+    int nextStepDistance = 1;
+
+    // **The block whose footstep this move earned**, or air for no footstep.
+    //
+    // Set by `move()` -- cleared at the top of every one, so it describes the
+    // most recent move and nothing older -- and read by whoever owns a sound
+    // engine. The body does not play it: `core/audio/block_sound.hpp` turns a
+    // block into a key, a volume and a pitch, and the platform layer is what
+    // has a listener to attenuate against. Keeping the two apart is what lets
+    // the whole trigger be tested with no audio at all.
+    //
+    // Already resolved: snow lying on top has replaced the block underfoot,
+    // and a liquid has become air, because both of those decisions need the
+    // world and this is where the world is.
+    block::BlockId stepSoundDue = block::kAir;
+
+    // The liquid half of `moveEntityWithHeading`, shared by water and lava.
+    void swim(const tick::TickWorld& world, const PlayerInput& input, double drag);
+
+    // `kh.b(DDD)Z` -- whether the box moved by this much would be clear of both
+    // collision and liquid. Named for what it answers rather than for what the
+    // jar calls it, which is `isOffsetPositionInLiquid` and is the opposite way
+    // round.
+    bool offsetPositionFree(const tick::TickWorld& world, double dx, double dy, double dz) const;
+
     // `EntityLiving.jump`, which is one assignment and nothing else.
     void jump() { motionY = kJumpVelocity; }
+
+    // **One tick of riding something**, which is `Entity.updateRidden` for the
+    // rider's half and is the first thing in this project that takes the body
+    // off its own physics.
+    //
+    // The surprising part -- and the reason a boat responds to the movement
+    // keys at all -- is that **`EntityLiving` never checks whether it is
+    // riding**. There is no reference to `ridingEntity` anywhere in `ge`, so
+    // `moveEntityWithHeading` keeps turning the stick into `motionX`/`motionZ`
+    // exactly as it would on foot; what a vehicle reads is that motion, and
+    // what gets overwritten is only the *position*. So this applies the heading
+    // and the air friction and then puts the body where the seat says.
+    //
+    // `seatY` is the vehicle's `posY + getMountedYOffset()`; this adds the
+    // body's own `yOffset` on top, which is the rider's business and not the
+    // vehicle's.
+    void tickRiding(const PlayerInput& input, double seatX, double seatY, double seatZ);
+
+    // `kh.g_()` and `kh.G()`. Both shrink the body's box by 0.4 top and bottom
+    // before asking, so a puddle at the ankles is not water to swim in.
+    //
+    // **Water asks a harder question than lava.** Being in water is "a cell of
+    // the probe holds water whose *surface* reaches the top of it", which is
+    // `handleMaterialAcceleration`; being in lava is the plain material test.
+    // That difference is the jar's.
+    //
+    // **And water is not a question at all.** `kh.g_()` answers by walking
+    // every water cell the probe touches, summing their flow vectors and
+    // adding four thousandths of the normalised total to the motion -- so
+    // asking it *is* being carried by the current, and there is no const
+    // version of it to ask instead. That is why this one is a mutator and
+    // `inLava` is not: lava has no vector in this version and carries nothing.
+    // See core/block/fluid_flow.hpp.
+    bool handleWaterMovement(const tick::TickWorld& world);
+    bool inLava(const tick::TickWorld& world) const;
+
+    // `ge.A()` -- **isOnLadder**, and it looks at two cells rather than one:
+    //
+    // ```
+    // int i = floor(posX), j = floor(boundingBox.minY), k = floor(posZ);
+    // return world.getBlockId(i, j, k) == ladder
+    //     || world.getBlockId(i, j + 1, k) == ladder;
+    // ```
+    //
+    // The second half is the one that matters to a player: a body is 1.8 tall
+    // and the feet leave a ladder's bottom cell before the chest leaves the one
+    // above, so without it the last block of every climb drops you.
+    //
+    // **It reads the box's bottom, not `posY`** -- `posY` is the eye. And it
+    // asks for the ladder *block*, not for a shape or a material, which is why
+    // standing on a rail or in a doorway is not climbing.
+    bool onLadder(const tick::TickWorld& world) const;
 
     // **One tick of Creative flight, and it is ours.** Nothing above this line
     // is; everything here is. See the constants above.

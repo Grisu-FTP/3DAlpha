@@ -5,8 +5,11 @@
     "`metadata` maps a block id to the metadata it lands with for each face struck,",
     "in mc::mesh::Face order: 0 -Y, 1 +Y, 2 -Z, 3 +Z, 4 -X, 5 +X. This is",
     "Block.onBlockPlaced, which ItemBlock runs after setBlockWithNotify.",
-    "Only the lever also depends on the player's heading, and only on its top face;",
-    "that is not captured here. See docs/physics-a1.1.2.md."
+    "Only the six blocks whose class overrides it have a non-zero row. A furnace",
+    "and a staircase orient in onBlockAdded, from their neighbours, which is the",
+    "tick behaviour's job and not this table's.",
+    "a1.1.2 has no Block.onBlockPlacedBy, so no block orients from the player's",
+    "heading. ItemDoor does, in the item."
   ],
   "version": "a1.1.2",
   "metadata": {
@@ -309,10 +312,10 @@
     "53": [
       0,
       0,
-      2,
-      3,
       0,
-      1
+      0,
+      0,
+      0
     ],
     "54": [
       0,
@@ -371,20 +374,20 @@
       0
     ],
     "61": [
-      3,
-      3,
-      2,
-      3,
-      4,
-      5
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
     ],
     "62": [
-      3,
-      3,
-      2,
-      3,
-      4,
-      5
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
     ],
     "63": [
       0,
@@ -395,12 +398,12 @@
       0
     ],
     "64": [
-      4,
-      4,
-      4,
-      4,
-      4,
-      4
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
     ],
     "65": [
       0,
@@ -421,10 +424,10 @@
     "67": [
       0,
       0,
-      2,
-      3,
       0,
-      1
+      0,
+      0,
+      0
     ],
     "68": [
       0,
@@ -436,11 +439,11 @@
     ],
     "69": [
       0,
-      14,
-      12,
-      11,
-      10,
-      9
+      6,
+      4,
+      3,
+      2,
+      1
     ],
     "70": [
       0,
@@ -501,10 +504,10 @@
     "77": [
       0,
       0,
-      12,
-      11,
-      10,
-      9
+      4,
+      3,
+      2,
+      1
     ],
     "78": [
       0,

@@ -327,3 +327,57 @@ TEST(the_spawner_picker_weights_zombie_double)
     CHECK(skeleton > 8000);
     CHECK(spider > 8000);
 }
+
+// **The generation worker passes no output struct, and that has to be free.**
+//
+// `ChunkGenerator::populate` hands `populateChunk` a null `PopulationSideEffects`
+// so the worker does not build chest and spawner records it is only going to
+// throw away -- the blocks are in the column already, and chunk tile entities
+// round-trip as an opaque blob. That is an allocation saved on the thread that
+// can least afford one.
+//
+// It is also the one shape of change that can corrupt a world silently. Every
+// draw in `generateDungeon` -- the two chest positions, the eight loot rolls,
+// the slot each non-empty roll lands in, the spawner's mob -- has to happen
+// whether or not anybody is recording the result, because population keeps
+// going afterwards: clay, seven ore passes, lakes and trees all read the same
+// stream. A single draw skipped under a null check would shift all of them, and
+// nothing downstream would look wrong enough to notice.
+//
+// So this runs the whole fixture a second time with no output and asserts the
+// two things that would catch it: identical blocks, and the stream in identical
+// shape afterwards.
+TEST(a_dungeon_generated_with_no_output_draws_and_writes_the_same)
+{
+    for (int c = 0; c < kDungeonCaseCount; ++c) {
+        const auto& want = kDungeonCases[c];
+
+        Scene recorded;
+        recorded.build(want.x, want.z, want.doorways);
+        JavaRandom recordedRandom(want.rngSeed);
+        worldgen::DungeonOutput out;
+        const bool recordedPlaced = worldgen::generateDungeon(
+            recorded.view, recordedRandom, want.x, want.y, want.z, &out);
+
+        Scene silent;
+        silent.build(want.x, want.z, want.doorways);
+        JavaRandom silentRandom(want.rngSeed);
+        const bool silentPlaced = worldgen::generateDungeon(
+            silent.view, silentRandom, want.x, want.y, want.z, nullptr);
+
+        CHECK_EQ(int(silentPlaced), int(recordedPlaced));
+
+        // The same fingerprint the jar comparison uses: where the stream ended
+        // up. This is the assertion a skipped draw cannot survive -- and it is
+        // checked against the jar's own number as well as against the recorded
+        // run, so the two cannot drift together.
+        const i64 recordedAfter = recordedRandom.nextLong();
+        const i64 silentAfter = silentRandom.nextLong();
+        CHECK_EQ(silentAfter, recordedAfter);
+        CHECK_EQ(silentAfter, want.afterDraw);
+
+        // ...and the chest and spawner blocks are placed either way, which is
+        // the half of the feature that does survive into the column.
+        CHECK(silent.snapshot(want.x, want.z) == recorded.snapshot(want.x, want.z));
+    }
+}

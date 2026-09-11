@@ -16,6 +16,7 @@
 #include "core/map/map_render.hpp"
 #include "core/map/map_sample.hpp"
 #include "core/map/map_store.hpp"
+#include "core/mesh/cube_atlas.hpp"
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/visibility.hpp"
 #include "core/entity/player_body.hpp"
@@ -1232,7 +1233,7 @@ bool collect(void* context, i32 x, i32 z)
     return true;
 }
 
-int meshWorld(const char* worldDir, mesh::CubeFormat cubeFormat)
+int meshWorld(const char* worldDir, mesh::CubeFormat cubeFormat, bool greedy)
 {
     io::PosixFileSystem fs;
     // Whichever shape the folder is in, so a packed world can be measured
@@ -1264,6 +1265,7 @@ int meshWorld(const char* worldDir, mesh::CubeFormat cubeFormat)
     mesh::VisibilityScratch visScratch;
     mesh::MeshBuilder builder;
     builder.setCubeFormat(cubeFormat);
+    builder.setGreedy(greedy);
     builder.reserveQuads(4096);
 
     for (const auto& entry : w.columns) {
@@ -1341,9 +1343,10 @@ int meshWorld(const char* worldDir, mesh::CubeFormat cubeFormat)
                 int tile;
                 if (cubeFormat == mesh::CubeFormat::Quads) {
                     // The quad format never encoded the UVs, so the tile is
-                    // read back rather than reconstructed.
+                    // read back from its cube-atlas slot.
                     const mesh::QuadVertex& v = builder.quads()[q];
-                    tile = int(v.tileY) * mesh::kAtlasTilesPerEdge + int(v.tileX);
+                    tile = mesh::kCubeAtlas.tileOfSlot[int(v.slotY) * mesh::kCubeSlotsPerEdge
+                                                       + int(v.slotX)];
                 } else {
                     // Corners sit on both edges of the tile and which corner
                     // comes first depends on the winding, so the tile is the
@@ -1355,8 +1358,9 @@ int meshWorld(const char* worldDir, mesh::CubeFormat cubeFormat)
                         u = v[c].u < u ? v[c].u : u;
                         w = v[c].v < w ? v[c].v : w;
                     }
-                    tile = (w / mesh::kUvUnitsPerTile) * mesh::kAtlasTilesPerEdge
-                           + (u / mesh::kUvUnitsPerTile);
+                    tile = mesh::kCubeAtlas.tileOfSlot[(w / mesh::kCubeUvPerSlot)
+                                                           * mesh::kCubeSlotsPerEdge
+                                                       + (u / mesh::kCubeUvPerSlot)];
                 }
                 if (tile >= 0 && tile < mesh::kAtlasTileCount) {
                     ++t.quadsByTile[tile];
@@ -1379,6 +1383,8 @@ int meshWorld(const char* worldDir, mesh::CubeFormat cubeFormat)
                 cubeFormat == mesh::CubeFormat::Quads
                     ? "geoshader, one 8-byte vertex per quad"
                     : "4 x 12-byte vertices per quad, shared index buffer");
+    std::printf("greedy meshing  %s\n",
+                greedy ? "on, runs of up to 3x3 equal faces per quad" : "off, one quad per face");
     std::printf("columns         %d\n", t.columns);
     std::printf("sections        %d  (%d uniform air, %d meshed)\n",
                 t.sections, t.sectionsEmpty, meshed);
@@ -1629,8 +1635,6 @@ int generateWorld(i64 seed, int radius, bool snow, int cacheColumns, bool rowMaj
                 double(store.blockBytes) / (1024.0 * 1024.0), store.delivered,
                 double(store.blockBytes) / double(store.delivered) / 1024.0);
     std::printf("\n");
-    std::printf("  dungeon chests / spawners dropped  %u / %u\n", st.droppedChests,
-                st.droppedSpawners);
     std::printf("  scratch window columns    %u generated, %u reused\n", st.scratchColumns,
                 st.scratchHits);
     std::printf("  must all be zero: refused %u, escapes %u, evictedLive %u\n",
@@ -2453,8 +2457,17 @@ int main(int argc, char** argv)
         return generateWorld(seed, radius, snow, cache, rowMajor);
     }
 
+    // `--mesh <world> [quads] [flat]`, in either order: `flat` turns greedy
+    // meshing off, so the two meshes of one world can be set side by side.
     if (argc > 2 && std::strcmp(argv[1], "--mesh") == 0) {
-        return meshWorld(argv[2], cubeFormat);
+        bool meshQuads = false;
+        bool flat = false;
+        for (int i = 3; i < argc; ++i) {
+            meshQuads = meshQuads || std::strcmp(argv[i], "quads") == 0;
+            flat = flat || std::strcmp(argv[i], "flat") == 0;
+        }
+        return meshWorld(argv[2],
+                         meshQuads ? mesh::CubeFormat::Quads : mesh::CubeFormat::Vertices, !flat);
     }
 
     // The two halves of the texture-pack feature that do not need a console.

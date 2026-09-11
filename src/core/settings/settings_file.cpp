@@ -82,6 +82,16 @@ bool loadSettings(io::FileSystem& fs, const char* path, GameSettings* out)
             }
             continue;
         }
+        if (key == "skin") {
+            // **The same guard `texture_pack` has, and for the same reason.**
+            // A skin key is a prefix and a *file name*; a separator in it would
+            // let an edited ini point the loader anywhere on the card.
+            if (value.find('/') == std::string_view::npos
+                && value.find('\\') == std::string_view::npos) {
+                out->skin.assign(value);
+            }
+            continue;
+        }
         // Unknown keys are dropped, and saving will not write them back. Said
         // in the header so it is a decision rather than a surprise.
     }
@@ -111,6 +121,10 @@ bool saveSettings(io::FileSystem& fs, const char* path, const GameSettings& sett
 
     text += "texture_pack=";
     text += settings.texturePack;
+    text += '\n';
+
+    text += "skin=";
+    text += settings.skin;
     text += '\n';
 
     return fs.writeFileAtomic(path, ConstByteSpan(reinterpret_cast<const u8*>(text.data()),

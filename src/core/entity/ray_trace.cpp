@@ -113,7 +113,7 @@ bool traceBox(const AABB& box, const Vec3d& from, const Vec3d& to, Vec3d* point,
 }  // namespace
 
 RayHit rayTrace(const tick::TickWorld& world, double eyeX, double eyeY, double eyeZ,
-                double dirX, double dirY, double dirZ, double reach)
+                double dirX, double dirY, double dirZ, double reach, bool hitLiquids)
 {
     RayHit miss;
 
@@ -189,11 +189,14 @@ RayHit rayTrace(const tick::TickWorld& world, double eyeX, double eyeY, double e
         if (crossed == mesh::kFacePosZ) { --z; }
 
         const block::BlockId id = world.blockAt(x, y, z);
-        if (id == block::kAir || !block::isTargetable(id)) {
+        if (id == block::kAir) {
             continue;
         }
 
         const u8 metadata = world.dataAt(x, y, z);
+        if (!block::isTargetable(id, metadata, hitLiquids)) {
+            continue;
+        }
 
         // **In the block's own coordinates, then translated back** -- which is
         // what `Block.collisionRayTrace` does, and it is not the same as
@@ -226,6 +229,52 @@ RayHit rayTrace(const tick::TickWorld& world, double eyeX, double eyeY, double e
     }
 
     return miss;
+}
+
+double entityPickReach(double eyeX, double eyeY, double eyeZ, const RayHit& blockHit)
+{
+    double reach = kBlockReach;
+    if (blockHit.hit) {
+        const double dx = blockHit.hitX - eyeX;
+        const double dy = blockHit.hitY - eyeY;
+        const double dz = blockHit.hitZ - eyeZ;
+        reach = double(MathHelper::sqrtDouble(dx * dx + dy * dy + dz * dz));
+    }
+    return reach > kEntityReach ? kEntityReach : reach;
+}
+
+bool interceptDistance(const AABB& box, double fromX, double fromY, double fromZ, double toX,
+                       double toY, double toZ, double* distance)
+{
+    const Vec3d from{fromX, fromY, fromZ};
+    const Vec3d to{toX, toY, toZ};
+    // The same six planes in the same order as `traceBox`, but **chosen on
+    // squared distance**: `calculateIntercept` compares `squareDistanceTo`,
+    // unlike `Block.collisionRayTrace`. Ties keep the earlier face.
+    const double planes[6] = {box.minX, box.maxX, box.minY, box.maxY, box.minZ, box.maxZ};
+    const int axes[6] = {0, 0, 1, 1, 2, 2};
+
+    bool found = false;
+    double best = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        Vec3d candidate;
+        if (!intermediate(from, to, axes[i], planes[i], &candidate)
+            || !onFace(box, candidate, axes[i])) {
+            continue;
+        }
+        const double dx = from.x - candidate.x;
+        const double dy = from.y - candidate.y;
+        const double dz = from.z - candidate.z;
+        const double squared = dx * dx + dy * dy + dz * dz;
+        if (!found || squared < best) {
+            found = true;
+            best = squared;
+        }
+    }
+    if (found) {
+        *distance = double(MathHelper::sqrtDouble(best));
+    }
+    return found;
 }
 
 }  // namespace mc::entity

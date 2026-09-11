@@ -1,5 +1,6 @@
 #include "core/mesh/fluid.hpp"
 
+#include "core/block/fluid_flow.hpp"
 #include "core/block/registry.hpp"
 
 #include <cassert>
@@ -85,40 +86,28 @@ float cornerHeight(const MeshScratch& scratch, int x, int y, int z, u8 material)
     return 1.0f - total / static_cast<float>(count);
 }
 
-// `jp.b(nm,III)`: the cell's flow level, or -1 when it is not this fluid at
-// all. Levels 8..15 are the falling flag and read as a source.
-int flowDecay(const MeshScratch& scratch, int x, int y, int z, u8 material)
-{
-    if (at(scratch, x, y, z).material != material) {
-        return -1;
-    }
-    const int level = scratch.metadata(x, y, z);
-    return level >= 8 ? 0 : level;
-}
+// The two questions core/block/fluid_flow.hpp asks of a world, answered by a
+// `MeshScratch`. The names are the ones a `tick::TickWorld` already uses, which
+// is what lets the flow field be written once and read by the mesher and by an
+// entity standing in a river.
+struct ScratchAccess {
+    const MeshScratch& scratch;
 
-// `aj.b()`: normalise, with the original's own 1e-4 guard and its float sqrt of
-// a double length.
-void normalise(double& x, double& y, double& z)
-{
-    const double length = static_cast<float>(std::sqrt(x * x + y * y + z * z));
-    if (length < 1.0e-4) {
-        x = y = z = 0.0;
-        return;
+    block::BlockId blockAt(i32 x, int y, i32 z) const
+    {
+        return scratch.block(int(x), y, int(z));
     }
-    x /= length;
-    y /= length;
-    z /= length;
-}
+    u8 dataAt(i32 x, int y, i32 z) const { return scratch.metadata(int(x), y, int(z)); }
+};
 
 }  // namespace
 
 float fluidHeightPercent(int level)
 {
-    // `jp.b(I)F`. Ninths, not eighths: a source's surface sits at 1 - 1/9.
-    if (level >= 8) {
-        level = 0;
-    }
-    return static_cast<float>(level + 1) / 9.0f;
+    // `jp.b(I)F`. Ninths, not eighths: a source's surface sits at 1 - 1/9. The
+    // arithmetic is in core/block/fluid_flow.hpp, where the entity side reads
+    // it too.
+    return block::fluidPercentAir(level);
 }
 
 FluidCorners fluidCorners(const MeshScratch& scratch, int x, int y, int z, u8 material)
@@ -136,30 +125,22 @@ bool fluidFaceVisible(const MeshScratch& scratch, int x, int y, int z, int face,
     // `jp.c(nm,IIII)`, which takes the *neighbour's* coordinates.
     const BlockDef& def = at(scratch, x, y, z);
 
-    if (def.material == material) {
-        return false;
-    }
-
-    // Ice, by singleton identity in the jar -- there is no property behind it,
-    // which is why the generator has to name it. The comparison is compiled out
-    // entirely for a version with no ice, where the constant is 0 and no
-    // constructed block takes material 0.
-    if (mcver::kIceMaterial != 0 && def.material == mcver::kIceMaterial) {
-        return false;
-    }
-
-    // A fluid's top face is drawn unconditionally, even buried under stone.
-    // Wasteful and deliberate: it is what the original does, and the faces are
-    // rare -- only fluid with a solid lid directly on it qualifies, since fluid
-    // under fluid was already rejected above.
     if (face == kFacePosY) {
-        return true;
+        // A fluid's top face is drawn unconditionally, even buried under
+        // stone. Wasteful and deliberate: it is what the original does, and
+        // the faces are rare -- only fluid with a solid lid directly on it
+        // qualifies. The same fluid above, and ice, are still rejected: those
+        // are the two tests `jp.c` makes before it reaches the top-face
+        // branch, and they are the first two lines of `fluidSideVisible`.
+        if (def.material == material) {
+            return false;
+        }
+        return mcver::kIceMaterial == 0 || def.material != mcver::kIceMaterial;
     }
 
-    // `ly.c(nm,IIII)` otherwise, which for a full-cube bounding box -- and a
-    // fluid block's box is 0..1 on every axis while it renders -- reduces to
-    // "is the neighbour an opaque cube".
-    return !def.opaque;
+    // Everything else is the shared transcription, which the flow vector reads
+    // eight times per falling cell. See core/block/fluid_flow.hpp.
+    return block::fluidSideVisible(scratch.block(x, y, z), material);
 }
 
 u8 fluidLight(const MeshScratch& scratch, int x, int y, int z)
@@ -174,79 +155,13 @@ u8 fluidLight(const MeshScratch& scratch, int x, int y, int z)
 
 float fluidFlowAngle(const MeshScratch& scratch, int x, int y, int z, u8 material)
 {
-    // `jp.e(nm,III)`, the flow vector, then `jp.a(nm,IIILgb;)D` on top of it.
-    double vx = 0.0;
-    double vy = 0.0;
-    double vz = 0.0;
+    // `jp.e(nm,III)`, which is core/block/fluid_flow.hpp now because an entity
+    // standing in the same river needs the same vector, then
+    // `jp.a(nm,IIILgb;)D` on top of it.
+    const block::FlowVector flow =
+        block::fluidFlowVector(ScratchAccess{scratch}, x, y, z, material);
 
-    const int mine = flowDecay(scratch, x, y, z, material);
-
-    // Note this walks -X, -Z, +X, +Z, which is not the face order the emitter
-    // below uses. Kept as the original has it, because the sign of the vector
-    // depends on it.
-    for (int i = 0; i < 4; ++i) {
-        int px = x;
-        int pz = z;
-        if (i == 0) px -= 1;
-        if (i == 1) pz -= 1;
-        if (i == 2) px += 1;
-        if (i == 3) pz += 1;
-
-        int decay = flowDecay(scratch, px, y, pz, material);
-
-        if (decay < 0) {
-            // Not this fluid. If it is something you can walk through, the
-            // fluid one step down still pulls -- this is what makes water
-            // aim at the lip of a drop rather than at the drop's far wall.
-            //
-            // The predicate is Material.blocksMovement, `gb.c()`, and it is
-            // identical to Material.isSolid, `gb.a()`, for every one of
-            // a1.1.2's four material classes: air, liquid and the
-            // no-collision material override both to false, the base
-            // overrides neither. So the `solid` column answers both.
-            if (!at(scratch, px, y, pz).solid) {
-                decay = flowDecay(scratch, px, y - 1, pz, material);
-                if (decay >= 0) {
-                    const int weight = decay - (mine - 8);
-                    vx += static_cast<double>((px - x) * weight);
-                    vz += static_cast<double>((pz - z) * weight);
-                }
-            }
-        } else {
-            const int weight = decay - mine;
-            vx += static_cast<double>((px - x) * weight);
-            vz += static_cast<double>((pz - z) * weight);
-        }
-    }
-
-    // A falling column with anything open around it -- at its own level or the
-    // one above -- points almost straight down, so its texture stops spinning
-    // with whatever horizontal imbalance it happened to have.
-    if (scratch.metadata(x, y, z) >= 8) {
-        const int open[8][4] = {
-            {x, y, z - 1, kFaceNegZ},     {x, y, z + 1, kFacePosZ},
-            {x - 1, y, z, kFaceNegX},     {x + 1, y, z, kFacePosX},
-            {x, y + 1, z - 1, kFaceNegZ}, {x, y + 1, z + 1, kFacePosZ},
-            {x - 1, y + 1, z, kFaceNegX}, {x + 1, y + 1, z, kFacePosX},
-        };
-
-        bool falling = false;
-        for (const auto& cell : open) {
-            if (fluidFaceVisible(scratch, cell[0], cell[1], cell[2], cell[3], material)) {
-                falling = true;
-                break;
-            }
-        }
-
-        if (falling) {
-            normalise(vx, vy, vz);
-            vy += -6.0;
-        }
-    }
-
-    normalise(vx, vy, vz);
-
-    if (vx == 0.0 && vz == 0.0) {
+    if (flow.x == 0.0 && flow.z == 0.0) {
         return kNoFlow;
     }
 
@@ -255,7 +170,7 @@ float fluidFlowAngle(const MeshScratch& scratch, int x, int y, int z, u8 materia
     // a radian on a texture rotation; the table is 256 KB and would be the
     // single largest thing in .rodata.
     constexpr double kHalfPi = 1.5707963267948966;
-    return static_cast<float>(std::atan2(vz, vx) - kHalfPi);
+    return static_cast<float>(std::atan2(flow.z, flow.x) - kHalfPi);
 }
 
 void addFluid(const MeshScratch& scratch, int x, int y, int z, const BlockDef& def,

@@ -1,58 +1,63 @@
 #pragma once
 
-// The Creative block palette -- **and a1.1.2 has no Creative mode at all**.
+// The Creative palette -- **and a1.1.2 has no Creative mode at all**.
 //
-// This is the first thing in the project with no oracle behind it. Alpha v1.1.2
-// has one way to play: `Minecraft` carries no gamemode field, `EntityPlayer` no
-// capabilities object, and the word does not appear in the client. Creative is
-// Beta 1.8's, two years later and a different codebase. So nothing in this file
-// was recovered from a jar, nothing here can be pinned against a reference
-// implementation, and no test in `tests/` compares it to one. That is also why
+// Alpha v1.1.2 has one way to play: `Minecraft` carries no gamemode field,
+// `EntityPlayer` no capabilities object, and the word does not appear in the
+// client. Creative is Beta 1.8's, two years later and a different codebase. So
+// nothing about *having* a palette was recovered from a jar, and that is why
 // gamemode lives in `<world>/3dalpha.ini` and never in `level.dat` -- see
 // core/settings/world_settings.hpp for the other half of the same argument.
 //
-// What that buys is licence to make the palette *derived* rather than curated.
-// Beta's own creative inventory is a hand-written list in `CreativeTabs`, and a
-// hand-written list here would be 70 block ids typed into a source file --
-// which is precisely the thing CONTRIBUTING forbids and for a better reason
-// than style: the next version manifest would silently inherit a1.1.2's list.
+// **What is in it, though, is no longer this file's opinion.** The palette used
+// to be "every block the registry knows, minus air", computed here. That is
+// what put the *burning* furnace in the hand next to the furnace, flowing water
+// next to water, and the block form of a door -- whose texture is the door's
+// lower panel -- where the door item belongs. Those are not blocks a player
+// holds; they are states the engine writes.
 //
-// So the palette is **every block this version's registry defines**, in id
-// order, minus air. `BlockDef::known` is the column that answers it -- it is
-// already false for the sixteen ids a1.1.2 leaves empty -- and it means adding
-// a version whose registry has more blocks in it adds them here with no edit.
+// So the column moved to the generated item table, where it can be *derived*:
+// `tools/genref.java --items` measures which block each item places by using it
+// in a real world, and hides an ItemBlock whose block already has a carried
+// form. That one rule covers doors, signs, reeds, seeds and redstone without
+// naming any of them. Four ids -- flowing water, flowing lava, fire and the
+// burning furnace -- are excluded by hand and are the only judgement in it;
+// they are spelled out in that tool rather than dressed up as a derivation.
 //
-// **What it does not do**, all of it deliberate and none of it a guess:
+// **And it is the whole table now, not the two thirds of it that place a
+// block.** The rule used to be "nothing that places no block is offered", on
+// the argument that a sword does nothing this build can perform. That was the
+// wrong test and it was reported as one: a Creative hand is also how a sword,
+// an ingot, a smelted ore or a piece of armour gets into a chest, into a save,
+// or on to the ground -- and a catalogue that silently omits 84 of its 147 rows
+// reads as a table with holes in it. Using one still does nothing, which is
+// honest; not being able to hold one was not.
 //
-//   * No item ids. The `items` slot is empty for this version, and a palette
-//     of *blocks* is what a block-placing game needs first. Saplings, doors,
-//     beds and cake are items backed by blocks in the original and are offered
-//     here as their blocks, which places the block form directly.
-//   * No filtering by "would a player ever get this". Fire, mob spawners,
-//     flowing water and the double slab are all in it. Excluding them would be
-//     inventing a second table with nothing to check it against, and a Creative
-//     mode that can place a mob spawner is more useful to this project than one
-//     that has opinions.
+// **What it still does not do**, all deliberate:
+//
 //   * No ordering by category. Id order is the one ordering that is stable
 //     across builds and derivable from the data.
+//   * No filtering by "would a player ever get this". Bedrock, the mob spawner
+//     and the double slab are all in it. A Creative mode with opinions about
+//     what you should want is worse than one without.
+//   * No naming of what an item is *for*. A hoe and a fishing rod are offered
+//     beside a sword and do the same amount, which is nothing.
 
-#include "core/block/block_def.hpp"
-#include "core/util/types.hpp"
+#include "core/item/item_def.hpp"
 
 namespace mc::item {
 
-// How many blocks the palette offers. Computed once at load from the registry;
-// for a1.1.2 it is 70 -- `kBlockCount` minus air.
+// How many items the palette offers. For a1.1.2 it is 147.
 int paletteSize();
 
-// The block at `index`, or air for an index outside the palette. Air is the
+// The item at `index`, or 0 for an index outside the palette. Zero is the
 // out-of-range answer rather than an assert because this is read by a UI whose
 // page arithmetic can legitimately run off the end of the last page.
-block::BlockId paletteBlock(int index);
+ItemId paletteItem(int index);
 
-// Where a block sits in the palette, or -1 for one that is not in it (air, and
-// any id this version's registry does not define). The inverse of the above,
-// and what lets a hotbar slot show which palette cell it came from.
-int paletteIndexOf(block::BlockId id);
+// Where an item sits in the palette, or -1 for one that is not in it. The
+// inverse of the above, and what lets a hotbar slot show which cell it came
+// from.
+int paletteIndexOf(ItemId id);
 
 }  // namespace mc::item

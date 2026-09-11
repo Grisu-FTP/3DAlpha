@@ -138,6 +138,48 @@ def write_blocks(out: Path, m: dict) -> bool:
     doc = json.loads(source.read_text())
     blocks = {entry["id"]: entry for entry in doc["blocks"]}
 
+    # **Which ids the mesher's fast path can draw**, folded here rather than
+    # asked at runtime. A standard block whose render bounds fill its cell for
+    # every metadata value goes down the cube stream; anything else cannot,
+    # because that stream stores whole-block corners. The bounds live in
+    # selection.json, which is generated separately, so this is the one column
+    # of blocks.hpp that reads another data file -- and it is worth it: asking
+    # the two tables separately cost 3.3 us a section on the dev host.
+    #
+    # A version with no selection.json yet gets `true` for every standard
+    # block, which is the behaviour this project had before boxes existed.
+    selection_path = REPO / m["data"] / "selection.json"
+    always_unit = {}
+    # **Which metadata values a ray sees when it is allowed to hit liquids**,
+    # as a sixteen-bit mask -- the other column of selection.json that belongs
+    # on a block rather than in a shape table. A version without the file yet
+    # falls back to the `targetable` bool broadcast over every metadata, which
+    # is what this project did before a bucket existed.
+    liquid_mask = {}
+    if selection_path.is_file():
+        selection = json.loads(selection_path.read_text())
+        unit_shape = selection["shapes"].index([0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+        for key, row in selection["index"].items():
+            always_unit[int(key)] = all(shape == unit_shape for shape in row)
+        for key, mask in selection.get("targetableLiquids", {}).items():
+            liquid_mask[int(key)] = mask
+
+    def liquid_targets(entry) -> int:
+        if entry is None:
+            return 0
+        if entry["id"] in liquid_mask:
+            return liquid_mask[entry["id"]]
+        return 0xFFFF if entry["targetable"] else 0
+
+    def unit_cube(entry) -> bool:
+        if entry is None or entry["render"] != "cube":
+            return False
+        # A furnace fills its cell, but the fast path draws `faces` and cannot
+        # read metadata, so it goes round by the slower one that can.
+        if "metadataFaces" in entry:
+            return False
+        return always_unit.get(entry["id"], True)
+
     # Pre-Anvil ids are one byte on disk and on the wire. The table covers the
     # whole range so that any id a file can hold is in bounds.
     table_size = 256
@@ -185,15 +227,28 @@ def write_blocks(out: Path, m: dict) -> bool:
     ice = next((e for e in blocks.values() if e["name"] == "ice"), None)
     ice_material = material_index.get(ice["material"], 0) if ice else 0
 
+    # **The footstep table**, nine rows shared by seventy blocks. Emitted as a
+    # table plus an index rather than four columns on every row, because that
+    # is the shape the jar has: `Block.stepSound` is a pointer to one of nine
+    # singletons, and two blocks that share one are the *same* sound rather
+    # than two rows that happen to agree.
+    #
+    # Index 0 is "no sound", which no real block takes -- air and any id this
+    # build does not know land there, and a lookup that returns an empty name
+    # is silence rather than a branch at every call site.
+    step_fields = sorted({e["stepSound"] for e in blocks.values()
+                          if e.get("stepSound") is not None})
+    step_index = {name: i + 1 for i, name in enumerate(step_fields)}
+
     def definition(entry) -> str:
         if entry is None:
             # Shape::FullCube rather than None: an id this build does not
             # know is far better treated as something to stand on than as
             # something to fall through.
             return ('{"unknown", 0.0f, 0.0f, 0, {0, 0, 0, 0, 0, 0}, '
-                    "RenderType::Cube, Shape::FullCube, 0.6f, true, "
-                    "0, 0, 255, true, true, true, false, true, "
-                    "TickBehaviour::None, 10, false, 0, 0, false, false}")
+                    "RenderType::Cube, Shape::FullCube, true, 0.6f, true, "
+                    "0xFFFF, 0, 0, 255, true, true, true, false, true, "
+                    "TickBehaviour::None, 10, false, 0, 0, false, false, 0}")
         # repr keeps the decimal point: "100f" is not a float literal, "100.0f"
         # is, and %g drops the point for integral values.
         hardness = repr(float(entry["hardness"]))
@@ -203,8 +258,10 @@ def write_blocks(out: Path, m: dict) -> bool:
             f'{entry.get("texture", 0)}, {faces(entry)}, '
             f'RenderType::{pascal(entry["render"])}, '
             f'Shape::{pascal(entry["shape"])}, '
+            f'{c_bool(unit_cube(entry))}, '
             f'{repr(float(entry["slipperiness"]))}f, '
             f'{c_bool(entry["targetable"])}, '
+            f'0x{liquid_targets(entry):04X}, '
             f'{material_index.get(entry.get("material"), 0)}, '
             f'{entry["light"]}, {entry["opacity"]}, '
             f'{c_bool(entry["opaque"])}, {c_bool(entry["fullCube"])}, '
@@ -215,7 +272,8 @@ def write_blocks(out: Path, m: dict) -> bool:
             f'{entry.get("tickRate", 10)}, '
             f'{c_bool(entry.get("tickRandomly", False))}, '
             f'{entry.get("burnEncourage", 0)}, {entry.get("burnCatch", 0)}, '
-            f'{c_bool(entry.get("canBurn", False))}, true}}'
+            f'{c_bool(entry.get("canBurn", False))}, true, '
+            f'{step_index.get(entry.get("stepSound"), 0)}}}'
         )
 
     # Air's material is the jar's too -- every block that uses it is the same
@@ -248,6 +306,25 @@ def write_blocks(out: Path, m: dict) -> bool:
     lines.append("\n// The material a fluid refuses to draw a face against, "
                  "besides its own.\n// 0 means this version has none.\n")
     lines.append(f"inline constexpr mc::u8 kIceMaterial = {ice_material};\n")
+
+    # The footstep table. Index 0 is the silent row, which air and any unknown
+    # id take; the rest are the jar's nine singletons in field order.
+    sounds = doc.get("stepSounds", {})
+    lines.append("\n// `Block.stepSound`, as a table indexed by "
+                 "`BlockDef::stepSound`.\n// Row 0 is silence; no constructed "
+                 "block takes it.\n")
+    lines.append(f"inline constexpr int kStepSoundCount = {len(step_fields) + 1};\n")
+    lines.append("inline constexpr mc::block::StepSound "
+                 "kStepSounds[kStepSoundCount] = {\n")
+    lines.append('    {"", "", 0.0f, 0.0f},\n')
+    for name in step_fields:
+        row = sounds.get(name)
+        if row is None:
+            sys.exit(f"configure: blocks.json has no stepSounds entry for {name!r}")
+        lines.append(f'    /* {name} */ {{"{row["step"]}", "{row["break"]}", '
+                     f'{repr(float(row["volume"]))}f, '
+                     f'{repr(float(row["pitch"]))}f}},\n')
+    lines.append("};\n")
     lines.append("\ninline constexpr BlockDef kUnknownBlock =\n    "
                  + definition(None) + ";\n")
     lines.append("\ninline constexpr BlockDef kBlocks[kBlockTableSize] = {\n")
@@ -256,9 +333,275 @@ def write_blocks(out: Path, m: dict) -> bool:
         label = entry["name"] if entry else "unknown"
         lines.append(f"    /* {bid:3} {label:<22} */ {definition(entry)},\n")
     lines.append("};\n")
+
+    # **Faces that follow the block's own metadata**, which in a1.1.2 is the
+    # furnace's mouth. Beside the table rather than in it: two blocks out of
+    # 256 want sixteen rows of six, and the row the mesher's inner loop loads
+    # should not grow by 192 bytes to carry them. Row 0 of the index is "none";
+    # the table itself always has at least one row so it is never zero-sized.
+    tabled = [bid for bid in sorted(blocks) if "metadataFaces" in blocks[bid]]
+    lines.append("\n// `metadataFaces`: [row][metadata][face] -> atlas tile, for a block whose\n"
+                 "// in-world faces follow its own metadata. kMetadataFaceRow[id] is the row\n"
+                 "// plus one, and 0 for every block whose faces are `BlockDef::faces`.\n")
+    lines.append(f"inline constexpr int kMetadataFaceTableCount = {max(len(tabled), 1)};\n")
+    lines.append("inline constexpr mc::u16 "
+                 "kMetadataFaces[kMetadataFaceTableCount][16][6] = {\n")
+    for bid in tabled:
+        rows = blocks[bid]["metadataFaces"]
+        if len(rows) != 16 or any(len(row) != 6 for row in rows):
+            sys.exit(f"configure: block {bid}'s metadataFaces is not 16 rows of 6")
+        lines.append(f"    /* {bid} {blocks[bid]['name']} */ {{\n")
+        for row in rows:
+            lines.append("        {" + ", ".join(str(t) for t in row) + "},\n")
+        lines.append("    },\n")
+    if not tabled:
+        lines.append("    {},\n")
+    lines.append("};\n")
+    row_of = {bid: i + 1 for i, bid in enumerate(tabled)}
+
+    # **The block a block is built from** -- a staircase's planks. 0 for all
+    # the rest, which is air and so never a block anything turns into.
+    for bid, entry in blocks.items():
+        if "model" in entry and entry["model"] not in blocks:
+            sys.exit(f"configure: block {bid}'s model {entry['model']} is not a block")
+
+    def byte_table(name, ctype, value) -> None:
+        lines.append(f"inline constexpr {ctype} {name}[kBlockTableSize] = {{\n")
+        for start in range(0, table_size, 16):
+            row = (str(value(bid)) for bid in range(start, start + 16))
+            lines.append("    " + ", ".join(row) + ",\n")
+        lines.append("};\n")
+
+    lines.append("\n")
+    byte_table("kMetadataFaceRow", "mc::u8", lambda bid: row_of.get(bid, 0))
+    lines.append("\n// `model`: the block a staircase turns into with something solid on it.\n")
+    byte_table("kModelBlock", "mc::block::BlockId",
+               lambda bid: blocks.get(bid, {}).get("model", 0))
+
     lines.append("\n}  // namespace mcver\n")
 
     (out / "blocks.hpp").write_text("".join(lines))
+    return True
+
+
+def write_items(out: Path, m: dict) -> bool:
+    """Turn data/<version>/items.json into a constexpr table.
+
+    Same shape as write_blocks and for the same reasons, with one difference:
+    the table stops at 512 rather than covering every id the format allows. Item
+    ids are shorts and a1.1.2's two music discs are 2256 and 2257, so a table
+    indexed by id over the whole range would be 2,258 rows to carry two that
+    cannot be obtained, placed or used. Ids past the end come back as the
+    unknown item; core/item/registry.hpp says what that costs and what it does
+    not.
+    """
+    source = REPO / m["data"] / "items.json"
+    if not source.is_file():
+        (out / "items.hpp").write_text(
+            BANNER.format(id=m["id"]) + "#pragma once\n"
+            "// No items.json for this version yet.\n")
+        return False
+
+    doc = json.loads(source.read_text())
+    items = {entry["id"]: entry for entry in doc["items"]}
+
+    table_size = 512
+    outside = sorted(i for i in items if i >= table_size)
+
+    # Two items can share a name -- the door you carry is 324 and the door block
+    # is 64, and both are called wooden_door, which is the point. The block form
+    # takes a "Block" suffix so the generated enum still has one name per id.
+    name_counts = {}
+    for entry in items.values():
+        name_counts[entry["name"]] = name_counts.get(entry["name"], 0) + 1
+
+    def enum_name(entry) -> str:
+        base = pascal(entry["name"])
+        if name_counts[entry["name"]] > 1 and entry["id"] < 256:
+            return base + "Block"
+        return base
+
+    def definition(entry) -> str:
+        if entry is None:
+            return ('{"unknown", 0, 0, 0, 1, IconSheet::Items, '
+                    'ItemDef::kNotArmour, ItemDef::kNotABucket, '
+                    'SpawnsEntity::None, 0, false, false, false}')
+        return (
+            f'{{"{entry["name"]}", {entry["icon"]}, {entry["places"]}, '
+            f'{entry["durability"]}, {entry["stack"]}, '
+            f'IconSheet::{"Terrain" if entry["sheet"] == "terrain" else "Items"}, '
+            f'{entry["armour"]}, {entry["bucket"]}, '
+            f'SpawnsEntity::{pascal(entry["spawns"])}, {entry["spawnVariant"]}, '
+            f'{c_bool(bool(entry["fx"]))}, {c_bool(entry["palette"])}, true}}'
+        )
+
+    in_table = sorted(i for i in items if i < table_size)
+    palette = [i for i in in_table if items[i]["palette"]]
+
+    lines = [
+        BANNER.format(id=m["id"]),
+        "#pragma once\n",
+        '\n#include "core/item/item_def.hpp"\n',
+        "\nnamespace mcver {\n",
+        "\nusing mc::item::IconSheet;\n",
+        "using mc::item::SpawnsEntity;\n",
+        "using mc::item::ItemDef;\n",
+        "\n// Named ids, so no literal item number appears anywhere else.\n",
+        "enum class Item : mc::item::ItemId {\n",
+    ]
+    for iid in sorted(items):
+        lines.append(f"    {enum_name(items[iid])} = {iid},\n")
+    lines.append("};\n")
+
+    lines.append(f"\ninline constexpr int kItemTableSize = {table_size};\n")
+    lines.append(f"inline constexpr int kItemCount = {len(items)};\n")
+    lines.append("\n// Ids this version defines that the table does not reach. "
+                 "Carried through a\n// save, drawn as nothing. "
+                 "See core/item/registry.hpp.\n")
+    lines.append(f"inline constexpr int kItemsOutsideTable = {len(outside)};\n")
+    lines.append("\ninline constexpr ItemDef kUnknownItem =\n    "
+                 + definition(None) + ";\n")
+    lines.append("\ninline constexpr ItemDef kItems[kItemTableSize] = {\n")
+    for iid in range(table_size):
+        entry = items.get(iid)
+        label = entry["name"] if entry else "unknown"
+        lines.append(f"    /* {iid:3} {label:<22} */ {definition(entry)},\n")
+    lines.append("};\n")
+
+    lines.append("\n// The Creative hand's offering, in id order, as a table "
+                 "rather than a scan.\n// Which items are in it is decided by "
+                 "tools/genref.java, not here.\n")
+    lines.append(f"inline constexpr int kPaletteSize = {len(palette)};\n")
+    lines.append("inline constexpr mc::item::ItemId kPalette[kPaletteSize] = {\n")
+    for start in range(0, len(palette), 12):
+        row = ", ".join(str(i) for i in palette[start:start + 12])
+        lines.append(f"    {row},\n")
+    lines.append("};\n")
+    lines.append("\n}  // namespace mcver\n")
+
+    (out / "items.hpp").write_text("".join(lines))
+    return True
+
+
+def write_drops(out: Path, m: dict) -> bool:
+    """Emit what each block leaves behind when it is removed.
+
+    Six numbers a block, generated in turn (tools/genref.java --drops), so no
+    value here was typed by a human and none of them is a guess about a method
+    that takes a Random. The per-metadata rows are held apart from the main
+    table because only three blocks in a1.1.2 have one -- a door, an iron door
+    and a crop -- and giving all 256 rows sixteen entries would be 8 KB of
+    .rodata to carry three.
+    """
+    source = REPO / m["data"] / "drops.json"
+    if not source.is_file():
+        return False
+
+    doc = json.loads(source.read_text())
+    rows = {entry["id"]: entry for entry in doc["drops"]}
+    size = m["constants"].get("blockTableSize", 256)
+
+    # The side table, in the order the blocks that need one appear.
+    meta_rows = []
+    meta_index = {}
+    for bid in sorted(rows):
+        entry = rows[bid]
+        if "itemByMetadata" in entry:
+            meta_index[bid] = len(meta_rows)
+            meta_rows.append(entry["itemByMetadata"])
+
+    def definition(entry) -> str:
+        if entry is None:
+            return "{0, 0, 0, 0, 0, 0, -1}"
+        return (
+            f'{{{entry["item"]}, {entry.get("altItem", 0)}, {entry.get("altOneIn", 0)}, '
+            f'{entry.get("countMin", 0)}, {entry.get("countSpread", 0)}, '
+            f'{entry.get("countOneIn", 0)}, {meta_index.get(entry["id"], -1)}}}'
+        )
+
+    lines = [
+        BANNER.format(id=m["id"]),
+        "#pragma once\n",
+        '\n#include "core/util/types.hpp"\n',
+        "\nnamespace mcver {\n",
+        "\nusing mc::i8;\n",
+        "using mc::u8;\n",
+        "using mc::u16;\n",
+        "\n// One block's drop rule. See data/<version>/drops.json for what each field\n"
+        "// means and core/tick/drop.hpp for the four lines that run them.\n",
+        "struct BlockDrop {\n",
+        "    u16 item;         // the usual answer; 0 is 'nothing'\n",
+        "    u16 altItem;      // the other answer, when altOneIn is not 0\n",
+        "    u8 altOneIn;      // nextInt(altOneIn) == 0 picks altItem\n",
+        "    u8 countMin;      // how many, before the roll below\n",
+        "    u8 countSpread;   // + nextInt(countSpread), when not 0\n",
+        "    u8 countOneIn;    // nextInt(countOneIn) == 0 ? countMin : 0, when not 0\n",
+        "    i8 metadataRow;   // index into kDropByMetadata, or -1\n",
+        "};\n",
+        f"\ninline constexpr int kDropTableSize = {size};\n",
+    ]
+    lines.append(f"inline constexpr int kDropMetadataRows = {max(len(meta_rows), 1)};\n")
+    lines.append(
+        "\n// [row][metadata] -> the item that metadata drops. Only a door and a crop\n"
+        "// need one; a block with metadataRow -1 answers with `item` whatever its\n"
+        "// metadata is.\n"
+    )
+    lines.append("inline constexpr u16 kDropByMetadata[kDropMetadataRows][16] = {\n")
+    if meta_rows:
+        for bid in sorted(meta_index, key=lambda b: meta_index[b]):
+            row = rows[bid]["itemByMetadata"]
+            lines.append("    {" + ", ".join(str(v) for v in row)
+                         + f"}},   // {rows[bid].get('name', bid)}\n")
+    else:
+        lines.append("    {0},\n")
+    lines.append("};\n")
+
+    lines.append("\ninline constexpr BlockDrop kBlockDrops[kDropTableSize] = {\n")
+    for bid in range(size):
+        entry = rows.get(bid)
+        label = entry.get("name", "") if entry else ""
+        lines.append(f"    /* {bid:3} {label:<22} */ {definition(entry)},\n")
+    lines.append("};\n")
+    lines.append("\n}  // namespace mcver\n")
+
+    (out / "drops.hpp").write_text("".join(lines))
+    return True
+
+
+def write_paintings(out: Path, m: dict) -> bool:
+    """Emit the art table -- what pictures exist and where they live in kz.png.
+
+    `er` (EnumArt) is twenty-four rows of five values and every one of them is a
+    literal in one static initialiser, so this could have been typed. It is
+    generated for the same reason the drop table is: a name in this table is
+    what a painting's NBT stores, and a name that was remembered rather than
+    read is a save file that does not round-trip.
+    """
+    source = REPO / m["data"] / "paintings.json"
+    if not source.is_file():
+        return False
+
+    doc = json.loads(source.read_text())
+    arts = doc["paintings"]
+
+    lines = [
+        BANNER.format(id=m["id"]),
+        "#pragma once\n",
+        '\n#include "core/entity/painting_art.hpp"\n',
+        "\nnamespace mcver {\n",
+        "\nusing mc::entity::PaintingArt;\n",
+        f"\ninline constexpr int kPaintingCount = {len(arts)};\n",
+        "\ninline constexpr PaintingArt kPaintings[kPaintingCount] = {\n",
+    ]
+    for art in arts:
+        lines.append(
+            f'    {{"{art["name"]}", {art["width"]}, {art["height"]}, '
+            f'{art["u"]}, {art["v"]}}},\n'
+        )
+    lines.append("};\n")
+    lines.append("\n}  // namespace mcver\n")
+
+    (out / "paintings.hpp").write_text("".join(lines))
     return True
 
 
@@ -322,10 +665,11 @@ def write_selection(out: Path, m: dict) -> bool:
 def write_placement(out: Path, m: dict) -> bool:
     """Emit which metadata a block lands with, per face struck.
 
-    `Block.onBlockPlaced`, which is what makes a torch on a wall a wall torch
-    and a staircase face the way you clicked. Twelve of the seventy blocks
-    answer differently per face; the rest are zero, and a table is still the
-    right shape for it because the alternative is a switch full of block ids.
+    `Block.onBlockPlaced`, which is what makes a torch on a wall a wall torch.
+    Six of the seventy blocks answer differently per face; the rest are zero,
+    and a table is still the right shape for it because the alternative is a
+    switch full of block ids. (A furnace and a staircase turn from their
+    neighbours in onBlockAdded, which is a tick behaviour, not this table.)
 
     Generated in turn from a real jar -- see tools/gen_selection.py.
     """
@@ -386,12 +730,24 @@ def main() -> None:
     write_cmake(out_dir, m)
     write_rsf(out_dir, m)
     has_blocks = write_blocks(out_dir, m)
+    has_items = write_items(out_dir, m)
+    has_drops = write_drops(out_dir, m)
+    has_paintings = write_paintings(out_dir, m)
     has_selection = write_selection(out_dir, m)
     has_placement = write_placement(out_dir, m)
 
     print(f"configure: {m['display']} (protocol {m['constants']['protocol']}) -> {out_dir}")
     if not has_blocks:
         print(f"configure: no {m['data']}/blocks.json yet")
+    if not has_items:
+        print(f"configure: no {m['data']}/items.json yet -- "
+              "run tools/genref.java --items")
+    if not has_drops:
+        print(f"configure: no {m['data']}/drops.json yet -- "
+              "run tools/genref.java --drops")
+    if not has_paintings:
+        print(f"configure: no {m['data']}/paintings.json yet -- "
+              "run tools/genref.java --art")
     if not has_selection:
         print(f"configure: no {m['data']}/selection.json yet -- run tools/gen_selection.py")
     if not has_placement:

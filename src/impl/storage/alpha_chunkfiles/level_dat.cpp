@@ -1,7 +1,11 @@
 #include "impl/storage/alpha_chunkfiles/level_dat.hpp"
+#include "core/entity/persistence.hpp"
+#include "core/entity/player_body.hpp"
 
 #include "core/nbt/nbt.hpp"
 #include "core/nbt/writer.hpp"
+
+#include <cmath>
 
 namespace mc::alpha {
 namespace {
@@ -154,6 +158,30 @@ bool decodePlayer(nbt::Reader& r, PlayerData* player)
     return r.ok();
 }
 
+// **A player lost to a NaN is put back at the spawn point.** Riding a cart
+// whose position had overflowed to NaN put the player there too, and a world
+// saved like that used to open with the camera nowhere: nothing drawn, no
+// collision, no marker on the map. Pos is an eye position (`posY` is
+// `yOffset` above the feet), so the spawn block's feet go back up by that.
+// Everything else in the compound -- the inventory above all -- is kept.
+void repairPlayer(LevelData* level)
+{
+    PlayerData& p = level->player;
+    if (!std::isfinite(p.pos[0]) || !std::isfinite(p.pos[1]) || !std::isfinite(p.pos[2])) {
+        p.pos[0] = double(level->spawnX);
+        p.pos[1] = double(level->spawnY) + double(entity::kEyeHeight);
+        p.pos[2] = double(level->spawnZ);
+        p.fallDistance = 0.0f;
+    }
+    if (!std::isfinite(p.fallDistance)) p.fallDistance = 0.0f;
+    for (double& m : p.motion) {
+        if (!std::isfinite(m)) m = 0.0;
+    }
+    for (float& a : p.rotation) {
+        if (!std::isfinite(a)) a = 0.0f;
+    }
+}
+
 bool decodeData(nbt::Reader& r, LevelData* level)
 {
     nbt::TagType type;
@@ -184,6 +212,11 @@ bool decodeData(nbt::Reader& r, LevelData* level)
         } else if (name == "SpawnZ") {
             if (!nbt::expectType(r, type, nbt::TagType::Int)) return false;
             level->spawnZ = r.intValue();
+        } else if (name == "3DAlphaEntities") {
+            if (!nbt::expectType(r, type, nbt::TagType::Compound) || level->entities) return false;
+            auto entities = std::make_shared<entity::PersistentEntities>();
+            if (!entity::readPersistentEntities(r, entities.get())) return false;
+            level->entities = std::move(entities);
         } else if (name == "Player") {
             if (!nbt::expectType(r, type, nbt::TagType::Compound)) return false;
             if (level->player.present || !decodePlayer(r, &level->player)) {
@@ -192,6 +225,9 @@ bool decodeData(nbt::Reader& r, LevelData* level)
         } else if (!level->preserved.capture(r, name, type)) {
             return false;
         }
+    }
+    if (level->player.present) {
+        repairPlayer(level);
     }
     return r.ok();
 }
@@ -302,6 +338,7 @@ bool encodeLevelDat(const LevelData& level, std::vector<u8>* out)
     if (level.player.present) {
         encodePlayer(w, level.player);
     }
+    if (level.entities) entity::writePersistentEntities(w, *level.entities);
     level.preserved.writeTo(w);
     w.endCompound();
     level.preservedRoot.writeTo(w);

@@ -49,6 +49,7 @@
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/font.hpp"
 #include "core/texture/pack_list.hpp"
+#include "core/texture/skin_list.hpp"
 #include "core/util/types.hpp"
 #include "core/world/format/converter.hpp"
 #include "core/world/world_format.hpp"
@@ -244,6 +245,12 @@ public:
     // the process, so it survives `shutdown()` and a world may read it.
     const std::vector<u8>& backgroundTile() const { return backgroundTile_; }
 
+    // **The pack's bitmap font, for the world and not for the menu.** The menu
+    // draws its own text through `BitmapFont`; a sign draws text *in the world*
+    // and needs the sheet and the widths on the GPU side. Empty for a pack with
+    // no `default.png`, which is the case a sign shows a blank board in.
+    const texture::FontImage& fontImage() const { return fontImage_; }
+
     // Handed the process's audio before the first menu is drawn. Both pointers
     // are borrowed and must outlive the menu; the shell owns them. Optional --
     // a menu with neither still works and simply says there is no audio.
@@ -283,6 +290,10 @@ private:
         // reason Texture Pack is one -- and because the explanation needs room
         // that a value row does not have.
         Sound,
+        // Which skin the arm of an empty hand is drawn with. A list rather
+        // than a value row for the reason Texture Pack is one: the rows come
+        // off a card and there can be any number of them.
+        Skins,
     };
 
     // The shared half of init() and initOverlay(): citro2d, the text buffer,
@@ -300,6 +311,19 @@ private:
     void refreshWorlds();
     void refreshPacks();
     void refreshJars();
+
+    // **Lists the packs first**, because a skin row exists for every pack that
+    // carries one and `PackEntry::hasSkin` is where that is known. On the
+    // console that is a full read of every zip on the card, which is why this
+    // runs when the screen is opened and not at boot -- the same price the
+    // Texture Pack screen already pays, and the reason `ensureSkin` below
+    // exists to apply a saved choice without it.
+    void refreshSkins();
+
+    // Applies the saved skin key to the live atlas, reading only the one file
+    // it names. Called wherever the atlas is rebuilt, because rebuilding it
+    // puts the *active pack's* skin back in the player's page.
+    void applySavedSkin();
     void setScreen(Screen screen);
     void printConsoleHelp();
 
@@ -346,6 +370,7 @@ private:
     void handleConfirmConvert(u32 down);
     void handleConfirmDelete(u32 down);
     void handleTexturePacks(u32 down);
+    void handleSkins(u32 down);
     void handlePickJar(u32 down);
     void handleConfirmDeleteJar(u32 down);
 
@@ -474,6 +499,12 @@ private:
     void drawConfirmConvert();
     void drawConfirmDelete();
     void drawTexturePacks();
+    void drawSkins();
+
+    // The Options row's label, built from `skinKey_` alone -- see the note on
+    // the definition for why it does not go near the card. `skinLabel_` is the
+    // storage it hands back, and is why this is not `const char*` off a local.
+    const char* skinLabel() const;
     void drawPickJar();
     void drawConfirmDeleteJar();
 
@@ -574,9 +605,16 @@ private:
     // which of them is live. `packName_` is the file name inside the packs
     // folder, empty for Dev Art -- the same value 3ds.ini stores.
     std::vector<texture::PackEntry> packs_;
+    std::vector<texture::SkinEntry> skins_;
     std::vector<texture::JarEntry> jars_;
     texture::AtlasImage atlas_;
     std::string packName_;
+
+    // `SkinEntry::key`: empty is Default, which is the active pack's own
+    // `char.png` or the black silhouette. See core/texture/skin_list.hpp.
+    std::string skinKey_;
+    // Scratch for `skinLabel()`, which returns a pointer into it.
+    mutable std::string skinLabel_;
 
     // The pack's menu art, decoded once per pack rather than once per visit --
     // 68 KB held for the process against three card reads per visit to the
@@ -605,6 +643,8 @@ private:
 
     int packCursor_ = 0;   // 0 is "+ Extract from a jar..."
     int packScroll_ = 0;
+    int skinCursor_ = 0;   // 0 is Default
+    int skinScroll_ = 0;
     int jarCursor_ = 0;
     int jarScroll_ = 0;
 

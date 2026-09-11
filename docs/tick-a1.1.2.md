@@ -502,22 +502,68 @@ reaches only the block above it.
 
 ### The switches and the door
 
-**What needs a player and what does not.** Pressing a button, flipping a lever and opening a door by
-hand are *inputs*, and inputs need a player. Everything else about these blocks is reachable and
-testable without one, by writing the metadata the input would have written:
+**What needs a player and what does not.** These four were built from the circuit end first, because
+everything except the input is reachable without one -- write the metadata the input would have
+written and the rest of the block is testable. **All four inputs now exist.**
 
-| Block | Needs a player | Works and is tested now |
+| Block | The input | State |
 |---|---|---|
-| Lever (`no`) | flipping it | which sides it powers when on, falling off a wall that goes away |
-| Button (`hu`) | pressing it | the same, plus **letting itself back out** 20 ticks later |
-| Pressure plate (`al`) | an entity standing on it | which sides it powers under load, falling off |
-| Door (`fw`) | opening by hand | **opening and closing because a circuit told it to**, and both halves staying in step |
+| Lever (`no`) | flipping it | **done** -- `leverActivated`, reached from a right-click |
+| Button (`hu`) | pressing it | **done** -- `buttonActivated`, which also schedules the release 20 ticks later |
+| Pressure plate (`al`) | an entity standing on it | **done** -- `pressurePlateSense`, off `TickWorld::anyEntityIn` |
+| Door (`fw`) | opening by hand | **done** -- `doorActivated`, from either half; an iron door refuses |
+
+**The plate is the only behaviour that asks the world about entities**, so it is the only one with a
+seam of its own. `al.h(Lcn;III)V` looks in a box an eighth in on the four sides and a quarter of a
+block tall, arms on `al.b(Lcn;IIILkh;)V` (onEntityCollidedWithBlock, and only while it is up),
+disarms on its own scheduled update at rate 20 (and only while it is down), and re-books that update
+for as long as something is standing there. It writes metadata with `setBlockMetadata`, which
+notifies nothing, and then notifies its own neighbours and the block *below* itself -- the two calls
+are the plate's, not the write's.
+
+`TickWorld::setEntityQuery` is how it reaches them, and it is deliberately **not** on `TickAccess`:
+that structure is how the tick reaches chunks and is built by whatever owns them, while nothing owns
+the player and the dropped items together except the frame loop. Unset means "there are no
+entities", which is the right answer for every headless tool here.
+
+**The two plates are two tick behaviours**, `pressure_plate_all` (block 72, wooden) and
+`pressure_plate_mobs` (block 70, stone), because `al` takes a `js` -- EnumMobType -- as its third
+constructor argument and the jar passes a different one to each. The observable difference is that a
+**dropped item presses the wooden plate and not the stone one**. `js.c` ("players") is modelled and
+no block in this version takes it.
+
+The scan that arms it is `tick::entityCollidedWithBlocks`, which is the tail of `kh.c(DDD)V`
+(moveEntity): every block whose cell the entity's box overlaps, with the original's **inclusive**
+floor bounds rather than the half-open range every other box walk here uses.
+
+The circuit halves were done first and are unchanged: which sides each powers, falling off a wall
+that goes away, the button letting itself back out, and a door opening because a circuit told it to
+with both halves in step.
+
+**The input is `Block.blockActivated`, and it arrives through `tick::blockActivated`** --
+dispatched on the behaviour column like everything else here, and called from `item::rightClick`,
+which is the port of `PlayerController.onPlayerRightClick`. The order in that method is the rule
+worth remembering: **the block is asked before the item**, with no sneak override, so a lever flicks
+rather than disappearing under the block you were holding. See core/tick/behaviour.hpp.
 
 A lever's and a button's metadata are the same shape: the low three bits name the face it hangs on
 (1 = -x, 2 = +x, 3 = -z, 4 = +z, 5 = the floor) and bit 3 is "on". `isIndirectlyProvidingPowerTo` is
 just that bit; `isProvidingPowerTo` maps the face to the one side opposite it. A lever takes five
 faces and a button four -- a lever can stand on the floor and a button cannot. Both drop when the
 face their metadata *names* stops being an opaque cube, not merely when they run out of faces.
+
+**A lever has a sixth value, and it behaves differently from the other five.** `BlockLever.
+onBlockAdded` writes `5 + rand.nextInt(2)` for a lever on the floor, so a floor lever is 5 **or 6**,
+and 6 is which way round the handle lies. Two methods treat it as a value they have never heard of,
+and both are the class file's own:
+
+- `onNeighborBlockChange` sets its drop flag from a chain of five `meta == n` tests, `n` from 1 to
+  5. A 6 is named nowhere, so a lever wearing it never drops for its face -- only for
+  `canPlaceBlockAt` running out of walls. Answering "unsupported" for 6 here deleted floor levers
+  the moment they were flicked, because a flick notifies the lever's own cell.
+- `isProvidingPowerTo` runs the same five tests, so **a floor lever at orientation 6 hands no direct
+  power to the block it stands on**. It still powers wire beside it: that is the indirect answer,
+  which only reads bit 3.
 
 A pressure plate powers straight up directly and every side indirectly, whenever its metadata is
 non-zero.
@@ -534,6 +580,78 @@ from costing anything at all.
 **Rails are skipped, deliberately.** `BlockMinecartTrack`'s only behaviour is recomputing its shape
 from its neighbours, and without minecarts -- which are entities -- a rail's shape is not something
 a player can act on. It is the one part of redstone with no payoff until entities exist.
+
+## Rails -- `if` and `mk`
+
+**The largest single behaviour in a1.1.2's block set**, and none of it is a placement decision:
+`Block.onBlockPlaced` answers 0 for a rail, which is why `data/a1.1.2/placement.json` carries six
+zeroes on that row. The shape is worked out afterwards, from the neighbours, by `mk` -- RailLogic --
+which `core/tick/rail.{hpp,cpp}` transcribes whole.
+
+The ten shapes, and they are the same numbering the mesher draws from:
+
+| metadata | shape |
+|---|---|
+| 0 | flat, along z |
+| 1 | flat, along x |
+| 2 | ascending towards **+x** |
+| 3 | ascending towards **-x** |
+| 4 | ascending towards **-z** |
+| 5 | ascending towards **+z** |
+| 6 | curve joining +x and +z |
+| 7 | curve joining -x and +z |
+| 8 | curve joining -x and -z |
+| 9 | curve joining +x and -z |
+
+`setBasicRail` maps each of them to the **two cells it joins**, and everything else is built on that
+list:
+
+```
+0: (x, y, z-1) (x, y, z+1)      5: (x, y, z-1)   (x, y+1, z+1)
+1: (x-1, y, z) (x+1, y, z)      6: (x+1, y, z)   (x, y, z+1)
+2: (x-1, y, z) (x+1, y+1, z)    7: (x-1, y, z)   (x, y, z+1)
+3: (x-1, y+1, z) (x+1, y, z)    8: (x-1, y, z)   (x, y, z-1)
+4: (x, y+1, z-1) (x, y, z+1)    9: (x+1, y, z)   (x, y, z-1)
+```
+
+`refreshTrackShape(powered)` asks four questions -- is there a rail I can join at each side, counting
+one block up and one down -- and reads the answers through a table:
+
+```
+if ((negZ || posZ) && !negX && !posX) shape = 0;
+if ((negX || posX) && !negZ && !posZ) shape = 1;
+if (posZ && posX && !negZ && !negX)   shape = 6;
+if (posZ && negX && !negZ && !posX)   shape = 7;
+if (negZ && negX && !posZ && !posX)   shape = 8;
+if (negZ && posX && !posZ && !negX)   shape = 9;
+if (shape == -1) {                              // nothing unambiguous
+    if (negZ || posZ) shape = 0;
+    if (negX || posX) shape = 1;
+    ...the four corners again, in one order if powered and the reverse if not
+}
+if (shape == 0) { rail at (x, y+1, z-1) -> 4;  rail at (x, y+1, z+1) -> 5; }
+if (shape == 1) { rail at (x+1, y+1, z) -> 2;  rail at (x-1, y+1, z) -> 3; }
+if (shape < 0) shape = 0;
+```
+
+Five things in it are worth knowing before reading the code:
+
+- **A freshly placed rail is written with metadata 15 first.** `if.e` does that before it refreshes,
+  and 15 matches none of `setBasicRail`'s ten cases -- so the connection list is empty. It means "I
+  have no previous shape to be biased by", spelled as a metadata value because there is nowhere else
+  to put it.
+- **`powered` only reorders the four corner preferences**, so the *last* match wins differently and
+  a T-junction points the other way. That is a1.1.2's rail switch, two years before powered rails,
+  and it is the only thing `isBlockIndirectlyGettingPowered` is asked for here.
+- **`connectTo` re-derives the neighbour's shape from its remembered list, not from the world.**
+  That is the whole difference between it and `refreshTrackShape`, and it is what stops the two ends
+  of a new join disagreeing.
+- **`canConnectFrom`'s tail is dead code**: the class file compares two heights and returns true on
+  both paths, so the whole method is "yes unless I am already full".
+- **`onNeighborBlockChange` drops the rail** when the block under it stops being an opaque cube --
+  and, for an ascending rail, when the block under the neighbour it *climbs towards* does. Only a
+  block that `canProvidePower` re-points a junction, and only one with exactly three adjacent
+  tracks.
 
 ## One surprising rule, pinned rather than smoothed over
 
@@ -576,7 +694,8 @@ running jar over every constructed block:
 | Random tick area is `min(9, loadRadius)` chunks | We cannot tick a column we do not hold. At the render distances a 3DS runs, ours is the smaller number, so a world simulates a little less far out than the original. |
 | The tick never generates a chunk | Generation order **is** the world (see status.md §0g). A random tick allowed to trigger generation would reorder it, and a slower console would make a different world. A fluid stops at the frontier and resumes when the ground arrives, which is what the original does for a genuinely absent chunk. |
 | Scheduled ticks are a fixed-capacity heap, not a `TreeSet` | The frame path may not allocate. Ordering and identity are the original's; the pool refuses the newest entry when full and counts it, and a neighbour notification re-schedules whatever was lost. |
-| Sand and gravel land in one tick | There is no entity system, so `EntityFallingSand` has nowhere to live. The resting place is the one the entity would have found, so the world ends up identical and only the fall is missing. |
+| Sand and gravel land in one tick **when nobody is watching** | Which is `BlockSand.fallInstantly`, a real static on the class file, true while a chunk is populated. Here the flag is "is there an entity pool to spawn into": world generation and the headless tools have none and take the instant path, the frame loop has one and gets `EntityFallingSand`. The resting place is the same either way. See `core/entity/falling_block.hpp`. |
+| A block behaviour reaches entities, drops and sound through three function-pointer seams | `core/tick/` may not know about the entity pools or the mixer: the tick runs on a worker, the mixer does not, and `TickAccess` is how the tick reaches *chunks* and is built by the thing that owns them. `setEntityQuery`, `setDropSink`, `setFallingBlockSink` and `setSoundSink` are set by the frame loop instead. **Unset is a real answer in every case** -- no entities, no pool, silence -- and the random draws still happen either way, so a world ticked headless takes the same random path as one ticked with a player in it. |
 | Leaf decay's budget is threaded, not a field | The original bounds its recursive `updateLeaves` with `iz.c`, a counter on the single shared `Block` object -- `if (this.c++ >= 100) return;` -- reset at the entry points. The bound is copied exactly and is not optional: two adjacent leaf blocks can each decide the other needs re-running, and a 3DSX main thread has 32 KB of stack that nothing in the binary can enlarge. What is not copied is its being a field, which is an artefact of one shared Java object rather than a rule about leaves. |
 | Light is repropagated incrementally, not by re-solving the column | `LightEngine` solves a whole column against a 3x3 window over a 576 KB working set, which is far more than a block change disturbs and more than a flowing fluid can afford. `world::LightUpdater` runs the standard removal-then-addition pair over the cells the change actually reached. lighting.hpp's own argument is why that is safe -- the update rule is a monotone fixed point with a strictly positive decrement, so there is one answer and any algorithm that finds it finds the same numbers -- and `tests/light_update_test.cpp` checks the two agree cell by cell. |
 | Relighting is budgeted per frame, and its queues are bounded | The frame path may not allocate, and a roof coming off relights a lot of cells at once. `drain` settles a stated number and carries the rest; past the queue capacity entries are dropped and counted. A drop leaves a patch of world holding light one edit out of date, which is a wrong shade rather than a wrong world, and it is on the debug page. |
@@ -586,11 +705,10 @@ running jar over every constructed block:
 
 Named here rather than left to be discovered. Each is a subsystem, not a rule:
 
-- **The inputs to redstone**: pressing a button, flipping a lever, an entity standing on a pressure
-  plate, opening a door by hand. Every other part of those blocks is done; what is missing is a
-  player and an entity to *be* the input. **Rails** are skipped for the same reason -- a rail's only
-  behaviour is its shape, and shape means nothing without a minecart.
 - **A sapling becoming a tree**: the counter and its conditions are ported; the last step runs
   `WorldGenTrees` or `WorldGenBigTree`, and both write through `PopulationView` rather than through
   a live world. It needs an adapter, not a call.
-- **TNT**, **sponge**, and the tile-entity ticks (furnace, mob spawner).
+- **TNT** and the tile-entity ticks (furnace, mob spawner). **Not sponge**: `ng.e` walks a 5x5x5 box
+  comparing each cell's material against water and the body of that comparison is *empty* in this
+  version -- the absorption is Classic's and then 1.8's. Its `onBlockRemoval`, which notifies the
+  same box, is ported.

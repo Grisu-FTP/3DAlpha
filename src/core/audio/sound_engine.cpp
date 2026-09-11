@@ -1,5 +1,7 @@
 #include "core/audio/sound_engine.hpp"
 
+#include <cmath>
+
 #include "core/audio/sample.hpp"
 #include "core/audio/vorbis_stream.hpp"
 
@@ -17,6 +19,17 @@ float clamp01(float value)
 float interfaceGain(float volume, float soundVolume)
 {
     return clamp01(volume) * 0.25f * clamp01(soundVolume);
+}
+
+float positionalGain(float volume, float distance, float soundVolume)
+{
+    if (volume <= 0.0f) {
+        return 0.0f;
+    }
+    // The range stretches with a volume above 1 and the gain does not.
+    const float range = volume > 1.0f ? 16.0f * volume : 16.0f;
+    const float fade = distance >= range ? 0.0f : 1.0f - distance / range;
+    return clamp01(volume) * clamp01(soundVolume) * fade;
 }
 
 SoundEngine::SoundEngine(io::FileSystem& fs, Backend& backend, i64 seed)
@@ -122,6 +135,46 @@ void SoundEngine::playSoundFX(std::string_view key, float volume, float pitch)
     }
 
     backend_.playSample(id, interfaceGain(volume, soundVolume_), pitch);
+}
+
+void SoundEngine::setListener(double x, double y, double z)
+{
+    listenerX_ = x;
+    listenerY_ = y;
+    listenerZ_ = z;
+}
+
+void SoundEngine::playSoundAt(std::string_view key, double x, double y, double z,
+                              float volume, float pitch)
+{
+    // of.b's first line, and of.a's -- the same test in the same order.
+    if (!backend_.available() || soundVolume_ == 0.0f) {
+        return;
+    }
+
+    // The draw comes before the volume test in the original and it stays there:
+    // moving it would make which file plays depend on how far away the player
+    // happened to be.
+    const SoundEntry* entry = resources_.sounds.randomEntry(key);
+    if (entry == nullptr || volume <= 0.0f) {
+        return;
+    }
+
+    const SampleId id = sampleFor(entry->path);
+    if (id == kNoSample) {
+        return;  // never preloaded: silence, and not an error.
+    }
+
+    const double dx = x - listenerX_;
+    const double dy = y - listenerY_;
+    const double dz = z - listenerZ_;
+    const float distance = float(std::sqrt(dx * dx + dy * dy + dz * dz));
+
+    const float gain = positionalGain(volume, distance, soundVolume_);
+    if (gain <= 0.0f) {
+        return;  // out of range: a voice spent on silence is a voice lost
+    }
+    backend_.playSample(id, gain, pitch);
 }
 
 void SoundEngine::tick(int elapsedTicks)

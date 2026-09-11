@@ -201,6 +201,24 @@ public:
         double pos[3] = {0.0, 0.0, 0.0};
         float rotation[2] = {0.0f, 0.0f};  // yaw, pitch
         i64 timeTicks = 0;
+
+        // **The carried inventory, and the one field here that is not written
+        // every frame.** Position and rotation are four stores and are handed
+        // over on every frame; this is a vector of up to forty stacks, each
+        // with its own preserved tags, so copying it per frame would be an
+        // allocation in the frame path -- which this project does not do. It is
+        // set only when the player actually changes what they are holding, and
+        // `hasInventory` is what tells the save whether it was ever set at all.
+        //
+        // A world entered in Spectator never sets it, and the stacks the real
+        // client left in that world's level.dat come back untouched, because a
+        // false here means the save leaves the list exactly as it was read.
+        // Shared immutable ownership keeps queued I/O independent of live pools.
+        // Null leaves the existing snapshot alone; an empty snapshot clears it.
+        std::shared_ptr<const entity::PersistentEntities> entities;
+
+        bool hasInventory = false;
+        std::vector<item::ItemStack> inventory;
     };
 
     explicit ChunkCache(io::FileSystem& fs) : storage_(fs) {}

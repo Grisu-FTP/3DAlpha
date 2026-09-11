@@ -89,6 +89,33 @@ The live pack is marked, and the choice is written to `3ds.ini` the moment it is
 not decode is refused in front of the player with a reason, and the pack they had stays live — the
 alternative is an untextured world and no explanation.
 
+## Choosing a player skin
+
+**Options → Skin.** The only thing in this build that draws a player skin is the **arm of an empty
+hand** — a1.1.2 renders no other biped — so that is what this screen changes. Three groups of row:
+
+- **Default**, first and always present: the *active* texture pack's own `char.png`, or a **solid
+  black silhouette** when it has none. Every other page's stand-in is a coloured grid, which suits a
+  boat and does not suit an arm — a forearm in placeholder orange reads as a bug where a silhouette
+  is honest about being a shape with no skin on it.
+- **Every texture pack that carries a `char.png`**, whether or not it is the pack in use. `hasSkin`
+  comes off the same central-directory read the file count does, so a pack without one costs
+  nothing.
+- **Every `.png` in `sdmc:/3dalpha/skins`**, which the screen creates the first time it is opened.
+
+`char.png` sits at the **root** of the pack, not under `item/` — the one thing unusual about it.
+Both **64 × 32** and **64 × 64** are read; a 64 × 64 keeps its top half, because that half *is* the
+classic layout and the second layer below it is 1.8's, which a1.1.2's `ModelBiped` has nowhere to
+draw. A skin drawn for the **slim** body is detected and the row says so, and it is still drawn on
+the wide arm: the narrow body arrived with 1.8 and this is Alpha. `versions/<id>.json`'s
+`hasSlimSkins` is the gate, and `core/render/held_item.cpp` fails the build if it is turned on
+before that version's `ModelBiped` box has been derived.
+
+The choice is written to `3ds.ini` as a **name**, not a path — `pack:<name>` or `file:<name.png>` —
+so applying it at boot costs the one file it names rather than a walk of the packs folder, and
+moving the card's `3dalpha` folder does not orphan it. A skin that is no longer on the card falls
+back to Default rather than leaving the screen pointing at nothing.
+
 **Options → Texture Pack → Extract from a jar** lists every `*.jar` in `sdmc:/3dalpha/packs` and in
 `sdmc:/3dalpha` above it, with sizes, and turns the one the player picks into
 `packs/<jar name>.zip`. Entries are copied **verbatim** — compressed bytes, method, CRC and sizes

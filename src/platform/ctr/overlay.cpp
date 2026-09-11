@@ -2,6 +2,7 @@
 
 #include "core/block/registry.hpp"
 #include "core/item/creative_palette.hpp"
+#include "core/item/registry.hpp"
 #include "core/util/console_text.hpp"
 #include "core/util/coord_text.hpp"
 #include "platform/ctr/heap.hpp"
@@ -139,15 +140,19 @@ void Overlay::begin(const char* worldName, const char* model)
     lookYawStep_ = -1;
     uiTouchActive_ = false;
 
-    // A new world starts with the palette's first nine and the focus off. The
-    // hotbar is not saved anywhere -- see core/item/hotbar.hpp -- so this is
-    // not losing anything a previous session had.
-    hotbar_ = item::Hotbar{};
-    hotbar_.fillFromPalette();
+    // Emptied, not filled. **The world's own stacks arrive next**, through
+    // `setInventory`, and only a world with none of them falls back to the
+    // palette's opening nine -- see there. Filling here as well would put nine
+    // blocks in the hand of a player whose save says otherwise, for the one
+    // frame between the two calls.
+    inventory_.clear();
+    inventoryChanged_ = false;
+    heldSlot_ = -1;
     palettePage_ = 0;
     paletteCursor_ = 0;
+    itemsCursor_ = 0;
     focus_ = false;
-    focusPalette_ = false;
+    focusGrid_ = false;
     hotbarDirty_ = true;
     bodyDirty_ = true;
     // map_.reset() above already cleared the pan; this is the pair of it for a
@@ -184,12 +189,71 @@ void Overlay::setGamemode(settings::Gamemode mode)
     dirty_ = true;
 }
 
+void Overlay::setAnimatedItemsTile(int tile, const u8* texels)
+{
+    sheets_.animatedItems = texels;
+    sheets_.animatedItemsTile = texels != nullptr ? tile : -1;
+    if (texels == nullptr || tile < 0) {
+        return;
+    }
+
+    // Does anything on screen actually draw this tile? An item's icon is a
+    // property of the item, so this is a comparison against `def(id).icon` and
+    // not against the id -- which is the same rule the blit uses, and has to
+    // be, or a slot would redraw for a tile it does not show.
+    auto shows = [tile](item::ItemId id) {
+        if (id <= 0) {
+            return false;
+        }
+        const item::ItemDef& def = item::def(id);
+        return def.known && def.sheet == item::IconSheet::Items && int(def.icon) == tile;
+    };
+
+    for (int slot = 0; slot < item::kHotbarSlots; ++slot) {
+        if (shows(inventory_.main[slot].id)) {
+            hotbarDirty_ = true;
+            break;
+        }
+    }
+
+    if (page_ != Page::Player) {
+        return;
+    }
+    if (playerPage_ == PlayerPage::Items) {
+        for (int slot = item::kHotbarSlots; slot < item::kMainSlots; ++slot) {
+            if (shows(inventory_.main[slot].id)) {
+                bodyDirty_ = true;
+                return;
+            }
+        }
+        for (int slot = 0; slot < item::kArmourSlots; ++slot) {
+            if (shows(inventory_.armour[slot].id)) {
+                bodyDirty_ = true;
+                return;
+            }
+        }
+    } else if (playerPage_ == PlayerPage::Blocks) {
+        const int base = palettePage_ * hud::kPalettePerPage;
+        for (int i = 0; i < hud::kPalettePerPage; ++i) {
+            if (shows(item::paletteItem(base + i))) {
+                bodyDirty_ = true;
+                return;
+            }
+        }
+    }
+}
+
 void Overlay::setAtlas(const texture::AtlasImage& atlas)
 {
     map_.setPalette(atlas);
     // Borrowed. `empty()` is the atlas's own "not built yet", and null is what
     // the icon blit treats as "draw nothing" rather than "draw tile zero".
-    atlasRgba_ = atlas.empty() ? nullptr : atlas.rgba.data();
+    sheets_.terrain = atlas.empty() ? nullptr : atlas.rgba.data();
+    // **Optional, and its absence is not a failure.** A pack with no
+    // gui/items.png leaves this null and every icon that wanted it falls back
+    // to the terrain tile of the block the item places, which is what this
+    // screen drew before there were two sheets.
+    sheets_.items = atlas.hasItems() ? atlas.itemsRgba.data() : nullptr;
     bodyDirty_ = true;
     hotbarDirty_ = true;
 }
@@ -285,12 +349,17 @@ void Overlay::selectTab(int index)
     }
     playerPage_ = pages[index];
 
-    // **The palette cursor only exists on the palette's own page.** Leaving it
-    // set while the Map page is up would mean the d-pad moved something the
-    // player cannot see.
-    if (playerPage_ != PlayerPage::Blocks) {
-        focusPalette_ = false;
+    // **A grid cursor only exists on a page that has a grid.** Leaving it set
+    // while the Map page is up would mean the d-pad moved something the player
+    // cannot see.
+    if (!pageHasGrid()) {
+        focusGrid_ = false;
     }
+    // **A lifted stack is put back down where it came from.** Nothing is lost
+    // either way -- the stack never leaves the array, only its outline follows
+    // the cursor -- but a slot drawn hollow on a page the player has left is a
+    // state with nothing on screen to explain it.
+    heldSlot_ = -1;
     dirty_ = true;
 }
 
@@ -332,16 +401,16 @@ float padAxis(s16 raw)
     return value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
 }
 
-void blockCaption(block::BlockId id, char* out, usize size)
+void itemCaption(item::ItemId id, char* out, usize size)
 {
     if (size == 0) {
         return;
     }
-    if (id == block::kAir) {
+    if (id == 0 || !item::def(id).known) {
         std::snprintf(out, size, "%s", "empty");
         return;
     }
-    const char* name = block::def(id).name;
+    const char* name = item::def(id).name;
     usize written = 0;
     for (; name[written] != '\0' && written + 1 < size; ++written) {
         const char c = name[written];
@@ -381,9 +450,22 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
             // **The hotbar answers a touch on every page**, which is the whole
             // reason it is a band rather than something on the inventory page:
             // changing what is in your hand should not cost a page change.
-            if (slot != hotbar_.selected) {
-                hotbar_.selected = slot;
+            //
+            // ...unless a stack is being carried, in which case the band is
+            // somewhere to put it down. One press does one thing, and which
+            // thing it is is decided by whether the player's hands are full.
+            if (heldSlot_ >= 0) {
+                touchSlot(slot);
+            } else if (slot != inventory_.selected) {
+                inventory_.selected = slot;
                 hotbarDirty_ = true;
+            }
+            uiTouchActive_ = true;
+        } else if (playerPage_ == PlayerPage::Items) {
+            const int cell = hud::itemsCellAt(x, y);
+            if (cell >= 0) {
+                itemsCursor_ = cell;
+                touchSlot(hud::itemsSlotForCell(cell));
             }
             uiTouchActive_ = true;
         } else if (playerPage_ == PlayerPage::Blocks) {
@@ -402,10 +484,8 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
                 // and a pick that also moved the slot would fill one slot nine
                 // times.
                 paletteCursor_ = cell;
-                hotbar_.set(hotbar_.selected,
-                            item::paletteBlock(paletteIndex()));
+                takeFromPalette();
                 bodyDirty_ = true;
-                hotbarDirty_ = true;
             }
             uiTouchActive_ = true;
         } else if (playerPage_ != PlayerPage::Look) {
@@ -424,7 +504,7 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     // Read before SELECT's page cycle, because nothing in that chord uses them
     // and a held SELECT should not take the hotbar away.
     if (hasHotbar() && (down & (KEY_ZL | KEY_ZR)) != 0) {
-        hotbar_.cycle((down & KEY_ZR) != 0 ? 1 : -1);
+        inventory_.cycle((down & KEY_ZR) != 0 ? 1 : -1);
         hotbarDirty_ = true;
     }
 
@@ -468,8 +548,9 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
                 releaseFocus();
             } else {
                 focus_ = true;
-                focusPalette_ = playerPage_ == PlayerPage::Blocks;
+                focusGrid_ = pageHasGrid();
                 paletteCursor_ = 0;
+                itemsCursor_ = 0;
                 // The banner has to appear over whatever is already drawn, and
                 // the page below it has to come back when it goes -- so both
                 // directions are a full redraw. It happens on a button press,
@@ -533,6 +614,11 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     }
 
     if (cursor_ == 2) {
+        settings->greedyMeshing = !settings->greedyMeshing;
+        return true;
+    }
+
+    if (cursor_ == 3) {
         settings->wireframe = !settings->wireframe;
         return true;
     }
@@ -559,6 +645,77 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
 //
 // It must not be called between C3D_FrameBegin and C3D_FrameEnd. Input is
 // handled at the top of the loop, well before the frame opens, so it is not.
+bool Overlay::editSignViaKeyboard(world::SignStore* store, int index)
+{
+    if (store == nullptr || index < 0 || index >= store->count()) {
+        return false;
+    }
+
+    // Four lines of fifteen, plus the newlines between them and a terminator.
+    constexpr int kMaxText =
+        world::kSignLines * (world::kSignLineLength + 1) + 1;
+
+    // Prefilled with whatever is already on it, so editing a sign is editing
+    // rather than retyping.
+    char initial[kMaxText];
+    int at = 0;
+    for (int line = 0; line < world::kSignLines; ++line) {
+        const char* text = (*store)[index].lines[line];
+        for (int i = 0; text[i] != '\0' && at < kMaxText - 2; ++i) {
+            initial[at++] = text[i];
+        }
+        if (line + 1 < world::kSignLines && at < kMaxText - 2) {
+            initial[at++] = '\n';
+        }
+    }
+    initial[at] = '\0';
+
+    SwkbdState swkbd;
+    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, kMaxText - 1);
+    swkbdSetInitialText(&swkbd, initial);
+    swkbdSetHintText(&swkbd, "sign text");
+    swkbdSetFeatures(&swkbd, SWKBD_MULTILINE | SWKBD_DARKEN_TOP_SCREEN);
+    // **No validation.** A blank sign is a legal sign -- it is what every sign
+    // starts as -- so there is nothing here for a filter to refuse.
+
+    char text[kMaxText];
+    const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
+
+    // The same re-init `teleportViaKeyboard` documents at length: libctru's
+    // console caches a framebuffer address that an applet invalidates.
+    consoleInit(GFX_BOTTOM, nullptr);
+    dirty_ = true;
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
+
+    if (pressed != SWKBD_BUTTON_CONFIRM) {
+        return false;
+    }
+
+    // Split on newline into four lines, each truncated to fifteen characters.
+    // A player who types one long line gets it on the first row and three blank
+    // rows, which is what the original's editor would have made them do by
+    // hand.
+    int line = 0;
+    int start = 0;
+    for (int i = 0; i <= int(std::strlen(text)) && line < world::kSignLines; ++i) {
+        if (text[i] != '\n' && text[i] != '\0') {
+            continue;
+        }
+        store->setLine(index, line, std::string_view(text + start, usize(i - start)));
+        ++line;
+        start = i + 1;
+        if (text[i] == '\0') {
+            break;
+        }
+    }
+    // Anything the player deleted has to actually go.
+    for (; line < world::kSignLines; ++line) {
+        store->setLine(index, line, std::string_view());
+    }
+    return true;
+}
+
 bool Overlay::teleportViaKeyboard(Camera* camera)
 {
     // Long enough for three signed coordinates at full length with decimals,
@@ -734,7 +891,10 @@ static_assert(hud::kPaletteColumns == hud::kHotbarColumns,
 void Overlay::releaseFocus()
 {
     focus_ = false;
-    focusPalette_ = false;
+    focusGrid_ = false;
+    // Same reason as the page change: the outline has nowhere to be once the
+    // cursor it was following is gone.
+    heldSlot_ = -1;
 
     // **Going out puts the map back on the player.** A pan is a thing you did
     // with the focus on, and leaving the focus with the window parked four
@@ -802,9 +962,9 @@ bool Overlay::handleFocusedInput(u32 down)
         const int count = playerPagesFor(pages);
         const int tab = selectedTab() + ((down & KEY_R) != 0 ? 1 : count - 1);
         selectTab(tab % count);
-        // selectTab drops the palette cursor when it leaves the Blocks page and
+        // selectTab drops the grid cursor when it leaves a page that has one and
         // does not put it back on the way in, so say where the focus goes.
-        focusPalette_ = playerPage_ == PlayerPage::Blocks;
+        focusGrid_ = pageHasGrid();
         hotbarDirty_ = true;
         bodyDirty_ = true;
         return true;
@@ -821,7 +981,7 @@ bool Overlay::handleFocusedInput(u32 down)
     const bool onBlocks = playerPage_ == PlayerPage::Blocks;
     const int pages = hud::palettePageCount();
 
-    if (focusPalette_) {
+    if (focusGrid_ && onBlocks) {
         if ((down & (KEY_DLEFT | KEY_DRIGHT)) != 0) {
             // Linear through the page and off its ends into the next one, which
             // is how a list of 70 things reads. Stopping at the last cell of
@@ -843,30 +1003,99 @@ bool Overlay::handleFocusedInput(u32 down)
             paletteCursor_ = cell;
             bodyDirty_ = true;
         }
-        if ((down & KEY_DUP) != 0 && paletteCursor_ >= hud::kPaletteColumns) {
-            paletteCursor_ -= hud::kPaletteColumns;
-            bodyDirty_ = true;
-        }
-        if ((down & KEY_DDOWN) != 0) {
-            if (paletteCursor_ + hud::kPaletteColumns < hud::kPalettePerPage) {
-                paletteCursor_ += hud::kPaletteColumns;
+        // **Off the top row is the hotbar**, in the same column -- the grid
+        // and the band are one cursor space with a gap in it. It used to be off
+        // the *bottom*; the band moved to the top of the screen, and a cursor
+        // that left a grid downwards to reach something drawn above it would be
+        // the kind of wrongness that is felt rather than seen.
+        if ((down & KEY_DUP) != 0) {
+            if (paletteCursor_ >= hud::kPaletteColumns) {
+                paletteCursor_ -= hud::kPaletteColumns;
                 bodyDirty_ = true;
             } else {
-                // Off the bottom row is the hotbar, in the same column -- the
-                // grid and the band are one cursor space with a gap in it.
-                focusPalette_ = false;
-                hotbar_.selected = paletteCursor_ % hud::kPaletteColumns;
+                focusGrid_ = false;
+                inventory_.selected = paletteCursor_ % hud::kPaletteColumns;
                 bodyDirty_ = true;
                 hotbarDirty_ = true;
             }
+        }
+        if ((down & KEY_DDOWN) != 0
+            && paletteCursor_ + hud::kPaletteColumns < hud::kPalettePerPage) {
+            paletteCursor_ += hud::kPaletteColumns;
+            bodyDirty_ = true;
         }
         if ((down & KEY_A) != 0) {
             // Into the slot that is already selected. **A does not move the
             // selection**: filling a hotbar is pick a slot, then pick a block,
             // and a pick that moved the slot too would fill one slot nine times.
-            hotbar_.set(hotbar_.selected, item::paletteBlock(paletteIndex()));
+            takeFromPalette();
             bodyDirty_ = true;
-            hotbarDirty_ = true;
+        }
+        return true;
+    }
+
+    // The backpack grid, which walks exactly like the palette above it and
+    // acts differently: there is nothing to take a copy of here, so A picks a
+    // stack up and the next A puts it down.
+    if (focusGrid_ && playerPage_ == PlayerPage::Items) {
+        const bool onArmour = itemsCursor_ >= item::kBackpackSlots;
+        const int armourRow = onArmour ? itemsCursor_ - item::kBackpackSlots : 0;
+
+        // **Left off the first column is the armour**, which is where it is
+        // drawn, and right off the armour comes back to the row it left from.
+        // The armour is one cell taller than the backpack, so the fourth row
+        // lands on the last backpack row rather than nowhere.
+        if ((down & (KEY_DLEFT | KEY_DRIGHT)) != 0) {
+            const bool right = (down & KEY_DRIGHT) != 0;
+            if (onArmour) {
+                if (right) {
+                    const int row = armourRow < hud::kItemsRows ? armourRow
+                                                                : hud::kItemsRows - 1;
+                    itemsCursor_ = row * hud::kItemsColumns;
+                }
+            } else if (!right && itemsCursor_ % hud::kItemsColumns == 0) {
+                itemsCursor_ = item::kBackpackSlots + itemsCursor_ / hud::kItemsColumns;
+            } else {
+                int cell = itemsCursor_ + (right ? 1 : -1);
+                cell = cell < 0 ? 0
+                                : (cell >= item::kBackpackSlots ? item::kBackpackSlots - 1
+                                                                : cell);
+                itemsCursor_ = cell;
+            }
+            bodyDirty_ = true;
+        }
+        if ((down & KEY_DUP) != 0) {
+            if (onArmour && armourRow > 0) {
+                --itemsCursor_;
+                bodyDirty_ = true;
+            } else if (!onArmour && itemsCursor_ >= hud::kItemsColumns) {
+                itemsCursor_ -= hud::kItemsColumns;
+                bodyDirty_ = true;
+            } else {
+                // Off the top row is the hotbar, in the same column -- the
+                // same one cursor space with a gap in it that the palette has.
+                focusGrid_ = false;
+                inventory_.selected = onArmour ? 0 : itemsCursor_ % hud::kItemsColumns;
+                bodyDirty_ = true;
+                hotbarDirty_ = true;
+            }
+        }
+        if ((down & KEY_DDOWN) != 0) {
+            if (onArmour) {
+                if (armourRow + 1 < item::kArmourSlots) {
+                    ++itemsCursor_;
+                    bodyDirty_ = true;
+                }
+            } else if (itemsCursor_ + hud::kItemsColumns < item::kBackpackSlots) {
+                itemsCursor_ += hud::kItemsColumns;
+                bodyDirty_ = true;
+            }
+        }
+        if ((down & KEY_A) != 0) {
+            touchSlot(hud::itemsSlotForCell(itemsCursor_));
+        }
+        if ((down & KEY_B) != 0 && heldSlot_ >= 0) {
+            cancelHeld();
         }
         return true;
     }
@@ -874,25 +1103,156 @@ bool Overlay::handleFocusedInput(u32 down)
     // The hotbar row. Left and right are the selection, which is what ZL and ZR
     // do and is the reason an old 3DS is not shut out of changing it.
     if ((down & (KEY_DLEFT | KEY_DRIGHT)) != 0) {
-        hotbar_.cycle((down & KEY_DRIGHT) != 0 ? 1 : -1);
+        inventory_.cycle((down & KEY_DRIGHT) != 0 ? 1 : -1);
         hotbarDirty_ = true;
     }
-    if (onBlocks && (down & KEY_DUP) != 0) {
-        focusPalette_ = true;
-        paletteCursor_ = (hud::kPaletteRows - 1) * hud::kPaletteColumns + hotbar_.selected;
+    const bool onItems = playerPage_ == PlayerPage::Items;
+    // **Down into the grid, because the grid is below the band now.** The cell
+    // entered is the *first* row's, in the column the hand is on, which is the
+    // cell directly under the slot the cursor just left.
+    if ((onBlocks || onItems) && (down & KEY_DDOWN) != 0) {
+        focusGrid_ = true;
+        if (onBlocks) {
+            paletteCursor_ = inventory_.selected;
+        } else {
+            itemsCursor_ = inventory_.selected;
+        }
         bodyDirty_ = true;
         hotbarDirty_ = true;
     }
     if (onBlocks && (down & KEY_A) != 0) {
-        // "Where did this come from" -- the cursor jumps to the held block's
-        // own cell, paging the palette to find it. Useful precisely when the
-        // palette is two pages and the block is on the other one.
-        showBlockInPalette(hotbar_.selectedBlock());
+        // "Where did this come from" -- the cursor jumps to the held item's own
+        // cell, paging the palette to find it. Useful precisely when the
+        // palette is two pages and the item is on the other one.
+        showItemInPalette(inventory_.selectedItem());
+    }
+    if (onItems && (down & KEY_A) != 0) {
+        // On the hotbar row of the Items page, A picks the held slot up or puts
+        // the carried stack into it -- the same two lines the grid above uses,
+        // so a stack can be moved between the band and the backpack without
+        // leaving the row it started on.
+        touchSlot(inventory_.selected);
+    }
+    if ((down & KEY_B) != 0 && heldSlot_ >= 0) {
+        cancelHeld();
     }
     return true;
 }
 
-void Overlay::showBlockInPalette(block::BlockId id)
+void Overlay::touchSlot(int slot)
+{
+    if (heldSlot_ < 0) {
+        // Nothing to put down, so this is a pick-up -- and an empty slot is not
+        // something to pick up. Refusing rather than lifting nothing is what
+        // stops a mistap arming a move the player did not ask for.
+        if (inventory_.at(slot).empty()) {
+            return;
+        }
+        heldSlot_ = slot;
+    } else {
+        // A swap either way. Into an empty slot it is a move; onto a full one
+        // the two exchange places, which is what a1.1.2's own container click
+        // does with a full cursor and is the behaviour that needs no rule about
+        // what happens when there is no room.
+        //
+        // **A refused swap keeps the stack in hand rather than dropping it.**
+        // An armour slot takes only its own piece (`Inventory::accepts`), and
+        // letting go of the carried stack on a slot that would not have it
+        // reads as the move having happened when it did not -- the player looks
+        // back at the slot they took it from and it is empty. Holding on is
+        // also the original's behaviour: a cursor that a container slot refuses
+        // stays full.
+        if (!item::Inventory::accepts(slot, inventory_.at(heldSlot_).id)
+            || !item::Inventory::accepts(heldSlot_, inventory_.at(slot).id)) {
+            bodyDirty_ = true;
+            return;
+        }
+        inventory_.swap(heldSlot_, slot);
+        heldSlot_ = -1;
+        inventoryChanged_ = true;
+    }
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
+}
+
+void Overlay::cancelHeld()
+{
+    heldSlot_ = -1;
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
+}
+
+void Overlay::setInventory(const std::vector<item::ItemStack>& stacks)
+{
+    inventory_.load(stacks);
+    heldSlot_ = -1;
+    if (inventory_.empty()) {
+        // **A player who has never carried anything gets the opening hand**,
+        // which is what makes a brand new Creative world usable. It counts as a
+        // change, so the next save writes it: an empty inventory and one that
+        // happens to hold the first nine palette entries are different states
+        // and the file should say which this is.
+        inventory_.fillHandFromPalette();
+        inventoryChanged_ = true;
+    }
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
+}
+
+bool Overlay::takeInventoryChange()
+{
+    const bool changed = inventoryChanged_;
+    inventoryChanged_ = false;
+    return changed;
+}
+
+void Overlay::takeFromPalette()
+{
+    // **A copy, not a move.** The palette is a catalogue and holds nothing, so
+    // taking from it fills the selected slot with a fresh stack and leaves the
+    // catalogue exactly as it was. The count is the item's own maximum, which
+    // is what Creative means by "as many as you want" without an infinite-stack
+    // concept the save format has nowhere to put.
+    const item::ItemId id = item::paletteItem(paletteIndex());
+    inventory_.set(inventory_.selected, id, i8(item::def(id).stack));
+    inventoryChanged_ = true;
+    hotbarDirty_ = true;
+}
+
+item::ItemId Overlay::dropHeldItem()
+{
+    const item::ItemId dropped = inventory_.dropOne();
+    if (dropped == 0) {
+        return 0;
+    }
+    inventoryChanged_ = true;
+    hotbarDirty_ = true;
+    return dropped;
+}
+
+void Overlay::replaceHeldItem(item::ItemId id)
+{
+    const int slot = inventory_.selected;
+    const item::ItemStack& stack = inventory_.at(slot);
+    if (id == 0 || stack.empty() || stack.id == i16(id)) {
+        return;
+    }
+    inventory_.set(slot, id, stack.count);
+    inventoryChanged_ = true;
+    hotbarDirty_ = true;
+}
+
+int Overlay::collectItems(mc::entity::ItemEntitySystem& items, const AABB& playerBox)
+{
+    const int taken = items.collect(playerBox, inventory_);
+    if (taken > 0) {
+        inventoryChanged_ = true;
+        hotbarDirty_ = true;
+    }
+    return taken;
+}
+
+void Overlay::showItemInPalette(item::ItemId id)
 {
     const int index = item::paletteIndexOf(id);
     if (index < 0) {
@@ -900,7 +1260,7 @@ void Overlay::showBlockInPalette(block::BlockId id)
     }
     palettePage_ = index / hud::kPalettePerPage;
     paletteCursor_ = index % hud::kPalettePerPage;
-    focusPalette_ = true;
+    focusGrid_ = true;
     bodyDirty_ = true;
     hotbarDirty_ = true;
 }
@@ -909,13 +1269,13 @@ void Overlay::drawBlocks(const gui::Surface& surface)
 {
     // The caption names whatever the player is pointing at: the cursor's cell
     // while the grid is focused, and what is in the hand otherwise.
-    const block::BlockId named =
-        focusPalette_ ? item::paletteBlock(paletteIndex()) : hotbar_.selectedBlock();
+    const item::ItemId named =
+        focusGrid_ ? item::paletteItem(paletteIndex()) : inventory_.selectedItem();
     char caption[40];
-    blockCaption(named, caption, sizeof caption);
+    itemCaption(named, caption, sizeof caption);
 
-    hud::drawBlocksPage(surface, atlasRgba_, palettePage_, focusPalette_ ? paletteCursor_ : -1,
-                        hotbar_.selectedBlock(), caption);
+    hud::drawBlocksPage(surface, sheets_, palettePage_, focusGrid_ ? paletteCursor_ : -1,
+                        inventory_.selectedItem(), caption);
 }
 
 bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
@@ -958,7 +1318,8 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
     case PlayerPage::Items:
         // Nothing on it changes, so once drawn it stays drawn.
         if (bodyDirty_) {
-            hud::drawItemsPage(screen);
+            hud::drawItemsPage(screen, inventory_, sheets_,
+                               focusGrid_ ? itemsCursor_ : -1, heldSlot_);
             drew = true;
         }
         break;
@@ -983,8 +1344,9 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         // so a cursor on the hotbar would be marking a slot that no button
         // moves -- which is worse than not marking one at all.
         const bool cursorOnHotbar =
-            focus_ && !focusPalette_ && playerPage_ != PlayerPage::Map;
-        hud::drawHotbar(screen, hotbar_, atlasRgba_, cursorOnHotbar ? hotbar_.selected : -1);
+            focus_ && !focusGrid_ && playerPage_ != PlayerPage::Map;
+        hud::drawHotbar(screen, inventory_, sheets_,
+                        cursorOnHotbar ? inventory_.selected : -1, heldSlot_);
         hotbarDirty_ = false;
         drew = true;
     }
@@ -1398,7 +1760,7 @@ int Overlay::drawStorage(const render::WorldStreamer& world)
 int Overlay::drawSettings(const Renderer& renderer, const DebugSettings& settings,
                           const Camera& camera)
 {
-    const char* cursor[kSettingCount] = {"  ", "  ", "  ", "  "};
+    const char* cursor[kSettingCount] = {"  ", "  ", "  ", "  ", "  "};
     cursor[cursor_] = "\x1b[33m> \x1b[0m";
 
     int r = kBodyRow;
@@ -1429,7 +1791,8 @@ int Overlay::drawSettings(const Renderer& renderer, const DebugSettings& setting
             row(r++, "   at ramp step [%s]", renderer.geoRampName());
         }
     }
-    row(r++, "%swireframe         %s", cursor[2], renderer.wireframe() ? "on " : "off");
+    row(r++, "%sgreedy meshing    %s", cursor[2], settings.greedyMeshing ? "on " : "off");
+    row(r++, "%swireframe         %s", cursor[3], renderer.wireframe() ? "on " : "off");
     // **The map's grids are not on this page any more.** They were here on the
     // reasoning that "is the map aligned with the chunks" is a maintainer's
     // question -- true, and beside the point, because a chunk grid is also the
@@ -1440,7 +1803,7 @@ int Overlay::drawSettings(const Renderer& renderer, const DebugSettings& setting
     // landed, which is the only confirmation the player needs and costs no
     // extra state to keep. Integers because newlib's printf here has no float
     // support -- see the note on tenths().
-    row(r++, "%steleport          %d %d %d", cursor[3], int(std::floor(camera.x)),
+    row(r++, "%steleport          %d %d %d", cursor[4], int(std::floor(camera.x)),
         int(std::floor(camera.y)), int(std::floor(camera.z)));
     blank(r++);
     row(r++, "d-pad up/down choose, l/r change");
@@ -1456,13 +1819,14 @@ int Overlay::drawSettings(const Renderer& renderer, const DebugSettings& setting
     row(r++, "Past ~20 the heap runs out. Changing");
     row(r++, "it rebuilds the pool; columns stay.");
     blank(r++);
-    // The one live question on this page, so it gets the room. Says what to
-    // look at, because the number that decides it is not on this screen.
-    row(r++, "Cube format is the M2 gate's open");
-    row(r++, "question, and geoshader is now the");
-    row(r++, "default: 8 bytes a quad, not 60. Both");
-    row(r++, "re-mesh, so wait, then compare GPU");
-    row(r++, "draw on Info.");
+    // The live questions on this page, so they get the room. Says what to
+    // look at, because the number that decides them is not on this screen.
+    // One line shorter than when it spoke for the cube format alone, which is
+    // what paid for the greedy-meshing row.
+    row(r++, "Cube format and greedy both re-mesh:");
+    row(r++, "wait, then compare GPU draw and quads");
+    row(r++, "on Info. Geoshader (8 bytes a quad,");
+    row(r++, "not 60) and greedy on are default.");
     // The number the comparison is against, on the screen where the comparison
     // is made. 30 fps is 33.3 ms a frame, less the ~0.8 ms fixed cost.
     row(r++, "Gate: 30 fps at %d, 3D on, so GPU", kGateDistanceNew3DS);

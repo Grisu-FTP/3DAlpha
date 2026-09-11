@@ -62,6 +62,28 @@ namespace mc::audio {
 // positional sounds; see the volume table in docs/audio-a1.1.2.md.
 float interfaceGain(float volume, float soundVolume);
 
+// `of.b(String, float, float, float, float, float)`'s volume arithmetic -- the
+// *positional* path, which is a different sum from the interface one and not
+// only by a factor:
+//
+//     float range = 16.0F;
+//     if (volume > 1.0F) range = 16.0F * volume;
+//     sndSystem.newSource(..., x, y, z, ATTENUATION_LINEAR, range);
+//     sndSystem.setPitch(src, pitch);
+//     if (volume > 1.0F) volume = 1.0F;
+//     sndSystem.setVolume(src, volume * options.soundVolume);
+//
+// **There is no 0.25f here**, which is why a footstep at `volume * 0.15` is
+// still audible; and a volume above 1 does not get louder, it gets *further* --
+// it stretches the range and is then clamped back to 1.
+//
+// **The falloff itself is the library's, not the jar's.** `ATTENUATION_LINEAR`
+// is paulscode's, and paulscode fades a source linearly to nothing across the
+// distance it is given. That rule is transcribed here; what cannot be is the
+// stereo panning around it, which needs a listener orientation the seam does
+// not carry. So a sound in this port is attenuated by distance and centred.
+float positionalGain(float volume, float distance, float soundVolume);
+
 class SoundEngine {
 public:
     // `fs` and `backend` are borrowed and must outlive the engine; both are
@@ -115,6 +137,19 @@ public:
     // resources, a zero volume or an unloaded sound it does nothing at all.
     void playSoundFX(std::string_view key, float volume = 1.0f, float pitch = 1.0f);
 
+    // `of.b(...)` -- the positional path: a footstep, a block breaking, a door.
+    // Attenuated against the listener set by `setListener`, and silent past the
+    // range. Safe to call from anywhere on any frame, on the same terms as
+    // `playSoundFX`.
+    void playSoundAt(std::string_view key, double x, double y, double z,
+                     float volume = 1.0f, float pitch = 1.0f);
+
+    // Where the ears are. a1.1.2 sets this every frame from the render view
+    // entity; nothing reads it but `playSoundAt`, and until it is called the
+    // listener is at the origin -- which is a real position, so a game that
+    // forgets to call it is quiet rather than silent.
+    void setListener(double x, double y, double z);
+
     // How many decoded effects the backend is holding -- the options screen's
     // way of saying whether a click will actually make a noise.
     usize loadedSamples() const { return samples_.size(); }
@@ -162,6 +197,9 @@ private:
     std::vector<LoadedSample> samples_;
     float musicVolume_ = 1.0f;
     float soundVolume_ = 1.0f;
+    double listenerX_ = 0.0;
+    double listenerY_ = 0.0;
+    double listenerZ_ = 0.0;
 };
 
 }  // namespace mc::audio

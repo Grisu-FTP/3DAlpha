@@ -18,10 +18,11 @@ paragraph was the state before any of it and is gone.*
 - `Entities` and `TileEntities` round-trip as opaque preserved NBT
   (`src/core/nbt/preserved.hpp`, `src/impl/storage/alpha_chunkfiles/chunk_nbt.hpp:26`). Nothing
   parses them. That is deliberate and it still holds.
-- `src/impl/items/b1_2/` — still empty. Nothing encodes an `ItemStack` yet, which is why the hotbar
-  is not saved.
+- `src/impl/items/b1_2/` — **filled.** It holds the slot numbering (36 main, 4 armour at +100); the
+  stack encoding was already in the Alpha level format. The inventory is saved. See `docs/status.md`
+  §*4. The item table, the inventory, and five things the first Creative pass got wrong*.
 - `src/core/entity/` has the body, the ray trace and the collision sweep; `src/core/item/` has the
-  Creative palette and the hotbar. Spectator, Survival and Creative all parse from
+  item table, the Creative palette and the 40-slot inventory. Spectator, Survival and Creative all parse from
   `<world>/3dalpha.ini`, and **Spectator and Creative are both selectable** — Survival is the one
   drawn disabled now.
 - **Nothing from steps 1, 2 or 3 has been run on hardware.** Every one of them builds for the 3DS
@@ -133,9 +134,16 @@ Two things `--walk` turned up that the fixtures could not:
 - [x] **`onBlockPlaced`**, as a generated table: `tools/genref.java --place` sweeps every block
       against every face at sixteen player headings, `tools/gen_selection.py` reduces it to
       `data/a1.1.2/placement.json`, and `block::placementMetadata` reads it.
-      **Measured and surprising: a1.1.2 stairs and furnaces face the struck face, not the player.**
-      Only the lever consults the heading, and only on its top face — that one rule came out
-      non-quadrant-shaped under this harness and is a documented gap rather than a guess.
+      *Nothing* in a1.1.2 consults the heading when a block is placed — there is no
+      `Block.onBlockPlacedBy` in this version at all. This line used to say stairs and furnaces
+      "face the struck face"; **they do not**. Neither has an `onBlockPlaced`: both turn from their
+      neighbours in `onBlockAdded` (`ku.h`, `km.h`), and the sweep's single stone cube made that
+      look face-driven. Only six blocks are in the table now; the furnace and stairs are
+      `tick::blockAdded`, and the furnace's mouth is drawn where its metadata says
+      (`block::worldFaces`). See docs/physics-a1.1.2.md, *Which way a placed block faces*. The table said otherwise until the sweep
+      itself was fixed: it was punching every block after placing it, which flipped levers, pressed
+      buttons, opened doors and lit redstone ore. See docs/physics-a1.1.2.md, *The lever's "heading
+      rule", which was neither*.
 - [x] Repeat while the button is held, every **five ticks** — `Minecraft.runTick` gates both mouse
       buttons on `ticksRan - lastClickTick >= Timer.ticksPerSecond / 4`, and the timer is built with
       20.0f. **This is not hardness-paced**, and an earlier note here saying it was is wrong:
@@ -225,10 +233,13 @@ Three things came out of using it, all in `status.md` §*0s*:
 **Not done: none of it has been seen on hardware.** It builds for the 3DS and the host suite is
 green. That is the same debt step 2's selection outline carries.
 
-**Also not done: the hotbar is not saved.** a1.1.2 writes the inventory into `level.dat`'s `Player`
-compound and this project preserves that compound verbatim rather than parsing it; writing one back
-means going through the `items` slot, which is empty for this version. The contents live for the
-session and start from the palette's first nine each time.
+~~**Also not done: the hotbar is not saved.**~~ **Done**, along with four other things this first
+pass got wrong — half a door in the hand, the burning furnace in the palette, a camera pinned to the
+tick, and a gamemode change that teleported you into the ground. The whole of it is written up in
+`docs/status.md` §*4. The item table, the inventory, and five things the first Creative pass got
+wrong*; the short version is that there is a generated item table now, measured out of a running
+jar, and the hotbar was never the right shape for the save file because a door is item 324 and the
+block it leaves is 64.
 
 ## 4. Survival
 
@@ -243,11 +254,112 @@ meshes go through `VboPool` with a 12-byte vertex that has no room even for a fa
 (`status.md`, the `BlockDoor` note). Entity models are a different vertex format, a different draw
 cadence and a different budget on a 268 MHz ARM11. That is a design decision, not an increment.
 
-- [ ] **Dropped items first.** No AI, one quad, and it exercises the whole `entitydata` slot
-      end to end: `none` → a real implementation, `Entities` parsed instead of preserved, ticked at
-      20 Hz, saved, reloaded, byte-compared against a real client's world.
-- [ ] Entity model/renderer design note in `docs/` **before** any mob code, with a measured budget.
+- [x] **Dropped items first.** Landed in status.md §9. `core/entity/item_entity.{hpp,cpp}` is
+      `EntityItem` -- the throw, the fall through the shared sweep, the bounce, the five-minute
+      lifetime and the pickup -- and `core/render/item_entity_mesh.{hpp,cpp}` draws it, as a
+      spinning quarter-size block or as a yaw-billboarded sprite. The renderer needed no new vertex
+      format after all: the 16-byte `DetailVertex` the torches and particles already use takes
+      arbitrary corners, so a rotated cube and a billboard both go down the existing detail pass.
+      **gui/items.png had to reach the GPU**, which it had not before.
+- [x] **Session entity persistence.** Dropped items, falling blocks, paintings, arrows,
+      boats and minecarts save through a versioned `3DAlphaEntities` compound in level.dat
+      (also inside packed manifests). Immutable snapshots go through the existing I/O queue
+      on autosave, pause and close. This is a port extension, not native chunk entity support.
+- [ ] **Sign text persistence** remains part of the tile entity work.
+- [ ] The rest of what that box was for: the **`entitydata` slot** end to end -- `none` → a real
+      implementation, `Entities` parsed instead of preserved, ticked at 20 Hz, saved, reloaded,
+      byte-compared against a real client's world. The session pool snapshot does not yet
+      import or export Java's chunk `Entities` list.
+- [x] **Block drops**, which turned out not to be an entity question at all: `idDropped` and
+      `quantityDropped` off every block, generated the way the placement table is --
+      `tools/genref.java --drops` -> `data/<ver>/drops.json` -> `core/tick/drop.{hpp,cpp}`. There is
+      **no `damageDropped`**: `dropBlockAsItemWithChance` builds `new ItemStack(id)` in this
+      version, so nothing keeps its metadata. Wired to the nine tick paths that call it; the hand's
+      own break is Survival's and is step 4. See status.md §11.
+- [x] **The falling block**, which is the second entity: `core/entity/falling_block.{hpp,cpp}` is
+      `ff` and `core/render/falling_block_mesh.{hpp,cpp}` draws it. `BlockSand.fallInstantly` is a
+      real flag and the instant path stayed as what it is rather than as a fallback.
+- [x] Entity model/renderer design note in `docs/` **before** any mob code, with a measured budget.
+      **Done: `docs/entity-render-a1.1.2.md`.** Its finding is that the box overstated the problem.
+      The pipeline question was already answered by the dropped item -- `DetailVertex` takes
+      arbitrary corners and rides the world shader -- and what was actually left was texture
+      management: the detail pass samples one texture per draw and a1.1.2 draws these entities out
+      of five more files. Two pieces came out of it, both landed and both tested:
+      `core/texture/entity_skins.{hpp,cpp}` (one 128 x 64 sheet holding boat, cart, sign and arrow
+      pages, plus `art/kz.png` as its own plane, with generated stand-ins under both) and
+      `core/render/box_model.{hpp,cpp}` (`ip`/ModelRenderer, which holds exactly one box per part
+      and whose texture space is a hard-coded 64 x 32). See status.md §13.
+- [x] **Paintings**, the first of the four and the cheapest: no physics, no motion, no collision
+      sweep. `core/entity/painting.{hpp,cpp}` is `jc` -- `setDirection`, `onValidSurface`, and the
+      constructor's art draw over every `er` that fits -- and `core/render/painting_mesh.{hpp,cpp}`
+      is `bw`, which does *not* use the box model because it lights each 16 x 16 cell separately.
+      The art table is generated: `tools/genref.java --art` -> `data/<ver>/paintings.json`.
+      Wired through a new **`spawns`** column on `ItemDef`, which is what tells "places no block"
+      apart from "does nothing" -- the distinction all six entity-spawning items needed.
+- [x] **The bow** -- **done.** `core/entity/arrow.{hpp,cpp}` is `kg` and
+      `core/render/arrow_mesh.{hpp,cpp}` is `gk`. It does not use `moveEntity`: an arrow
+      ray-traces from where it is to where it would be. **Gravity is 0.03, not 0.05**, and there
+      is **no charge in this version**. One stated deviation: it costs no arrow, on the same
+      no-depletion rule Creative's block placement already takes.
+- [x] **The boat and the minecart** -- **done**, and **riding with them.** The riding question
+      turned out to be small: `EntityLiving` never checks whether it is riding, so the movement keys
+      keep becoming motion exactly as they do on foot and only the position is overwritten.
+      `PlayerBody::tickRiding` is that and `core/entity/rider.hpp` is the seam. Y dismounts.
+      The minecart's rail physics is transcribed in full -- snapped to the centreline, speed
+      re-pointed rather than re-computed, height looked up rather than integrated -- and the
+      connection matrix `oc.j` is exactly the ten shapes `core/tick/rail.hpp` already derives.
+      **A chest or furnace cart is placeable and drawable and opens nothing**, which is the one
+      piece of those two that is not ported.
+- [x] **The `tileentity` half**, which signs need -- **done as a session store, not as a slot.**
+      `core/world/sign_store.{hpp,cpp}` is `ob`, `core/render/sign_mesh.{hpp,cpp}` is `jk` through
+      `in`, and `Overlay::editSignViaKeyboard` is `GuiEditSign` as one multi-line system keyboard
+      rather than four. **The text does not survive the world closing**, which is the same open box
+      every pool here sits in and is the next line below.
+      **There is no generated font**, so a sign on Dev Art shows a blank board -- the one place in
+      this project where Dev Art is less than a real pack.
+- [x] **The compass** -- **done.** It is not an entity and not an item behaviour: item 345 is a
+      plain `di`, and the whole of a compass in a1.1.2 is `aa` (TextureCompassFX) rewriting its
+      16 x 16 icon every tick with a needle aimed at `spawnX/spawnZ`.
+      `core/texture/compass_fx.{hpp,cpp}` is that, on the world's 20 Hz clock rather than the
+      frame's for the reason the flames already are. The items sheet has an animated-tile path now
+      (`Atlas::updateItemsTile`), and the bottom screen takes an **override** rather than a write
+      into the pack's pixels. Which tile is read off the FX class by the generator -- nothing names
+      item 345. The same sweep settles that **a1.1.2 has no clock**: six `TextureFX` and only one
+      of them on the items sheet.
+- [x] **The held item in the corner of the top screen** -- **done.**
+      `core/render/held_item.{hpp,cpp}` is `ItemRenderer` -- the equip animation and the arm swing
+      on the 20 Hz clock, and `renderItemInFirstPerson` plus `renderItem` as camera-space quads --
+      and `Renderer::drawHeldItem` is one extra pass at the end of each eye. Self-contained as
+      estimated: `block::renderBoxes` gave the block branch, and the flat branch is the original's
+      own **66-quad extrusion** of the icon rather than the item entity's single billboard.
+      An **empty hand draws the arm**: `char.png` is a pack file like `terrain.png`, so it gets a
+      fifth page of the entity sheet (which grew 128 x 64 -> 256 x 64; the four existing offsets did
+      not move) and a pack without one gets a **black silhouette** rather than a placeholder grid.
+      Spectator gets no hand at all, which is a state of its own.
+      **Options -> Skin** picks between Default, any pack's `char.png` and any `.png` in
+      `sdmc:/3dalpha/skins` (`core/texture/skin_list.{hpp,cpp}`). A slim skin is detected, marked as
+      such and still drawn on the wide arm -- `hasSlimSkins` is false for this version and
+      `held_item.cpp` fails the build if it is turned on without deriving that version's box.
+      Three of its numbers are the screen's rather than the game's -- a 0.14-block sideways shift
+      for a 5:3 window, its own 0.05 near plane, and `C3D_DepthMap` standing in for the
+      `glClear(GL_DEPTH_BUFFER_BIT)` citro3d cannot do mid-frame. See `docs/status.md` §15.
+      **It still owes a hardware fill number and a look at its stereo** (CONTRIBUTING.md): the
+      separation is a sixteenth of the world's, and that sixteenth is arithmetic, not a measurement.
+      The first hardware run found it drawing at zero alpha -- see `docs/status.md` §15 -- so the
+      run that confirms it is drawn at all is still owed too.
+- [x] **Hitting entities.** The break button never looked for one, so a boat, a cart and a
+      painting could not be broken and never dropped anything. `item::attackEntity` is the
+      entity half of `Minecraft.clickMouse`; each pool has an `attack` transcribed from its own
+      `attackEntityFrom`. Hand damage is 1 for every item until an item `damageVsEntity` column
+      exists. See status.md §16.
 - [ ] Mobs after that: model, animation, AI, pathfinding, then the spawn algorithm.
+      **Memory is not the constraint; per-frame model building is** (status.md §18):
+      - Entity state is 80–176 bytes, with nothing per-type duplicated.
+      - a1.1.2's spawners cap the world at **200 monsters** (`co`) and **15 animals** (`ag`), read
+        off `ia`'s constructor. That cap is a rule of the game, so keep it.
+      - Build each model type's boxes **once** into a static buffer. Draw a mob by uploading its
+        part matrices and light: a part-indexed vertex shader, not per-frame vertex rebuilding.
+      - Give pathfinding a per-tick budget.
 - [ ] `nbtdiff.py` a copied real world before and after to prove nothing preserved got dropped.
 
 ## Standing rules that will bite here

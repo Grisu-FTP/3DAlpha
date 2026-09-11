@@ -315,18 +315,20 @@ void buildStressQuad(WorldVertex* out)
 // accumulates. One reboot, and most of the search space is gone either way.
 //
 // **The texture will not match the 12-byte cube, and that is expected.**
-// quad.v.pica divides tile coordinates by 16 because the game's atlas is 16
-// tiles to a side; the probe's is four. So a tile index here selects a
-// *sixteenth* of the probe's atlas rather than a quarter of it, and no value
-// can make this cube wear the same texels as the other one. That is a
-// coordinate-space mismatch between two atlases, not a rendering fault.
+// quad.v.pica addresses the game's cube atlas -- 8 slots to a side, and a
+// single face samples one 1/32 copy at the start of its slot (see
+// core/mesh/cube_atlas.hpp) -- and the probe's atlas is four tiles to a side.
+// So a slot index here selects an eighth of the probe's atlas rather than a
+// quarter of it, and no value can make this cube wear the same texels as the
+// other one. That is a coordinate-space mismatch between two atlases, not a
+// rendering fault.
 //
-// **Which is why tileX steps by two rather than sitting at zero.** With every
-// face on tile 0 the whole cube comes out one flat green, and a flat green cube
-// cannot tell "tileX and tileY reached the shader" from "they were ignored".
-// Stepping by two walks 0/16 .. 10/16 across the probe's four tiles, so the six
-// faces come out green, green, brown, brown, grey, grey -- readable at a glance
-// and a second thing this draw proves beyond the one it was built for.
+// **Which is why slotX steps rather than sitting at zero.** With every face in
+// slot 0 the whole cube comes out one flat green, and a flat green cube cannot
+// tell "slotX and slotY reached the shader" from "they were ignored". Stepping
+// by one walks 0/8 .. 5/8 across the probe's four tiles, so the six faces come
+// out green, green, brown, brown, grey, grey -- readable at a glance and a
+// second thing this draw proves beyond the one it was built for.
 constexpr int kQuadCubeQuads = 6;
 
 void buildQuadCube(mc::mesh::QuadVertex* out)
@@ -339,12 +341,12 @@ void buildQuadCube(mc::mesh::QuadVertex* out)
         q.y = 0;
         q.z = 0;
         q.face = u8(face);
-        q.tileX = u8(face * 2);
-        q.tileY = 0;
+        q.slotX = u8(face);
+        q.slotY = 0;
         // The same per-face light the 12-byte cube carries, so the two look
         // like the same object under the same lightmap.
         q.light = packLight(kCubeFaces[face].sky, kCubeFaces[face].block);
-        q.ao = 0;
+        q.extent = mc::mesh::packExtent(1, 1);
     }
 }
 
@@ -555,6 +557,11 @@ int runProbe(bool isNew3DS)
     shaderProgramInit(&program);
     shaderProgramSetVsh(&program, &dvlb->DVLE[0]);
     const int uLocMvp = shaderInstanceGetUniformLocation(program.vertexShader, "mvp");
+    // The greedy-meshing seam (core/mesh/vertex.hpp). The probe's cubes are
+    // single faces, so it is held at zero -- written rather than left, because
+    // an unwritten uniform register holds whatever the last program put there.
+    const int uLocSeam = shaderInstanceGetUniformLocation(program.vertexShader, "seam");
+    const int uLocSeamDir = shaderInstanceGetUniformLocation(program.vertexShader, "seamDir");
     C3D_BindProgram(&program);
 
     // Attribute layout -- order defines the byte offsets inside WorldVertex.
@@ -577,6 +584,7 @@ int runProbe(bool isNew3DS)
     int uLocQuadMvp = -1;
     int uLocQuadFog = -1;
     int uLocQuadFaceBasis = -1;
+    int uLocQuadSeam = -1;
     C3D_AttrInfo quadAttrs;
     // Tracked apart from quadReady: a program that was initialised has to be
     // freed even if a uniform lookup afterwards said it is not usable, and one
@@ -591,11 +599,13 @@ int runProbe(bool isNew3DS)
         uLocQuadFog = shaderInstanceGetUniformLocation(quadProgram.vertexShader, "fogparam");
         uLocQuadFaceBasis =
             shaderInstanceGetUniformLocation(quadProgram.vertexShader, "faceBasis");
-        quadReady = uLocQuadMvp >= 0 && uLocQuadFog >= 0 && uLocQuadFaceBasis >= 0;
+        uLocQuadSeam = shaderInstanceGetUniformLocation(quadProgram.vertexShader, "seam");
+        quadReady = uLocQuadMvp >= 0 && uLocQuadFog >= 0 && uLocQuadFaceBasis >= 0
+                    && uLocQuadSeam >= 0;
 
         AttrInfo_Init(&quadAttrs);
         AttrInfo_AddLoader(&quadAttrs, 0, GPU_UNSIGNED_BYTE, 4);  // x,y,z,face
-        AttrInfo_AddLoader(&quadAttrs, 1, GPU_UNSIGNED_BYTE, 4);  // tileX,tileY,light,ao
+        AttrInfo_AddLoader(&quadAttrs, 1, GPU_UNSIGNED_BYTE, 4);  // slotX,slotY,light,extent
     }
 
     // Geometry
@@ -824,6 +834,17 @@ int runProbe(bool isNew3DS)
             // of zero would be indistinguishable from a cube that did not draw,
             // which is the one thing this probe has to be able to tell apart.
             C3D_FVUnifSet(GPU_VERTEX_SHADER, uLocQuadFog, 0.0f, 1.0f, 0.0f, 0.0f);
+            C3D_FVUnifSet(GPU_VERTEX_SHADER, uLocQuadSeam, 0.0f, 0.0f, 0.0f, 0.0f);
+        } else {
+            // The same reason, for the 12-byte program's seam: no growth at all.
+            if (uLocSeam >= 0) {
+                C3D_FVUnifSet(GPU_VERTEX_SHADER, uLocSeam, 0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            if (uLocSeamDir >= 0) {
+                for (int seam = 0; seam < mc::mesh::kSeamTableSize; ++seam) {
+                    C3D_FVUnifSet(GPU_VERTEX_SHADER, uLocSeamDir + seam, 0.0f, 0.0f, 0.0f, 0.0f);
+                }
+            }
         }
 
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);

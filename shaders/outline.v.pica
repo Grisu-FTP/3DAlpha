@@ -1,9 +1,17 @@
-; 3DAlpha selection outline vertex shader: position in, black at 40 % alpha out.
+; 3DAlpha selection/crosshair vertex shader: position in, the caller's colour out.
 ;
 ; The simplest shader in the project, and deliberately so. It has no texture, no
 ; lighting and no fog: the selection box is a1.1.2's `glColor4f(0, 0, 0, 0.4)`
 ; and nothing else, and the only thing this stage has to do is put the vertex
 ; where the camera can see it.
+;
+; **`tint` is a uniform rather than a constant because two passes share this
+; program and they are not the same colour.** The selection box is the
+; original's black at four tenths; the crosshair is white and opaque, because it
+; is a1.1.2's `gui/icons.png` mark reduced to two quads and a black one would
+; disappear into every cave and every night. Baking one of the two in made the
+; other wrong -- the outline was white for a while, which is the version of this
+; file this replaces.
 ;
 ; The colour is emitted here rather than set as a combiner constant so the
 ; fragment stage can be configured to pass primary colour straight through,
@@ -21,6 +29,7 @@
 .alias ones  consts.yyyy
 
 .fvec mvp[4]
+.fvec tint
 
 .in position v0
 
@@ -36,8 +45,8 @@
     dp4 outpos.z, mvp[2], r0
     dp4 outpos.w, mvp[3], r0
 
-    ; Black, four tenths opaque -- the original's own colour.
-    mov outclr, consts.xxxz
+    ; Whatever the pass asked for -- see the note on `tint` above.
+    mov outclr, tint
 
     end
 .end

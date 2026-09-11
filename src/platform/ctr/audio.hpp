@@ -74,11 +74,29 @@ inline constexpr usize kRingBytes =
 // it leaves nineteen of ndsp's twenty-four channels free for what comes later.
 inline constexpr int kEffectVoices = 4;
 
-// How many distinct effects the backend will hold. The menus need one; the
-// headroom is for the next emitter, not for a resources folder, and the honest
-// answer for three hundred `dig.*` files is a decode queue rather than a bigger
-// number here. See core/audio/sound_engine.hpp.
-inline constexpr int kMaxSamples = 16;
+// How many distinct effects the backend will hold.
+//
+// **48, and the number is the block table's rather than a guess.** Footsteps
+// and breaking arrived, and they are the whole of a1.1.2's effect set: nine
+// StepSound singletons name six distinct keys -- `step.stone`, `step.wood`,
+// `step.gravel`, `step.grass`, `step.cloth`, `step.sand` -- plus
+// `random.glass` and the menu's `random.click`. Each key covers however many
+// numbered variants the player supplied, and Mojang's own set is six of the
+// biggest ones: 34 files, 35 with the click.
+//
+// **Partial loading is not an option, which is why the cap had to move rather
+// than the loader.** `playSoundFX` draws its variant *before* it knows whether
+// that file is resident -- the original draws there and moving it would make
+// the sequence depend on what happens to be in memory -- so a key with three
+// of its six variants loaded is a footstep that is silent half the time. All
+// or nothing per key, and 48 is what "all" costs here.
+//
+// The memory is real but small and is only spent on files the player actually
+// has: a step sound is about a third of a second of 44.1 kHz mono, ~31 KB
+// decoded, so a full set is ~1.1 MB of linear memory against the 32 MB the
+// mesh pool leaves free. a1.1.2 ships no sounds at all, so the common case is
+// zero. See core/audio/block_sound.hpp.
+inline constexpr int kMaxSamples = 48;
 
 // Why ndsp did not come up. The distinction matters to the player: someone who
 // has already dumped their firmware must not be told to dump it again.

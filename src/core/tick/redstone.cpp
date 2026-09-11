@@ -1,4 +1,5 @@
 #include "core/tick/redstone.hpp"
+#include "core/tick/drop.hpp"
 
 #include "core/block/registry.hpp"
 #include "core/tick/tick_world.hpp"
@@ -13,24 +14,6 @@ using block::TickBehaviour;
 BlockId id(mcver::Block b) { return BlockId(b); }
 
 bool isWire(BlockId b) { return block::def(b).tick == TickBehaviour::RedstoneWire; }
-
-// `ly.d()Z` -- canProvidePower, false on the base class. Only a wire, a
-// torch, a lever, a button and a pressure plate answer true, and it is a
-// property of the class rather than a table, so it is derived from the
-// behaviour column here.
-bool canProvidePower(BlockId b)
-{
-    switch (block::def(b).tick) {
-    case TickBehaviour::RedstoneWire:
-    case TickBehaviour::RedstoneTorch:
-    case TickBehaviour::Lever:
-    case TickBehaviour::Button:
-    case TickBehaviour::PressurePlate:
-        return true;
-    default:
-        return false;
-    }
-}
 
 // `kf.b(Lnm;III)Z` (static) -- isPowerProviderOrWire.
 bool powerProviderOrWire(const TickWorld& world, i32 x, int y, i32 z)
@@ -218,6 +201,16 @@ void notifySix(TickWorld& world, i32 x, int y, i32 z, BlockId self)
 // The low three bits of a lever's or a button's metadata name the face it
 // hangs on; bit 3 is "on". `wallOpaque` asks whether the named face is still
 // something to hang from.
+//
+// **A face the original does not test answers "still supported", and 6 is one
+// of them.** `no.a(Lcn;IIII)V` is a run of five `if (!isBlockNormalCube(..) &&
+// meta == n)` lines, n from 1 to 5, each of which *sets* a drop flag; a
+// metadata the chain never names leaves the flag alone and the block stays.
+// A floor lever is 5 **or 6** -- `BlockLever.onBlockAdded` writes
+// `5 + rand.nextInt(2)`, which is which way round the handle lies -- so half of
+// all floor levers wear a face this method must not refuse. Answering false
+// here deleted them: flicking one notifies its own cell, the notification came
+// straight back here, and the lever removed itself mid-flick.
 bool faceSupported(const TickWorld& world, i32 x, int y, i32 z, int face)
 {
     switch (face) {
@@ -226,7 +219,11 @@ bool faceSupported(const TickWorld& world, i32 x, int y, i32 z, int face)
     case 3: return world.opaqueAt(x, y, z - 1);
     case 4: return world.opaqueAt(x, y, z + 1);
     case 5: return world.opaqueAt(x, y - 1, z);
-    default: return false;
+    default:
+        // 6 -- the other floor lever -- and the values nothing writes. The
+        // original names none of them, and `switchHasSupport` above has already
+        // insisted on *something* to hang from.
+        return true;
     }
 }
 
@@ -243,6 +240,26 @@ bool switchHasSupport(const TickWorld& world, i32 x, int y, i32 z, bool allowFlo
 
 // The face-to-side map both share: the side a switch hands direct power to is
 // the one opposite the face it hangs on.
+// The notify a switch does after it flips: itself, and then whatever its
+// metadata says it is stuck to. Six lines that appear three times in the class
+// files -- a button's press, a button's release and a lever's flick -- and are
+// one function here.
+//
+// The face is read back out of the world rather than passed in, which is safe
+// because every caller writes the low three bits back unchanged: only bit 3,
+// the on/off bit, ever moves.
+void notifyAttached(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    world.notifyNeighbours(x, y, z, self);
+    switch (int(world.dataAt(x, y, z)) & 7) {
+    case 1: world.notifyNeighbours(x - 1, y, z, self); break;
+    case 2: world.notifyNeighbours(x + 1, y, z, self); break;
+    case 3: world.notifyNeighbours(x, y, z - 1, self); break;
+    case 4: world.notifyNeighbours(x, y, z + 1, self); break;
+    default: world.notifyNeighbours(x, y - 1, z, self); break;
+    }
+}
+
 bool switchPowersSide(int face, int side)
 {
     if (face == 5 && side == 1) return true;
@@ -271,10 +288,36 @@ void doorSetOpen(TickWorld& world, i32 x, int y, i32 z, BlockId self, bool open)
         world.setDataRaw(x, y + 1, z, u8((md ^ 4) + 8));
     }
     world.setDataRaw(x, y, z, u8(md ^ 4));
-    // The original also plays random.door_open or random.door_close here.
+
+    // `random.door_open` or `random.door_close` at volume 1, pitched
+    // `rand.nextFloat() * 0.1F + 0.9F` -- **out of the world's own Random**,
+    // which is why this is here and not in the caller: the draw shifts the
+    // stream every later random tick reads, so a door that is opened is a
+    // different world from a door that is not.
+    const float pitch = world.random().nextFloat() * 0.1f + 0.9f;
+    world.playSoundAt(open ? "random.door_open" : "random.door_close", double(x) + 0.5,
+                      double(y) + 0.5, double(z) + 0.5, 1.0f, pitch);
 }
 
 }  // namespace
+
+// `ly.d()Z` -- canProvidePower, false on the base class. Only a wire, a torch,
+// a lever, a button and a pressure plate answer true, and it is a property of
+// the class rather than a table, so it is derived from the behaviour column.
+bool canProvidePower(BlockId b)
+{
+    switch (block::def(b).tick) {
+    case TickBehaviour::RedstoneWire:
+    case TickBehaviour::RedstoneTorch:
+    case TickBehaviour::Lever:
+    case TickBehaviour::Button:
+    case TickBehaviour::PressurePlateAll:
+    case TickBehaviour::PressurePlateMobs:
+        return true;
+    default:
+        return false;
+    }
+}
 
 bool providesPowerTo(const TickWorld& world, i32 x, int y, i32 z, int side, BlockId self)
 {
@@ -296,7 +339,8 @@ bool providesPowerTo(const TickWorld& world, i32 x, int y, i32 z, int side, Bloc
         if ((md & 8) == 0) return false;
         return switchPowersSide(md & 7, side);
     }
-    case TickBehaviour::PressurePlate:
+    case TickBehaviour::PressurePlateAll:
+    case TickBehaviour::PressurePlateMobs:
         // `al.c`: a plate under load powers straight up and nothing else.
         if (world.dataAt(x, y, z) == 0) return false;
         return side == 1;
@@ -378,7 +422,8 @@ bool indirectlyProvidesPowerTo(const TickWorld& world, i32 x, int y, i32 z, int 
         // `no.b` and `hu.b`: a switch that is on powers every side around it,
         // and the face it hangs on is irrelevant to the indirect answer.
         return (world.dataAt(x, y, z) & 8) != 0;
-    case TickBehaviour::PressurePlate:
+    case TickBehaviour::PressurePlateAll:
+    case TickBehaviour::PressurePlateMobs:
         return world.dataAt(x, y, z) > 0;
     default:
         return false;  // `ly.b(Lnm;IIII)Z` is false for everything else
@@ -401,8 +446,10 @@ void wirePropagate(TickWorld& world, i32 x, int y, i32 z, BlockId self)
 
 void wireNeighbourChanged(TickWorld& world, i32 x, int y, i32 z, BlockId self)
 {
-    // `kf.a(Lcn;IIII)V`: a wire needs an opaque cube under it.
+    // `kf.a(Lcn;IIII)V`: a wire needs an opaque cube under it, and leaves a
+    // pile of redstone behind when it has not got one.
     if (!world.opaqueAt(x, y - 1, z)) {
+        dropBlockAsItem(world, x, y, z, self, world.dataAt(x, y, z));
         world.setBlockWithNotify(x, y, z, block::kAir);
         return;
     }
@@ -484,34 +531,129 @@ void buttonTick(TickWorld& world, i32 x, int y, i32 z, BlockId self)
     const int md = int(world.dataAt(x, y, z));
     if ((md & 8) == 0) return;
 
-    const int face = md & 7;
-    world.setDataRaw(x, y, z, u8(face));
-    world.notifyNeighbours(x, y, z, self);
-
-    switch (face) {
-    case 1: world.notifyNeighbours(x - 1, y, z, self); break;
-    case 2: world.notifyNeighbours(x + 1, y, z, self); break;
-    case 3: world.notifyNeighbours(x, y, z - 1, self); break;
-    case 4: world.notifyNeighbours(x, y, z + 1, self); break;
-    default: world.notifyNeighbours(x, y - 1, z, self); break;
-    }
-    // The original also plays random.click here.
+    world.setDataRaw(x, y, z, u8(md & 7));
+    notifyAttached(world, x, y, z, self);
+    // `random.click` at 0.3, **pitched 0.5 coming out** against the 0.6 it went
+    // in at -- the two-note click of a button, and the only thing that says it
+    // has popped back up.
+    world.playSoundAt("random.click", double(x) + 0.5, double(y) + 0.5, double(z) + 0.5,
+                      0.3f, 0.5f);
 }
 
+namespace {
+
+// `js` -- which entities this plate answers to. The jar passes it to `al`'s
+// constructor; the table carries it as the behaviour, for the reason
+// core/block/block_def.hpp gives.
+EntityFilter plateFilter(BlockId self)
+{
+    return block::def(self).tick == TickBehaviour::PressurePlateMobs ? EntityFilter::Mobs
+                                                                    : EntityFilter::Everything;
+}
+
+}  // namespace
+
+void pressurePlateSense(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    // `boolean flag = world.getBlockMetadata(i,j,k) == 1` -- and it is `== 1`
+    // rather than `!= 0`, which matters nowhere in this version because the
+    // only two values ever written are 0 and 1, and is transcribed anyway.
+    const bool wasArmed = world.dataAt(x, y, z) == 1;
+
+    // `float f = 0.125F`, and a quarter of a block tall. **The arithmetic is
+    // the class file's, floats and all**: `(float)i + f` promoted to double,
+    // not `(double)i + 0.125`. The two disagree once the coordinate is large
+    // enough that a float cannot hold it exactly, which this project reaches
+    // -- a1.1.2's world runs to +-32,000,000 and a float loses the eighth at
+    // about 2^21.
+    constexpr float kInset = 0.125f;
+    const AABB box{
+        double(float(x) + kInset),        double(y),           double(float(z) + kInset),
+        double(float(x + 1) - kInset),    double(y) + 0.25,    double(float(z + 1) - kInset),
+    };
+
+    // `list.size() > 0`. The list itself is never read, so the seam is a
+    // predicate; see TickWorld::anyEntityIn.
+    const bool armed = world.anyEntityIn(box, plateFilter(self));
+
+    if (armed && !wasArmed) {
+        // `cn.b(IIII)V` is setBlockMetadata and notifies **nothing** -- the
+        // two `notifyBlocksOfNeighborChange` calls below are the whole of the
+        // notification, and they are the plate's own. Using the notifying
+        // write here would send a third round and change the order a circuit
+        // settles in.
+        world.setDataRaw(x, y, z, 1);
+        world.notifyNeighbours(x, y, z, self);
+        world.notifyNeighbours(x, y - 1, z, self);
+        // `markBlocksDirty`, then `random.click` at 0.3/0.6. The redraw is
+        // `setDataRaw`'s `changed` callback. **The height is `j + 0.1`**, not
+        // `j + 0.5`: a plate is a quarter of a block tall and the original
+        // plays from just above the floor.
+        world.playSoundAt("random.click", double(x) + 0.5, double(y) + 0.1, double(z) + 0.5,
+                          0.3f, 0.6f);
+    }
+    if (!armed && wasArmed) {
+        world.setDataRaw(x, y, z, 0);
+        world.notifyNeighbours(x, y, z, self);
+        world.notifyNeighbours(x, y - 1, z, self);
+        // `random.click` again, at 0.3/**0.5** -- a lower pitch on the way up
+        // than on the way down, which is the two-note click of a plate.
+        world.playSoundAt("random.click", double(x) + 0.5, double(y) + 0.1, double(z) + 0.5,
+                          0.3f, 0.5f);
+    }
+
+    // **Only while something is on it.** A plate that has just been stepped
+    // off does not re-schedule, so the chain ends here rather than ticking for
+    // ever; the twenty-tick delay is the block's own tickRate.
+    if (armed) {
+        world.scheduleBlockUpdate(x, y, z, self);
+    }
+}
+
+void pressurePlateTick(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    // `if (world.getBlockMetadata(i,j,k) == 0) return;` -- a plate that is
+    // already up has nothing to do on a timer, because nothing but contact can
+    // put it down.
+    if (world.dataAt(x, y, z) == 0) {
+        return;
+    }
+    pressurePlateSense(world, x, y, z, self);
+}
+
+void pressurePlateCollided(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    // `if (world.getBlockMetadata(i,j,k) == 1) return;` -- the mirror of the
+    // above. A plate already down is left to its timer, which is what stops
+    // every entity in the box re-notifying its neighbours every tick.
+    if (world.dataAt(x, y, z) == 1) {
+        return;
+    }
+    pressurePlateSense(world, x, y, z, self);
+}
+
+// **All three of these drop themselves before they go**, which is the whole of
+// `b_(Lcn;IIII)V` on the end of each of `al.a`, `no.a` and `hu.a`. It reads as
+// a small thing and it is the difference between knocking the wall out from
+// behind a lever and getting the lever back, and knocking it out and having
+// deleted a lever.
 void switchNeighbourChanged(TickWorld& world, i32 x, int y, i32 z, BlockId self)
 {
     const TickBehaviour behaviour = block::def(self).tick;
 
-    if (behaviour == TickBehaviour::PressurePlate) {
+    if (behaviour == TickBehaviour::PressurePlateAll
+        || behaviour == TickBehaviour::PressurePlateMobs) {
         // `al.a(Lcn;IIII)V`: a plate wants an opaque cube directly under it and
         // has no face to name.
         if (world.opaqueAt(x, y - 1, z)) return;
+        dropBlockAsItem(world, x, y, z, self, world.dataAt(x, y, z));
         world.setBlockWithNotify(x, y, z, block::kAir);
         return;
     }
 
     const bool allowFloor = behaviour == TickBehaviour::Lever;
     if (!switchHasSupport(world, x, y, z, allowFloor)) {
+        dropBlockAsItem(world, x, y, z, self, world.dataAt(x, y, z));
         world.setBlockWithNotify(x, y, z, block::kAir);
         return;
     }
@@ -520,6 +662,7 @@ void switchNeighbourChanged(TickWorld& world, i32 x, int y, i32 z, BlockId self)
     // one that has to still be there.
     const int face = int(world.dataAt(x, y, z)) & 7;
     if (faceSupported(world, x, y, z, face)) return;
+    dropBlockAsItem(world, x, y, z, self, world.dataAt(x, y, z));
     world.setBlockWithNotify(x, y, z, block::kAir);
 }
 
@@ -552,7 +695,14 @@ void doorNeighbourChanged(TickWorld& world, i32 x, int y, i32 z, BlockId self,
             world.setBlockWithNotify(x, y + 1, z, block::kAir);
         }
     }
-    if (broken) return;
+    // `if (flag) dropBlockAsItem(world, i, j, k, l)` -- **the metadata is the
+    // lower half's**, which is what makes the drop table's `itemByMetadata` row
+    // give a door item here and nothing at all for the upper half. A door
+    // therefore comes back as one item however it was knocked down.
+    if (broken) {
+        dropBlockAsItem(world, x, y, z, self, u8(md));
+        return;
+    }
 
     // **Only a power source wakes a door.** A door does not re-read the world
     // every time any neighbour changes; it looks only when the block that
@@ -563,6 +713,140 @@ void doorNeighbourChanged(TickWorld& world, i32 x, int y, i32 z, BlockId self,
     const bool powered = world.isIndirectlyPowered(x, y, z) ||
                          world.isIndirectlyPowered(x, y + 1, z);
     doorSetOpen(world, x, y, z, self, powered);
+}
+
+// ---- what a hand does to them -----------------------------------------
+//
+// The four `blockActivated` overrides that are mechanisms rather than screens.
+// Dispatched by tick::blockActivated; see core/tick/behaviour.hpp for the
+// order a right-click goes in and for the ones that are missing.
+
+bool doorActivated(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    // `fw.a(Lcn;IIILdm;)Z`. **An iron door eats the click and does nothing** --
+    // its first line is `if (material == Material.iron) return true`, which is
+    // the whole of why an iron door needs redstone. Naming a block to get at a
+    // material is the same move `PlayerBody` makes for water and lava: the test
+    // in the class file is on the material, so the material is what is
+    // compared, and the id is only how it is found.
+    constexpr u8 kIronMaterial = mcver::kBlocks[int(mcver::Block::IronDoor)].material;
+    if (block::def(self).material == kIronMaterial) return true;
+
+    const int md = int(world.dataAt(x, y, z));
+    if ((md & 8) != 0) {
+        // The upper half hands the click down and answers for both.
+        if (world.blockAt(x, y - 1, z) == self) {
+            doorActivated(world, x, y - 1, z, self);
+        }
+        return true;
+    }
+
+    // `meta ^ 4` on this half and `(meta ^ 4) + 8` on the one above, which is
+    // exactly what the redstone path already does once it has decided which
+    // way the door should be -- so the flip is that function with the state
+    // negated rather than a second copy of it.
+    doorSetOpen(world, x, y, z, self, (md & 4) == 0);
+    return true;
+}
+
+void leverPlaced(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    // `no.e(Lcn;III)V` -- **BlockLever.onBlockAdded**, and it is the method
+    // that gives a lever an orientation when the struck face did not.
+    //
+    // The original's order is onBlockAdded first, picking the first opaque
+    // neighbour it finds, and then `onBlockPlaced(side)` overwriting that with
+    // the struck face. This port writes the struck face's answer up front, out
+    // of the generated placement table -- so this runs *last* where the
+    // original ran it first, and it must only supply what a static table
+    // cannot. There are exactly two such things:
+    //
+    //   * **The underside.** `onBlockPlaced` names sides 1 to 5 and leaves side
+    //     0 alone, so the table's row for it is 0 -- and 0 is not an
+    //     orientation. Whatever wall is beside the lever is the answer, which
+    //     is the chain below.
+    //   * **`5 + rand.nextInt(2)`**, which is which way round a floor lever's
+    //     handle lies. Both `onBlockAdded` and `onBlockPlaced` roll it and a
+    //     `(id, face)` table can carry neither, so the roll happens here. It is
+    //     `World.rand` in the original and `world.random()` here, which is the
+    //     same source; the random tick's positions come out of the update LCG
+    //     and are not disturbed by it.
+    //
+    // The second is not cosmetic, which is worth saying because it looks it:
+    // `no.c(Lcn;IIII)Z` names orientations 1 to 5 and **not 6**, so a floor
+    // lever lying the second way round hands no *direct* power to the block it
+    // stands on. That is a1.1.2's own quirk, and pinning the roll would have
+    // made every floor lever in the game wear it.
+    const int md = int(world.dataAt(x, y, z));
+    const int orientation = md & 7;
+
+    if (orientation == 5 || orientation == 6) {
+        world.setDataRaw(x, y, z, u8((md & 8) + 5 + world.random().nextInt(2)));
+        return;
+    }
+    if (orientation != 0) return;
+
+    int face = 0;
+    if (world.opaqueAt(x - 1, y, z)) {
+        face = 1;
+    } else if (world.opaqueAt(x + 1, y, z)) {
+        face = 2;
+    } else if (world.opaqueAt(x, y, z - 1)) {
+        face = 3;
+    } else if (world.opaqueAt(x, y, z + 1)) {
+        face = 4;
+    } else if (world.opaqueAt(x, y - 1, z)) {
+        face = 5 + world.random().nextInt(2);
+    }
+    if (face == 0) return;
+
+    world.setDataRaw(x, y, z, u8((md & 8) + face));
+    (void) self;
+}
+
+bool leverActivated(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    // `no.a(Lcn;IIILdm;)Z`. `8 - (meta & 8)` is the original's way of writing
+    // "toggle bit 3", and the metadata is written **without** notifying, then
+    // the notifications are sent by hand -- so a lever wakes its own cell and
+    // the block it hangs on, and nothing else.
+    const int md = int(world.dataAt(x, y, z));
+    const int on = 8 - (md & 8);
+    world.setDataRaw(x, y, z, u8((md & 7) + on));
+    notifyAttached(world, x, y, z, self);
+    // `random.click` at 0.3, pitched 0.6 when it has just gone on and 0.5 when
+    // it has gone off -- so a lever says which way it went without being looked
+    // at.
+    world.playSoundAt("random.click", double(x) + 0.5, double(y) + 0.5, double(z) + 0.5,
+                      0.3f, on > 0 ? 0.6f : 0.5f);
+    return true;
+}
+
+bool buttonActivated(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    // `hu.a(Lcn;IIILdm;)Z`, and the interesting line is the early return: a
+    // button that is already in **consumes the click and does nothing**, so
+    // pressing it again does not extend it. The twenty ticks it stays down are
+    // scheduled here and spent in `buttonTick`.
+    const int md = int(world.dataAt(x, y, z));
+    const int on = 8 - (md & 8);
+    if (on == 0) return true;
+
+    world.setDataRaw(x, y, z, u8((md & 7) + on));
+    notifyAttached(world, x, y, z, self);
+    world.scheduleBlockUpdate(x, y, z, self);
+    world.playSoundAt("random.click", double(x) + 0.5, double(y) + 0.5, double(z) + 0.5,
+                      0.3f, 0.6f);
+    return true;
+}
+
+void redstoneOreActivated(TickWorld& world, i32 x, int y, i32 z, BlockId self)
+{
+    // `ai.h(Lcn;III)V`, reached from a `blockActivated` that then returns
+    // **false** -- so touching redstone ore lights it and the click carries on
+    // to the item in the hand. It is the one activation that does not consume.
+    if (self != id(mcver::Block::RedstoneOre)) return;
+    world.setBlockWithNotify(x, y, z, id(mcver::Block::LitRedstoneOre));
 }
 
 }  // namespace mc::tick

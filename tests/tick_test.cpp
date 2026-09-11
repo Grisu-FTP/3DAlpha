@@ -6,8 +6,11 @@
 // seam. No streamer, no renderer, no card, and every assertion is about a
 // block that did or did not change.
 
+#include "core/block/collision.hpp"
 #include "core/block/registry.hpp"
+#include "core/mesh/vertex.hpp"
 #include "core/tick/behaviour.hpp"
+#include "core/tick/redstone.hpp"
 #include "core/tick/tick_timer.hpp"
 #include "core/tick/tick_world.hpp"
 #include "framework.hpp"
@@ -64,6 +67,10 @@ public:
     int changes() const { return changes_; }
 
     void set(i32 x, int y, i32 z, mcver::Block b) { world_->setBlockRaw(x, y, z, bid(b)); }
+    void set(i32 x, int y, i32 z, mcver::Block b, u8 metadata)
+    {
+        world_->setBlockAndDataRaw(x, y, z, bid(b), metadata);
+    }
     BlockId get(i32 x, int y, i32 z) const { return world_->blockAt(x, y, z); }
     u8 dataAt(i32 x, int y, i32 z) const { return world_->dataAt(x, y, z); }
 
@@ -760,15 +767,28 @@ TEST(water_does_not_flow_through_a_ladder)
     // in every direction, so one ladder is something to flow around and proves
     // nothing; the wall spans further than the water can reach so that "dry on
     // the far side" means the ladder stopped it rather than that it ran out.
+    //
+    // **And the ladders need a wall of their own**, which they did not used to.
+    // A ladder is written with metadata 2..5 naming the side it hangs on, and
+    // `br.a(Lcn;IIII)V` drops one whose named side has stopped being an opaque
+    // cube. This test used to stand nineteen ladders in mid air at metadata 0 --
+    // a value the game never writes -- and passed only because nothing checked.
+    // Once the support rule was transcribed, the first neighbour change knocked
+    // the whole row down and the water walked through the gap, which is a1.1.2's
+    // answer to a mid-air ladder too. So: stone at x = 3, ladders at x = 2 with
+    // metadata 4, and the source two cells clear of both.
     TestWorld t;
     t.floorOf(mcver::Block::Stone, 60);
-    for (i32 z = -9; z <= 9; ++z) t.set(1, 61, z, mcver::Block::Ladder);
+    for (i32 z = -9; z <= 9; ++z) {
+        t.set(3, 61, z, mcver::Block::Stone);
+        t.set(2, 61, z, mcver::Block::Ladder, 4);
+    }
     placeSource(t, 0, 61, 0, mcver::Block::FlowingWater);
     settle(t);
 
-    CHECK_EQ((long long) t.w().blockAt(1, 61, 0), (long long) bid(mcver::Block::Ladder));
-    CHECK_EQ((long long) t.w().blockAt(2, 61, 0), (long long) bid(mcver::Block::Air));
+    CHECK_EQ((long long) t.w().blockAt(2, 61, 0), (long long) bid(mcver::Block::Ladder));
     // …and it did reach the wall, so the wall is what stopped it.
+    CHECK(t.w().blockAt(1, 61, 0) != bid(mcver::Block::Air));
     CHECK(t.w().blockAt(0, 61, 3) != bid(mcver::Block::Air));
 }
 
@@ -1161,6 +1181,88 @@ TEST(a_plate_and_a_button_fall_off_an_unsupported_block)
     CHECK_EQ((long long) t.get(3, 61, 0), (long long) bid(mcver::Block::Air));
 }
 
+TEST(a_floor_lever_survives_being_flicked_whichever_way_round_it_lies)
+{
+    // **The reported bug: flicking a floor lever deleted it.** A lever on the
+    // ground is orientation 5 *or* 6 -- `BlockLever.onBlockAdded` rolls
+    // `5 + nextInt(2)` for which way the handle lies -- and the flick notifies
+    // the lever's own cell, so the support check runs on it immediately.
+    // `onNeighborBlockChange` in the original only ever tests orientations 1
+    // to 5; 6 is named nowhere and is therefore never dropped.
+    TestWorld t;
+    t.floorOf(mcver::Block::Stone, 60);
+
+    // Twenty levers along one row. `onBlockAdded` re-rolls the 5/6 pair off the
+    // world's random -- `5 + nextInt(2)` in the class file -- so which way round
+    // each lies is not what was written, and both must turn up along the row or
+    // the roll is not happening.
+    bool sawFive = false;
+    bool sawSix = false;
+    for (i32 x = 0; x < 20; ++x) {
+        t.w().setBlockAndDataWithNotify(x, 61, 0, bid(mcver::Block::Lever), 5);
+        const int orientation = int(t.dataAt(x, 61, 0)) & 7;
+        CHECK(orientation == 5 || orientation == 6);
+        sawFive = sawFive || orientation == 5;
+        sawSix = sawSix || orientation == 6;
+        CHECK_EQ((long long) t.get(x, 61, 0), (long long) bid(mcver::Block::Lever));
+
+        CHECK(tick::blockActivated(t.w(), x, 61, 0));
+        CHECK_EQ((long long) t.get(x, 61, 0), (long long) bid(mcver::Block::Lever));
+        CHECK_EQ(int(t.dataAt(x, 61, 0)), orientation + 8);
+
+        // And back off again, still there.
+        CHECK(tick::blockActivated(t.w(), x, 61, 0));
+        CHECK_EQ((long long) t.get(x, 61, 0), (long long) bid(mcver::Block::Lever));
+        CHECK_EQ(int(t.dataAt(x, 61, 0)), orientation);
+
+        // It still goes when the floor does, which is the check that must not
+        // have been thrown away with the false answer.
+        t.w().setBlockWithNotify(x, 60, 0, bid(mcver::Block::Air));
+        CHECK_EQ((long long) t.get(x, 61, 0), (long long) bid(mcver::Block::Air));
+        t.set(x, 60, 0, mcver::Block::Stone);
+    }
+    CHECK(sawFive);
+    CHECK(sawSix);
+}
+
+TEST(a_lever_placed_against_a_wall_from_below_takes_the_wall)
+{
+    // The underside is the one face `onBlockPlaced` leaves alone, so its row in
+    // the placement table is 0 -- which is not an orientation. `onBlockAdded`
+    // is what fills it in from whatever is beside the lever, and this is that.
+    CHECK_EQ(int(block::placementMetadata(bid(mcver::Block::Lever), mesh::kFaceNegY)), 0);
+
+    TestWorld t;
+    t.set(1, 61, 0, mcver::Block::Stone);
+    t.w().setBlockAndDataWithNotify(0, 61, 0, bid(mcver::Block::Lever), 0);
+    CHECK_EQ((long long) t.get(0, 61, 0), (long long) bid(mcver::Block::Lever));
+    // Face 2 is "+x", the wall it found.
+    CHECK_EQ(int(t.dataAt(0, 61, 0)) & 7, 2);
+
+    // And with nothing to hold onto, nothing is invented: the support check is
+    // what removes it, not a made-up orientation.
+    TestWorld bare;
+    bare.w().setBlockAndDataWithNotify(0, 61, 0, bid(mcver::Block::Lever), 0);
+    CHECK_EQ(int(bare.dataAt(0, 61, 0)) & 7, 0);
+}
+
+TEST(a_placed_lever_is_off_and_lands_on_the_floor_from_the_top_face)
+{
+    // The other half of the same report: the placement table used to hand out
+    // metadata 14 -- a floor lever already switched on -- because the sweep
+    // that generated it punched every block after placing it.
+    const int floorMeta = int(block::placementMetadata(bid(mcver::Block::Lever), mesh::kFacePosY));
+    CHECK(floorMeta == 5 || floorMeta == 6);
+
+    TestWorld t;
+    t.floorOf(mcver::Block::Stone, 60);
+    t.w().setBlockAndDataWithNotify(0, 61, 0, bid(mcver::Block::Lever), u8(floorMeta));
+    CHECK_EQ((long long) t.get(0, 61, 0), (long long) bid(mcver::Block::Lever));
+    CHECK_EQ(int(t.dataAt(0, 61, 0)) & 8, 0);
+    // Off, so it powers nothing before anyone touches it.
+    CHECK(!tick::providesPowerTo(t.w(), 0, 61, 0, 1, bid(mcver::Block::Lever)));
+}
+
 namespace {
 
 // A whole door: the lower half at y, the upper half above it with bit 3 set.
@@ -1312,3 +1414,177 @@ TEST(a_redstone_net_cannot_reset_the_cascade_budget_by_notifying)
 }
 
 
+
+// ---------------------------------------------------------------------------
+// canPlaceBlockAt: the rules the placement path was not asking
+// ---------------------------------------------------------------------------
+//
+// **Every predicate below was already in behaviour.cpp**, transcribed when the
+// tick system landed, because a neighbour change has to ask the same question:
+// that is what makes a flower pop when you mine the dirt under it. What was
+// missing was anyone asking it when a block is *placed* -- the edit path tested
+// "is the cell air" and stopped, so a cactus went on glass and a sapling into
+// mid-air, and the tick then deleted them a moment later. That reads as the
+// game losing your block rather than as a rule.
+//
+// These live beside the tick's own tests on purpose: the two must agree, and
+// the last case here is that agreement stated as a property.
+
+namespace {
+
+constexpr int kPlaceY = 70;
+
+// Ground under (0, kPlaceY, 0) and nothing else placed.
+TestWorld benchWith(mcver::Block ground)
+{
+    TestWorld t;
+    t.floorOf(ground, kPlaceY - 1);
+    return t;
+}
+
+bool canPlace(TestWorld& t, mcver::Block block)
+{
+    return tick::canPlaceAt(t.w(), bid(block), 0, kPlaceY, 0);
+}
+
+}  // namespace
+
+TEST(a_sapling_needs_ground_under_it)
+{
+    TestWorld dirt = benchWith(mcver::Block::Dirt);
+    CHECK(canPlace(dirt, mcver::Block::Sapling));
+    TestWorld grass = benchWith(mcver::Block::Grass);
+    CHECK(canPlace(grass, mcver::Block::Sapling));
+
+    // The complaint: a sapling would go on anything at all.
+    TestWorld stone = benchWith(mcver::Block::Stone);
+    CHECK(!canPlace(stone, mcver::Block::Sapling));
+    TestWorld glass = benchWith(mcver::Block::Glass);
+    CHECK(!canPlace(glass, mcver::Block::Sapling));
+    TestWorld nothing = benchWith(mcver::Block::Air);
+    CHECK(!canPlace(nothing, mcver::Block::Sapling));
+}
+
+TEST(wheat_needs_farmland_and_nothing_else)
+{
+    TestWorld farm = benchWith(mcver::Block::Farmland);
+    CHECK(canPlace(farm, mcver::Block::Wheat));
+    TestWorld dirt = benchWith(mcver::Block::Dirt);
+    CHECK(!canPlace(dirt, mcver::Block::Wheat));
+    TestWorld stone = benchWith(mcver::Block::Stone);
+    CHECK(!canPlace(stone, mcver::Block::Wheat));
+}
+
+TEST(a_cactus_needs_sand_and_clear_sides)
+{
+    TestWorld sand = benchWith(mcver::Block::Sand);
+    CHECK(canPlace(sand, mcver::Block::Cactus));
+    TestWorld dirt = benchWith(mcver::Block::Dirt);
+    CHECK(!canPlace(dirt, mcver::Block::Cactus));
+
+    // Sand underneath is not enough: `BlockCactus.canBlockStay` refuses to
+    // touch anything solid, which is why cactus grows in the open.
+    TestWorld crowded = benchWith(mcver::Block::Sand);
+    crowded.set(1, kPlaceY, 0, mcver::Block::Stone);
+    CHECK(!canPlace(crowded, mcver::Block::Cactus));
+}
+
+TEST(a_torch_needs_a_face_and_not_a_ceiling)
+{
+    TestWorld floor = benchWith(mcver::Block::Stone);
+    CHECK(canPlace(floor, mcver::Block::Torch));
+
+    TestWorld floating = benchWith(mcver::Block::Air);
+    CHECK(!canPlace(floating, mcver::Block::Torch));
+
+    // A wall will do...
+    TestWorld wall = benchWith(mcver::Block::Air);
+    wall.set(1, kPlaceY, 0, mcver::Block::Stone);
+    CHECK(canPlace(wall, mcver::Block::Torch));
+
+    // ...but a ceiling will not, which is the one face BlockTorch leaves out.
+    TestWorld ceiling = benchWith(mcver::Block::Air);
+    ceiling.set(0, kPlaceY + 1, 0, mcver::Block::Stone);
+    CHECK(!canPlace(ceiling, mcver::Block::Torch));
+}
+
+TEST(a_ladder_wants_a_wall_where_a_rail_wants_a_floor)
+{
+    TestWorld floor = benchWith(mcver::Block::Stone);
+    CHECK(!canPlace(floor, mcver::Block::Ladder));
+    CHECK(canPlace(floor, mcver::Block::Rail));
+
+    TestWorld wall = benchWith(mcver::Block::Air);
+    wall.set(0, kPlaceY, 1, mcver::Block::Stone);
+    CHECK(canPlace(wall, mcver::Block::Ladder));
+    CHECK(!canPlace(wall, mcver::Block::Rail));
+}
+
+TEST(a_door_needs_a_floor_and_headroom)
+{
+    TestWorld room = benchWith(mcver::Block::Stone);
+    CHECK(canPlace(room, mcver::Block::WoodenDoor));
+
+    // The upper half has to fit, which is why a door will not go under a
+    // ceiling one block up.
+    TestWorld squashed = benchWith(mcver::Block::Stone);
+    squashed.set(0, kPlaceY + 1, 0, mcver::Block::Stone);
+    CHECK(!canPlace(squashed, mcver::Block::WoodenDoor));
+}
+
+TEST(an_ordinary_block_goes_anywhere_free_including_into_water)
+{
+    TestWorld air = benchWith(mcver::Block::Air);
+    CHECK(canPlace(air, mcver::Block::Stone));
+
+    // **A liquid is free space**, which the base `canPlaceBlockAt` says and the
+    // old air-only test denied. Building into a pond works in the original.
+    TestWorld pond = benchWith(mcver::Block::Stone);
+    pond.set(0, kPlaceY, 0, mcver::Block::Water);
+    CHECK(canPlace(pond, mcver::Block::Stone));
+
+    // An occupied cell is still occupied.
+    TestWorld full = benchWith(mcver::Block::Stone);
+    full.set(0, kPlaceY, 0, mcver::Block::Stone);
+    CHECK(!canPlace(full, mcver::Block::Stone));
+}
+
+TEST(what_placement_allows_the_next_tick_does_not_delete)
+{
+    // **The property, and the reason this belongs in this file.** A block the
+    // placement path accepts must not be one the very next neighbour
+    // notification removes; if the two predicates ever disagree, the game
+    // swallows blocks. Checked over every ground the version defines.
+    for (int ground = 0; ground < mcver::kBlockTableSize; ++ground) {
+        if (ground != 0 && !mcver::kBlocks[ground].known) {
+            continue;
+        }
+        for (mcver::Block plant : {mcver::Block::Sapling, mcver::Block::Wheat,
+                                   mcver::Block::Cactus, mcver::Block::Torch}) {
+            // A single ground block on a stone plane rather than a plane of the
+            // ground itself. **A plane of cactus is not a legal world** -- each
+            // one has solid cactus beside it and deletes itself -- and the
+            // property being tested is about placement, not about whether an
+            // impossible scene stays put.
+            TestWorld t;
+            t.floorOf(mcver::Block::Stone, kPlaceY - 2);
+            t.w().setBlockWithNotify(0, kPlaceY - 1, 0, bid(mcver::Block(ground)));
+            // **Poked, because a stay-check only runs on a neighbour change.**
+            // A cactus dropped onto stone survives being written and dies the
+            // moment anything next to it moves; without this the loop would set
+            // up an illegal ground, place a legal cactus on it, and watch the
+            // whole column collapse -- which says nothing about placement.
+            tick::neighbourChanged(t.w(), 0, kPlaceY - 1, 0, block::kAir);
+            if (t.get(0, kPlaceY - 1, 0) != bid(mcver::Block(ground))) {
+                // The ground could not stay there either, so there is nothing
+                // to stand a plant on and nothing to conclude.
+                continue;
+            }
+            if (!tick::canPlaceAt(t.w(), bid(plant), 0, kPlaceY, 0)) {
+                continue;
+            }
+            t.w().setBlockWithNotify(0, kPlaceY, 0, bid(plant));
+            CHECK_EQ(int(t.get(0, kPlaceY, 0)), int(plant));
+        }
+    }
+}

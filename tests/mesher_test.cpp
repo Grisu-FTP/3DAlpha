@@ -1,6 +1,7 @@
 #include "framework.hpp"
 
 #include "core/block/registry.hpp"
+#include "core/mesh/cube_atlas.hpp"
 #include "core/mesh/mesher.hpp"
 
 #include <cstring>
@@ -25,10 +26,15 @@ MeshScratch& scratch()
     return instance;
 }
 
-MeshBuilder meshOf(const ChunkColumn& column, int sectionY)
+// **One quad per face, unless a test asks otherwise.** Most of this file is
+// about which faces exist -- culling, winding, light, tiles -- and those are
+// questions about faces, which greedy meshing only regroups. greedy_test.cpp
+// checks that the regrouping draws exactly these faces.
+MeshBuilder meshOf(const ChunkColumn& column, int sectionY, bool greedy = false)
 {
     scratch().fill(ColumnNeighbourhood::isolated(column), sectionY);
     MeshBuilder out;
+    out.setGreedy(greedy);
     mesh::meshSection(scratch(), out);
     return out;
 }
@@ -37,7 +43,22 @@ MeshBuilder meshOf(const ChunkColumn& column, int sectionY)
 // what was written to the buffer rather than what the mesher was asked to write.
 int quadFace(const MeshBuilder& m, usize quad)
 {
-    return m.vertices()[quad * 4].face;
+    return mesh::faceOf(m.vertices()[quad * 4]);
+}
+
+// A single face's UV range in the cube atlas, for the tile it shows. The cube
+// pass samples the cube atlas and not terrain.png; see core/mesh/cube_atlas.hpp.
+struct CubeUv {
+    int u0, u1, v0, v1;
+};
+
+CubeUv cubeUvOf(int tile)
+{
+    const int slot = mesh::cubeSlotOf(tile);
+    const int sx = slot % mesh::kCubeSlotsPerEdge;
+    const int sy = slot / mesh::kCubeSlotsPerEdge;
+    return {mesh::cubeUvStart(sx), mesh::cubeUvEnd(sx, 1), mesh::cubeUvStart(sy),
+            mesh::cubeUvEnd(sy, 1)};
 }
 
 std::set<int> facesEmitted(const MeshBuilder& m)
@@ -98,7 +119,7 @@ TEST(touching_faces_between_two_opaque_blocks_are_both_dropped)
 
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
-        const int face = v[0].face;
+        const int face = mesh::faceOf(v[0]);
         // No quad may sit on the plane y = 6, which is the shared boundary.
         const bool onSeam = (face == mesh::kFacePosY && v[0].y == 6)
                             || (face == mesh::kFaceNegY && v[0].y == 6);
@@ -151,8 +172,8 @@ TEST(glass_is_a_full_cube_that_does_not_cull_its_neighbour)
     int stoneTop = 0;
     for (usize q = 0; q < m2.quadCount(); ++q) {
         const WorldVertex* v = m2.vertices() + q * 4;
-        if (v[0].face == mesh::kFaceNegY && v[0].y == 6) ++glassBottom;
-        if (v[0].face == mesh::kFacePosY && v[0].y == 6) ++stoneTop;
+        if (mesh::faceOf(v[0]) == mesh::kFaceNegY && v[0].y == 6) ++glassBottom;
+        if (mesh::faceOf(v[0]) == mesh::kFacePosY && v[0].y == 6) ++stoneTop;
     }
     CHECK_EQ(glassBottom, 0);
     CHECK_EQ(stoneTop, 1);
@@ -193,7 +214,7 @@ TEST(faces_are_wound_counter_clockwise_seen_from_outside)
 
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
-        const int face = v[0].face;
+        const int face = mesh::faceOf(v[0]);
 
         const int ax = v[1].x - v[0].x, ay = v[1].y - v[0].y, az = v[1].z - v[0].z;
         const int bx = v[2].x - v[0].x, by = v[2].y - v[0].y, bz = v[2].z - v[0].z;
@@ -217,7 +238,7 @@ TEST(the_four_corners_of_a_quad_are_distinct_and_coplanar)
     const MeshBuilder m = meshOf(column, 0);
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
-        const int face = v[0].face;
+        const int face = mesh::faceOf(v[0]);
 
         std::set<int> corners;
         for (int c = 0; c < 4; ++c) {
@@ -253,7 +274,7 @@ TEST(face_shade_is_what_the_original_applies)
 
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
-        const u8 want = mesh::kFaceShade[v[0].face];
+        const u8 want = mesh::kFaceShade[mesh::faceOf(v[0])];
         for (int c = 0; c < 4; ++c) {
             CHECK_EQ(v[c].r, want);
             CHECK_EQ(v[c].g, want);
@@ -269,11 +290,13 @@ TEST(uvs_land_on_the_blocks_atlas_tile)
 
     const MeshBuilder m = meshOf(column, 0);
     const int tile = block::def(kStone).texture;
-    // The tile's range, inset off the boundary at both ends -- see kUvInset.
-    const int u0 = mesh::tileUvMin(tile % 16);
-    const int u1 = mesh::tileUvMax(tile % 16);
-    const int v0 = mesh::tileUvMin(tile / 16);
-    const int v1 = mesh::tileUvMax(tile / 16);
+    // The tile's range in the cube atlas, inset off the slot boundary at both
+    // ends -- see kCubeUvInset.
+    const CubeUv range = cubeUvOf(tile);
+    const int u0 = range.u0;
+    const int u1 = range.u1;
+    const int v0 = range.v0;
+    const int v1 = range.v1;
 
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
@@ -293,6 +316,7 @@ TEST(uvs_land_on_the_blocks_atlas_tile)
     // The far edge of the last tile must still fit a signed short -- this is
     // why UVs are 1/16384 units and not 1/32768.
     CHECK_EQ(16 * mesh::kUvUnitsPerTile, mesh::kUvUnitsPerAtlas);
+    CHECK_EQ(mesh::kCubeSlotsPerEdge * mesh::kCubeUvPerSlot, mesh::kUvUnitsPerAtlas);
     CHECK(mesh::kUvUnitsPerAtlas <= 32767);
 }
 
@@ -311,10 +335,10 @@ TEST(each_face_gets_its_own_tile_not_the_blocks_default)
     const block::BlockDef& def = block::def(kGrass);
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
-        const int tile = def.faces[quadFace(m, q)];
+        const CubeUv range = cubeUvOf(def.faces[quadFace(m, q)]);
         for (int c = 0; c < 4; ++c) {
-            CHECK(v[c].u == mesh::tileUvMin(tile % 16) || v[c].u == mesh::tileUvMax(tile % 16));
-            CHECK(v[c].v == mesh::tileUvMin(tile / 16) || v[c].v == mesh::tileUvMax(tile / 16));
+            CHECK(v[c].u == range.u0 || v[c].u == range.u1);
+            CHECK(v[c].v == range.v0 || v[c].v == range.v1);
         }
     }
 
@@ -322,6 +346,36 @@ TEST(each_face_gets_its_own_tile_not_the_blocks_default)
     // regenerated blocks.json cannot quietly move them together.
     CHECK(def.faces[mesh::kFacePosY] != def.faces[mesh::kFaceNegY]);
     CHECK(def.faces[mesh::kFacePosY] != def.faces[mesh::kFaceNegX]);
+}
+
+TEST(a_furnace_is_drawn_with_its_mouth_where_its_metadata_says)
+{
+    // Every furnace in the world used to have its mouth on +Z, because the
+    // cube stream draws `faces` -- the inventory answer -- and never looked at
+    // the metadata the placement wrote. It is drawn through the out-of-line
+    // path now, and still as six ordinary cube quads.
+    const u16 furnace = u16(mcver::Block::Furnace);
+    const block::BlockDef& def = block::def(furnace);
+    const CubeUv mouth = cubeUvOf(def.faces[mesh::kFacePosZ]);
+    for (int md = 2; md <= 5; ++md) {
+        ChunkColumn column;
+        column.setBlock(5, 5, 5, furnace);
+        column.setBlockData(5, 5, 5, u8(md));
+
+        const MeshBuilder m = meshOf(column, 0);
+        CHECK_EQ(m.quadCount(), usize(6));
+        int mouths = 0;
+        for (usize q = 0; q < m.quadCount(); ++q) {
+            const WorldVertex* v = m.vertices() + q * 4;
+            const bool isMouth = v[0].u == mouth.u0 || v[0].u == mouth.u1;
+            const bool isMouthRow = v[0].v == mouth.v0 || v[0].v == mouth.v1;
+            if (isMouth && isMouthRow) {
+                ++mouths;
+                CHECK_EQ(quadFace(m, q), md);
+            }
+        }
+        CHECK_EQ(mouths, 1);
+    }
 }
 
 TEST(light_is_sampled_from_the_cell_the_face_looks_into)
@@ -337,9 +391,9 @@ TEST(light_is_sampled_from_the_cell_the_face_looks_into)
     const MeshBuilder m = meshOf(column, 0);
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
-        if (v[0].face == mesh::kFacePosY) {
+        if (mesh::faceOf(v[0]) == mesh::kFacePosY) {
             CHECK_EQ(v[0].light, u8(15 << 4));
-        } else if (v[0].face == mesh::kFaceNegY) {
+        } else if (mesh::faceOf(v[0]) == mesh::kFaceNegY) {
             CHECK_EQ(v[0].light, u8(7));
         } else {
             CHECK_EQ(v[0].light, u8(0));
@@ -361,7 +415,7 @@ TEST(sky_light_above_the_world_is_full_not_missing)
     bool sawTop = false;
     for (usize q = 0; q < m.quadCount(); ++q) {
         const WorldVertex* v = m.vertices() + q * 4;
-        if (v[0].face == mesh::kFacePosY) {
+        if (mesh::faceOf(v[0]) == mesh::kFacePosY) {
             CHECK_EQ(v[0].light, u8(15 << 4));
             sawTop = true;
         }
@@ -403,7 +457,7 @@ TEST(a_neighbouring_column_culls_across_the_chunk_border)
     CHECK_EQ(m.quadCount(), usize(5));
 
     for (usize q = 0; q < m.quadCount(); ++q) {
-        CHECK(m.vertices()[q * 4].face != mesh::kFacePosX);
+        CHECK(quadFace(m, q) != mesh::kFacePosX);
     }
 }
 
@@ -470,17 +524,39 @@ TEST(has_emitter_agrees_with_what_the_dispatch_actually_reaches)
             continue;
         }
 
-        // Alone in air, so nothing is culled and any emitter at all shows up.
-        ChunkColumn column;
-        column.setBlock(8, 8, 8, u16(id));
+        // **Every metadata, not just zero.** A shape can legitimately draw
+        // nothing for a metadata the game never writes: a ladder's renderer is
+        // an if-chain over 2..5 and falls off the end for anything else, which
+        // means the original draws no ladder either. So "has an emitter" is
+        // "draws something for at least one state", and "has none" stays
+        // "draws nothing, ever".
+        usize best = 0;
+        for (u8 metadata = 0; metadata < 16; ++metadata) {
+            // Alone in air, so nothing is culled and any emitter at all shows
+            // up.
+            //
+            // **Except fire, which needs something to burn on.** `bc.d`
+            // branches on what is under and around the cell, and a flame with
+            // nothing solid below it and nothing flammable beside it draws
+            // zero quads in the original too -- fire in mid-air with nothing
+            // to burn goes out on the next tick and is never seen. So this one
+            // gets a floor, which is the state a fire is actually in.
+            ChunkColumn column;
+            column.setBlock(8, 8, 8, u16(id));
+            column.setBlockData(8, 8, 8, metadata);
+            if (render == block::RenderType::Fire) {
+                column.setBlock(8, 7, 8, u16(mcver::Block::Stone));
+            }
 
-        const MeshBuilder m = meshOf(column, 0);
-        const usize quads = m.quadCount() + m.detailQuadCount() + m.translucentQuadCount();
-
+            const MeshBuilder m = meshOf(column, 0);
+            const usize quads = m.quadCount() + m.detailQuadCount() + m.translucentQuadCount();
+            if (!mesh::hasEmitter(render)) {
+                CHECK_EQ(quads, usize(0));
+            }
+            best = quads > best ? quads : best;
+        }
         if (mesh::hasEmitter(render)) {
-            CHECK(quads > 0);
-        } else {
-            CHECK_EQ(quads, usize(0));
+            CHECK(best > 0);
         }
     }
 }

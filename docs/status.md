@@ -5,11 +5,20 @@ a number that has been measured, or a task that is next. Estimates and guesses a
 
 Update this file when a milestone moves.
 
-**It is no longer the first thing to read.** `CLAUDE.md` at the repo root is the entry point — it
-carries the commands, the layout, the review-blocking rules and the environment facts in about a
-fortieth of the length. This file is where you come once you know which question you have, and the
-way to read it is one section at a time: `docs/doc-index.md` lists every heading here with the line
-range it occupies, so `sed -n 'A,Bp' docs/status.md` beats opening the whole file.
+Entity persistence update (2026-09-09): the six persistent entity pools now save and reload
+through `core/entity/persistence.{hpp,cpp}` and the existing streamer/cache save queue.
+The versioned `Data/3DAlphaEntities` compound carries position, motion and simulation state
+in both folder and packed worlds. Autosave, pause and close capture immutable snapshots;
+empty pools overwrite previous snapshots. Falling blocks wait for resident chunks after load.
+Native Java chunk `Entities` are still opaque and preserved; this extension does not import
+or export them. Sign text persistence and restoring vehicle rider attachment remain pending.
+Validation: 1059/1059 host tests pass with ASan/UBSan; the four persistence tests and
+two housekeeping tests pass with TSan. The 3DSX cross-build succeeds; no hardware run yet.
+
+**Start with root `AGENTS.md`.** `docs/task-map.md` routes tasks to code and tests;
+`docs/current-work.md` holds a short, dated handoff. This file keeps the detailed historical
+record. Search `docs/doc-index.md` for the relevant section and read its line range rather
+than opening this document whole. Longer working instructions are in `docs/working-guide.md`.
 
 ---
 
@@ -28,12 +37,12 @@ hard oracle to check itself against.
 | **M0b** Day/night design decision | **done** — lightmap texture, measured free on hardware |
 | **M1** NBT, Alpha level format r/w, palette storage, block registry | **done** — verified against a real 660-chunk world. **Plus a second on-disk format**, `Packed`: sector-allocated region containers, 9× smaller than the folder layout on a 16 KB-cluster card and 280× fewer file operations, converted losslessly in either direction and byte-exact on a real 1,119-chunk world. New worlds are created in it. See §0j and [packed-worlds.md](packed-worlds.md) |
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, **draws the whole render distance on hardware without stalling, and is what the game boots into as of this change** — the 4-vertex path stays as the watchdog's fallback and as the only encoding that can ever carry per-corner light. What is still *not* taken is the gate measurement itself: GPU draw time per quad, both formats, one session, one position |
-| M3 Singleplayer gameplay | not started as *gameplay*, **but its foundation is now built: the world ticks.** a1.1.2's 20 Hz clock (`ir.class`, accumulator, partial ticks, the ten-tick cap that drops rather than defers), its scheduled-update list with the original's ordering and both of its limits, its 80-samples-a-chunk random tick, and fifteen block behaviours -- grass, leaves, saplings, crops, farmland, flowers, mushrooms, sugar cane, cactus, ice, both snows, torches, sand and gravel. Blocks are dispatched by a **tick behaviour**, never by id, the way the renderer dispatches on render type. Redstone, fire and the fluids are named and not done; see §0o and [tick-a1.1.2.md](tick-a1.1.2.md). Also **the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator and Creative are both implemented; Survival is the one drawn disabled.** Spectator is free flight with no body and is offered under a name that says so; Creative landed at M3 step 3 with a body that collides, a four-block reach, break and place, a nine-slot hotbar on the bottom screen, a block palette page fed from the registry, and flight that collides -- **and a1.1.2 has no Creative mode at all**, so all of it is invented and none of it has an oracle. See section 0s. Survival stays disabled because everything it adds -- damage, hardness, drops, depletion -- is a rule on top of the same body and does not exist. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now a tabbed HUD, and the debug pages are behind it rather than beside it.** The player's half is three pages switched by touching tabs along the top -- **Map**, **Items** and **Look** -- drawn as panels, slots and bevels in a1.1.2's own GUI colours over the pack's tiled dirt, while the three debug pages stay shared, unchanged and behind `SELECT + Y`. It is still libctru's text console underneath: the furniture is written straight into the RGB565 framebuffer and the console's glyphs are printed on top of it, on backgrounds set per row with `\x1b[48;2;R;G;Bm`, which is what stopped text punching black rectangles through the panels. **Map** is 208 by 200 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds -- **in every gamemode now, not only Spectator's** -- and it shows **coordinates and nothing else**: the chunk, the map tile, the chunk count and the redraw time were the maintainer's questions and have moved to the Info page, and the debug grids to the settings page. **There is no strip of button hints along the bottom**, because it was the same three lines on every page spending a twelfth of the screen to repeat itself; the debug pages keep theirs, which is where `SELECT + Y` is worth naming. Those 24 rows and 24 columns off the coordinate panel are what made the window a quarter bigger than the 192 by 176 it started at -- an estimated 790 us a redraw against 700, measured on the host as 16.9 us against 14.2. The marker is an **arrowhead rotated to a real yaw** rather than a diamond with a whole-block tick, which is what fixes both of the old one's faults at once -- it pointed eight ways and it was 41 % longer on a diagonal than on a straight. **Items** is the inventory frame, nine across and three rows, drawn empty and not offered in Spectator -- it lost its fourth row, because **the hotbar is a band of its own across the bottom of every player page** in every mode that has one. Creative adds a fourth tab, **Blocks**, which is the block palette and is deliberately not the inventory: a catalogue held by nobody against what a player is carrying. The map lost 32 pixels to that band and got cheaper for it, 208x168 rather than 208x200. **Look** is a pad that hands the drag to the camera, with a compass ribbon over it -- which exists because the bottom screen is both the UI and the only pointing device an old 3DS has, and dragging on a map used to turn the view. **Run on hardware, where a redraw read 5,000 us**; a per-chunk patch cache took that to a copy, and the number is on the Info page. **The HUD itself has not been seen on hardware.** See [map.md](map.md) |
+| M3 Singleplayer gameplay | not started as *gameplay*, **but its foundation is now built: the world ticks.** a1.1.2's 20 Hz clock (`ir.class`, accumulator, partial ticks, the ten-tick cap that drops rather than defers), its scheduled-update list with the original's ordering and both of its limits, its 80-samples-a-chunk random tick, and fifteen block behaviours -- grass, leaves, saplings, crops, farmland, flowers, mushrooms, sugar cane, cactus, ice, both snows, torches, sand and gravel. Blocks are dispatched by a **tick behaviour**, never by id, the way the renderer dispatches on render type. Redstone, fire and the fluids are named and not done; see §0o and [tick-a1.1.2.md](tick-a1.1.2.md). Also **the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator and Creative are both implemented; Survival is the one drawn disabled.** Spectator is free flight with no body and is offered under a name that says so; Creative landed at M3 step 3 with a body that collides, a four-block reach, break and place, a nine-slot hotbar on the bottom screen, a block palette page fed from the registry, and flight that collides -- **and a1.1.2 has no Creative mode at all**, so all of it is invented and none of it has an oracle. See section 0s. Survival stays disabled because everything it adds -- damage, hardness, drops, depletion -- is a rule on top of the same body and does not exist. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now a tabbed HUD, and the debug pages are behind it rather than beside it.** The player's half is three pages switched by touching tabs along the **bottom** -- **Map**, **Items** and **Look** -- drawn as panels, slots and bevels in a1.1.2's own GUI colours over the pack's tiled dirt, while the three debug pages stay shared, unchanged and behind `SELECT + Y`. It is still libctru's text console underneath: the furniture is written straight into the RGB565 framebuffer and the console's glyphs are printed on top of it, on backgrounds set per row with `\x1b[48;2;R;G;Bm`, which is what stopped text punching black rectangles through the panels. **Map** is 208 by 200 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds -- **in every gamemode now, not only Spectator's** -- and it shows **coordinates and nothing else**: the chunk, the map tile, the chunk count and the redraw time were the maintainer's questions and have moved to the Info page, and the debug grids to the settings page. **There is no strip of button hints along the bottom**, because it was the same three lines on every page spending a twelfth of the screen to repeat itself; the debug pages keep theirs, which is where `SELECT + Y` is worth naming. Those 24 rows and 24 columns off the coordinate panel are what made the window a quarter bigger than the 192 by 176 it started at -- an estimated 790 us a redraw against 700, measured on the host as 16.9 us against 14.2. The marker is an **arrowhead rotated to a real yaw** rather than a diamond with a whole-block tick, which is what fixes both of the old one's faults at once -- it pointed eight ways and it was 41 % longer on a diagonal than on a straight. **Items** is the inventory, nine across and three rows with **the four armour slots down its left**, filling the whole page band and not offered in Spectator -- it lost its fourth row, because **the hotbar is a band of its own across the *top* of every player page** in every mode that has one, edge to edge, with slots 35 and 36 pixels wide so that nine of them land exactly on both screen edges. See §11. Creative adds a fourth tab, **Blocks**, which is the block palette and is deliberately not the inventory: a catalogue held by nobody against what a player is carrying. The map lost 32 pixels to that band and got cheaper for it, 208x168 rather than 208x200. **Look** is a pad that hands the drag to the camera, with a compass ribbon over it -- which exists because the bottom screen is both the UI and the only pointing device an old 3DS has, and dragging on a map used to turn the view. **Run on hardware, where a redraw read 5,000 us**; a per-chunk patch cache took that to a copy, and the number is on the Info page. **The HUD itself has not been seen on hardware.** See [map.md](map.md) |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
 | M5 Multiplayer (protocol 2) | not started |
 | M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, and background music is built but unheard**, both ahead of the rest of M6; mobs and packaging not started. **Music is a1.1.2's `of.c()` transcribed exactly** -- the counter seeded at `nextInt(12000)` and reset to `nextInt(24000)+24000`, and, the part that is easy to lose, *not decremented while a track is playing*, so the period is the track's own length plus 20-40 minutes. It runs on the same `elapsedTicks()` the world does, beside `stepTicks`. Underneath it: `audio::Backend` (the `IAudio` docs/architecture.md always named), an ndsp voice on channel 0 fed by a ring of eight 1024-frame wave buffers in linear memory, and a third `WorkerRole` -- `Audio` -- decoding Ogg Vorbis through Tremor. **On an Old 3DS that decode is on core 0**, because a 3DSX has no other core; it sits below the main thread and the 186 ms ring is what makes that safe, which is a claim only hardware can settle -- the overlay counts underruns and decode microseconds for exactly that reason. Options -> Sound carries the volumes and the one line that says why a console is silent, distinguishing a missing DSP firmware from a DSP something else is holding. **Sound effects are deliberately absent**: nothing in the port can emit one yet, so the machinery arrives with its first caller rather than as dead code. See [audio-a1.1.2.md](audio-a1.1.2.md). Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
 
-**690 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**946 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -2361,10 +2370,11 @@ is on unconditionally, in every pass, set once per frame.
 | touch drag | look. **Yaw was inverted**: the view turned the opposite way from the finger. Both axes now follow the mouse convention, drag right look right, and the reason it is `+=` is that `Camera::look` sends yaw 0 to +Z and positive yaw toward −X — south turning to west, which is right |
 | B | Spectator: up. Otherwise **jump** |
 | Y | Spectator: down. Otherwise **sneak**, which walks the move back at a ledge |
-| L / R | **break and place**, repeating every five ticks — M3 §2. Focused (see X), they **change tab** instead — Map, Items, Blocks — and the focus survives the change; break and place are suspended for as long as the focus is on, so one press does one thing |
+| R / L | **break and place** — R breaks, L places, repeating every five ticks. **The opposite way round from a mouse, and deliberately so**: on a 3DS the shoulders are triggers rather than a left and a right hand, R is under the finger that also holds the console up, and breaking is what a player does most often — M3 §2. Focused (see X), they **change tab** instead — Map, Items, Blocks — and the focus survives the change; break and place are suspended for as long as the focus is on, so one press does one thing |
 | ZL / ZR | **change the held hotbar slot**, wrapping. New 3DS only, which is why the focused d-pad below does the same job |
 | X | Spectator: sprint, unless SELECT is held. Otherwise **focus the bottom screen** — the d-pad drives a cursor over the palette and the hotbar and A picks, while the camera keeps working. A dark banner under the tab strip says so and says what the buttons mean on that page. It exists because the screen is resistive and a player walking has no stylus out |
 | B B (double tap) | Creative: **toggle flight**. A quarter of a second, timed in frames because it is a gesture and not physics |
+| forward forward (double tap) | Creative: **sprint**, until the stick comes back. **Creative only** — a1.1.2 has no sprint and Survival here is meant to *be* a1.1.2. Not a1.1.2's — that jar has no sprint at all — but the console editions' gesture, and the speed is Beta's `landMovementFactor * 1.3` applied where Beta applies it. Two thresholds rather than one, so a pad resting near the edge cannot chatter itself into a sprint. See `core/entity/sprint_gesture.hpp` |
 | A | focused: pick. Creative and flying: **fly faster**. **X is Spectator's sprint and A is Creative's**, which is not an inconsistency to tidy: X is the bottom screen's focus in every mode that has a hotbar, so it cannot also be a held modifier, and A is the focused screen's pick button and does nothing unfocused |
 | SELECT + d-pad | tune the 3D. **Was Y + d-pad**, which Y being sneak took away; SELECT already claimed only Y and X for the page cycle, so the d-pad under it was free. The map page's d-pad had a matching Y guard, removed with it — left in, the map's zoom would have died whenever the player crouched |
 | SELECT + Y / X | cycle the bottom screen forward / back |
@@ -2860,7 +2870,8 @@ Two things multiply with it and neither has been measured yet:
   mesher can work around that. The fixes are all changes to the atlas — a padded atlas where each
   tile is stored as an *n×n* repeat, capping merge runs at *n*, or one texture per tile and a draw
   call per tile per section — and each has a cost that has not been measured. This is a real
-  blocker and it was not recorded before.
+  blocker and it was not recorded before. **Resolved in §22** with the first of those: a 512×512
+  cube atlas of 4×4 repeats, for the 54 tiles cube blocks can show.
 - **A shorter vertex shader.** The light-nibble unpack is 6 of the 22 instructions and a 256-entry
   lightmap indexed by the packed byte would make it one; the two setup `mov`s go if the position
   attribute is declared 3-component, since w then defaults to 1.0.
@@ -2905,9 +2916,8 @@ fragment-bound.
 - **Smooth lighting / AO.** The 12-byte vertex format already carries per-vertex colour and light
   for it; **the 8-byte quad format cannot carry it at all**, so if the geometry-shader path wins,
   these two are mutually exclusive and that is a choice rather than an oversight.
-- **Greedy meshing.** Legal as far as lighting goes — smooth lighting is off — and blocked by the
-  atlas: see the note in §2 above. Whether it is worth unblocking depends entirely on the seventh
-  launch.
+- **Greedy meshing.** *Done — see §22.* Kept here for the constraint it leaves behind: smooth
+  lighting, if it ever lands, varies per corner, so it will only let faces with equal corners merge.
 - **Translucent cubes.** Ice is flagged `translucent` in the block table and the mesher emits it
   into the *cube* stream, which is drawn in the opaque pass, so ice is currently solid. It is the
   only such block in a1.1.2 and fixing it means either a fourth range in the 12-byte format or
@@ -3893,18 +3903,20 @@ would make every switch pass through a state that refuses.
 #### The palette is derived, not curated
 
 Beta's own creative inventory is a hand-written list in `CreativeTabs`. A hand-written list here
-would be 70 block ids typed into a source file, which CONTRIBUTING forbids and for a better reason
-than style: the next version manifest would silently inherit a1.1.2's list. So
-`core/item/creative_palette.hpp` is **every block the registry defines, in id order, minus air** —
-`BlockDef::known` is the column that answers it, and it is already false for the sixteen ids a1.1.2
-leaves empty. 70 blocks, built `constexpr` out of the generated table, 512 bytes of `.rodata` and no
-initialiser at startup.
+would be ids typed into a source file, which CONTRIBUTING forbids and for a better reason than
+style: the next version manifest would silently inherit a1.1.2's list.
 
-What it deliberately does not do: no item ids (the `items` slot is empty for this version, and
-saplings, doors and beds are offered as their blocks); no filtering by "would a player ever get
-this" (fire, mob spawners, flowing water and the double slab are all in it, because excluding them
-would be inventing a second table with nothing to check it against); no ordering by category, since
-id order is the one ordering that is stable across builds and derivable from the data.
+**The first version of this was "every block the registry defines, minus air", computed in C++.**
+It was wrong in three visible ways and §4 below replaced it with a generated column: it offered the
+*burning* furnace next to the furnace, flowing water next to water, and the **block** form of a
+door — whose texture is the door's lower panel — where the door item belongs. Those are not things a
+player holds; they are states the engine writes. The palette is now `mcver::kPalette`, a column of
+`data/<version>/items.json` measured out of a running jar, and it is 66 items rather than 70 blocks.
+
+What it deliberately still does not do: no filtering by "would a player ever get this" (bedrock, the
+mob spawner and the double slab are all in it, because a Creative mode with opinions about what you
+should want is worse than one without); no ordering by category, since id order is the one ordering
+that is stable across builds and derivable from the data.
 
 #### The palette is a separate page from the inventory
 
@@ -3915,8 +3927,10 @@ Survival's is Map, Items, Look; Spectator's is Map, Look. The mapping lives in o
 `Overlay::playerPagesFor`, because the strip, the selected index and a tap on a tab used to work it
 out separately and could disagree about which page a mode's third tab was.
 
-The Items page keeps its 27 slots and stays empty. That is not a contradiction with Creative being
-implemented: Creative carries nothing.
+The Items page kept its 27 slots and stayed empty, on the argument that Creative carries nothing.
+**That argument was wrong and §4 below undid it**: a1.1.2 writes all thirty-six slots into
+`level.dat` whatever mode you are in, so there was always something to show — the only thing missing
+was an item table to name it with.
 
 #### The hotbar is a band on every page, and the bottom screen grew a third one
 
@@ -3945,14 +3959,19 @@ different rates: a shoulder press moves the selection, and the 45-cell palette b
 changed at all. Redrawing the page for a hotbar move would be 45 slot bevels and 45 icon blits to
 move one white rectangle.
 
-#### A block icon is a flat tile, and that is a deviation
+#### A block icon was a flat tile, and "there is no way to do that here" was wrong
 
-a1.1.2 draws a block in a slot through `RenderBlocks.renderBlockAsItem` — a small three-quarter view
-built by the same block renderer that draws the world. There is no way to do that here: the bottom
-screen has no GPU access at all, it is a CPU blit into libctru's framebuffer. So a cell shows the
-block's `texture` column, blitted 16×16 at 1:1 out of the terrain atlas, which the table already
-defines as "what the block shows anywhere a single tile is wanted". Grass reads as grass from above
-and a log as its bark. Alpha is a cutout rather than a blend, which is what leaves a torch standing
+a1.1.2 draws a block in a slot through `RenderBlocks` with the GUI's transform — a three-quarter
+view showing a top face and two sides at three brightnesses. This section used to say there was no
+way to do that here, because the bottom screen has no GPU access at all and is a CPU blit into
+libctru's framebuffer. **The conclusion did not follow from the premise.** A cube seen from the
+corner is three parallelograms, and filling three parallelograms by inverse-mapping each destination
+pixel back into its tile is forty lines of software rasterising — no GPU, no geometry path, and it
+runs on the host where it can be tested.
+
+So §4 below replaced the flat blit with `core/gui/item_icon.cpp`. A plain block draws as a cube; a
+torch, a sapling, a door and everything on the items sheet draw flat, which is the same split
+`RenderItem` makes. Alpha stays a cutout rather than a blend, which is what leaves a torch standing
 on the slot instead of in a black box.
 
 The atlas pixels are **borrowed, not copied** — 256 KB is not something the overlay should hold a
@@ -4072,17 +4091,2206 @@ the negative axis.
 
 - **Nothing here has been seen on hardware.** It builds for the 3DS and the host suite is green;
   the console run has not happened. The same is still true of the selection outline from step 2.
-- **The hotbar is not saved.** a1.1.2 writes the inventory into `level.dat`'s `Player` compound as a
-  list of slot-tagged stacks, and this project preserves that compound verbatim rather than parsing
-  it. Writing one back means going through the `items` slot, which is empty for this version. So the
-  contents live for the session and start from the palette's first nine each time.
 - **Placement is still air-only.** a1.1.2 also replaces water, lava and snow, which wants the
   replaceable-material test — a Survival-shaped question, unanswered.
-- **A door placed from the palette is half a door.** The palette offers blocks, and the block form
-  of an item-backed block is what gets placed. Honest, and named here rather than discovered.
 - **status.md still has no write-up of M3 steps 1 and 2.** The body and the reach/break/place seam
   landed before this and their results are in `docs/todo-m3.md` and `docs/physics-a1.1.2.md`; they
   have not been folded in here. That is a handoff gap and it is this file's, not theirs.
+
+Two entries that used to be here — the hotbar not being saved, and a door from the palette placing
+half a door — are done and are written up in §4 immediately below.
+
+### 4. The item table, the inventory, and five things the first Creative pass got wrong
+
+Everything in this step came out of one play session's list of complaints. They looked like six
+unrelated bugs and were three: **the camera was pinned to the tick**, **the body and the free camera
+never handed the position to each other**, and **there was no item table**, which is what put half a
+door in the hand and the burning furnace in the palette.
+
+#### The camera was drawn where the body was, not where it is
+
+`camera.x = body.x` ran after the body's ticks and nowhere else. The body moves at 20 Hz and the
+screen draws at 30 or 60, so the camera stood still for a frame or two and then jumped a whole
+tick's travel — about a fifth of a block at a walk, which reads as *stepping* rather than walking
+and was reported as "moving in whole integers".
+
+`Entity` has carried `prevPosX/Y/Z` since forever for exactly this, and `EntityRenderer.orientCamera`
+reads `prevPos + (pos - prevPos) * partialTicks`. `PlayerBody` now snapshots the same three at the
+top of `tick` and `tickFlying`, `renderX/renderEyeY/renderZ` are that line, and `TickTimer` already
+had the fraction. `setFeet` snaps the previous position to the new one, because a teleport has
+nothing to interpolate from — without that a gamemode change drew the camera *sliding* to its new
+place over the following tick.
+
+**What is saved is still `body.eyeY()`, not the interpolated value.** A position part way through a
+tick is a picture rather than a state: writing one into `Pos` puts a number in the file the physics
+never produced.
+
+#### Changing gamemode put you in the ground
+
+Spectator flies a bare camera and never touches the body; every other mode reads the camera off the
+body. Nothing handed the position across, so a mode change re-read a body that had last been ticked
+at world entry — usually the spawn point, frequently inside terrain by then. The fix is six lines
+where the pause menu returns: leaving Spectator puts the body under the camera, clears the motion
+and the banked `fallDistance`, and cancels the sprint. The other direction needs nothing, because
+the camera is already at the eye the body was handing it.
+
+#### The item table, which is what the other four bugs were
+
+`data/a1.1.2/items.json` is generated by a new `tools/genref.java --items`, and every column but the
+name came out of a running jar:
+
+| Column | Where it comes from |
+|---|---|
+| `icon`, `stack`, `durability` | `Item.itemsList`, read off the constructed singletons |
+| `sheet` | a1.1.2's own rule: `RenderItem` draws terrain.png below id 256 and gui/items.png above |
+| `places` | **measured** — a real `EntityPlayer` in a real `World` uses each item on each face of each of five grounds, and the block that appears is the answer |
+| `palette` | one derived rule and one four ids long; see below |
+
+Measuring `places` rather than reading it is what makes doors, signs, reeds, seeds and redstone come
+out right without anything knowing they exist: `ItemRedstone`, `ItemSign` and `ItemDoor` decide
+inside `onItemUse`, and `ItemDoor`'s answer depends on the material it was constructed with. Five
+grounds because placement has preconditions — seeds want farmland, cactus wants sand, reeds want
+sand or dirt with water beside it — and five faces because a ladder and a wall torch refuse the top.
+
+163 items, of which 161 fit the 512-entry table; the two music discs are 2256 and 2257 and are left
+out rather than costing a 2,258-row array for two items no a1.1.2 player can obtain. A stack holding
+one still round-trips through a save untouched.
+
+**The palette rule.** An ItemBlock is hidden when some item above 255 places the same block, because
+that item is the form a player holds — one rule, read out of the measured column, covering doors,
+signs, reeds, seeds and redstone without naming any of them. Four ids are then excluded by hand:
+flowing water, flowing lava, fire and the burning furnace, which are block *states* with a resting
+form already in the palette. That is the only judgement in it and it is spelled out in the generator
+rather than dressed up as a derivation. 66 items offered.
+
+#### The inventory is real, and it is saved
+
+`core/item/inventory.{hpp,cpp}` replaces the nine-slot `Hotbar`: 36 main slots plus 4 armour, with
+the hotbar a *view* of 0..8 exactly as it is in `InventoryPlayer`. `src/impl/items/b1_2/` — empty
+since the slot was invented — now holds the numbering that gives a slot index its meaning, and the
+encoding was already in `level_data.hpp` and the Alpha `level_dat.cpp`, so saving was a plumbing
+job: `WorldStreamer::setPlayerInventory`, called on the edit rather than on the frame because it
+copies up to forty stacks and their preserved NBT.
+
+**A slot number this version does not model is kept, not dropped.** `InventoryPlayer.readFromNBT`
+throws away anything that is neither `< 36` nor in `100..103`, and this project's own reference
+world has a stack at slot 81. Dropping it would be a load/save cycle destroying data.
+
+The Items page is 27 live slots with a cursor. One press picks a stack up and the next puts it down,
+rather than a drag: a resistive screen sampled once a frame reports a drag as a sequence of jumps,
+and the d-pad has no drag at all, so a one-press gesture is the only one both input routes can make.
+
+#### Two sheets, and a cube in the slot
+
+`gui/items.png` is loaded into a second 256×256 plane of `AtlasImage`. **Nothing on the GPU ever
+sees it** — the icons it feeds are drawn by the CPU into the bottom screen's framebuffer — so it
+costs 256 KB of heap and no VRAM. A pack without one is a pack: every icon that wanted it falls back
+to the terrain tile of the block the item places, which is what this screen drew before.
+
+`core/gui/item_icon.cpp` draws a plain block as a cube seen from the corner and everything else
+flat, which is the split `RenderItem` makes. The projection is the flat 2:1 isometric one rather
+than the original's 30-degree matrix: at sixteen pixels across the difference is under half a pixel
+and the 2:1 version lands its edges on pixel boundaries, so the silhouette has no stair-stepping.
+The three shades **are** the original's — `mesh::kFaceShadeFloat`, the same table the world mesher
+uses, because a slot lit differently from the world is the kind of small wrongness that is felt
+rather than seen. Stack counts are drawn above one, which is what `RenderItem` does.
+
+#### Fire's texture really does say "fire"
+
+Tile 31 of a real a1.1.2 `terrain.png` is red pixel-lettering on transparency and tile 47 is a flat
+magenta square. Neither is ever shown by the real client: `Minecraft` registers a `TextureFX` for
+each at startup and overwrites those 256 texels every tick with a procedural flame. A build that
+loads terrain.png and stops there draws the placeholder.
+
+`core/texture/texture_fx.cpp` is `TextureFlamesFX` transcribed from the class file — a 16×20 heat
+field, a seed row of noise, a six-neighbour blur weighted 18:1 toward the cell below, and a ramp
+where red is linear, green is the square of the heat and blue is its **tenth** power. The randomness
+cannot be transcribed: the seed row comes from `Math.random()`, whose generator is seeded from the
+wall clock, so two runs of the *original* disagree. Ours draws from `JavaRandom` with a stated seed,
+which makes the output reproducible and therefore testable.
+
+**It is baked, not animated.** The simulation is run 200 ticks at pack load and written into the
+atlas, so the tile is a flame rather than a placeholder wherever it is drawn and costs nothing per
+frame. Animating it needs the atlas texture updated 20 times a second in VRAM *and* a fire emitter
+in the mesher to be visible in the world at all — neither exists, and both are named here rather
+than half-built.
+
+A pack's own fire tile is overwritten, deliberately: that is what the original does with it.
+
+### 5. Ten shapes that drew nothing, a slab that drew as a cube, and swimming
+
+The second play session's list, and again it was fewer bugs than it looked. "A slab and a double
+slab both place a double slab" and "the fence texture is just the wood texture in 2d" turned out to
+be the same bug seen twice -- **the mesher could only draw unit cubes** -- and "you can place crops,
+saplings and cacti on anything" turned out to be a rule the tick system already knew and the
+placement path had never asked.
+
+#### The cube vertex formats cannot express a slab
+
+`WorldVertex` stores a corner as three bytes of block coordinate and `QuadVertex` stores a face
+index the geometry shader rebuilds a *unit* cube from. Neither can put a corner half a block up. So
+the five standard blocks whose bounds are smaller than their cell -- the slab, the snow layer, both
+pressure plates and the button -- were all drawn as full blocks, and a slab and a double slab were
+pixel for pixel identical.
+
+`core/mesh/box.hpp` is the fix: one axis-aligned box, down the 16-byte **detail** stream that
+torches and fluids already use. The UV rule is `RenderBlocks`' own, read out of `bc.a` through
+`bc.f` -- one method per face -- and the interesting half is the sides, which take v from the box's
+**y** range with the *top* edge on the low end of the tile. A slab therefore shows the top half of
+its tile, which is what makes an upside-down slab's texture look shifted in every version of the
+game.
+
+**A full cube through the box path is identical to one through the cube path**, asserted vertex for
+vertex in `tests/box_test.cpp`. That is what says the new geometry agrees with what the console has
+been drawing since M0 rather than being a second opinion.
+
+#### Ten emitters, and `renderItemIn3d`
+
+`meshSection` skipped a render type it had no emitter for, on the argument that a missing ladder is
+obvious and a cubic one looks deliberate. That was right while nothing could place a ladder;
+Creative can place all ten, so the choice became "invisible" rather than "not yet".
+
+`core/mesh/shapes.cpp` has them: **stairs, doors, ladders, cactus, fence, crops, rails, redstone
+wire, levers and fire**. Four need no new geometry -- stairs, doors, ladders and cactus draw the box
+they collide as, already measured against a running jar -- and the rest carry constants read out of
+their own `RenderBlocks` method. `bc.a(ly,III)`'s if-chain is the map from a render type to the
+method that draws it, and it is quoted in the header.
+
+Two were honestly simplified and said so in place: the lever's arm pointed straight out of its
+mounting rather than swinging, and fire is four wall-hugging sheets rather than the original's
+flapping diagonals. **The lever is a transcription as of step 8** -- and the angle named here was
+wrong as well, it is 0.69813174 radians, 40 degrees, not 22.5.
+
+The fence also fixed its own inventory icon. `RenderBlocks.renderItemIn3d` is a static `(I)Z` in the
+jar and answers true for render types **0, 10, 11 and 13** -- the standard block, stairs, the fence
+and the cactus -- so a1.1.2 draws a fence in a slot in three dimensions and this build drew a flat
+plank tile. `core/block/model.hpp` now holds the box list, and both the mesher and the icon read it,
+so a fence in the hand and a fence in the world are the same shape rather than two sets of
+constants.
+
+#### Measured: +0.9 µs a section, and the two attempts before it
+
+Over the real 1,119-column world, on the dev host at `-O3` with sanitizers off:
+
+| | before | after |
+|---|--:|--:|
+| cube quads | 2,135,496 | 2,135,496 |
+| opaque detail quads | 56,038 | 56,074 |
+| mesh, per section | 34.5 µs | 35.2 µs |
+| of which face emit | 23.5 µs | 24.4 µs |
+
+Thirty-six extra quads, because a played world has few ladders and no slabs. **The first version cost
+13 µs a section for those thirty-six quads** -- face emit went 23.5 → 36.4 -- because it asked
+`selectionBox` for every block in the world to find out whether it was a unit cube. Folding the two
+facts the loop needs into one `unitCube` column of the generated block table, in the row it has
+already loaded, brought it back: a second table is a second cache line on the hottest loop in the
+project, and that is the whole of the difference.
+
+#### The placement rules were already written; nobody asked them
+
+Every `canBlockStay` predicate has been in `core/tick/behaviour.cpp` since the tick system landed,
+because a neighbour change has to ask the same question -- that is what makes a flower pop when you
+mine the dirt under it. The edit path tested `blockAt(...) == air` and stopped.
+
+So a cactus went on glass, wheat on stone and a sapling into mid-air, and the tick deleted them a
+moment later, which reads as the game losing your block rather than as a rule. `tick::canPlaceAt` is
+`Block.canPlaceBlockAt` and its dozen overrides, built on the predicates that were already there,
+and the placement path asks it. `tests/tick_test.cpp` checks the two agree: **a block placement
+accepts must not be one the next tick deletes**, over every ground the version defines.
+
+It also ended the "placement is air-only" deviation, because the base `canPlaceBlockAt` counts a
+liquid as free space. You can build into a pond, as you can in the game.
+
+#### Swimming
+
+`docs/physics-a1.1.2.md` had the two liquid branches transcribed and ended "not yet written". They
+are written, and fourteen new oracle cases match a real `EntityPlayer` bit for bit -- sinking,
+swimming forward, rising on a held jump, wading out onto a shore, both liquids, and a one-block
+puddle that is deliberately *not* deep enough to swim in. (The case named for rising on a held jump
+did not rise, and neither did the jar the oracle was taken from. See step 6.)
+
+The predicates underneath were where the reading was. `isInWater` is not a material test: a cell
+only counts if the fluid's **surface** reaches the probe, and the comparison is against the loop's
+upper bound rather than the cell being examined -- read it as the cell and every puddle is deep
+enough to swim in. `isAnyLiquid` floors its minimums twice for negative coordinates, which is the
+original's and is reproduced. The four methods are written up in the physics doc.
+
+**The current is not implemented.** `handleMaterialAcceleration` also pushes the body along the
+fluid's flow vector, and that needs a flow field this port does not have. It is why every oracle
+case is a *still* pool.
+
+#### Smaller things from the same list
+
+- **Sprint is Creative only.** a1.1.2 has no sprint at all; Survival here is meant to *be* a1.1.2,
+  and Creative is already openly not.
+- **Two slabs make a double slab**, which is `BlockStep.onBlockAdded` and therefore a tick
+  behaviour rather than anything the placement path knows. The class file tests the block *below*
+  and not the block being added, so a double slab placed on a single slab also collapses into one --
+  a real quirk, measurable in a running client, and reproduced.
+- **The palette lost three more ids**: the double slab (which is now *made* rather than placed), the
+  lit redstone ore and the *unlit* redstone torch. The one you carry is the lit one, which is why
+  that pair is the way round it is. 63 items offered.
+
+#### What is not done in step 5
+
+- **Still nothing on hardware.** Both targets build, 785 host tests pass, ThreadSanitizer is clean.
+- ~~**The lever's arm does not swing**~~ -- fixed in step 8. **Fire does not flap.** Named above
+  and in the source.
+- **The fluid current does not carry you.**
+- ~~**A door still places one block, not two**~~ -- fixed in step 6. Its two sides are still not
+  mirrored: the block table drops the sign that means "mirror this face", because the 12-byte vertex
+  has no flip bit.
+- ~~**Redstone wire is drawn with the crossing tile always and no colour**, because the detail
+  vertex has no per-quad tint.~~ -- fixed in step 8, and the reason given here was wrong: a1.1.2's
+  wire renderer has no tint at all, and the glow is the atlas row below.
+
+#### What is not done in step 4
+
+- **Still nothing on hardware.** Both targets build, 760 host tests pass, ThreadSanitizer is clean
+  over the streamer and the cache — the console run has not happened.
+- **Buckets place nothing.** `ItemBucket` works from a ray trace in `onItemRightClick` rather than
+  from a face, so there is no placement for `--items` to measure and `places` is 0. It is a real gap
+  in what a Creative hand can do.
+- **Only placeable items are offered.** A sword, an ingot and a bucket do nothing this build can
+  perform, so the palette does not offer them. They are still in the table, still drawn, and still
+  round-trip through a save — a sword the real client left in a world stays a sword.
+- **Armour slots are storage.** They load, save and can be swapped into; nothing wears anything.
+- **Fire, doors, ladders, rails, stairs, fences, levers, crops, cactus and redstone wire still have
+  no mesher emitter**, so a door placed from the palette lands in the world and is invisible. That
+  is unchanged by this step and is the largest remaining gap in what the palette can put down.
+- **A door places one block, not two.** `ItemDoor.onItemUse` writes the lower half and an upper half
+  above it with metadata 8; the edit path writes one block with `placementMetadata`. It did not
+  matter while doors were unreachable and it matters now that the palette offers one. The measured
+  `places` column only records the block, not the second write, so fixing this is a placement-path
+  job rather than a table one.
+
+### 6. Holding jump in water, and a slab a1.1.2 will not let you finish
+
+Two reports from the third play session. One was a real bug with a **wrong oracle standing behind
+it**, which is the interesting half; the other was a1.1.2 being a1.1.2.
+
+#### Holding jump in water jumped instead of swimming up
+
+`PlayerBody::tick` ran `if (input.jump && onGround) jump();` and then took the liquid branch. The
+class file does not: `ge.j()` -- `EntityLiving.onLivingUpdate` -- reads `isInWater()` and
+`handleLavaMovement()` first and branches **three ways**, adding a flat `0.03999999910593033` to the
+motion in either liquid and reaching `jump()` only when both are false. So a swimmer got one 0.42
+launch off the bottom of the pool and then sank, instead of rising steadily. Against the swim
+branch's 0.8 drag and 0.02 sink the real thing settles at 0.06 a tick, a block and a fifth a second.
+There is also no `jumpTicks` cooldown in a1.1.2 -- that is a later version's -- so the button fires
+again the tick you land.
+
+**The fixture agreed with the bug.** `tests/player_body_vectors.hpp` has had a case called
+`swim_up_by_holding_jump` since step 5, run twice as they all are, matching a real `EntityPlayer`
+bit for bit -- and in it the player sinks. `tools/genref.java` drove the jar with
+`if (jumping && onGround) jump()`: onLivingUpdate's third branch and neither of its first two. The
+oracle was a transcription of the same misreading, so fourteen liquid cases agreed to the last bit
+on the wrong answer, and a tick-for-tick comparison can never catch that.
+
+The generator reproduces all three branches now. Regenerating moved **240 lines of 13,317** -- the
+two `swim_up_by_holding_jump` cases and the two grounded/airborne counters, nothing else -- which is
+both the fix and the evidence that the emitter is deterministic under this JVM.
+
+`holding_jump_in_water_rises_instead_of_jumping` is the guard that would have caught it: it asserts
+the *shape* of those rows rather than their bits -- the first tick's motion is upward and smaller
+than a jump, the feet gain two blocks over sixty ticks, and no step is ever `onGround`. **A fixture
+whose name claims a behaviour needs a test that its rows show it**; there is no other kind of test
+that can fail when the oracle is wrong in the same direction as the port.
+
+786 tests pass.
+
+#### "Slabs cannot be placed on the top half of a block" -- and in a1.1.2 they cannot
+
+Probed rather than argued, by driving `editBlocks`' exact predicate chain -- ray trace,
+`canPlaceAt`, the player-box check -- over a scene world:
+
+| Aim | Result |
+|---|---|
+| The top face of a slab, standing beside it | places, and `BlockStep.onBlockAdded` merges the two into a double slab |
+| The upper half of a wall's side face | places, in the adjacent cell, as a bottom slab |
+| The lower half of the same face | places, identically -- the half you click changes nothing |
+| The top face of the slab **you are standing on** | refused: the new block would be inside the player |
+
+The last row is the report, and it is what the class files do. `ItemBlock.onItemUse` offsets by the
+struck face and writes **one** block; the merge is `onBlockAdded` looking down afterwards. So
+finishing a slab means placing into the cell *above* it -- the cell your legs are in -- and
+`World.canBlockBePlacedAt` refuses it through `checkIfAABBIsClear`, which fails on any entity in the
+box with `preventEntitySpawning` set. That is the player. Step off the slab and click its top face
+and it completes.
+
+The modern behaviour the report describes -- clicking the upper half of a face to get an
+upside-down slab -- **does not exist in a1.1.2 at all**. `oi` (`BlockStep`) sets its bounds once in
+its constructor, `(0, 0, 0, 1, 0.5, 1)`, reads no metadata anywhere, and the placement path has no
+notion of which half of a face was struck beyond the face itself. Adding it would be a deliberate
+deviation of the same kind as Creative flight, and would need the same argument written down first.
+
+#### A door arrived as half a door, and nothing could be opened
+
+Two more from the same session, and they turned out to be one missing method each.
+
+**`ItemDoor.onItemUse` is the only item in a1.1.2 that places two blocks**, and the placement path
+did not know it: it read `places` off the item table, wrote block 64 once, and stopped. A lone
+lower half then fails `onNeighborBlockChange`'s "is my other half there" the first time anything
+beside it changes and deletes itself -- so the report was "doors disappear when something gets
+placed next to them", and the cause was three hundred lines away in the placement. The method also
+carries a facing floored out of the player's heading and a **hinge that mirrors** against a door or
+a wall already on one side, which is what makes a pair of doors meet in the middle.
+
+**Nothing was asking `Block.blockActivated`.** `PlayerController.onPlayerRightClick` asks the block
+before the item, with no sneak override, and a block that answers true has spent the click. Without
+that call there is no way to open a door, flick a lever or press a button, and L could only ever
+place. `tick::blockActivated` is the dispatcher, on the behaviour column like every other tick
+dispatch; the four bodies -- door, lever, button, redstone ore -- sit beside the redstone halves
+that were already written and reuse them, so opening a door by hand is `doorSetOpen` with the state
+negated rather than a second copy of it.
+
+Two of the four are worth naming: **an iron door consumes the click and does nothing** (its first
+line is a material test, which is the whole of why it needs redstone), and **redstone ore lights but
+does not consume** -- its override glows and then returns the base class's `false`, so one press
+lights the ore and places the block in your hand.
+
+**The right-click moved into core**, as `core/item/use.cpp`. It had been inline in
+`platform/ctr/main.cpp`, which was fine while a placement was "offset by the face and write one
+cell" and stopped being fine the moment it was a two-block door oriented from a heading: nothing in
+`src/platform/` can be tested. `WorldStreamer::rightClick` is what is left on the platform side --
+the renderer bracket, held around the whole decision rather than around each write, because one
+click is now up to four.
+
+Two rules came back with the transcription, both from `ItemBlock.onItemUse` and its call to
+`World.canBlockBePlacedAt`:
+
+- **A snow layer is replaced, not built on.** The method's first line rewrites the side to 0 and
+  skips the offset entirely.
+- **Water, lava, fire and snow take a block whatever the block's own rule says.**
+  `canBlockBePlacedAt` returns true for those four *before* it reaches `canPlaceBlockAt`, so the
+  original lets you plant a sapling in water and then kills it on the next tick. This port had
+  tightened that into a refusal when the placement rules were first wired up in step 5 -- a
+  reasonable-looking mistake, because the two methods have almost the same name and only one of
+  them is the one a placement asks.
+
+**Measured, not just derived.** A scratch JVM harness stood a real `EntityPlayer` in a real world,
+used a real door item at seven headings, and called `blockActivated` on a door, a lever, a button, an
+iron door and redstone ore. Every number agrees with the port: the facing table (yaw 0 -> 1, 90 -> 2,
+180 -> 3, 270 -> 0, and -90 -> 0 as well, which is the row that would catch a sign error), the hinge
+mirror, the door's `meta ^ 4` on both halves, the lever's 5 -> 13 -> 5, the button's 1 -> 9 with a
+second press consumed and ignored, the iron door's refusal, and the ore's `false`. The facing table
+is in `docs/physics-a1.1.2.md` and the port's copy of it is in `tests/use_test.cpp`.
+
+`tests/use_test.cpp` is sixteen cases over the whole path, including the regression the report was:
+place a door, build three blocks around it, and both halves are still there.
+
+**802 tests pass**, and both targets build.
+
+#### What is not done in step 6
+
+- **Still nothing on hardware.**
+- **A chest, a workbench, a furnace and a jukebox do not consume a right-click**, where a1.1.2's do.
+  All four answer by opening a screen and there are no screens; eating the click to show nothing
+  would be indistinguishable from the placement being broken. It is one deviation with one cause and
+  it reverses the day a container screen lands. Named in `core/tick/behaviour.hpp`.
+- **A door's two faces are still not mirrored**, which is the 12-byte vertex having no flip bit --
+  the same gap step 5 named.
+- **No sounds.** Every activation in the class files plays one -- `random.door_open`,
+  `random.door_close`, `random.click` -- and nothing in this port can emit a sound effect yet. Each
+  one is named at the line it would go on.
+- **A pressure plate still needs an entity to stand on it**, which is the one redstone input left.
+
+### 7. Footsteps, breaking, and sixty-four flecks of dirt
+
+The third play session's second half, and the first three lines of this build that make a noise
+about the world rather than about a menu.
+
+#### There is no `dig.*` in a1.1.2, and that is the finding
+
+Every later version splits footsteps from breaking -- `step.grass` against `dig.grass` -- and
+this project's own audio doc had a "not yet ported" row for both. a1.1.2 does not: `bb`
+(`StepSound`) has two getters and **both return `"step." + name`** on the base class. Breaking a
+block plays a footstep. Two of the nine singletons override one getter and are the only rows
+where the pair differs: sand breaks like gravel, glass breaks with `random.glass`.
+
+Which getter is which cannot be read from the bytecode -- on the base class they are the same
+two lines -- so they are named by their callers, and that fact lives in `extract_blocks.py`'s
+`MEMBER_MAP` beside the other four of its kind. Backwards, and glass breaks with a footstep.
+
+**The table is generated and then measured.** `tools/extract_blocks.py` gained about a hundred
+lines: it finds the StepSound class from Block's field list (the type with the most static
+finals that Block also has exactly one instance field of -- both halves are needed, because
+Block has 78 static finals of its own type), reads the nine singletons out of the initialiser
+with their names, volumes and pitches, resolves the two subclasses' overrides, and takes each
+block's row off the `setStepSound` call in the chained constructor. Six blocks never call it and
+both cases are real: water and lava take **Block's constructor default**, and the two staircases
+**copy the block they are modelled on**, which is what makes wooden stairs sound like wood
+rather than like stone. All seventy rows were then read off a running jar and compared: **zero
+mismatches**.
+
+`Block.blockParticleGravity` was measured the same way and is 1.0 for all seventy, so it is a
+constant here rather than a column.
+
+#### The positional sound path
+
+`of.b(name, x, y, z, vol, pitch)` is not the interface path scaled. It has **no `0.25f`**, which
+is why a footstep at `volume * 0.15` is audible at all; a volume above 1 stretches the fade
+distance instead of getting louder; and the falloff is paulscode's `ATTENUATION_LINEAR` over 16
+blocks -- a *library* rule, the one part of this that could not be read out of the jar, and
+named as such where it is implemented.
+
+What does not cross the seam is **stereo**: panning needs a listener orientation and
+`audio::Backend` carries `playSample(id, gain, pitch)`. A sound is attenuated and centred, and
+that is the deviation.
+
+**The backend's sample cap moved from 16 to 48**, and the number is the block table's rather than
+a guess: six distinct `step.*` keys plus `random.glass` and `random.click`, which is 35 files in
+Mojang's own set. Partial loading is not an option -- `playSoundFX` draws its variant *before* it
+knows whether the file is resident, so a key with half its variants loaded is a footstep that is
+silent half the time. About 1.1 MB of linear memory for a full set, and zero for the common case,
+because a1.1.2 shipped no sounds at all.
+
+#### The footstep trigger, and the four ways to get it wrong
+
+It lives in `moveEntity`, not in the player, and every clause of it is audible: it measures the
+distance **covered** rather than asked for (so walking into a wall is silent), accumulates that
+distance **outside** the test (so a sneaking player banks it and pays out on standing up),
+**increments** `nextStepDistance` rather than resetting it, and lets **snow on top win outright**
+-- including over a liquid, which the branch below would have silenced.
+
+`PlayerBody::move` decides which block earned the step and leaves it in `stepSoundDue`; the
+platform layer, which is the half with a listener, plays it. That split is what lets the whole
+trigger be tested with no audio at all, and `tests/step_sound_test.cpp` does exactly that.
+
+#### The particles, and a rounding trap that ate them
+
+`EntityDiggingFX extends EntityFX extends Entity`, so a fleck runs the **same `moveEntity` the
+player does** -- it lands on the ground and slides along it. That is what finally pulled the
+block sweep out of `PlayerBody` into `core/entity/sweep.hpp`; the move is verbatim and the
+bit-exact body fixture is what proves it.
+
+Sixty-four particles per block, cut from a 4x4x4 grid of the cell and thrown along the offset
+from its middle, spawned **before** the block is cleared because they need its texture. They
+draw through the *existing* detail pipeline and the existing shared index buffer: four
+`DetailVertex` per particle, positions relative to the eye's block rather than to a chunk
+origin, so the whole pass needed one 32 KB linear allocation and no new shader.
+
+**The trap.** The first version stored the position and rebuilt the box from it each tick. That
+is a lossy round trip: the clip lands the box's bottom exactly on the block's top, and a rebuilt
+box sits a fraction of an ulp below it -- at which point `calculateYOffset`'s
+`mover.minY >= block.maxY` declines to stop it and the fleck falls through the world. The box is
+the authority, as it is in the jar, and `particles_fall_land_and_stop` is the test that found it.
+
+**The pool is 512 and lives on the heap.** 512 is eight clouds, which is the most a 5-tick edit
+repeat and a 40-tick maximum lifetime can put in the air at once; past it the *newest* spawn is
+refused and counted, because a cloud vanishing mid-flight looks like a bug where a missing one
+looks like nothing. On the heap because it is 67 KB and a 3DSX main thread has 32 KB of stack --
+`-Werror=stack-usage` caught that the moment it was a local, which is the guard doing its job.
+
+#### What is not done in step 7
+
+- **Still nothing on hardware.** Both targets build, **823 host tests pass**.
+- **No panning.** Named above; it needs a listener orientation at the backend seam.
+- **`Block.onEntityWalking`** -- redstone ore lighting when trodden on -- is the one line of the
+  footstep block not ported, because `move()` takes a const world.
+- **The fluid current still does not carry you**, unchanged from step 5.
+- **No other sound has an emitter yet.** `random.fizz`, the fire loops and the ambient cave
+  counter are all reachable now and all still named in [audio-a1.1.2.md](audio-a1.1.2.md).
+- **Particles are only ever block-breaking ones.** a1.1.2 also throws them on landing, under a
+  sprinting player, off a torch and out of a fire; every one of those needs a display tick that
+  does not exist.
+
+### 8. Four things a play session found: a lever that deleted itself, wire that never connected, footsteps from the sky, and a drop button
+
+The fourth play session, and three of the four turned out to be a *harness* being wrong rather than
+a transcription being wrong -- which is the shape of bug this project is meant to be resistant to,
+so each one is written up with what the harness did and how it was caught.
+
+#### The lever deleted itself when flicked, and the placement table put it down switched on
+
+Two faults, one block.
+
+**`faceSupported` answered false for orientation 6.** A floor lever is metadata 5 *or* 6 --
+`BlockLever.onBlockAdded` writes `5 + rand.nextInt(2)`, which is which way round the handle lies --
+and this port's support check had cases for 1 through 5 and `default: return false`. The original's
+`no.a(Lcn;IIII)V` is a run of five `if (!isBlockNormalCube(..) && meta == n)` lines that *set* a
+drop flag; a metadata the chain never names leaves the flag alone. So 6 is "still supported", not
+"unsupported". Flicking notifies the lever's own cell, the notification came straight back to the
+support check, and half of all floor levers removed themselves mid-flick.
+
+**And the placement table was measuring a punch.** `tools/genref.java --place` places each block and
+then called `ly.b(Lcn;IIILdm;)V` on it, on the reading that a1.1.2's controller runs
+`onBlockPlacedBy` after `ItemBlock.onItemUse`. It does not -- **a1.1.2 has no `onBlockPlacedBy` at
+all**. `Block` takes an `EntityPlayer` in three methods and that one is `onBlockClicked`, reached
+from `PlayerController.clickBlock`, which is the *left* button starting a break. The sweep was
+placing every block and then hitting it. Four rows of the shipped table were the hit:
+
+| block | was | is | what the punch did |
+|---|---|---|---|
+| lever | 13/14 on the top face | 6 | flipped it on |
+| stone button | 9…12 | 1…4 | pressed it |
+| wooden door | 4 | 0 | opened it |
+| redstone ore | -1 everywhere | 0 | turned it into id 74, which the sweep read as "did not survive" |
+
+`onBlockAdded` fills in what a `(id, face)` table cannot: the underside's row, which
+`onBlockPlaced` leaves alone and so is 0, and the floor lever's `5 + rand.nextInt(2)`. The second
+of those looks cosmetic and is not -- `no.c(Lcn;IIII)Z` names orientations 1 to 5 and **not 6**, so
+a floor lever lying the second way round hands no direct power to the block it stands on. It still
+powers wire beside it; that goes through the indirect answer, which only reads bit 3.
+
+The same fix settled the long-standing "only the lever consults the player's heading" note in
+[physics-a1.1.2.md](physics-a1.1.2.md). It never did. The 13/14 alternation across sixteen headings
+was `nextInt(2)` on an unseeded world; the sweep now reseeds `World.rand` per case, and
+`kPlacementYawVaryingCount` is **0**. Nothing in a1.1.2 orients from where the player is standing.
+`ItemDoor.onItemUse` reads the heading, and it is an item.
+
+**The build did not notice the new table.** `CMAKE_CONFIGURE_DEPENDS` listed `blocks.json` and
+nothing else, so `build-host/gen/placement.hpp` kept the old numbers through a rebuild and the
+suite failed against a fixture that was right. `items.json`, `placement.json` and `selection.json`
+are listed now.
+
+#### Redstone wire drew the crossing tile, always, unlit
+
+The note in step 5 said the tint was missing "because the detail vertex has no per-quad tint". That
+was describing a later version's renderer. **a1.1.2's `bc.e` calls `setColorOpaque_F(f, f, f)`** --
+brightness on all three channels, no tint anywhere -- and the glow is a *texture*:
+`kf.a(II)I` is `blockIndexInTexture + (metadata > 0 ? 16 : 0)`, one row down in terrain.png. Tiles
+84/85 are the dark cross and line, 100/101 the lit pair. Verified by decoding terrain.png and
+printing the four.
+
+So the wire now does what the class file does: `isPowerProviderOrWire` on all four horizontal
+neighbours (one down where the neighbour is not a solid, one up where it is), the line tile for a
+straight run and the crossing tile otherwise, unconnected arms of a crossing pulled back 5/16 of a
+block with their UV edge, the lit row when the metadata is non-zero, and a vertical sheet up a solid
+neighbour that has wire standing on it. `tick::canProvidePower` is public for this: the renderer and
+the circuit have to agree about what "connected" means, and two copies of that list is how a wire
+gets drawn reaching towards something it does not power.
+
+#### The lever's handle was broken at the top, and it was the UVs
+
+The handle was an upright box through `addBox`, which derives a face's UV from the box's own bounds.
+Tile 96 is a two-texel strip in columns 7-8, rows 6-15, and the top six rows of it are transparent
+-- so a box asking for the whole tile drew nothing over the top third of the handle.
+
+`bc.c` takes a fixed patch: texels 7…9 across, 6…16 down for the four sides and 6…8 for the two
+ends. It also *swings* the handle, through eight corners it rotates -- 0.69813174 radians for the
+throw about x, a quarter turn for the second floor orientation, a right angle plus a quarter turn
+per wall -- and every one of those goes through `addDetailQuad`, which takes arbitrary corners. So
+the lever is a transcription now rather than the file's second honest simplification; fire is the
+only one left. `MathHelper::sin`/`cos` do the rotation, not `<cmath>`, for the reason everything
+else in this port uses the table.
+
+#### Flying paid out a burst of footsteps over low ground
+
+`Entity.moveEntity` banks `distanceWalkedModified` unconditionally and spends it only where the cell
+under the feet is not air. That is a1.1.2 exactly, and it is why a fall across ground pays its steps
+out one at a time afterwards -- which the report agreed was right. But a1.1.2 has no flight, so
+`moveEntity` never runs on an airborne player there and the question never arises; here it did.
+Crossing the sky banked a block of credit per block travelled and cashed the lot in the moment the
+player skimmed a floor.
+
+`tickFlying` now saves and restores the two counters around its `move()` and clears `stepSoundDue`.
+It is a rule of ours, and it is marked as one in the source. Walking after a flight still steps on
+its own schedule, which is the other half and has its own test.
+
+#### A drops one of what is in the hand
+
+`InventoryPlayer.decrStackSize(currentItem, 1)`, which is the half of a drop that is not the
+entity. **Nothing landed on the ground at first** -- there were no item entities -- so the item was
+spent rather than dropped, and the method said so rather than being called `drop` and quietly
+deleting. Step 9 gave it somewhere to land.
+
+A is the button that was going spare: focused, it is the bottom screen's pick, and the drop is on
+the unfocused branch. It also overlapped with flight's held sprint, which step 9 removed.
+
+#### What is not done in step 8
+
+- **Still nothing on hardware.** Both targets build, **837 host tests pass**, and the
+  ThreadSanitizer build compiles clean -- the mesher runs on the worker and this touched it.
+- ~~A floor lever always lands on orientation 6~~ -- the roll is in `tick::leverPlaced` now, which
+  is `BlockLever.onBlockAdded`. It had to be: `no.c` names orientations 1 to 5 and **not 6**, so a
+  floor lever lying the second way round hands no *direct* power to the block it stands on -- a
+  a1.1.2 quirk that a pinned table would have given every lever in the game.
+- ~~**Nothing is dropped in the world.**~~ -- item entities landed in step 9. A broken block still
+  leaves nothing, and that is now a *table* rather than an entity: `idDropped` and
+  `quantityDropped` off every block.
+- **Fire still does not flap**, unchanged from step 5.
+- **The wire's climb is drawn but the wire itself still has no bottom-face cull**; every sheet in
+  `shapes.cpp` is drawn from both sides, which is a quad the original does not emit.
+
+### 9. One flight speed, and something to pick back up
+
+Two asks off the back of step 8's drop button, and the second is the first entity in this project
+that is not a particle.
+
+#### The held boost went, and A is only the drop now
+
+Creative flight copied Spectator's held boost onto A, which put a modifier on the one face button
+Creative had going spare -- and step 8 had just made that button the drop. The overlap worked (the
+boost read `held` and the drop read `down`) and read as an accident, which is what it was.
+
+`kFlightSprintSpeed` is gone and `tickFlying` takes one speed. Spectator keeps its boost on X:
+Spectator is a camera with nothing to hit, and Creative flight collides, places and breaks, so a
+held speed control is the wrong shape for the second in a way it is not for the first.
+`flight_is_stopped_by_a_wall_at_both_speeds` became
+`flight_is_stopped_by_a_wall_even_faster_than_a_block_a_tick` and kept its over-speed case: what
+that test proves is that the **sweep** is safe for a fast mover, and dropping the fast case with the
+fast mode would have thrown that away.
+
+#### `EntityItem`, transcribed
+
+`dx` in the jar. The constructor, `e_()` (onUpdate), `b(dm)` (onCollideWithPlayer) and
+`dm.a(Lev;Z)V` (dropPlayerItemWithRandomChoice) are all in `core/entity/item_entity.cpp`, constants
+and order included:
+
+| | |
+|---|---|
+| box | `setSize(0.25, 0.25)`, `yOffset = height / 2` -- so the position is the box's **centre** |
+| pull | 0.04 a tick |
+| drag | 0.98 on y; on x and z the floor's own slipperiness times 0.98, and `0.58800006` over air |
+| bounce | `motionY *= -0.5` on landing |
+| lifetime | 6000 ticks, five minutes, a hard `>=` |
+| pickup delay | 5 from the constructor, **40** when a player threw it |
+| throw | 0.3 along the look vector, `+0.1` on y, then a 0.02 scatter |
+| spawn height | `posY - 0.3 + getEyeHeight()`, and `getEyeHeight` is **0.12** on `EntityPlayer` |
+
+**It moves through the shared sweep** in `core/entity/sweep.hpp`, the same one the player and the
+digging particles use -- so an item lands on a slab, slides down ice and stops in a corner with no
+line here saying so. And the box is the authority with the position derived from it, which is the
+trap `Particle` documents at length: rebuild the box from a rounded centre and its bottom sits a
+fraction of an ulp below the block it landed on, at which point `calculateYOffset` declines to stop
+it and the item falls out of the world. `an_item_does_not_fall_through_the_world_it_lands_on` is
+that test.
+
+**a1.1.2 has no drop key.** `dropOneItem` does not exist in this version and the only callers of
+`dropPlayerItem` in the jar are the inventory screens spilling the stack on the cursor. So the
+button is ours and the throw under it is the game's -- the same split Creative itself is.
+
+**The entity is spawned before the stack is spent.** The pool holds 64 and refuses the newest past
+that, the rule the particle pool and the tick scheduler already follow; taking the item off the hand
+for an entity that was refused would have destroyed it.
+
+#### Picking one up
+
+`addItemStackToInventory` is `Inventory::addStack`, and it is the one piece of this that had a
+surprise in it. The original takes an `ItemStack` and edits its `stackSize`; this takes a count and
+returns the leftover, which says the same thing without a caller having to know its argument was
+mutated -- and `true` in the original is exactly `leftover == 0` here.
+
+- **`storePartialItemStack` tries one slot**, not the array: the slot already holding this item with
+  room in it, or failing that the first empty one. What will not fit comes back and
+  `addItemStackToInventory` drops the *whole* remainder into the first gap -- which is why a count
+  past an item's own maximum can sit in a slot, exactly as it can in the original.
+- **Damaged stacks do not merge.** `if (itemstack.itemDamage == 0)` is the method's first line.
+  Nothing wears out in this build yet, so every stack takes the merging path, but the rule is
+  written rather than assumed away.
+- **All of it or none of it.** The entity is removed only when the stack went in whole; a partial
+  fill leaves it holding the remainder and the player walks over it again next tick, which is what
+  stops a full inventory eating what it could not carry.
+
+The reach is `EntityPlayer.onUpdate`'s: the player's own box expanded by **one block horizontally
+and nothing vertically**, so an item is reached from a step away sideways and never through a floor.
+`random.pop` plays per pickup at volume 0.2, pitch `((r - r) * 0.7 + 1) * 2`.
+
+#### Drawing it, and the second texture that needed
+
+`ab.a(Ldx;DDDFF)V` -- `RenderItem.doRenderItem` -- draws two different things, and so does
+`core/render/item_entity_mesh.cpp`:
+
+- an item that places a block whose render type `RenderBlocks.renderItemIn3d` answers true for is
+  drawn as **that block, quarter size, spinning about its own vertical axis**. It asks
+  `block::renderBoxes` rather than carrying a second copy of the render-type list, which is what
+  keeps a fence in the hand, a fence in a slot and a fence on the ground the same shape;
+- everything else is a **flat sprite, half a block across, turned to face the camera about the
+  vertical axis only**. `glRotatef(180 - playerViewY, 0, 1, 0)` and no pitch term, so a sword on
+  the ground stays upright when you look down at it.
+
+The bob and the spin are `sin((age + partial) / 10 + hoverStart) * 0.1 + 0.1` and
+`((age + partial) / 20 + hoverStart) * 57.295776` degrees, both off the entity's own random phase so
+a heap does not pulse in unison. A stack draws as 1, 2, 3 or 4 copies past 1, 5 and 20, and the
+jitter between them is seeded `187` **per entity** -- that literal is the point, not an accident: it
+is what makes a given pile look the same from frame to frame instead of shimmering.
+
+**gui/items.png went to the GPU for this**, as `Atlas::initItems`. Before it, only the bottom
+screen's software rasteriser read that sheet. It goes to ordinary linear memory rather than VRAM --
+the block atlas earns VRAM because every fragment of every chunk samples it, and this is a handful
+of quads a frame -- and the item pass is two draws with the atlas rebound in between, because the
+PICA takes one texture per draw. A pack with no items.png draws no sprites at all rather than
+falling back to a terrain tile that would be a lie about what is lying there.
+
+#### What is not done in step 9
+
+- **Still nothing on hardware.** Both targets build, **855 host tests pass**, and the
+  ThreadSanitizer build compiles clean.
+- **A broken block still drops nothing.** That is `idDropped` and `quantityDropped` off every block
+  -- a generated table, and a derivation of its own -- rather than anything the entity is missing.
+- ~~**`handleWaterMovement` is skipped**~~ -- **done in step 10.** The flow field moved into
+  `core/block/fluid_flow.hpp` and both the player and the item read it.
+- **No `random.fizz`** when an item lands in lava. The throw-back is there; the sound is on
+  [audio-a1.1.2.md](audio-a1.1.2.md)'s list with the rest of the unported ones.
+- **Items are not saved.** They live in the pool for the session and are gone when the world is
+  closed, which is a1.1.2's `entities.dat`-shaped gap and needs the chunk entity list rather than a
+  pool.
+- ~~**They do not merge.**~~ -- **changed in step 10, and openly not this version's.** a1.1.2's
+  `EntityItem` really has no `combineItems`; it was asked for anyway, so the later version's is
+  transcribed and marked. See step 10.
+
+### 10. Six things a play session found: plates, currents, heaps, and fire that stood still
+
+Six reports, and they turned out to be five different kinds of missing. Two were a mechanism
+transcribed with its *input* left unbuilt (a pressure plate that could not see entities; water that
+could not push one). One was a renderer drawing half a block's shapes. One was a texture that ran
+once and stopped. Two were smaller: how drops behave, and eight pixels of a bevel.
+
+**899 host tests pass**, and both targets build clean.
+
+#### Pressure plates -- the seam a block behaviour needed and no other has
+
+`al` was already here: its support rule, its `canProvidePower` (straight up and nothing else), its
+`indirectlyProvidesPowerTo` (everywhere), its tick rate of 20. What was missing was the only thing
+it actually does, `al.h(Lcn;III)V` -- setStateIfMobInteractsWithPlate -- because that method asks
+the world a question no other block behaviour asks: *is anything standing here*.
+
+So `TickWorld` grew one hook, and it is deliberately not on `TickAccess`. `TickAccess` is how the
+tick reaches **chunks** and is built by `WorldStreamer`, which owns them; nothing owns the player
+and the dropped items together except the frame loop, so `setEntityQuery` is set there, once. Unset
+means "there are no entities", which is the honest answer for every headless tool in this project
+and is exactly what a plate did before this existed.
+
+| | |
+|---|---|
+| sense box | `(i + 0.125, j, k + 0.125)` to `(i + 1 - 0.125, j + 0.25, k + 1 - 0.125)`, and the arithmetic is the class file's floats, not doubles |
+| arm | `al.b(Lcn;IIILkh;)V` from the block-collision scan, and **only when the plate is up** |
+| disarm | `al.a(...Random)` on its own scheduled update, and **only when it is down** |
+| re-schedule | while something is on it, which is the twenty ticks it stays down after you step off |
+| writes | `setBlockMetadata` (which notifies nothing) then `notifyBlocksOfNeighborChange` on itself and on the block *below* |
+
+**The two plates are two tick behaviours now**, `pressure_plate_all` and `pressure_plate_mobs`. `al`
+takes a `js` -- EnumMobType -- as its third constructor argument, and the jar passes `js.b` ("mobs")
+for block 70 and `js.a` ("everything") for block 72. That is the whole observable difference between
+them: **a stack of dirt thrown on to a wooden plate presses it and the same stack on a stone plate
+does nothing**, because a dropped item is neither a mob nor a player. Two behaviours rather than one
+behaviour and a new generated column, which is the shape the table already uses for a flowing fluid
+against a still one.
+
+`tick::entityCollidedWithBlocks` is `moveEntity`'s tail: every block whose cell the entity's box
+overlaps gets `onEntityCollidedWithBlock`, with the original's **inclusive** floor bounds rather
+than the half-open range every other box walk here uses. It is called from the frame loop and not
+from inside `PlayerBody::move`, because that method takes a `const TickWorld&` on purpose -- moving
+a body must not be able to write blocks.
+
+#### The flow field had one reader and needed two
+
+`jp.e(nm,III)` -- BlockFluid.getFlowVector -- has been in this tree since the mesher needed it, to
+spin a flowing block's top texture. The other caller was missing: `cn.a(cf,gb,kh)Z`
+(World.handleMaterialAcceleration) sums that vector over every water cell an entity's box touches,
+normalises the total and adds **0.004** of it to the motion every tick. That is the entire mechanism
+by which a river carries you, and without it water was scenery.
+
+The transcription moved to `core/block/fluid_flow.hpp`, templated on the accessor rather than
+duplicated: the mesher asks a `MeshScratch` in local coordinates and an entity asks a `TickWorld` in
+world coordinates, and both answer `blockAt` and `dataAt` and nothing else. Two copies of one method
+against two world types is exactly the pair that drifts, and the drift would be silent -- water that
+pushes one way and paints its texture the other.
+
+Three details that are the original's and look like bugs:
+
+- **The push is normalised twice.** Each cell contributes a unit vector and the sum is normalised
+  again, so a wide box in a big river is pushed no harder than a narrow one. The cells decide the
+  *direction*; never the speed.
+- **The surface test compares against the loop bound**, `(double)l >= d1`, where `l` is the box's top
+  in cells -- so every fluid cell in the box is measured against one height rather than its own.
+- **A player holding jump in a current is pushed twice that tick.** `ge.j()` calls
+  `handleWaterMovement()` for the jump branch and `ge.b(FF)` calls it again for the movement branch,
+  and the method pushes as a side effect of answering. `PlayerBody::inWater` used to be a const
+  query asked once; it is `handleWaterMovement` now and is asked exactly where the original asks it.
+
+**Lava carries nothing**, and that is not an omission: `kh.G()` is `isMaterialInBB`, which has no
+vector in it at all.
+
+#### Fire had one shape and needed three
+
+`bc.d` branches on what is under and around the cell before it draws a vertex, and the branch is not
+cosmetic. `isBlockNormalCube(i, j-1, k) || canBlockCatchFire(i, j-1, k)` gives **floor fire** -- eight
+leaning sheets, 1.4 blocks tall, in two sets at ±0.2/±0.3 and ±0.4/the cell wall. Anything else gives
+**wall fire**, which is a different set of quads pinned to whichever of the four sides and the
+ceiling can burn. This drew an approximation of the first in every case, so a fire eating the side of
+a house floated in the air beside it.
+
+`canBlockCatchFire` is `chanceToEncourageFire[id] > 0` -- the `burnEncourage` column
+`core/tick/fire.cpp` already spreads by. So the shape a fire draws and the blocks it will spread to
+are one fact, and a wall flame is drawn against exactly the faces it is eating.
+
+Three things worth writing down:
+
+- **Fire in mid-air with nothing to burn draws zero quads** -- in the original too. It is never seen,
+  because such a fire goes out on the next tick. Two shape tests had to be told to give fire a floor.
+- **A flame is 1.4625 blocks tall**, so it legitimately leaves its own cell upwards.
+  `no_new_shape_leaves_its_own_cell` now says so instead of passing by accident.
+- Two parities, `(i + j + k) & 1` and `(i/2 + j/2 + k/2) & 1`, pick which of the two flame tiles a
+  wall face starts on and whether its texture is mirrored. They change no geometry and are the whole
+  reason a burning wall does not look like wallpaper.
+
+#### ...and it stood still, because the atlas is in VRAM
+
+`applyAnimatedTiles` settled `TextureFlamesFX` once at pack load and stopped there, for a stated
+reason: the animation needs the atlas updated 20 times a second on a console where it lives in VRAM,
+which the CPU cannot store into.
+
+The way through is the PICA's own layout. A 16×16 tile is four of the GPU's 8×8 tiles, and the pair
+side by side is **adjacent in memory** -- so a tile is two runs of 128 words, 512 bytes each, and
+updating one is two small texture copies rather than a 256 KB re-upload. `tileRunsFlipped` and
+`tileRunIndex` are in `core/texture/tiled.hpp` **so the host suite can pin them**, which is the same
+reason `tiledOffset` is there: `platform/ctr/` is compiled only for the console, and the last atlas
+upload defect hid there for exactly that long. Four tests, including "a tile's runs hold only that
+tile" -- a run that reached past its tile would corrupt a neighbouring texture every time fire
+ticked.
+
+`texture::FlameAnimation` is the two simulations kept running, stepped on the **world's** clock and
+uploaded once a frame -- the same split the particles and the music counter use, so a console at 24
+fps and one at 60 see the same fire. It starts settled rather than black. Not measured on hardware:
+four `C3D_SyncTextureCopy` calls of 512 bytes a frame is the cost, and what that is in microseconds
+is a console question.
+
+#### Dropped items: heaps, and a clock that only runs while somebody is there
+
+Two changes, and the first is **openly not a1.1.2's**. `dx.e_()` in this version has no merge step
+-- ground merging arrives with Beta 1.8's `combineItems` -- so two heaps of dirt thrown side by side
+stayed two heaps for the five minutes they lived. That is faithful, and it was asked to change, so
+the later version's method is transcribed and marked rather than invented: the bigger stack absorbs
+the smaller, the survivor keeps the **younger** age and the **longer** pickup delay, damaged stacks
+do not merge, and the scan runs every 25 ticks inside a box expanded 0.5 horizontally.
+
+The second closes a gap that only exists because of how this port is built. a1.1.2's entities live
+*in* chunks and an unloaded chunk has none of them to tick; ours are a flat pool that outlives the
+columns under it, so a drop left behind while the player walked away quietly spent its five minutes.
+**An item whose column is not resident does not tick at all** -- no physics, no light resample, no
+merge, and above all no ageing.
+
+A merge empties a stack rather than removing it, and a sweep at the end of the tick reclaims them:
+the walk holds references into the pool and `removeAt` swaps the last entry into the hole.
+
+#### The palette's page arrows
+
+`text` paints its own background across every column it claims, and the arrows asked for two columns
+on a sixteen-pixel slot -- so the fill covered the slot edge to edge and painted over both halves of
+the bevel. One column is eight pixels and stops four short on each side. A character cell cannot
+start half way through the 8-pixel grid, so the *box* is placed around the cell rather than the other
+way round, and two `static_assert`s pin it.
+
+#### What is not done in step 10
+
+- **Still nothing on hardware.** Both targets build and 899 host tests pass.
+- **No sound from a plate.** `random.click` at 0.3/0.6 arming and 0.3/0.5 disarming; core has no
+  sound engine, and it joins the list in [audio-a1.1.2.md](audio-a1.1.2.md) beside the button's.
+- **`js.c` ("players") is modelled and unused.** No block in a1.1.2 takes it.
+- **The entity query knows about the player and the dropped items only.** There is nothing else to
+  know about yet; a mob would be a third row and no more.
+- **Fire still has no back-face story of its own.** Every sheet goes through `addSheet`, which draws
+  it and its mirror, where the original relies on having eight sheets at four leans. It costs quads
+  on a block there are never many of.
+
+### 11. Nine things a play session found, and one of them was two years of Minecraft history
+
+A second report, longer than the last and with a wider spread: two behaviours transcribed and never
+wired, one whose data table did not exist, one entity that had a name and no class, a screen whose
+two bands were the wrong way round, a catalogue with two thirds of its rows hidden, and **two
+complaints that turned out to be a1.1.2 behaving exactly as it should**.
+
+**946 host tests pass**, and both targets build clean.
+
+#### Ladders: three faults on one block
+
+Reported as "ladders aren't climbable, have a full hitbox for placing, z-fight, and I don't think it
+was a thin cube in alpha". All three were real and none of them shared a cause.
+
+- **Climbing did not exist.** `ge.b(FF)`'s land branch asks `isOnLadder()` twice -- once before the
+  move, where it clears `fallDistance` and clamps a fall to `-0.15`, and once after, where
+  `isCollidedHorizontally && isOnLadder()` sets `motionY` to `0.2` outright. Both lines were in
+  [physics-a1.1.2.md](physics-a1.1.2.md)'s transcription and neither was written. `ge.A()` reads
+  **two** cells, `floor(boundingBox.minY)` and the one above it; without the second, the feet leave
+  a ladder's top cell before the chest does and the last block of every climb drops you.
+- **Placing asked about the wrong shape.** `canBlockBePlacedAt` tests the new block's collision box
+  against the player, and this port asked for that box at **metadata 0** -- which for a ladder is
+  outside the 2..5 the game writes and is the one value `collision.cpp` answers with a *full cube*
+  for. A full cube in the cell in front of you overlaps the body, so a ladder could not be hung on
+  the wall you were standing against. It asks with the metadata `onBlockPlaced` is about to write
+  now, which is deterministic and needs no leftover state.
+- **It was drawn as its collision box.** `bc.g` writes **four vertices** and stops: one flat quad,
+  `0.05F` off the wall. The box has six faces, and its back one sat inside the wall and z-fought
+  with it. The only deviation left is that the quad is drawn from both sides -- the original relies
+  on the wall behind it being opaque, so a ladder on glass is invisible from outside in a1.1.2.
+- And **a ladder whose wall went stayed hanging in mid air**, because `TickBehaviour::Ladder` had no
+  `neighbourChanged` entry at all. `br.a(Lcn;IIII)V` checks the face its metadata names and drops.
+
+#### Rails: `mk`, the largest block behaviour in the version
+
+Reported as "rails don't connect or change rotation", and both halves were true for different
+reasons.
+
+**The rotation was the renderer's.** `bc.f` keeps one fixed set of texture corners and permutes
+which *cell* corner each one lands on -- four permutations across the ten shapes -- and this port
+kept one. So every rail in the world was drawn as the north-south one. Worse, the two ascending
+shapes on the x axis were the wrong way round: **2 climbs towards +x and 3 towards -x**, and this
+had them reversed, so an east-west staircase climbed backwards and met its neighbour in mid air.
+
+**The connecting was missing outright.** `Block.onBlockPlaced` answers 0 for a rail -- which is why
+`placement.json` has six zeroes on that row -- because the shape is not a placement decision: it is
+worked out afterwards by `mk`, RailLogic, which is 1,300 lines of bytecode and the largest single
+behaviour in a1.1.2's block set. It is transcribed whole in `core/tick/rail.{hpp,cpp}`. Four things
+in it are worth keeping:
+
+- **A freshly placed rail is written with metadata 15 first.** `if.e` does that before it refreshes,
+  and 15 matches none of `setBasicRail`'s ten cases, so the connection list comes out empty. It is
+  "I have no previous shape to be biased by", spelled as a metadata value because a1.1.2 has nowhere
+  else to put it.
+- **Power reorders the curve preferences.** `refreshTrackShape` takes
+  `isBlockIndirectlyGettingPowered` and uses it for one thing: to flip the order the four corner
+  cases are tried in, so the *last* match wins differently and a T-junction points the other way.
+  That is a1.1.2's rail switch, two years before powered rails.
+- **`canConnectFrom`'s tail is dead code.** The class file compares two heights and returns true on
+  both paths, so the whole method is "yes unless I am already full". Transcribed as what it
+  computes.
+- Nothing recurses past a second frame, which matters on a 32 KB stack: `refreshTrackShape` builds
+  a RailLogic per neighbour and a neighbour's `refreshConnectedTracks` builds its own only to read
+  them.
+
+Nine cases in `tests/rail_test.cpp`, and all nine passed the first time the file compiled -- which
+is the strongest evidence available that the transcription is right, because none of them was
+written by looking at this implementation.
+
+#### What a block leaves behind, and the table that had to be generated for it
+
+`dropBlockAsItem` had **nine call sites and an empty body**, with a comment saying so. Knocking the
+support out from under a torch deleted the torch. The method itself is four lines; what was missing
+was the two it calls, `Block.idDropped(metadata, Random)` and `Block.quantityDropped(Random)`, which
+have **twenty-four and twenty overrides** between them and cannot be read as constants because both
+take a Random.
+
+They can be *characterised*, and that is what `tools/genref.java --drops` does: hand each method a
+Random that answers every `nextInt(bound)` at the bottom of its range once and the top once, and
+write down the bounds it asked for. Every one of a1.1.2's overrides draws at most once, so two calls
+pin the whole distribution, and the generator asserts the "at most one draw" property rather than
+assuming it. Four shapes come out:
+
+| shape | example |
+|---|---|
+| a constant | stone drops one cobblestone |
+| `min + nextInt(bound)` | redstone ore drops 4 or 5 |
+| `nextInt(bound) == 0 ? v : 0` | a leaf block drops a sapling one time in twenty |
+| two ids, one roll | gravel drops flint one time in ten |
+
+Three things the table settled that were not obvious:
+
+- **There is no damage column, because there is no `damageDropped` on this path.**
+  `dropBlockAsItemWithChance` builds `new ItemStack(id)`, so wool does not keep its colour and a log
+  does not keep its kind. That arrives later.
+- **A snow layer drops nothing** -- `quantityDropped` is 0 -- and neither do glass, ice, bookshelves,
+  TNT or a mob spawner.
+- **`BlockCrops.idDropped` prints to stdout.** `System.out.println("Get resource: " + l)` is a debug
+  line left in the shipped jar, and it had to be silenced for the length of the probe because stdout
+  is where the JSON goes.
+
+The draws come out of the **world's own** Random, so a drop shifts the stream every later random tick
+reads. That is why `TickWorld::spawnItem` is a seam and why the draws happen whether or not anything
+is listening: a world ticked by a headless tool takes the same random path as one ticked with a pool
+behind it, and there is a test that says so.
+
+#### Sand that falls rather than teleports
+
+`fallingTick` moved the block to its resting place in one tick and admitted it: "a placeholder with
+a known replacement". `core/entity/falling_block.{hpp,cpp}` is the replacement -- `ff`,
+EntityFallingSand, the second entity here that is not a particle.
+
+**The instant path stayed, and it is not a fallback.** `dh.a` is a static boolean on BlockSand,
+`fallInstantly`, true while a chunk is populated, and with it set `tryToFall` ticks the entity to a
+standstill instead of spawning it -- which is what stops a generated world raining sand as a player
+walks into it. This port reaches the same fork from the other side: an unset spawn seam means nobody
+is watching, which is true of world generation and of every headless tool here.
+
+Three details of `ff.e_()` that are easy to miss: it **clears its own source cell from inside its
+tick** rather than at spawn, so a column empties one cell at a time; the landing writes at
+`floor(posY)`, and `posY` is the box's centre because `yOffset` is half the height; and it gives up
+after 100 ticks and drops as an item. The landing write can also **fail** -- something in the way --
+and then the block becomes an item rather than overwriting, which is what stops sand falling into a
+doorway from eating the door.
+
+A full pool is the one place in this project that degrades rather than dropping something: the spawn
+is refused, `fallingTick` takes the instant branch, and the block still lands where it belongs.
+
+#### The bottom screen: the two bands changed places
+
+Asked for, and both halves are improvements on what was there. The **hotbar is the top band now** and
+runs edge to edge; the **tab strip is the bottom band**.
+
+The hotbar is the one control on that screen read while the player is looking at the *top* screen --
+it is what is in your hand -- so the top of the bottom screen is as close to the world as a second
+screen can put it. The tab strip is looked at deliberately, so the bottom costs least.
+
+**Nine slots across 320 pixels is 35.55, which does not divide.** The slots are therefore not all
+the same width: `hotbarSlotX(i)` is `i * 320 / 9`, so the widths come out 35 or 36 and the row lands
+exactly on both edges. Nine 35s centred would have left five pixels of nothing at the edge, and five
+pixels of nothing at the edge of a touch target is five pixels a finger can miss. The hit test is a
+search rather than a divide for the same reason.
+
+Everything that took its geometry from `kHotbarTop` now takes it from `kTabTop` -- the map, the
+palette, the look pad -- and the cursor's d-pad walk **flipped**: off the *top* row of a grid is the
+hotbar, and down from the hotbar enters the grid, because that is now where the two things are.
+
+#### The inventory: the whole page, and the armour
+
+The Items page was a 232x112 panel in the middle of a page with the pack's darkened dirt showing on
+every side of it, which reads as an unfinished screen. It is the page now: 316x164, 30-pixel slots
+(56 % more area than the 24s), 24-pixel icons, and **the four armour slots down the left**, where a
+paper doll would be.
+
+Those four have been in `Inventory` since the item table landed and round-trip through `level.dat`;
+what was missing was somewhere to draw them. `armorInventory[0]` is the **boots** and `[3]` the
+helmet, so the column is drawn in reverse index order -- inverted in the screen rather than in
+`Inventory`, because the save file's order is the save file's.
+
+30 rather than 32, because nine columns and an armour column have to share 320 pixels and nine 32s
+is 288 with nothing left. The 24-pixel icon is a trade rather than a free win: `drawFlat` is
+nearest-neighbour and 24 doubles every other row of a 16-pixel sprite, where 16 was 1:1. What it
+buys is that the icon fills the slot. The cube path does not pay it at all -- `drawBox`
+inverse-maps each destination pixel and is exact at any size -- and cubes are most of what a slot
+holds.
+
+#### The palette offers the whole table now
+
+The rule was "nothing that places no block is offered", on the argument that a sword does nothing
+this build can perform. That was the wrong test: a Creative hand is also how a sword, an ingot, a
+smelted ore or a piece of armour gets into a chest, into a save, or on to the ground. **84 of its
+147 rows were hidden and 63 were offered.** The two exclusions that remain are both about the same thing appearing twice --
+engine-only ids, and an ItemBlock whose block already has a carried form -- and neither hides
+anything a player could otherwise not reach. a1.1.2's palette is four pages rather than two -- 147 items rather than 63.
+
+#### Two reports that were a1.1.2 being itself
+
+Both are worth writing down because both look exactly like bugs.
+
+- **Sponges do not remove water, and have not since Classic.** `ng.e` -- onBlockAdded -- walks a
+  5x5x5 box comparing each cell's material against water, and **the body of that comparison is
+  empty**: the branch target is the next instruction. The absorption everybody remembers is
+  Classic's and then, five years later, 1.8's. The only thing `ng` does in this version is
+  `onBlockRemoval`, which notifies the same 5x5x5 -- and *that* was missing here and is wired now.
+- **Fire does not burn dropped items.** Nothing in a1.1.2 sets an entity's fire counter except one
+  branch of `Entity.onEntityUpdate`, and that branch is `isInLava()`. `og` has no
+  `onEntityCollidedWithBlock` at all, and no class outside `kh` writes `kh.aT`. What *was* missing is
+  the lava half: `attackEntityFrom(null, 10)` against `EntityItem`'s health of **5**, so one tick in
+  lava is the end of the stack. The fizz and the hop were already here, which is why the loss looked
+  like a bug -- an item thrown into lava jumped about convincingly and then lay there for five
+  minutes.
+
+Lava also **carries nothing**, and that is not an omission either: `kh.G()` is `isMaterialInBB`,
+which has no vector in it, and nothing in the jar calls `handleMaterialAcceleration` with anything
+but water. Water pushes; lava does not, in this version.
+
+#### A pressure plate that felt unresponsive was a pressure plate with no sound
+
+The mechanism was transcribed and correct -- the sense box, the twenty-tick release, both
+notifications, the two `js` filters. What it had no way to do was **say so**: a plate is flush with
+the floor and its whole state is one bit of metadata, so the click *is* the feedback. The lever, the
+button and the door were in the same position and had the same comment saying the sound was missing.
+
+`TickWorld` grew a third seam for it, `setSoundSink`, on exactly the terms the entity query and the
+drop sink have: `core/tick/` has no sound engine and must not grow one -- the tick runs on a worker
+and the mixer does not. Six calls now go through it, all with the class file's own volumes and
+pitches: the plate at 0.3/0.6 arming and 0.3/0.5 disarming and **at `j + 0.1`, not `j + 0.5`**; the
+lever at 0.3, pitched 0.6 on and 0.5 off; the button at 0.6 going in and 0.5 coming out; and the
+door's `random.door_open`/`random.door_close` at volume 1 and a pitch drawn from the world's Random
+-- which is a draw, so opening a door really does move the stream.
+
+Flint and steel got its own path at the same time. It is `nx`, not `av`: **no clearance test, air
+only, and `fire.ignite` rather than the block's place cue.** The first of those is why a fire lit on
+a stone wall appears and then goes out on the same call rather than being refused -- which is the
+original's sequence and is what "it instantly goes off" is supposed to look like.
+
+#### What is not done in step 11
+
+- **Still nothing on hardware.** Both targets build and 946 host tests pass. The new geometry --
+  four falling-block quads and a hotbar that is 30 % wider -- is unmeasured on a console.
+- **Nothing wears armour.** The four slots hold, draw and save; there is no damage for a helmet to
+  reduce, so a helmet in slot 103 is carried and does nothing. Honest, and still better than a
+  helmet that cannot be put anywhere.
+- **A falling block is always a cube.** `renderBlockFallingSand` goes through
+  `renderBlockByRenderType`, so a version whose falling block is some other shape would need the
+  shape table in `falling_block_mesh.cpp`. Sand and gravel are both cubes.
+- **Cactus does not hurt anything.** `hy` is the *second* block to override
+  `onEntityCollidedWithBlock` -- the note in step 10 said there was only one -- and it wants the
+  entity, which the seam deliberately does not carry. A third seam or a wider one, and neither is
+  worth it before there is health.
+- **Breaking a block by hand still drops nothing.** The drop machinery is wired to the nine tick
+  paths that call it; `onPlayerDestroyBlock` -> `harvestBlock` is Survival's and Survival is the
+  gamemode drawn disabled.
+- **A sign still has no text.** It falls off a wall correctly now and takes its writing with it,
+  which is what a1.1.2 does too.
+
+### 12. Six things a play session found: a ladder measured from the wrong method, and dropped items drawn from a buffer written twice
+
+A play-session list of thirteen. Six of them are fixed here; the other seven are classified at the
+end, because three of them turn out to be **a1.1.2 behaving exactly as reported** and three are the
+entity renderer that step 5 of `docs/todo-m3.md` has been waiting on.
+
+#### The ladder's selection box was a full cube, and the generator was reading the wrong method
+
+`data/<ver>/selection.json` said a ladder is 0,0,0 -> 1,1,1 at every one of its sixteen metadata
+values, so the outline round one was a whole block and a ray could not be aimed past one. That was
+not a transcription slip: it was the definition of "the selection box" being wrong in
+`tools/genref.java`.
+
+The generator took the box a ray is tested against, which it obtained by calling `collisionRayTrace`
+for its side effect and reading the `bf..bk` fields it left on the block singleton. That is right
+for a torch -- `BlockTorch` overrides `collisionRayTrace` and sets its bounds inline before
+delegating -- and it is **wrong for three blocks that set their bounds somewhere else entirely**.
+Asking the jar which classes override what:
+
+| class | `collisionRayTrace` | `getSelectedBoundingBoxFromPool` |
+|---|---|---|
+| `br` ladder | — | **yes** |
+| `hy` cactus | — | **yes** |
+| `km` stairs | — | yes (delegates to the model block) |
+| `fw` door | yes | yes |
+| `if` rail, `mj` | yes | — |
+
+`br` sets its two-sixteenths box in `d` (getCollisionBoundingBoxFromPool) and `f`
+(getSelectedBoundingBoxFromPool) and touches nothing on the ray's path, so a generator that restores
+each block's constructor defaults before every query -- which this one does, deliberately, to make
+the fixture reproducible -- records the ladder's *constructor* cube.
+
+**The fix is to ask both, in the order a frame asks them.** `Minecraft` ray-traces and then
+`RenderGlobal.drawSelectionBox` calls `f` on whatever was hit, so the generator now runs
+`collisionRayTrace` and then reads what `f` answers. The torch keeps its post (`Block.f` falls
+through to the bf..bk the torch just set) and the ladder gets its plate. Exactly two blocks moved in
+the 1,120-row fixture: **65 at metadata 2..5, and 81 at every metadata** -- the cactus's selection
+box is inset a sixteenth on x and z and is **full height**, where its collision box stops at 0.9375.
+
+`tests/ray_trace_vectors.hpp` then disagreed on sixteen rays, and it was right to: its scene is a
+world two statements old, where nothing has ever asked the ladder for a box, so the oracle recorded
+the constructor cube as well. **That is the leftover-singleton bug this project has already decided
+not to reproduce** (the same note is in the collision fixture's header). A running client never sees
+it -- `drawSelectionBox` calls `f` every frame and `Entity.moveEntity` calls `d` every tick for every
+block the body overlaps, and both leave the real box behind -- so the ray-trace generator now primes
+every block in its scene through `f` before the sweep, which is the state a played game is always in.
+Sixteen rays that used to stop on the ladder's phantom cube now pass through it or hit the wall
+behind, and the suite is green.
+
+#### Many dropped items were invisible, and no icon was missing
+
+`Renderer::drawItemEntities` builds one sheet, draws it, then builds the other **over the same
+vertices** and draws that. It reads as correct and it is not: `C3D_DrawElements` records a command
+naming an address, and the GPU does not execute it until `C3D_FrameEnd`. Both draws therefore ran
+against whatever the *second* `buildItemEntities` left in `itemVerts_`, so the terrain-sheet draw
+rendered the item-sheet geometry with the block atlas on it.
+
+The visible symptom is exactly what was reported: **a dropped cobblestone is simply not there
+whenever anything off `gui/items.png` is on the ground beside it** -- and it is there when nothing
+is, because a pass that writes nothing never overwrites the buffer. Both sheets are now built into
+disjoint halves of the one buffer before either is drawn, and each draw gets its own base pointer.
+The two spans cannot overflow between them: every entity belongs to exactly one sheet, so their sum
+is bounded by what one pass over all of them could produce, which is what `kMaxItemVertices` already
+sizes.
+
+**Not seen on hardware.** This is a GPU-ordering fault and the host has no GPU, so what is checked
+is the reasoning and the arithmetic, not the picture.
+
+#### Any armour piece went in any armour slot
+
+There was no rule at all -- `Inventory::swap` moved any stack anywhere -- so a helmet could be worn
+on the feet. a1.1.2 has one, in `lj` (SlotArmor), and it is one line:
+`stack.getItem() instanceof ItemArmor && ((ItemArmor) item).armorType == this.slotType`.
+
+So `items.json` grew an **`armour` column measured out of the jar** (`ItemArmor.armorType`, `mr.aX`),
+`Inventory::accepts` is that comparison, and `swap` refuses when either end would not hold what the
+other is carrying -- refused whole, because a swap is one move and a slot that keeps its contents
+while the other loses them would destroy a stack. The touch handler keeps the stack on the cursor
+when a slot refuses it, which is what the original does too.
+
+**armorType counts from the head and `armorInventory` counts from the feet.** `ContainerPlayer`
+builds its four slots as `getSizeInventory() - 1 - i` against armorType `i`, so `armorInventory[3]`
+is the helmet. The flip lives in `Inventory::armourSlotFor` and nowhere else.
+
+#### The bucket, which is the first item to go down `Item.onItemRightClick`
+
+Buckets did nothing, and they could not have: every right-click in this build went through
+`ItemBlock.onItemUse`, and `ac` (ItemBucket) does not implement it. `Minecraft.clickMouse` has **two**
+entry points -- the block's, which is handed the crosshair's hit, and the item's, which gets no hit
+at all and casts its own ray -- and only the first existed here. `item::useItem` is the second.
+
+Three measured things it needed, all now generated rather than assumed:
+
+- **`ItemBucket.isFull`**, as a `bucket` column: `0` empty, a **flowing** block id when full -- 8 and
+  10, not the still 9 and 11, which is why poured water spreads instead of standing in its cell --
+  and `-1` for milk. `-2` is "not a bucket", the one value the field cannot hold.
+- **`canCollideCheck(metadata, true)`**, as a second flags column in the collision fixture and a
+  sixteen-bit mask per block in `selection.json`. `hitLiquids` is the third argument of
+  `rayTraceBlocks_do` and exactly one class reads it -- `jp`, BlockFluid, whose whole override is
+  `hitLiquids && metadata == 0`. **That is why a bucket fills from a source and not from a stream**,
+  and it is the only column in the table that varies inside a block, which is why it is a mask and
+  not a bool.
+- **Reach 5.0, not 4.0.** `ItemBucket` builds its own ray with its own literal and never asks the
+  controller, so a bucket genuinely reaches a block further than a block can be broken.
+
+Filling matches on **material**, as the original does, so either water block fills the same bucket.
+Pouring refuses a solid cell -- a branch that can only fire with the eye inside a block, because the
+pour goes into the cell the ray came *from* and `rayTrace` never tests the cell it starts in. Without
+it, a player with their head in stone pours water into the block they are standing in.
+
+#### Jump climbs a ladder
+
+**Ours, and not in the jar.** a1.1.2 climbs only on `collidedHorizontally && isOnLadder()`, which on
+a mouse is free because the hand on W is not the hand that aims. On a 3DS it is the same thumb: the
+circle pad steers *and* looks, so turning your head to see where you are going stops the stick
+pressing the wall and you slide back down. Jump is otherwise dead on a ladder, it means "up"
+everywhere else, and it climbs at `kLadderClimb` -- the same 0.2 a tick the wall-press gives, so
+neither route is a shortcut. It is asked **before** `onGround`, so standing at the foot of a ladder
+climbs rather than jumps.
+
+#### The tab strip's labels sat on the top edge of their buttons
+
+`kTabTop / kCell + 1` names the strip's *first* row, not its middle: `text` counts rows from one, so
+the `+ 1` that converts the zero-based row index is already spent. The band is 216..240, which is
+rows 28, 29 and 30, and 29 is the one whose glyphs share a centre with the button.
+
+#### The other seven, classified
+
+**Three are a1.1.2 doing what it does**, and the finding is worth more than a fix would be:
+
+- **Eggs do nothing.** `Item.itemsList[344]` is a plain `di` -- no `onItemUse`, no
+  `onItemRightClick`, no subclass. `EntityEgg` is Beta's. There is nothing here to implement.
+- **The compass is an icon and nothing else.** Item 345 is a plain `di` too; the whole of a compass
+  in a1.1.2 is `aa` (TextureCompassFX), which rewrites the 16 x 16 icon every tick with a needle
+  aimed at `spawnX/spawnZ`. It needs an animated-tile path on the **items** sheet, which this build
+  has only for terrain (`texture_fx.hpp`'s `FlameAnimation`). Transcribed but not written.
+- **A sign has no text**, which the previous step already recorded.
+
+**Four need the entity renderer**, which is `docs/todo-m3.md` step 5's open box and is a design note
+with a measured budget before it is any code:
+
+- **The bow** (`jg`) fires an `EntityArrow` -- there is no charge in a1.1.2, one click is one arrow.
+- **Boats** (`me`) and **minecarts** (`jo`) place an entity, not a block, which is why neither can
+  even be put down: there is nothing to put.
+- **Paintings** (`od`) place an `EntityPainting`, and additionally need the art table and a
+  wall-fitting search.
+- **Signs** need a **tile-entity** slot as well -- `Entities` and `TileEntities` are still opaque
+  preserved NBT -- plus the console's software keyboard on placement. The block is render type -1 in
+  a1.1.2 and is drawn by `TileEntitySignRenderer`, so "signs do not render" is the same missing
+  renderer.
+
+**And one is a feature, not a fix**: the held item in the corner of the top screen. It is
+`ItemRenderer.renderItemInFirstPerson`, it is self-contained -- the geometry `item_entity_mesh`
+already builds, placed in camera space instead of world space -- and it is the one thing on this list
+that would put geometry on the top screen that is not the world. It has not been written.
+
+### 13. The compass was a texture, and the entity renderer was already half-built
+
+§12 left six things queued behind two blockers. This is the pass at those blockers, and the first
+finding is that **one of the six was not queued behind anything and the other blocker was smaller
+than it had been written down as.**
+
+#### The compass is not an item
+
+"The compass doesn't work" sends you to `core/item/`, and there is nothing there: item 345 is a
+plain `di` with no `onItemUse`, no `onItemRightClick` and no subclass. Read the item table and the
+honest conclusion is that a1.1.2 has no compass behaviour, which is true and is not the point.
+
+`Minecraft`'s startup registers an `aa` -- **TextureCompassFX** -- against tile 54 of
+`gui/items.png`, and `RenderEngine.updateDynamicTextures` overwrites those 256 texels every frame
+with a needle aimed at the world's spawn. **The compass is a texture.** There is no behaviour to
+port, and a build looking for one finds nothing.
+
+`core/texture/compass_fx.{hpp,cpp}` is `aa.a()` transcribed: the pack's own dial re-blitted each
+step, a target angle from the spawn point and the player's yaw, a **damped spring** chasing it
+(`velocity += error * 0.1; velocity *= 0.8; angle += velocity`, with the error clamped to one
+radian), and then a nine-texel grey crossbar and a twenty-five-texel needle drawn over the face with
+the front half red. The two loops are not each other with the arguments swapped -- one uses cosine
+for x and *subtracts* the sine term from y, the other does the opposite and adds -- and reading them
+as symmetric puts the bar on the wrong diagonal.
+
+**Which tile, asked of the jar.** `ItemDef` carries an `animatedIcon` flag now, set by
+`tools/genref.java --items` from the FX class's own `b` (the tile it owns) and `f` (the sheet).
+Nothing in the engine names item 345 or tile 54. A useful by-product of doing it that way: the same
+sweep proves **a1.1.2 has no clock.** There are six `z` subclasses in this jar -- water, flowing
+water, lava, flowing lava, two flames and the compass -- and the compass is the only one with
+`f == 1`.
+
+Two stated deviations. It **ticks at 20 Hz rather than once a frame**, so the needle settles in
+about half a second instead of about a sixth; the original's damping is frame-rate dependent and
+this project has already made that call for fire and for particles. And **anaglyph is skipped**, as
+it is in the flames, because the 3DS's stereo is real parallax.
+
+Two consumers, because the tile is read two ways: the bottom screen rasterises icons out of the
+pack's decoded pixels and a dropped compass is a sprite the GPU samples. Both are pushed.
+`Atlas::updateTile` was generalised to `updateTileOf` so the items sheet gets the same two-run
+treatment the block atlas already had -- and the bottom screen gets an **override** rather than a
+write into the sheet, because that buffer belongs to the Menu and outlives the world: a compass that
+overwrote it would leave its last needle baked into the pack.
+
+#### The entity renderer, which was mostly already there
+
+`docs/todo-m3.md` step 5 said the expensive part was that **nothing in the renderer can draw an
+entity** -- a different vertex format, a different draw cadence, a different budget. Half of that was
+already disproved by §9: the 16-byte `DetailVertex` takes arbitrary corners with arbitrary UVs and
+rides the world shader, which is how a dropped item and then a falling block got drawn.
+
+`docs/entity-render-a1.1.2.md` is the design note that box asked for. Its finding is that the
+pipeline question was answered by the dropped item and what was left was a **texture-management**
+question wearing its clothes: the detail pass samples one texture per draw, and a1.1.2 draws these
+entities out of five more files.
+
+- **`core/texture/entity_skins.{hpp,cpp}`** packs `item/boat.png`, `item/cart.png`,
+  `item/sign.png` and `item/arrows.png` into one sheet at fixed offsets, and carries `art/kz.png`
+  as a 256 x 256 plane of its own. **Never empty**: generated stand-ins go down first and the pack
+  is painted over them, so a pack carrying three of the four files does not get a black boat.
+  *(§15 added `char.png` as a fifth page and grew the sheet from 128 x 64 to 256 x 64; the four
+  offsets above did not move.)*
+- **`core/render/box_model.{hpp,cpp}`** is `ip` -- ModelRenderer -- transcribed, and is the one
+  genuinely new piece of geometry. Two facts out of the class file that a reimplementation would
+  get wrong: **a `ModelRenderer` in this version holds exactly one box**, because `addBox` assigns
+  its arrays rather than appending; and **the texture space is 64 x 32 with no field that says so**,
+  because `ll` divides every UV by hard-coded literals. The 0.1-texel inset is the original's too.
+- **Winding does not matter**, and that is worth writing down: the opaque detail pass runs with
+  `GPU_CULL_NONE` because a crossed square has two sides, so a box whose faces came out inside-out
+  is still drawn. A mistake there is a shading question, not an invisible boat.
+
+`tests/box_model_test.cpp` is where this is pinned, because its failure mode is not a crash: a box
+whose depth and width are swapped still fits its page and still draws, and no screenshot says which
+of the six faces is wrong.
+
+#### Paintings
+
+`od.a(...)` -- ItemPainting.onItemUse -- **runs to completion in this build and always did.** It
+builds an entity, asks it whether the wall will hold it, and hands it to the world. With nowhere to
+put an entity the click performed every step and produced nothing, silently. That is the shape of
+the bug for all six entity-spawning items, and it is why `places` could not express it: `places` is
+0 for all six, correctly, and 0 also means "does nothing".
+
+So there is a **`spawns` column** now -- none, painting, boat, minecart, arrow -- read as
+`instanceof` against the item classes the way `armour` and `bucket` already are, plus
+`spawnVariant` for `ItemMinecart`'s own 0/1/2. It finds exactly six items, including all three
+minecarts.
+
+`core/entity/painting.{hpp,cpp}` is `jc`: `setDirection` and `onValidSurface`, both transcribed, and
+the constructor's art draw -- **every art in declaration order, the ones that fit kept, one picked
+at random**, which is why a one-block gap gives one of the seven small pictures. Three details that
+a plausible reimplementation gets wrong:
+
+- **`offs` is not `size % 32 == 0`.** The class file tests `== 32` and `== 64` explicitly, so a
+  48-texel painting -- the Skeleton and the Donkey Kong -- gets no half-block slide where a modulo
+  reading would give it one.
+- **The bounding box is shrunk, not grown**, by `0.00625` on every face. Without that a painting
+  flush against a wall collides with the block behind it and refuses its own placement.
+- **The canvas is twice as thick as its hitbox**: the box is `0.5/32` of a block either side and the
+  geometry is `0.5/16`. That is the original's arithmetic and not a mismatch here.
+
+`core/render/painting_mesh.{hpp,cpp}` is `bw.a(Ljc;IIII)V`. It does **not** go through the box model,
+and that is the class file's decision: `RenderPainting` emits its own quads because it subdivides
+the canvas into 16 x 16 cells and **lights each one separately**, which a single box cannot do. A
+four-block picture across a doorway is bright at one end and dark at the other. The `Painting`
+carries sixteen light bytes for that -- sixteen because the largest art in this version is four
+blocks by four -- resampled every tick while the wall check stays on its hundred-tick counter.
+
+#### What is left, and what it now needs
+
+The bow, the boat, the minecart and the sign are **no longer blocked on a design decision**; they
+are blocked on their own work, and the shared pieces are in.
+
+- **The bow** wants an `EntityArrow` pool and `gk`'s geometry, which is a custom tessellator shape
+  rather than a box model. `jg.a(...)` is transcribed in this file already: it consumes an arrow
+  through `InventoryPlayer.consumeInventoryItem`, plays `random.bow` at `1/(rand*0.4+0.8)`, and
+  spawns one `kg`. **There is no charge in this version** -- one click, one arrow.
+- **The boat and the minecart** want `cl` and `hj` -- five and seven boxes -- which the box model
+  can now draw, plus their physics, plus **riding**, which is the first thing in this project that
+  takes the camera off the player body and is a `PlayerBody` question rather than a renderer one.
+  `me.a(...)` does its own ray at reach **5.0 with liquids on** -- the same shape as the bucket --
+  and spawns at `(x + 0.5, y + 1.5, z + 0.5)`. `jo.a(...)` places **only on rails** and reads its
+  cart type off its own field.
+- **Signs** still want the tile-entity half plus the console keyboard, and they are the only one of
+  the four that needs something the `entitydata` box does not already cover.
+
+**And the pools are still session pools.** A painting placed and a world reloaded is a painting
+gone, exactly as a dropped item is. `docs/entity-render-a1.1.2.md` says so explicitly; the
+`entitydata` slot is still `none` and this pass does not close it.
+
+### 14. The other four: an arrow, a boat, a minecart and a sign
+
+§13 removed the two blockers and left four features standing on them. This is those four, and three
+findings in it are worth more than the features.
+
+#### `yOffset` is computed in float, and a minecart written with a double simply does not go
+
+The cart's `setSize(0.98F, 0.7F)` gives `yOffset = height / 2.0F`. `Entity.setPosition` builds the
+box at `posY - yOffset`, and the rail branch sets `posY` to `j + yOffset` -- so the box's bottom is
+`j + yOffset - yOffset`, and whether that is exactly `j` depends on which `yOffset` it is:
+
+```
+float:  64.0 + 0.34999999403953552 - 0.34999999403953552 == 64.0
+double: 64.0 + 0.34999999999999998 - 0.34999999999999998 == 63.99999999999999
+```
+
+A box bottom a fraction of an ulp *below* the block it is standing on overlaps that block, and
+`calculateOffset` then refuses the move. **The first minecart travelled 0.01 blocks and stopped**,
+with everything else about it correct. This is the same class of thing `physics-a1.1.2.md` warns
+about -- "several constants are not the round numbers they look like" -- but it is worse than a
+wrong constant, because the two numbers are equal to fifteen digits and differ only in what a
+round trip does to them. Both the boat and the cart carry the float form now.
+
+#### `EntityLiving` has no idea it is riding anything
+
+There is no reference to `ridingEntity` anywhere in `ge`. So a player in a boat keeps running
+`moveEntityWithHeading` exactly as they would on foot -- the stick still becomes `motionX`/`motionZ`
+under the 0.02 air acceleration and the 0.91 friction -- and the *only* thing riding changes is that
+the position is overwritten afterwards. A boat's entire steering is
+`motionX += riddenByEntity.motionX * 0.2`.
+
+That is why riding cost so little: `PlayerBody::tickRiding` applies the heading, applies the
+friction, and puts the body where the vehicle's seat says. `core/entity/rider.hpp` is the seam, and
+it exists so `boat.hpp` never includes `player_body.hpp`.
+
+#### A head-on boat does not break
+
+`EntityBoat`'s wreck test is `isCollidedHorizontally && speed > 0.15`, and `speed` is measured
+**after** `moveEntity` -- which zeroes the motion on whichever axis was clipped. So a boat driven
+square into a wall measures a speed of nothing and survives; what breaks one is hitting at an angle,
+where the un-collided axis is still above the threshold. That is why boats break on shores and not
+on flat walls, and the first version of the test asserted the opposite.
+
+#### The four features
+
+- **The bow.** `jg.a(...)` has **no charge in this version** -- drawing a bow arrives with Beta 1.8,
+  the same release Creative does -- so one click is one arrow at a fixed 1.5 velocity.
+  `core/entity/arrow.{hpp,cpp}` is `kg`, and it is the cheapest moving entity here because it does
+  not use `moveEntity` at all: it ray-traces from where it is to where it would be, sticks in
+  whatever it hits, and otherwise adds its motion. **Gravity is 0.03, not the 0.05 of later
+  Minecraft** -- an arrow ported with 0.05 drops short and reads as bad aim.
+  `core/render/arrow_mesh.{hpp,cpp}` is `gk`: a tail cap drawn twice and four fins, on the one
+  square page of the entity sheet.
+
+  One stated deviation: **it costs no arrow.** The original consumes one and refuses to fire
+  without; this build has no stack depletion anywhere, and requiring ammunition would be the one
+  place a Creative hand was a stock rather than a catalogue.
+
+- **The boat.** `me.a(...)` is an `onItemRightClick` that casts **its own ray at reach 5.0 with
+  liquids on** -- the bucket's shape exactly -- which is why a boat could never have gone down the
+  block-placement path: the crosshair's ray is not allowed to see water, and water is the only place
+  a boat is any use. Buoyancy is five horizontal slices of the hull asked whether they are wet, the
+  fraction doubled and less one scaling a 0.04 push; there is no water level in it anywhere.
+
+- **The minecart.** `jo.a(...)` places **only on rails**, so half of "not even placeable" is the
+  game. The physics is the largest single entity method in a1.1.2 and its shape is worth stating:
+  the cart is **snapped onto the rail's centreline every tick** (assigned, not steered, so it cannot
+  leave sideways), its speed is **re-pointed rather than re-computed** (which is why it takes a
+  corner at full speed), a slope pushes with a constant `0.0078125` rather than with any component
+  of gravity, and its height is a **lookup**, not a simulation. The connection matrix `oc.j` turned
+  out to be exactly the ten rail shapes `core/tick/rail.hpp` already derives.
+
+  Two things are not ported and are named rather than hidden: a chest or furnace cart is placeable
+  and drawable but opens nothing, and the cart's *contents* are not drawn inside it.
+
+- **Signs.** Three halves, and the first is why the other two were invisible: **a sign is render
+  type -1**, so the mesher answers with nothing and the whole of a sign -- board, post and text --
+  comes from a tile entity that did not exist. `core/world/sign_store.hpp` is `ob`,
+  `core/render/sign_mesh.{hpp,cpp}` is `jk` through `in`, and `Overlay::editSignViaKeyboard` is
+  `GuiEditSign` as a console applet.
+
+  Two deviations. The editor is **one multi-line keyboard rather than four**, because opening the
+  system applet four times to write one sign would be worse than the thing it replaces. And **there
+  is no generated font**, so a sign on Dev Art shows a blank board -- the one place in this project
+  where Dev Art is less than a real pack, and the obvious next thing if it matters.
+
+#### A shared-sheet consequence worth knowing
+
+The minecart's underside plate is 18 x 14 x 1 at texture offset (44, 10), and the cuboid unwrap
+wants 38 texels of width from u 44 -- eighteen past the edge of a 64-wide page. The original does
+not care: `cart.png` is a texture of its own, OpenGL wraps, and the faces involved are inside the
+cart and never seen. **Here the pages share a sheet**, so unclamped those UVs would sample the
+arrow's page beside them. `buildBox` clamps into the page now; the difference from the original is
+confined to faces the original also draws with off-page UVs.
+
+### 15. The held item, and three things about a screen that is not a 4:3 window
+
+`docs/todo-m3.md`'s last open box before mobs: **the item in the player's hand, in the bottom right
+of the top screen.** It is `jh` -- `ItemRenderer` -- and the estimate that it was self-contained held
+up: `core/render/held_item.{hpp,cpp}` is the whole of it in core, `Renderer::drawHeldItem` is one
+extra pass, and no existing geometry changed. What was *not* in the estimate is that three of its
+decisions are about this console rather than about a1.1.2, and each of them has a number behind it.
+
+#### The class file, in two halves
+
+`jh.a(F)V` -- `renderItemInFirstPerson` -- is a transform and two branches. The transform is nine
+`glTranslatef`/`glRotatef`/`glScalef` calls composed in camera space, and the second branch of it is
+the arm swing read **twice with different curves**: `sin(swing * PI)` for the dip and
+`sin(swing * swing * PI)` for the turn. The item branch ends with `glScalef(0.4)` and hands over to
+`jh.a(Lev;)V` -- `renderItem` -- which splits again:
+
+- **A block** whose render type `RenderBlocks.renderItemIn3d` accepts -- 0, 13, 10 and 11, checked
+  in the class file rather than remembered -- goes through `renderBlockOnInventory`, which is
+  `glTranslatef(-0.5, -0.5, -0.5)` and the six faces at the block's own bounds. `block::renderBoxes`
+  already answers with boxes for exactly those four types, so a fence in the hand is a fence post,
+  the same shape it is in a slot and on the ground.
+- **Everything else** is the flat icon **given thickness**: a front face, a back face a sixteenth of
+  a unit behind it, and four runs of sixteen one-texel strips joining their edges. 66 quads, and the
+  strips are what make a held sword read as a sword rather than as a decal. Each strip's texture
+  coordinate is the tile edge minus `0.001953125F`, which is half a texel of a 256-wide sheet -- so
+  they land on texel centres by themselves and need none of this project's own tile inset.
+
+The per-tick half is `jh.a()V` plus `EntityPlayer.b_`/`w`: `equippedProgress` chases 1 while the
+selected item is the drawn one and 0 while it is not, at 0.4 a tick, and adopts the new item once it
+is under 0.1 -- which is what makes switching hotbar slots *lower one item and raise the next*. The
+swing is eight ticks of `swingProgressInt / 8`, and `getSwingProgress` adds one when the difference
+is negative so the last eighth interpolates 7/8 -> 1 instead of snapping backwards.
+
+Two calls in `Minecraft.clickMouse` decide when the arm swings, and they are not symmetric: button 0
+swings **before it looks at what is under the crosshair**, button 1 swings only if
+`onPlayerRightClick` returned true, and the `Item.onItemRightClick` path swings **not at all** --
+it calls `resetEquippedProgress` instead, so a bucket becoming a water bucket is shown as a re-raise.
+`editBlocks` in `platform/ctr/main.cpp` reproduces all three.
+
+#### The empty hand is the arm, and the skin is a pack file
+
+The `else` branch draws the player's own right arm, and it was nearly written off as unportable on
+the grounds that this project may not ship `char.png`. **That was the wrong reading of the
+constraint.** `char.png` is a *texture pack's* file exactly as `terrain.png` is -- it sits at the
+root of the jar rather than under `item/`, which is the only thing unusual about it -- so the rule
+is the one every other page already follows: read it from the pack, ship nothing.
+
+So it is ported. `core/texture/entity_skins.{hpp,cpp}` gained a fifth page and the sheet grew from
+**128 x 64 to 256 x 64**: a fifth 64 x 32 page does not fit the old sheet, 96 is not a power of two
+and a PICA texture dimension has to be one, and 256 x 64 is the next size that is one in both axes.
+64 KB rather than 32, eight slots of which five are used, and **the four existing pages kept their
+offsets**, so no model's UVs moved.
+
+**A pack with no skin gets a black arm.** Every other page's stand-in is a coloured grid, which is
+right for them -- a boat with a stand-in still reads as a boat. An arm does not work that way: a
+forearm in Dev Art orange reads as a bug, where a solid silhouette is honest about being a shape
+with no skin on it. It is also the one page whose texels are entirely covered by its model, so a
+grid would tell a reader nothing the silhouette does not.
+
+The geometry is one box, and the only thing in it worth deriving was what
+`setRotationAngles(0, 0, 0, 0, 0, 0.0625F)` leaves the arm at. **Two of the three angles are zero
+and the third is not**: the method's last four statements add an idle sway to both arms, and the
+right arm's Z term is `cos(age * 0.09) * 0.05 + 0.05`, which at age zero is **0.1** rather than 0.
+The swing block above it does run -- `onGround` is set to 0 and the gate is `> -9990` -- but every
+term in it is a sine or a square of zero, so it puts the rotation point back exactly where the
+constructor had it. The box itself is `ip(40, 16)` with `addBox(-3, -2, -2, 4, 12, 4, 0)` and
+`setRotationPoint(-5, 2, 0)`, and it goes through the same `buildBox` a boat does -- page clamp,
+0.1-texel inset and all.
+
+**The two branches share their shape and none of their numbers.** The swing offset is 0.3/0.4/0.4
+for the arm against 0.4/0.2/0.2 for an item; the rest position is 0.8 and -0.75 against 0.7 and
+-0.65; and the arm turns **+70 degrees about Y** where the item turns -20, with no X rotation at
+all. The five transforms between the swing and the model are in **blocks and not model units** --
+`render(0.0625F)` scales only what is inside it -- so `glTranslatef(-1, 3.6, 3.5)` looks like it
+puts the arm behind the player and the three rotations after it bring the box back to a centroid of
+(0.78, -0.64, -0.81), which is the bottom right corner with its lower end off the screen.
+
+**Spectator gets no hand at all**, which is now a distinct state from an empty one: `setHeldItem(0,
+...)` is an empty hand and draws the arm, and `clearHeldItem()` is a camera with no body.
+
+#### Three numbers that are the screen's and not the game's
+
+**The framing.** a1.1.2's constants place the hand at x = 0.56 in camera space and the horizontal
+half-extent is `tan(fov/2) * aspect * d`, so a 5:3 screen divides by 25 % more than the 4:3 window
+those constants were chosen against: untouched, the item sits at 0.67 of the half-width instead of
+0.83 and reads as floating near the middle rather than sitting in the corner. `buildHeldItem` takes
+the aspect and **shifts** the item sideways by `0.56 * (aspect / (4/3) - 1)` -- 0.14 of a block.
+A shift and not a scale, because scaling camera-space x would stretch the item as well as move it.
+
+**The near plane.** `kNearPlane` is 0.2 here and 0.05 in the original, traded for depth precision the
+world needs. Measured against the built geometry, the nearest corner of a held sprite reaches
+**0.193 of a block** in front of the eye -- inside 0.2, so the world's projection would clip the tip
+off it. `drawHeldItem` builds its own projection at a1.1.2's own 0.05 and costs nothing for it,
+because that pass does not use the depth range it would have spent.
+
+**The depth clear.** `iq.c(F)V` calls `glClear(GL_DEPTH_BUFFER_BIT)` at offset 704, immediately
+before `renderHand`, so the hand can never be clipped by a wall the player is standing against.
+citro3d has no mid-frame depth clear -- `C3D_RenderTargetClear` picks what `C3D_FrameDrawOn` clears
+and nothing more -- and a full-screen quad to do it by hand is 96,000 fragments of overdraw on a
+fill-bound device. So the hand is put where the world cannot reach instead: `C3D_DepthMap` compresses
+this pass into the **top 5 %** of the reversed depth range. With `kNearPlane` at 0.2 and a far plane
+of 128, a world fragment reaches 0.95 only within 0.21 of a block of the eye, and the near plane
+already clips everything nearer than 0.2 -- a one-centimetre shell no block face can occupy without
+filling the screen. 5 % and not 1 % because the item still sorts against *itself* and an extruded
+icon is a sixteenth of a unit thick: a twentieth of a 16-bit buffer leaves about a dozen levels
+across that thickness, a hundredth leaves two.
+
+#### And a stereo number, which is the one that wants hardware
+
+**The hand is nearer than the eyes are far apart.** The separation this renderer uses is derived
+rather than picked -- 7 px of infinity disparity at a focal distance of 8 comes out as I/2 = 0.33 of
+a block -- and the held item sits between 0.19 and 1.37 blocks away, where the `1/d` term of
+
+```
+disparity_px(d) = 200 * (I/2) * [ 1/(F*t*a) - 1/d ]
+```
+
+reaches 5.2. Put those numbers in and the nearest corner lands **86 pixels** out of the screen. The
+3DS convention is about 13 px and titles run to 20. No focal distance fixes it, because the object is
+closer to the eye than the two eyes are to each other.
+
+So the pass gets its own two: the focal distance is the item's own depth, 0.72, which puts it *on*
+the screen plane rather than in front of it, and the separation is a **sixteenth** of the world's,
+which holds the whole item inside the same 7 px the world's infinity is allowed
+(`200 * (I/2) * 1.67 = 7` solves to I/2 = 0.021 against 0.327). The slider still scales it, so
+turning 3D down still flattens the hand. **That sixteenth is arithmetic and not a measurement** --
+what it feels like is the kind of thing only a console can say.
+
+#### The hand was invisible, and the crosshair is why
+
+**It drew nothing on hardware.** Not clipped, not behind the world, not mis-transformed -- drawn,
+correctly, at an alpha of zero.
+
+`drawSelection` and `drawCrosshair` each say they restore no state "on purpose", and the argument is
+sound: `applyWorldState` runs before every eye and states all of it rather than inheriting it, so a
+pass that is *last* may leave the GPU however it likes. `drawHeldItem` was put after them, which
+made that argument false. What they leave behind is a **one-stage combiner replacing both colour and
+alpha with the vertex's own**, the alpha test off, and src-alpha blending -- and the detail shader
+puts the **fog amount** in the vertex alpha, which for something 0.8 of a block from the eye is
+zero. Every fragment of the hand was computed and then multiplied by nothing.
+
+The fix is one call to `applyWorldState()` at the top of the pass rather than undoing the
+crosshair's three settings by hand: a fourth thing either of those passes changes later would
+otherwise be the same bug again. **The lesson is about the comment, not the code** -- "restores
+nothing on purpose" was true of the last pass in the eye and was read as true of the renderer.
+
+#### The skin is a pack file, and there is a screen for it
+
+The first cut read `char.png` out of the *active* pack and stopped there. What was asked for, and is
+now there, is **Options → Skin**: Default, every texture pack carrying a `char.png`, and every
+`.png` in `sdmc:/3dalpha/skins` -- the folder created the first time the screen is opened, because a
+console help line naming a path that does not exist is a worse instruction than one that does.
+
+Four decisions in it are worth keeping:
+
+- **The saved value is a name, not a path or an index.** `pack:<name>` or `file:<name.png>`, which
+  is the rule `texture_pack` already follows, and it is what lets `ensureAtlas` apply the choice at
+  boot by reading the one file it names. An index would have meant listing the packs folder --
+  a full read of every zip on the card -- for a setting.
+- **A row is decoded before it is offered.** A PNG that will not decode, is not a multiple of 64
+  across, or is neither of the two skin heights is left off the list rather than offered and then
+  failing under the player's thumb. That is `listPacks`' own rule for a zip that will not open.
+- **Picking a skin rebuilds the atlas and then overrides the page.** Patching alone cannot go
+  *back* to Default: Default is the active pack's own file and only `buildEntitySkins` reads it, so
+  there would be nothing to restore it from.
+- **`PackEntry::hasSkin` comes off the central directory**, beside the file count, so a pack with no
+  skin costs the skin screen nothing at all and one with a skin is opened a second time only to read
+  it.
+
+#### The narrow body belongs to 1.8, and the build says so
+
+`detectSkinModel` recognises a slim skin -- the test the format implies, since a narrow arm's unwrap
+is `2 * (3 + 4) = 14` texels where a wide one is 16, so the last two columns of the right arm's page
+are texels no narrow skin ever fills -- and **only a 64 x 64 can be one**, because that format and
+the narrow body arrived together. The row says "slim" so a player whose Alex skin looks a texel wide
+is told why on the screen that offered it.
+
+It is then **drawn on the wide arm anyway**, because a1.1.2 has no other. `versions/<id>.json`
+gained `hasSlimSkins`, false here, and `core/render/held_item.cpp` carries a `static_assert` on it
+rather than a branch:
+
+> the narrow arm's ModelBiped box has not been derived -- open the jar of the version that added it
+> before turning hasSlimSkins on
+
+**That is the point of it.** Flipping the flag has to fail the build until somebody derives that
+version's box the way every other number in the file was derived from a1.1.2's; shipping a
+remembered `addBox(-2, -2, -2, 3, 12, 4)` would be exactly the kind of thing this project's rule
+about the jar exists to stop.
+
+#### Coverage
+
+`tests/held_item_test.cpp`, 14 cases; `tests/skin_list_test.cpp`, 10; plus three added to
+`tests/entity_skins_test.cpp` for the new page and two to `tests/settings_file_test.cpp` for the new
+key. The animation is checked against the class file's own numbers; the geometry has no oracle, so
+what is checked is the property the feature exists for -- the centroid is right of the eye, below it
+and in front of it, in **all three** branches and mid-swing -- plus the structural claims: one
+texture per hand, whole boxes or a full 66-quad sprite or one arm box, every arm UV inside the
+player's page and no other's, nothing written past the end of the buffer, and an item this build
+does not know drawing neither itself nor a bare arm. The skin list is checked on real files in a
+temporary directory -- Default always first, a pack without a skin never offered, a broken or
+wrongly-shaped PNG never offered, the key rebuilding a path with nothing listed, a 64 x 64 keeping
+its top half rather than being squashed, and a chosen skin changing the player's page and **no
+other page on the shared sheet**. Host suite 1096/1096; the 3DSX build passed.
+
+**Still unrun on hardware**, and the invisible-hand bug above is the reason that matters: it was a
+GPU state interaction, and nothing on the host could have caught it.
+
+### 16. Nothing could be hit, and one hook was never called
+
+A play session reported nine things that would not drop or would not break. Checked one at a time
+against the client jar, they turned out to be **two faults and five things that were already
+right** -- and the two are worth separating, because they are at opposite ends of the engine.
+
+**Fault one: there was no way to attack anything.** The break button rays for a block and only for a
+block. `Minecraft.clickMouse` asks `objectMouseOver` for what is under the crosshair and **an entity
+there is hit instead of the block behind it**, through
+`PlayerController.attackEntity` -> `EntityPlayer.attackTargetEntityWithCurrentItem` -> the entity's
+own `attackEntityFrom`. With that branch missing, a boat, a minecart and a painting could be placed,
+ridden and looked at, and nothing a player did could damage one -- so *of course* none of them ever
+left anything on the ground. The report read as three missing drop tables and was one missing call.
+
+`item::attackEntity` (core/item/use.hpp) is that call. It picks over the painting, boat and cart
+pools at `kBlockReach` and returns whether it hit something, which is the caller's cue not to break
+the block behind it. What each of the three then does is transcribed:
+
+- `dc.a(Lkh;I)Z` and `oc.a(Lkh;I)Z` are **the same four lines with a different tail**:
+  `forwardDirection` flips, `timeSinceHit = 10`, `damage += amount * 10`, and past 40 the vehicle
+  breaks. Those three numbers now live in `core/entity/rider.hpp`, which was already the seam
+  between a vehicle and its rider and is the only header both include. **Five bare-handed hits**
+  break either one -- `InventoryPlayer.getDamageVsEntity` answers 1 for an empty hand and `onUpdate`
+  sheds a point of damage a tick in between.
+- The boat leaves **three planks and two sticks**; the cart leaves **item 328 plus the chest or the
+  furnace it was carrying** -- not items 342 and 343, which is the one place a cart's type reaches
+  the ground.
+- `jc.a(Lkh;I)Z` -- the painting -- **never reads its damage argument**. One hit takes it down.
+
+Two things fell out of writing it. `MinecartSystem::hitByArrow` was already the same method with
+`amount` fixed at 4 and no drop, so it is now `attack(world, index, 4)` and an arrow-broken cart
+leaves a cart. And the boat's `Wreck` list -- a wall-broken boat recorded its position for
+`main.cpp` to drop planks at -- **turned out to be unnecessary**: `TickWorld::spawnItem` is `const`,
+so the pools can drop through the world's own sink exactly as `dropBlockAsItem` does. The wall and
+the hand now go through one `dropAndRemove` per pool, and fifteen lines came out of `runGame`.
+
+**A painting whose wall is mined also drops now**, which is not the attack path at all: `jc.e_()`'s
+hundred-tick `onValidSurface` check spawns an `EntityItem` as it removes the picture. The removal
+was here and the spawn was not, and the header said the item "belongs with Survival" -- it does not.
+It is the entity's own method and a1.1.2 has no Survival to gate it on.
+
+**Fault two: `onBlockDestroyedByPlayer` was never called.** `hq.b(IIII)Z` is four steps -- particles,
+read the metadata, `setBlockWithNotify(0)`, then sound **and `ly.b(Lcn;IIII)V`** -- and
+`item::destroyBlock` had the first three. use.hpp had quoted all four since it was written.
+
+It is empty on `Block` and has exactly three overrides in the whole version, which is why the gap
+was invisible: `km` (stairs) forwards to the model block, whose own is the empty one; `q` (TNT)
+primes it, and there is no primed-TNT entity here -- the same deviation `core/tick/fire.cpp` already
+names at the other call site. The one that shows is `hd` (crops): **three rolls of
+`nextInt(15) <= metadata`, each worth a seed**. A crop's `idDropped` answers only at growth stage 7,
+so before this a crop broken at any other stage left *nothing at all* -- which is exactly what was
+reported. `tick::blockDestroyedByPlayer` (core/tick/drop.hpp) is the hook, dispatched on the
+behaviour like everything else in that file. Its draws come out of the world's random, so a world
+with no item pool still walks the same stream.
+
+Two details of it are the class file's and neither is `dropBlockAsItem`'s: the offsets are computed
+**entirely in float**, coordinate included, where `dropBlockAsItem` widens each term before adding;
+and the seeds are **the player's break only**. Knocking the farmland out from under a crop is the
+neighbour path -- `mq.h`, which is `dropBlockAsItem` alone -- and leaves wheat at stage 7 and nothing
+below it. Conflating the two would make a crop worth farming by mining the dirt under it.
+
+**The other five were already right, and that is a result too.** A door, an iron door, a redstone
+torch, a pressure plate and a sign whose support is taken away all break and all drop, in
+`core/tick/redstone.cpp` and `core/tick/behaviour.cpp`, through the real player-break entry point
+(`item::destroyBlock`) and not just through a synthetic write. Measured, not assumed: a scratch
+fixture broke the supporting block under each in turn and read the drop sink -- door 324, iron door
+330, redstone torch 76, plates 70 and 72, sign post and wall sign 323, both halves of a door gone,
+the sign's cell emptied. Whatever was seen on the console was not these behaviours; the two faults
+above are what the session found, and the difference is worth the note so the next reader does not
+go looking for a third.
+
+`AABB`'s ray test moved with this work: `rayHitsBox` was **duplicated verbatim** in `boat.cpp` and
+`minecart.cpp` and a third copy was about to appear in `painting.cpp`, so it is in
+`core/util/aabb.hpp` now.
+
+Coverage: `tests/drop_catcher.hpp` is a shared sink so a test can ask what something left behind
+without building an item pool, and `tests/drop_test.cpp` was moved onto it. Eleven cases added --
+four on the crops hook (including that the neighbour path deliberately leaves no seeds, and that the
+random stream is unchanged with no sink), three on the painting, four on the boat and three on the
+cart, plus two on the `item::attackEntity` seam itself. Host suite **1112/1112**; the 3DSX build
+passed. **No hardware run.**
+
+### 17. Arrows hit every collidable entity, and a full item pool stops eating drops
+
+Reported as "arrows don't hit boats, and minecarts drop nothing when killed by arrows". Two faults.
+
+**The arrow only swept minecarts.** `kg.e_()` gathers every entity near its path and keeps those
+whose `canBeCollidedWith` (`c_()`) is true. From the class files, that is the painting (`jc`,
+`return true`), the boat (`dc`) and the cart (`oc`, both `!isDead`). `dx` (EntityItem) and the base
+`kh` say false. The nearest intercept against `box.expand(0.3F)` wins (`d < best || best == 0`),
+clipped to the block hit, and takes `attackEntityFrom(shooter, 4)`. `ArrowSystem::tick` now takes
+an `ArrowTargets` of all three pools and runs one nearest-target sweep over them. A painting falls
+to one arrow (its attack ignores the amount). A boat, like a cart, breaks to a second arrow inside
+two seconds. The player is also a target once the arrow is 5 ticks old; with no health yet, that is
+left out.
+
+**The cart did drop, into a pool that refused it.** A host repro of the reported chain passed:
+`runGame`'s tick order, a standing eye 6 blocks off, a real `ArrowSystem` and `MinecartSystem`, and
+the drop sink. The second arrow breaks the cart and item 328 reaches the sink. Past the sink,
+`ItemEntitySystem::spawn` can only fail by returning null from `allocate()`, which happens when all
+64 slots are full. That ceiling was sized for player throws only, and its header said to revisit it
+"when block drops land". Block drops have landed. In Creative every broken block drops an item that
+lives 5 minutes, so the pool fills quickly and the newest drop, the cart's, was refused. This is
+**inferred, not seen on hardware**; it is the only path in the code that fits the report.
+
+Now a drop into a full pool **replaces the oldest item**, the one nearest its own despawn, and the
+`evicted()` counter records it. `dropFromPlayer` still refuses, because a refused throw stays in the
+hand and loses nothing. Capacity stays at 64.
+
+Coverage: `tests/arrow_test.cpp` has four new cases. Two carts are broken by arrows from a standing
+player and item 328 is caught. A boat breaks to planks and sticks. A painting is knocked down. A
+boat in front of a cart takes the arrow alone. A mutation check (boat and painting strikes turned
+off) fails three of them. `tests/item_entity_test.cpp` replaces the refuse-the-newest case with
+eviction of the oldest and with a throw still being refused. Host suite **1117/1117**; the 3DSX build
+passed. **No hardware run.**
+
+### 18. The entity pools have no cap; the heap decides, and the draw is nearest-first
+
+Reported as "arrows, minecarts (and probably more) have a limit, the real game doesn't". The report
+is right. a1.1.2 caps none of them: `spawnEntityInWorld` adds to a list, and so does
+`EffectRenderer.addEffect`. Its bytecode (`bq.a(Lnq;)V`) is `List.add` then `return`, read off the
+jar for this change. The old arrays (arrows 128, carts 32, boats 8, paintings 32, items 64, falling
+blocks 16, particles 512, signs 64) were limits this port had chosen.
+
+**Storage: `core/util/segmented_pool.hpp`.** Each pool is a list of fixed-size segments.
+- **The first segment is the old capacity and is taken at construction** (`kInitialCapacity` on each
+  system). Ordinary play therefore allocates exactly as often as before, which is never.
+- **Growth copies nothing and moves nothing.** A reference into a pool survives a push into the same
+  pool. `FallingBlockSystem::tick` relies on this, because it can spawn while it walks. A
+  `std::vector` would break that silently on its first reallocation.
+- **Growth goes through `malloc`, never `operator new`,** which on the console ends the process
+  (`platform/ctr/heap.hpp`).
+- **Growth first asks `poolGrowthAllowed`** (`core/util/memory.hpp`). It is allowed only while the
+  heap left after it still holds an 8 MB reserve plus three copies of every pool byte. Those three
+  copies are a save's snapshot, its NBT and the compressed file, so the save after a spike can still
+  be written.
+- **Refusal lands on the old full-array path.** The shot is not fired, the placement fails (the item
+  is kept), a drop evicts the oldest item, a throw is refused, and sand takes the instant path.
+- **Memory comes back.** `trim` runs at the end of each tick and frees trailing segments, keeping one
+  spare as hysteresis. Removal never frees, so no segment goes under a live reference mid-walk.
+
+**Save: `SavedPool<T>`** is a `malloc`'d array sized at capture.
+- A capture the heap refuses keeps the previous snapshot. An older save is a save; a partial one is
+  a loss.
+- `readPool` no longer rejects a list longer than a pool. That old check failed the whole level.dat.
+- The count in the file is not trusted for an allocation. Each element is read before it is stored.
+- On restore, a pool that the heap refuses keeps what fits and counts the rest in `refused()`.
+
+**Drawing: `core/render/draw_budget.hpp`.** The vertex buffers stay fixed-size, because the GPU reads
+them after submit. Previously a pass filled its buffer in pool order, which dropped whichever entities
+sat late in the pool, and swap-removal reshuffled that order from frame to frame. Now a pass that
+would overflow works as follows:
+- It sorts entities into half-block rings and draws every ring that fits in full.
+- The first ring that doesn't fit gets exactly the room left, in pool order, so a pile bigger than
+  the budget still shows part of itself.
+- Items share one `DrawCutoff` across the two sheet passes. Signs share one across boards and text,
+  and the text pass rewinds it so it draws the same signs.
+- There is no allocation and no sort: 128 counters on the stack, plus a first pass that is skipped
+  when everything fits.
+- Draw budgets were raised for boats (8 → 32) and falling blocks (16 → 64). The rest are unchanged.
+  That is about 64 KB more linear memory.
+
+**Performance at large counts is uncapped, not fixed.** These costs grow with the count:
+- The arrow sweep is arrows × targets.
+- Cart-on-cart pushing is O(n²) per tick.
+- The item merge scan is O(n²), but each item runs it once every 25 ticks, so a tick pays n²/25
+  box tests: 10,000 at 500 items. A pile that merges shrinks itself, so drop piles stay small. The
+  later version the merge was transcribed from searches chunk entity buckets, which would be the fix
+  if it were ever needed.
+
+`TickTimer` still clamps at ten ticks a frame, so a slow tick costs frame rate, not a death spiral.
+That is the trade asked for ("degrade performance rather than crash"). Nothing about it is measured on
+hardware.
+
+**Not touched, and the same kind of limit:** `TickScheduler` (4096, drops and counts),
+`LightUpdateQueue` (2048), and `TickWorld`'s torch-toggle (64) and deferred-notify (512) tables.
+Those are block-update structures rather than entities.
+
+Coverage: `tests/segmented_pool_test.cpp` has 10 cases. They cover growth without moving, fresh
+slots, swap-remove, trim hysteresis, byte accounting, heap refusal, the growth rule at its exact edge,
+and three draw-cutoff cases. Every per-system "refuses rather than overflowing" test became two tests:
+one showing no limit past the first segment, and one where a `test::LowHeap` (`tests/low_heap.hpp`)
+takes the old full path. The persistence tests add a 389-arrow round trip and a low-heap restore.
+`past_the_buffer_the_nearest_items_are_drawn` spawns far items first, so a pool-order build would fail
+it. Host suite **1134/1134** under ASan/UBSan. TSan is clean on `entity_persistence`,
+`housekeeping`, `save_progress` and `pool`. The 3DSX build passed. **No hardware run.**
+
+#### The refusal is said on the top screen
+
+A refused spawn used to look like a button that did nothing. It now puts Legacy Console Edition's
+sentence in the bottom left of the top screen: "The maximum number of Minecarts in a world has been
+reached." Boats and Paintings use the same wording (LCE's own). Signs, Arrows and Dropped Items were
+made to match.
+
+**The look is a1.1.2's own chat overlay**, which LCE kept. It was read out of `lu` (`GuiIngame`):
+- `lu.a(String)` wraps at 320 GUI pixels by `kd.a(String)`, the longest prefix that fits, one
+  character at a time. Pieces go in at index 0, and the list is trimmed to 50.
+- `lu.a()` ages each line by one a tick.
+- The draw shows the first ten lines and skips any aged 200 or more. Opacity is
+  `t = clamp((1 - age/200) * 10, 0, 1)`, and `alpha = 255 * t * t`.
+- Line `i` sits at `height - 48 - 9i`, over `drawRect(2, y-1, 322, y+8)` in black at `alpha/2`.
+  The text is `kd.a(String,III)`, which is drawStringWithShadow: the shadow at (+1, +1) in
+  `(c & 0xFCFCFC) >> 2`, then the text.
+
+Where the pieces live:
+- `core/gui/chat_log.{hpp,cpp}` is the list.
+- `core/render/chat_mesh.{hpp,cpp}` builds the glyph quads, in screen pixels.
+- `Renderer::drawChat` draws last in each eye:
+  - an ortho matrix at the screen plane;
+  - strips through the outline program, with the alpha in its tint;
+  - text through the detail program off the pack font, with the alpha in the combiner constant,
+    because that shader spends vertex alpha on fog.
+- `buildChat` runs once a frame, before the first eye.
+
+Two stated differences:
+- Only the ten showable lines are kept, since there is no chat screen.
+- Posting the message that is already newest, while it still shows, restarts its fade. The
+  placement buttons repeat every five ticks, and ten copies of one sentence would fill the list.
+
+Detection needs no signature change. `item::markRefusals` snapshots every pool's `refused()` before
+a click, and `refusedSince` names whichever rose. A throw compares the item pool's count the same way.
+
+**No pack font, no message:** the only in-game font is the pack's `default.png`, which is the same
+limit sign text has.
+
+**A bug fixed on the way.** `useSign` wrote the sign block before asking the store for the tile
+entity. A refused store left an invisible block, since a sign is render type -1. The tile entity is
+now asked first, and a refusal places nothing.
+
+Coverage: `tests/chat_log_test.cpp` has 14 cases:
+- the class file's numbers (opacity is 254 at age 180 in doubles, as Java computes it);
+- wrap order, the ring, ageing, and repeat restarts;
+- code-point-safe truncation;
+- shadow/text quads, positions and UVs;
+- no font, and the buffer edge;
+- the sentences, and refusal detection.
+
+`a_sign_the_store_will_not_hold_leaves_no_block_behind` is in `sign_test.cpp`.
+
+#### What an entity costs in memory, and what a mob farm will
+
+Asked while doing the above: can many entities be made cheaper in RAM by not holding the same
+things repeatedly? Measured with `sizeof` on the host and through devkitARM with the console's
+flags; the two agree:
+
+| | Bytes |
+|---|---|
+| Arrow | 176 |
+| Minecart | 176 |
+| Boat | 152 |
+| ItemEntity | 152 |
+| Particle | 144 |
+| FallingBlock | 136 |
+| Painting | 120 |
+| SignText | 80 |
+
+**Nothing per-type is held per instance already.** Textures are one sheet each, models are
+compiled-in box tables, and item and block definitions are generated tables. An instance holds only
+its own state, and most of that is a1.1.2's doubles (position, previous position, motion and box).
+Narrowing those would break the float behaviour the physics was transcribed for. A thousand
+entities is about 150 KB, against a newlib heap of about 21 MB on an old 3DS and 40 MB on a New 3DS
+(`docs/3ds-performance.md`).
+
+**Mobs are bounded by the game, not by RAM.** `ia` (PlayerControllerSP) builds two spawners:
+- `new k(this, 200, co.class, ...)`: 200 monsters (`co` is IMob);
+- `new az(15, ag.class, ...)`: 15 animals.
+
+Each checks `cn.b(Class)`, the world's count, before spawning. That is a rule of the game rather than
+a technical limit, so it stays when mobs are ported. A farm's population is at most about 215 mobs,
+well under a megabyte even at 1 KB each.
+
+**What will actually cost is per-frame model building.** Every entity pass rebuilds its vertices on
+the CPU every frame. At 200 bipeds of six boxes that is 28,800 vertices (460 KB written) per frame.
+The saving worth making for mobs:
+- build each model type's boxes **once**, into a static buffer;
+- per mob, upload only its part matrices and light;
+- draw each mob with a skinning-style vertex shader that picks the matrix by a part index.
+
+That turns "rebuild the model" into "set some uniforms". It belongs in the mob work
+(`docs/todo-m3.md`) rather than here, because no pass that exists today draws enough animated
+entities to need it. Pathfinding has the same shape of cost and wants a per-tick budget.
+
+### 19. A minecart stack overflowed to NaN, and took its rider and the save with it
+
+Reported as "stacking too many minecarts turns them flat or makes them disappear; riding one
+teleports you to 0 0 0 into a ghost world that doesn't render or collide and has no map arrow; a
+world saved after that won't open". One fault and one bad failure mode.
+
+**The fault is a1.1.2's own arithmetic.** `oc.f(kh)` (applyEntityCollision), cart against cart,
+from the class file: `sum = m1 + m2`, then `m1 = m1 * 0.2 + sum / 2 - push` and the mirror for the
+other cart. The pair ends with **1.2 times** the motion it had, and `oc` bounds only the *move*
+(`kMinecartSpeedCap`, 0.4), never motion. `oc.e_()` calls it for every nearby cart, so carts that
+stay in contact compound it every tick. Host repro: eight carts placed on one rail of a 21×21
+loop, one ridden and pushed. The largest per-axis motion is 3.5e125 at tick 250. Past about 1e154
+the squared speed overflows, and at **tick 320** (16 s) motion goes `inf` then NaN. The NaN spreads
+through the rail snap into position: the cart is drawn nowhere or degenerate, the rider's seat
+is NaN, and so is the player.
+
+**The fix bounds motion where it compounds.** `collideCarts` clamps each axis to
+`kMinecartMotionLimit` (10). It is the port's bound, not the game's: past 0.4 more motion does not
+move a cart faster, it only sets how long the cart keeps top speed once it is clear. From 10, a
+ridden cart (drag 0.997, move ×0.75) coasts at the cap for about 976 ticks; an empty one about 79.
+The unbounded original, if the double could hold it, would coast for longer and not otherwise
+differ. Rail re-pointing can carry a clamped pair's combined speed onto one axis, so per-axis
+motion peaks slightly over 10 (11.5 in the repro) until the next collision.
+
+**The save failure was the decoder, not the writer.** Each entity reader rejected a non-finite
+field by returning false, which failed `readPool`, then `readPersistentEntities`, then the whole
+`decodeLevelDat`. Now `read` fails only when the stream is broken, and an entity holding an
+impossible value (non-finite, or out of the existing range checks) is **dropped**. `decodeData`
+also repairs a present player whose `Pos` is non-finite: they go to the spawn block (`Pos[1]` is
+eye height, so `spawnY + kEyeHeight`) with fall distance reset. NaN motion and rotation go to zero.
+The inventory and everything else are kept. Worlds already saved in that state should now open,
+without the NaN carts and with the player at spawn.
+
+**Not changed:** the port still resolves each cart pair once per tick where `oc.e_()` resolves it
+from both carts (see `collideCarts`). The push is 0.1 against the class file's
+`0.1 × (1 − aO) × 0.5`, applied from both sides. That is an existing, deliberate difference and is
+unrelated to the overflow.
+
+Coverage: `a_stack_of_carts_stays_finite_however_long_it_runs` (minecart_test) fails with the clamp
+disabled, at tick 320. `entity_persistence_rejects_truncation_and_drops_nonfinite_entities` replaces
+the case that pinned the old "a NaN entity fails the file" behaviour.
+`entity_persistence_puts_a_nonfinite_player_back_at_spawn` is new. Host suite **1151/1151**
+(ASan/UBSan); the 3DSX build passed. **No hardware run**, and no real broken save was reopened.
+
+### 20. "Placed blocks don't face the way I'm looking": furnaces and stairs face their neighbours
+
+Reported as "the rotation of placed blocks doesn't follow view direction for logs, furnaces etc".
+**In a1.1.2 nothing follows the view direction.** Re-checked in the jar: `ly` has no method taking
+an `EntityLiving`, so there is no `onBlockPlacedBy` (it arrives with pumpkins in a1.2). A log (`mg`)
+has no orientation at all, just top/bottom rings from `a(I)I`. The user chose faithful a1.1.2
+over a Beta-style heading rule. Two real faults were under the report:
+
+- **Every furnace drew its mouth on +Z.** The cube stream draws `faces`, the inventory answer, and
+  never read the metadata the placement wrote. `ku.a(Lnm;IIII)I` puts the mouth on side ==
+  metadata, and a lit furnace's mouth in the world is tile 61 (`bb + 16`), not 44. The fix:
+  `metadataFaces` in blocks.json (extractor, jar-verified), `block::worldFaces`, and furnaces off
+  the fast path.
+- **Furnace and stair orientation came from a face table that the jar does not have.** Neither
+  class overrides `onBlockPlaced`. Both turn from their neighbours in `onBlockAdded` (`ku.h`,
+  `km.h`), and the one-stone sweep made that look face-driven. Ported as
+  `TickBehaviour::Furnace` and `::Stairs`, including the staircase turning into its model block
+  under anything solid. The sweep now lists the six classes that do override `onBlockPlaced`, and
+  `gen_selection.py` tables only those. Details: [physics-a1.1.2.md](physics-a1.1.2.md), *Which
+  way a placed block faces*.
+
+The generated `placement_vectors.hpp` is otherwise byte-identical to the checked-in one. Coverage in
+`placement_test.cpp`: the port's own write-then-`blockAdded` against every case of the sweep, plus
+walls, corners, flights and a block on top. `mesher_test.cpp` covers the mouth. Host suite
+**1163/1163**; the 3DSX build passed; `extract_blocks.py --verify` and `gen_selection.py --check`
+agree. **No hardware run.** Not done: the chest, whose world texture reads its neighbours (and
+double chests), is still drawn from `faces`.
+
+### 21. Entity hitboxes were the arrow's, and the outline ignored what the click would hit
+
+Reported as "entity hitboxes feel too big, so it becomes impossible to place a rail below a
+minecart". The report also asked that the block outline stop when an entity would be hit first.
+Four differences from `iq.a(F)` (EntityRenderer.getMouseOver), each checked in the jar:
+
+- **The border was 0.3; the original's is 0.1.** The boat's pick said the 0.3 was the entity
+  pick's own. It is `EntityArrow`'s. A grounded cart's box tops out at 64.7. Under 0.3 the grown
+  box reached the top of its cell, so every shot at that cell entered the cart first. With 0.1 it
+  stops at 64.8, which leaves a strip at the top of the neighbour's side face clickable.
+- **No distance limit to three blocks.** Entities were picked out to the block reach of four.
+- **No clip to the block hit.** A cart behind a wall took the click.
+- **Pool order, not distance.** Paintings, then boats, then carts: a boat behind a cart won.
+  Distances were also measured to the centre, not the intercept.
+
+`item::pickEntity` now transcribes it over all three pools (core/item/use). It returns an
+`EntityTarget`, and `attackEntity` and the new `interactWithEntity` act on that target. The
+per-pool `pick` methods and `rayHitsBox` are gone. `editBlocks` computes the target once per
+click:
+- R attacks the target.
+- L interacts with it. A refused `interact` (a chest cart, an occupied vehicle) no longer falls
+  through to the block behind it, but the item's own `useItem` still runs, as in `clickMouse`.
+
+The outline is cleared on frames where an entity takes the crosshair.
+
+Coverage in `tests/minecart_test.cpp` (six cases), with `boat_test`, `painting_test` and
+`use_test` moved to the new API. The reported case is `a_rail_goes_back_under_a_cart_that_has_lost_its_track`.
+A mutation back to 0.3 fails it, and fails the border cases for the cart and the painting.
+Dropping the block clip fails the wall case. Host suite **1169/1169**; the 3DSX build passed.
+**No hardware run.**
+
+### 22. Greedy meshing: a cube atlas to repeat tiles in, and a seam for the rasteriser
+
+Equal neighbouring cube faces are now one quad. That means the same plane, face direction, tile and
+light byte. Both cube formats carry it. It is on by default, with a debug-page row to turn it off.
+The blocker recorded in §2 was the atlas, and three hardware facts decided the shape of the fix.
+
+**1. The PICA cannot repeat one tile of a shared atlas.** Wrap mode belongs to the whole texture,
+and the fragment stage has no `fract`. So every tile a cube face can show is stored pre-repeated
+in a 64×64 slot of a second texture, the **cube atlas** (`core/mesh/cube_atlas.hpp`). A slot is an
+8-texel gutter, three copies of the tile, and another 8-texel gutter. The gutters repeat the tile's
+own first and last texel. A merged quad samples `[0, w] × [0, h]` copies from the end of the near
+gutter, which caps a run at 3 along either edge.
+- **The gutter came from hardware (first run, below).** The first layout was 4×4 copies edge to
+  edge, and every block showed a few texels of the neighbouring slot: red on the corners of grass
+  tops, which is TNT's slot 8, directly below grass's slot 0. The ⅛-texel inset is half as large in
+  texture coordinates at 512 texels as at 256, and a run spans four tiles, not one. Together that
+  was more error than the inset absorbs. Now a stray sample has to be 8 texels out to reach
+  another tile; anything less reads the same tile's edge texel.
+- **What the gutter does not cover:** the far edge of a run shorter than three, which ends against
+  the next copy of the *same* tile. The inset still stands there.
+- **The fourth copy paid for the gutter.** On the real world, runs of 3 cost 5.8 % more quads than
+  runs of 4 (1,057,821 against 999,579). Keeping 4 with a gutter would have needed a 1024×512
+  atlas, 2 MB of VRAM.
+- **The size is set by VRAM.** A slot for all 256 tiles would be 1024², 4 MB at RGBA8, the figure
+  `atlas_image.hpp` already refused. Cube blocks can reach only 54 tiles in a1.1.2, so slots go to
+  those alone: 8×8 slots in 512×512, **1 MB**.
+- The layout is computed at compile time from the generated block table. It covers every cube-type
+  block's faces, the furnace's metadata rows, the unknown block and tile 0. A `static_assert`
+  fails the build if a version ever needs more than 64 slots; a 2×2 repeat would hold all 256.
+- **VRAM order:** the cube atlas is allocated first, then the ordinary atlas. The upload goes in
+  eight 128 KB bands through the existing 256 KB staging buffer, so a texture-pack reload with a
+  full pool never asks the linear heap for 1 MB.
+- `updateTile` also rewrites the tile's whole slot, copies and gutters. No animated a1.1.2 tile is
+  a cube tile, so that path is dormant.
+- The detail and translucent passes keep terrain.png. Fluid reads across tile edges on purpose, and
+  nothing but cubes merges.
+
+**2. Merged quads create T-junctions, and the PICA rasteriser cracks at them.** It snaps each
+vertex to 12.4 fixed point (1/16 px, as Azahar models it). A corner lying mid-edge of a merged quad
+lands up to ~0.044 px off that edge. The sliver between belongs to neither quad and shows the sky
+colour. Unmerged faces never do this, because they share corners exactly.
+- The fix is a **seam**: each merged quad grows by `k = seam.x·max(w,0) + seam.y` blocks on every
+  side, where `w` is the view distance.
+- `seam.x` is ⅛ px over the focal length (`120/tan(fov/2)`), so the growth is ⅛ px at any
+  distance. `seam.y` is a 1/1024-block floor. The clamp on `w` stops corners behind the near plane
+  from shrinking a quad.
+- Single faces get zero growth, so an unmerged mesh draws exactly as before.
+- **12-byte format:** `WorldVertex::face` became `seam = face + 6·code`. Code 0 means a single
+  face; code 1+corner is a merged corner. `world.v.pica` indexes a 30-entry `seamDir` table
+  (`mesh::seamDirection`) with that byte directly.
+- **Quad format:** the old `ao` byte is the extent, stored as `w + 16h`. `quad.v.pica` unpacks it,
+  lengthens the edges to `(w+2k)` and `(h+2k)`, and moves corner 0 by `−k(e1+e2)`. It sizes `k`
+  from corner 0's `w` for all four corners; the floor covers the corners that come out short.
+- The texture is not stretched to follow the growth. That costs ⅛ px of texel misalignment at a
+  merged edge.
+
+**3. The merge must be cheap on the main thread.** Faces go into per-face, per-layer bitmask rows,
+51 KB on the heap. The merge clears each bit as it covers it, so there is no per-section clear.
+
+Host measurements on a copy of the real 1119-column world (`--mesh`, with `flat` for the old
+mesh):
+
+| | cube quads | mesh bytes, 12-byte | mesh bytes, geoshader | face emit (O3) |
+|---|---|---|---|---|
+| one quad per face | 2,135,496 | 107.45 MB | — | 26.3 µs/section |
+| greedy, runs of 4 (first layout) | 999,579 (2.14× fewer) | 55.46 MB | 17.33 MB | 26.9 µs/section |
+| greedy, runs of 3 (current) | **1,057,821** (2.02× fewer) | 58.12 MB | 17.78 MB | 26.2 µs/section |
+
+- Resident at distance 8 with runs of 3: 11.16 MB → 8.78 MB (12-byte) and 2.24 MB (geoshader).
+- Vertex-shader length: `world.v.pica` 22 → 28 instructions per vertex; `quad.v.pica` 44 → 69 per
+  quad; the geometry shader is unchanged at 29. That is ~18–27 % more shader work per quad, against
+  2× fewer quads.
+
+**First hardware run** (runs of 4, geoshader default, as reported by the user). Greedy on: **22 ms
+GPU / 25 ms CPU**. Greedy off: **34 ms GPU / 44 ms CPU**. It also showed the cross-slot texel bleed
+that the gutter above fixes. The runs-of-3 layout has not been on a console yet.
+
+**Verified without a console:**
+- `tests/greedy_test.cpp` takes 48 terrain and noise sections apart into unit faces. Each greedy
+  mesh equals the flat mesh as a multiset of (cell, face, slot, light). The tests also cover
+  winding, the run cap, outward seams, a clean builder after a flush, and the cube atlas layout
+  and gutters.
+- `quad_format_test` compares the two formats with merged quads included.
+- A scratch PICA interpreter ran the **assembled** `.shbin`s over 62 quads (46 merged). The paths
+  agree to 1e-15 in position and UV under affine matrices, with and without the seam. The 12-byte
+  shader matches `M·(corner + k·dir)` exactly.
+
+**What only hardware can say:**
+- Whether the gutter clears every wrong texel. If a few remain at the far edge of short runs, they
+  are the same tile's opposite edge, and the next lever is the inset (`kCubeUvInset`, and the
+  constants in `quad.v.pica`).
+- Whether ⅛ px is enough seam on the real rasteriser (look for sparkles along merged edges with the
+  seam uniform at zero, then at ⅛).
+- The wireframe now marks each quad's two start edges in white over the grey block grid, which
+  shows the runs.
+
+Host suite **1182/1182** (ASan/UBSan); the 3DSX build passed. **No hardware run.**
 
 ## Open questions
 

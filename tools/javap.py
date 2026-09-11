@@ -108,10 +108,17 @@ class Probe(Ref):
     block is being asked about. Touching it raises `Probed`, so a method that
     answers without consulting it gives an answer good everywhere, and one that
     consults it is reported as world-dependent instead of being answered with a
-    guess."""
+    guess.
 
-    def __init__(self, name="probe"):
+    `answers` narrows that to "everything but these calls": a map from
+    (method name + descriptor, argument tuple) to the value the call returns.
+    Only an exact match answers -- the same method at other arguments is still
+    a probe -- so a world that knows one cell's metadata cannot be mistaken for
+    one that knows its neighbours'."""
+
+    def __init__(self, name="probe", answers=None):
         super().__init__(name)
+        self.answers = {} if answers is None else answers
 
 
 class Array:
@@ -622,7 +629,11 @@ class Interpreter:
 
         returns = _return_type(descriptor)
         if isinstance(receiver, Probe):
-            raise Probed(f"{receiver.class_name}.{method_name}{descriptor}")
+            key = (method_name + descriptor, tuple(args))
+            if key not in receiver.answers:
+                raise Probed(f"{receiver.class_name}.{method_name}{descriptor}")
+            stack.append(receiver.answers[key])
+            return
 
         if owner_name.startswith("java/"):
             if returns != "V":

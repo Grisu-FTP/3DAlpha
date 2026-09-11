@@ -762,7 +762,10 @@ beside it is not a measurement and the watchdog has already dropped the format b
   fewer triangles, which means greedy meshing, and greedy meshing has a problem of its own: merged
   faces need the texture to repeat across the merged quad, and a 16×16 atlas with one wrap mode for
   the whole texture cannot do that. That would be the next thing to solve, and it would be a change
-  to the atlas rather than to the mesher.
+  to the atlas rather than to the mesher. **Now built** (docs/status.md §22): a 512×512 cube atlas
+  of 3×3 tile repeats inside 8-texel gutters, a ⅛-pixel seam against the rasteriser's T-junction
+  cracks, and 2.02× fewer cube quads on the real world. First hardware run: 34 → 22 ms GPU. Either answer to the measurement above is now worth less, because
+  both halves of the cost shrink with the quad count.
 
 ## 2b. Take control of the heap split (implemented)
 
@@ -1448,7 +1451,7 @@ what stops executing.
 | `resolution_scale` (1.0 / 0.75 / 0.5) | fragment count scales with the square |
 | `color_depth` (16 / 24) | RGB565 render target halves colour bandwidth |
 | `smooth_lighting` | AO flood-fill skipped at mesh time, **and** enables face merging ⇒ fewer quads |
-| `greedy_meshing` | merges coplanar same-texture faces; large win on flat and ocean terrain |
+| `greedy_meshing` | merges coplanar same-texture, same-light faces, runs up to 3×3; 2.02× fewer cube quads on the real world, 34 → 22 ms GPU on hardware. **Built**, on the debug page (status.md §22) |
 | `clouds` | whole clouds pass skipped, VBO freed |
 | `particles`, `entity_shadows`, `view_bobbing`, `hand_render` | those passes and their per-frame updates skipped |
 | `mipmaps` | mip chain never generated, ~⅓ less texture memory |

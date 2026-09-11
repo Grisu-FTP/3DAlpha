@@ -2,6 +2,7 @@
 
 #include "core/mesh/vertex.hpp"
 #include "core/texture/dev_art.hpp"
+#include "core/texture/entity_skins.hpp"
 
 #include <3ds.h>
 
@@ -52,6 +53,77 @@ constexpr u32 kDisplayTransferFlags =
 // face being clipped away, and no more: depth precision is the cost, and a
 // 16-bit depth buffer has little to spare.
 constexpr float kNearPlane = 0.2f;
+
+// **The hand gets its own, and it is the original's.** `iq.a(FI)V` sets the
+// world up with `gluPerspective(fov, aspect, 0.05F, far)` and `renderHand`
+// reuses it; this renderer trades that near plane away for depth precision the
+// world needs and the hand does not. At 0.2 the nearest corner of a held sword
+// -- which reaches 0.193 of a block in front of the eye -- is clipped off, so
+// the one pass that is drawn in camera space builds its own projection with
+// a1.1.2's own value. It costs nothing: `drawHeldItem` remaps its depth into a
+// sliver of the buffer anyway, so the precision this near plane would have
+// spent is not being spent on the world.
+constexpr float kHeldItemNearPlane = 0.05f;
+
+// **How much of the depth range the hand is given, and why it needs any.**
+//
+// The original clears the depth buffer before drawing the hand
+// (`glClear(GL_DEPTH_BUFFER_BIT)` at offset 704 of `iq.c(F)V`), so the item
+// can never be clipped by a wall the player is standing against. citro3d has
+// no mid-frame depth clear -- `C3D_RenderTargetClear` picks what
+// `C3D_FrameDrawOn` clears and nothing more -- and a full-screen quad to clear
+// it by hand would be 96,000 fragments of pure overdraw on a fill-bound
+// device.
+//
+// So the hand is put where the world cannot reach instead. Depth here is
+// reversed -- the buffer is cleared to 0 and the test is GPU_GREATER, so
+// nearer is *larger* -- and `C3D_DepthMap` scales what the projection produces
+// before it is written. Compressed into the top 5 %, the hand beats any world
+// fragment whose own depth is below 0.95, which with `kNearPlane` at 0.2 and a
+// far plane of 128 means anything further away than 0.21 of a block. The near
+// plane already clips everything nearer than 0.2, so what is left is a
+// one-centimetre shell that no block face can be in without filling the screen.
+//
+// 5 % and not 1 %: the hand still has to sort against *itself*, and an
+// extruded icon is only a sixteenth of a unit thick. A twentieth of a 16-bit
+// buffer leaves about a dozen depth levels across that thickness, which is
+// enough; a hundredth leaves two or three, which is not.
+constexpr float kHeldItemDepthScale = -0.05f;
+constexpr float kHeldItemDepthOffset = 0.95f;
+
+// **The hand is nearer than the eyes are far apart, and that is a stereo
+// problem the world never has.**
+//
+// The separation this renderer uses is derived from an on-screen disparity, not
+// picked: `interocularForDisparity` inverts
+//
+//     disparity_px(d) = 200 * (I/2) * [ 1/(F*t*a) - 1/d ]
+//
+// at infinity, and 7 px of infinity disparity at F = 8 comes out as I/2 = 0.33
+// of a block. The held item sits between 0.19 and 1.37 blocks from the eye, so
+// the `1/d` term reaches 5.2 -- put those numbers in and the nearest corner of
+// a held sword lands **86 pixels** out of the screen. The 3DS convention is
+// about 13 px and titles run to 20; 86 cannot be fused at all, and no choice of
+// focal distance fixes it, because the object is closer to the eye than the two
+// eyes are to each other.
+//
+// So this pass gets its own two numbers. The focal distance is the item's own
+// depth, which puts it *on* the screen plane rather than in front of it; and
+// the separation is a sixteenth of the world's, which is what holds the whole
+// item inside the same 7 px the world's infinity is allowed. The slider still
+// works -- `iod` is what it scales -- so turning 3D down still flattens the
+// hand along with everything else.
+//
+// **A sixteenth is arithmetic, not a measurement.** 200 * (I/2) * 1.67 = 7 at
+// the nearest corner solves to I/2 = 0.021 against the world's 0.327, and 1/16
+// is the round number next to it. What it feels like on hardware is the kind of
+// thing only hardware can say; see CONTRIBUTING.md.
+constexpr float kHeldItemStereoScale = 1.0f / 16.0f;
+constexpr float kHeldItemFocalBlocks = 0.72f;
+
+// citro3d's own default, restored on the way out -- see C3D_Init.
+constexpr float kDepthMapScale = -1.0f;
+constexpr float kDepthMapOffset = 0.0f;
 
 // The alpha test, and it is the original's own rather than a threshold of ours.
 //
@@ -240,6 +312,10 @@ bool Renderer::buildPipeline(Pipeline* pipeline, const void* shbin, u32 shbinSiz
     shaderProgramSetVsh(&pipeline->program, &pipeline->dvlb->DVLE[0]);
     pipeline->uLocMvp = shaderInstanceGetUniformLocation(pipeline->program.vertexShader, "mvp");
     pipeline->uLocFog = shaderInstanceGetUniformLocation(pipeline->program.vertexShader, "fogparam");
+    pipeline->uLocTint = shaderInstanceGetUniformLocation(pipeline->program.vertexShader, "tint");
+    pipeline->uLocSeam = shaderInstanceGetUniformLocation(pipeline->program.vertexShader, "seam");
+    pipeline->uLocSeamDir =
+        shaderInstanceGetUniformLocation(pipeline->program.vertexShader, "seamDir");
 
     AttrInfo_Init(&pipeline->attrs);
     if (detail) {
@@ -250,7 +326,7 @@ bool Renderer::buildPipeline(Pipeline* pipeline, const void* shbin, u32 shbinSiz
     } else {
         // mesh::WorldVertex, 12 bytes.
         AttrInfo_AddLoader(&pipeline->attrs, 0, GPU_SHORT, 2);          // u, v        offset 0
-        AttrInfo_AddLoader(&pipeline->attrs, 1, GPU_UNSIGNED_BYTE, 4);  // x,y,z,face  offset 4
+        AttrInfo_AddLoader(&pipeline->attrs, 1, GPU_UNSIGNED_BYTE, 4);  // x,y,z,seam  offset 4
         AttrInfo_AddLoader(&pipeline->attrs, 2, GPU_UNSIGNED_BYTE, 4);  // r,g,b,light offset 8
     }
     return true;
@@ -271,7 +347,551 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
     // never during a frame -- see setSelection.
     outlineVerts_ = linearAlloc(sizeof(render::OutlineVertex)
                                 * usize(render::kOutlineVertexCount));
-    return outlineVerts_ != nullptr;
+    crosshairVerts_ = linearAlloc(sizeof(render::OutlineVertex) * 12);
+
+    // 32 KB, once: 512 particles of four 16-byte vertices. It shares the
+    // detail pipeline and the shared index buffer, so this allocation is the
+    // whole cost of the particle pass.
+    particleVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxParticleVertices));
+    // 24 KB more, once, on the same argument: dropped items are built into it
+    // every frame the pool is not empty and never allocate on a frame.
+    itemVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxItemVertices));
+    // 24 KB more: sixty-four falling blocks of six faces each.
+    fallingVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxFallingVertices));
+    // 24 KB more: eight full-size paintings at six faces per 16 x 16 cell. See
+    // kMaxPaintingVertices for why it is eight and not the pool's thirty-two.
+    paintingVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxPaintingVertices));
+    // 48 KB more: 128 arrows at six quads each.
+    arrowVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxArrowVertices));
+    // 60 KB more: thirty-two boats of five boxes each.
+    boatVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxBoatVertices));
+    // 72 KB more: thirty-two minecarts of six boxes each.
+    minecartVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMinecartVertices));
+    // 240 KB, and it is the text that costs it -- see kMaxSignVertices.
+    signVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxSignVertices));
+    // 4 KB, and the smallest of the lot: one item, 66 quads at the worst.
+    heldVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxHeldVertices));
+    // 64 KB of glyphs and under a kilobyte of strips, for the chat lines.
+    chatVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kChatMaxVertices));
+    chatStrips_ = linearAlloc(sizeof(render::OutlineVertex) * 6u
+                              * usize(mc::gui::kChatShownLines));
+
+    return outlineVerts_ != nullptr && crosshairVerts_ != nullptr && particleVerts_ != nullptr
+           && itemVerts_ != nullptr && fallingVerts_ != nullptr
+           && paintingVerts_ != nullptr && arrowVerts_ != nullptr
+           && boatVerts_ != nullptr && minecartVerts_ != nullptr
+           && signVerts_ != nullptr && heldVerts_ != nullptr && chatVerts_ != nullptr
+           && chatStrips_ != nullptr;
+}
+
+void Renderer::setParticles(const mc::entity::ParticleSystem* particles,
+                            const mc::render::Billboard& camera,
+                            double eyeX, double eyeY, double eyeZ, float partial)
+{
+    particles_ = particles;
+    particleCamera_ = camera;
+    particleEyeX_ = eyeX;
+    particleEyeY_ = eyeY;
+    particleEyeZ_ = eyeZ;
+    particlePartial_ = partial;
+}
+
+// **Built every frame, and that is the point.** A particle moves on every tick
+// and every quad faces the camera, so there is nothing here that could be
+// cached between frames the way the outline is: turning on the spot changes all
+// four corners of all of them. What the frame path is not allowed to do is
+// allocate or read the card, and this does neither -- the buffer was taken once
+// at init, and the build only reads the pool.
+void Renderer::drawParticles(const C3D_Mtx& viewProjection, i32 originChunkX,
+                             i32 originChunkZ)
+{
+    if (particles_ == nullptr || particles_->count() == 0 || particleVerts_ == nullptr) {
+        return;
+    }
+
+    // The quads are relative to the eye's *block*, not to the chunk origin the
+    // rest of the frame uses: a detail position is a signed short of 1/1024
+    // blocks and reaches 32 blocks, where a chunk-relative one would have to
+    // reach the whole render distance. Flooring keeps the translation exact in
+    // a float.
+    const double eyeBlockX = std::floor(particleEyeX_);
+    const double eyeBlockY = std::floor(particleEyeY_);
+    const double eyeBlockZ = std::floor(particleEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(particleVerts_);
+    const int written = render::buildParticles(*particles_, particleCamera_, eyeBlockX,
+                                               eyeBlockY, eyeBlockZ, particlePartial_,
+                                               verts, kMaxParticleVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+
+    // The same translation trick drawPass argues at length: the model matrix is
+    // a pure translation, so the product is `vp` with one column replaced.
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, particleVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    // Four vertices a quad through the shared index buffer, exactly as a
+    // section's detail range is drawn -- which is why no new index buffer and
+    // no new shader were needed for any of this.
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+}
+
+void Renderer::setItemEntities(const mc::entity::ItemEntitySystem* items,
+                              float viewYawDegrees, double eyeX, double eyeY, double eyeZ,
+                              float partial)
+{
+    items_ = items;
+    itemViewYaw_ = viewYawDegrees;
+    itemEyeX_ = eyeX;
+    itemEyeY_ = eyeY;
+    itemEyeZ_ = eyeZ;
+    itemPartial_ = partial;
+}
+
+void Renderer::drawItemEntities(const C3D_Mtx& viewProjection, i32 originChunkX,
+                                i32 originChunkZ)
+{
+    if (items_ == nullptr || items_->count() == 0 || itemVerts_ == nullptr) {
+        return;
+    }
+
+    // The same eye-block origin the particles use, and for the same reason: a
+    // detail position is a signed short of 1/1024 blocks and reaches 32.
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    bindPipeline(detailPipeline_);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(itemVerts_);
+
+    // **Both sheets are built before either is drawn, into disjoint halves of
+    // the one buffer.** This used to build a sheet, draw it, and then build the
+    // other over the top of the same vertices -- which reads as correct and is
+    // not, because `C3D_DrawElements` records a command that names an *address*
+    // and the GPU does not execute it until `C3D_FrameEnd`. Both draws
+    // therefore ran against whatever the second `buildItemEntities` had left in
+    // the buffer, so the terrain-sheet draw rendered the item-sheet geometry
+    // with the terrain atlas on it -- a handful of quads in the wrong place
+    // reading as **a dropped cobblestone that simply is not there** whenever
+    // anything off gui/items.png was on the ground beside it. That is what
+    // "many dropped items are invisible" was: not a missing icon, a buffer
+    // written twice.
+    //
+    // The two spans cannot overflow between them, because every entity belongs
+    // to exactly one sheet and both passes charge the one `itemCutoff`, which
+    // the first settles against the whole buffer.
+    render::DrawCutoff itemCutoff;
+    const int terrainCount = render::buildItemEntities(*items_, itemViewYaw_, eyeBlockX,
+                                                       eyeBlockY, eyeBlockZ, itemPartial_,
+                                                       item::IconSheet::Terrain, verts,
+                                                       kMaxItemVertices, &itemCutoff);
+    // A pack with no gui/items.png. The bottom screen falls back to a terrain
+    // tile for these; here there is nothing to fall back to that would not be a
+    // lie, so they are not drawn. See core/texture/atlas_image.hpp.
+    const int itemCount =
+        atlas_.hasItems() ? render::buildItemEntities(*items_, itemViewYaw_, eyeBlockX,
+                                                      eyeBlockY, eyeBlockZ, itemPartial_,
+                                                      item::IconSheet::Items,
+                                                      verts + terrainCount,
+                                                      kMaxItemVertices - terrainCount,
+                                                      &itemCutoff)
+                          : 0;
+    if (terrainCount + itemCount < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(terrainCount + itemCount));
+
+    // Terrain first, because the atlas is already bound from the passes above
+    // and the sheet swap is then paid at most once.
+    const int counts[2] = {terrainCount, itemCount};
+    const bool reboundItems = itemCount >= 4;
+    int base = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        const int written = counts[pass];
+        if (written < 4) {
+            base += written;
+            continue;
+        }
+        if (pass == 1) {
+            atlas_.bindItems(0);
+        }
+
+        // **The base pointer is what separates the two draws**, so each still
+        // indexes from zero through the shared quad index buffer.
+        C3D_BufInfo bufInfo;
+        BufInfo_Init(&bufInfo);
+        BufInfo_Add(&bufInfo, verts + base, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&bufInfo);
+
+        const int quads = written / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+        base += written;
+    }
+
+    // **Put the block atlas back.** Everything after this in the frame -- the
+    // translucent terrain pass, and the next eye -- assumes unit 0 is the
+    // atlas, and a texture left bound is the kind of fault that shows up as
+    // water textured with swords.
+    if (reboundItems) {
+        atlas_.bind(0, wireframe_);
+    }
+}
+
+// The same pass as the item entities and deliberately not folded into it: a
+// falling block is always a terrain cube, so there is no sheet to choose, no
+// spin to compute and no stack to draw more than once. Sharing the loop would
+// have meant a branch in the middle of it for a case that has none of the same
+// arithmetic.
+void Renderer::drawFallingBlocks(const C3D_Mtx& viewProjection, i32 originChunkX,
+                                 i32 originChunkZ)
+{
+    if (fallingBlocks_ == nullptr || fallingBlocks_->count() == 0
+        || fallingVerts_ == nullptr) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(fallingVerts_);
+    const int written = render::buildFallingBlocks(*fallingBlocks_, eyeBlockX, eyeBlockY,
+                                                   eyeBlockZ, itemPartial_, verts,
+                                                   kMaxFallingVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, fallingVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+}
+
+void Renderer::drawPaintings(const C3D_Mtx& viewProjection, i32 originChunkX,
+                             i32 originChunkZ)
+{
+    if (paintings_ == nullptr || paintings_->count() == 0 || paintingVerts_ == nullptr
+        || !atlas_.hasArt()) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(paintingVerts_);
+    const int written = render::buildPaintings(*paintings_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                               verts, kMaxPaintingVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+
+    // **The art sheet, which is nobody else's.** `art/kz.png` is its own
+    // texture -- see core/texture/entity_skins.hpp -- so this pass costs one
+    // bind, and the block atlas has to go back afterwards or the translucent
+    // pass draws water out of a painting.
+    atlas_.bindArt(0);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, paintingVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    atlas_.bind(0, wireframe_);
+}
+
+void Renderer::drawArrows(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ)
+{
+    if (arrows_ == nullptr || arrows_->count() == 0 || arrowVerts_ == nullptr
+        || !atlas_.hasEntities()) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(arrowVerts_);
+    const int written = render::buildArrows(*arrows_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                            itemPartial_, verts, kMaxArrowVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+
+    // The shared entity sheet -- see core/texture/entity_skins.hpp. The arrow's
+    // page is the one square page of the four.
+    atlas_.bindEntity(0);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, arrowVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    atlas_.bind(0, wireframe_);
+}
+
+void Renderer::drawBoats(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ)
+{
+    if (boats_ == nullptr || boats_->count() == 0 || boatVerts_ == nullptr
+        || !atlas_.hasEntities()) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(boatVerts_);
+    const int written = render::buildBoats(*boats_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                           itemPartial_, verts, kMaxBoatVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+    atlas_.bindEntity(0);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, boatVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    atlas_.bind(0, wireframe_);
+}
+
+void Renderer::drawMinecarts(const C3D_Mtx& viewProjection, i32 originChunkX,
+                             i32 originChunkZ)
+{
+    if (minecarts_ == nullptr || minecartWorld_ == nullptr || minecarts_->count() == 0
+        || minecartVerts_ == nullptr || !atlas_.hasEntities()) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(minecartVerts_);
+    const int written =
+        render::buildMinecarts(*minecarts_, *minecartWorld_, eyeBlockX, eyeBlockY,
+                               eyeBlockZ, itemPartial_, verts, kMaxMinecartVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+    atlas_.bindEntity(0);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, minecartVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    atlas_.bind(0, wireframe_);
+}
+
+void Renderer::drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ)
+{
+    if (signs_ == nullptr || signs_->count() == 0 || signVerts_ == nullptr) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(signVerts_);
+
+    // **Both spans are built before either is drawn.** The boards go into the
+    // front of the buffer and the text after them, and only then does anything
+    // draw -- because `C3D_DrawElements` records a command naming an *address*
+    // and the GPU does not execute it until `C3D_FrameEnd`. Building one,
+    // drawing it, and then building the other over the top is exactly the bug
+    // that made dropped items invisible; see drawItemEntities.
+    render::DrawCutoff signCutoff;
+    const int boardCount =
+        atlas_.hasEntities() ? render::buildSignBoards(*signs_, eyeBlockX, eyeBlockY,
+                                                       eyeBlockZ, verts, kMaxSignVertices,
+                                                       &signCutoff)
+                             : 0;
+    const bool haveFont = atlas_.hasFont() && signFont_ != nullptr && !signFont_->empty();
+    const int textCount =
+        haveFont ? render::buildSignText(*signs_, *signFont_, eyeBlockX, eyeBlockY,
+                                         eyeBlockZ, verts + boardCount,
+                                         kMaxSignVertices - boardCount, &signCutoff)
+                 : 0;
+    if (boardCount + textCount < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(boardCount + textCount));
+
+    bindPipeline(detailPipeline_);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    // Boards off the entity sheet, text off the font -- two textures, so two
+    // draws with two base pointers into one buffer.
+    const int counts[2] = {boardCount, textCount};
+    int base = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        const int written = counts[pass];
+        if (written < 4) {
+            base += written;
+            continue;
+        }
+        if (pass == 0) {
+            atlas_.bindEntity(0);
+        } else {
+            atlas_.bindFont(0);
+        }
+
+        C3D_BufInfo bufInfo;
+        BufInfo_Init(&bufInfo);
+        BufInfo_Add(&bufInfo, verts + base, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&bufInfo);
+
+        const int quads = written / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+        base += written;
+    }
+
+    atlas_.bind(0, wireframe_);
 }
 
 void Renderer::setSelection(const AABB& worldBox)
@@ -318,6 +938,9 @@ void Renderer::drawSelection(const C3D_Mtx& viewProjection, i32 originChunkX, i3
 
     bindPipeline(outlinePipeline_);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, outlinePipeline_.uLocMvp, &viewProjection);
+    // `glColor4f(0.0F, 0.0F, 0.0F, 0.4F)` -- `RenderGlobal.drawSelectionBox`,
+    // unchanged. The crosshair pass below shares this program and sets its own.
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, outlinePipeline_.uLocTint, 0.0f, 0.0f, 0.0f, 0.4f);
 
     // One combiner stage: hand the vertex colour straight to the framebuffer.
     // The world's three-stage texture combiner has nothing to say about a shape
@@ -345,6 +968,345 @@ void Renderer::drawSelection(const C3D_Mtx& viewProjection, i32 originChunkX, i3
     // Nothing is restored here on purpose: applyWorldState runs before every
     // eye and states all of the above rather than inheriting it, precisely so a
     // pass like this one can leave the state where it likes.
+}
+
+// The world view needs its own crosshair; the one on the bottom-screen look
+// pad is only a touch affordance.  Reuse the colour-only outline pipeline so
+// this stays a tiny, texture-free draw and remains visible over water, leaves
+// and every other world surface.
+void Renderer::drawCrosshair(const C3D_Mtx& viewProjection, const Camera& camera,
+                             i32 originChunkX, i32 originChunkZ)
+{
+    if (crosshairVerts_ == nullptr) {
+        return;
+    }
+
+    float fx, fy, fz;
+    camera.look(&fx, &fy, &fz);
+    const float rx = std::cos(camera.yaw);
+    const float rz = std::sin(camera.yaw);
+    // forward cross right is the camera's screen-up vector.
+    const float ux = fy * rz;
+    const float uy = fz * rx - fx * rz;
+    const float uz = -fy * rx;
+    constexpr float kDistance = 2.0f;
+    constexpr float kArm = 0.11f;
+    constexpr float kHalfWidth = 0.008f;
+    const float cx = float(camera.x - double(originChunkX) * 16.0) + fx * kDistance;
+    const float cy = float(camera.y) + fy * kDistance;
+    const float cz = float(camera.z - double(originChunkZ) * 16.0) + fz * kDistance;
+
+    auto* verts = static_cast<render::OutlineVertex*>(crosshairVerts_);
+    int written = 0;
+    const auto point = [=](float right, float up) {
+        return render::OutlineVertex{cx + rx * right + ux * up, cy + uy * up,
+                                     cz + rz * right + uz * up};
+    };
+    const auto quad = [&verts, &written](render::OutlineVertex a, render::OutlineVertex b,
+                                         render::OutlineVertex c, render::OutlineVertex d) {
+        verts[written++] = a; verts[written++] = b; verts[written++] = c;
+        verts[written++] = a; verts[written++] = c; verts[written++] = d;
+    };
+    quad(point(-kArm, -kHalfWidth), point(kArm, -kHalfWidth),
+         point(kArm, kHalfWidth), point(-kArm, kHalfWidth));
+    quad(point(-kHalfWidth, -kArm), point(kHalfWidth, -kArm),
+         point(kHalfWidth, kArm), point(-kHalfWidth, kArm));
+    GSPGPU_FlushDataCache(verts, sizeof(render::OutlineVertex) * u32(written));
+
+    bindPipeline(outlinePipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, outlinePipeline_.uLocMvp, &viewProjection);
+    // **Set here and not inherited.** The selection pass shares this program and
+    // leaves the original's black at four tenths in the uniform -- and on a
+    // frame where the crosshair is on nothing at all, that pass returns before
+    // it writes anything, so there is no colour to inherit either. Opaque
+    // white: this mark has to read against a night sky and a cave wall alike.
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, outlinePipeline_.uLocTint, 1.0f, 1.0f, 1.0f, 1.0f);
+    C3D_TexEnv* env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+    for (int i = 1; i < 3; ++i) C3D_TexEnvInit(C3D_GetTexEnv(i));
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+
+    // **Culling off, and this is what made the crosshair invisible.**
+    //
+    // The translucent pass above turns culling back on, and the convention the
+    // whole renderer is wound for is that counter-clockwise in screen space is
+    // the front: `kFaceCorner[kFaceNegZ]` is (1,0,0), (0,0,0), (0,1,0) and
+    // through Mtx_LookAt's basis -- s = forward x up, so at yaw 0 screen right
+    // is world -X -- those three come out counter-clockwise, which is why the
+    // world is visible at all under GPU_CULL_BACK_CCW.
+    //
+    // `rx, rz` above is the *other* horizontal perpendicular: it is screen
+    // **left**, not screen right. Everything the two quads are built from is
+    // symmetric about both axes, so the mark looks identical either way -- but
+    // the triangles come out clockwise, which is back-facing, and the whole
+    // pass was being thrown away by the cull. A mark that always faces the
+    // camera has no back to cull, so this states none rather than depending on
+    // which of the two perpendiculars the basis picked.
+    //
+    // Safe to leave set: applyWorldState restates the cull mode before every
+    // eye rather than inheriting it.
+    C3D_CullFace(GPU_CULL_NONE);
+
+    C3D_BufInfo* buf = C3D_GetBufInfo();
+    BufInfo_Init(buf);
+    BufInfo_Add(buf, verts, sizeof(render::OutlineVertex), 1, 0x0);
+    C3D_DrawArrays(GPU_TRIANGLES, 0, written);
+
+}
+
+// **The item in the player's hand, and the only geometry on the top screen
+// that is not the world.** `jh.a(F)V` -- `ItemRenderer.renderItemInFirstPerson`
+// -- with core/render/held_item.cpp holding all of the arithmetic and this
+// holding the three things about it that are the PICA's business.
+//
+// **One: no view matrix.** The original's `renderHand` calls `glLoadIdentity()`
+// on the modelview and draws in camera space, so `buildHeldItem` returns
+// camera-space blocks and the uniform here is the *projection alone*. That is
+// also why this takes `iod` rather than the eye's view-projection -- the
+// stereo separation still applies, the camera's position and heading do not.
+//
+// **Two: its own near plane**, kHeldItemNearPlane, because the world's would
+// clip the nearest corner off a held sword.
+//
+// **Three: its own slice of the depth buffer**, which is this port's answer to
+// the `glClear(GL_DEPTH_BUFFER_BIT)` the original does first. Both constants
+// carry the argument.
+void Renderer::drawHeldItem(float iod)
+{
+    if (!heldVisible_ || heldVerts_ == nullptr) {
+        return;
+    }
+
+    auto* verts = static_cast<mesh::DetailVertex*>(heldVerts_);
+    // Named `built` rather than `mesh`, because `mesh::DetailVertex` is three
+    // lines below it and a local of that name reads as a shadow even though
+    // qualified lookup ignores it.
+    const render::HeldItemMesh built =
+        render::buildHeldItem(heldItem_, heldEquipped_, heldSwing_, 400.0f / 240.0f,
+                              heldLight_, verts, kMaxHeldVertices);
+    if (built.vertices < 4) {
+        return;
+    }
+    // **Which of the three sheets this one draw is bound to.** A pack with no
+    // gui/items.png gets the same answer drawItemEntities gives -- nothing,
+    // because there is no fallback here that would not be a lie about what the
+    // player is holding. The player's skin cannot be missing in the same way:
+    // `buildEntitySkins` lays down its stand-in before it reads a pack, so an
+    // empty hand with no `char.png` is a black arm rather than no arm at all.
+    const bool fromItems = built.sheet == render::HeldSheet::Items;
+    const bool fromSkin = built.sheet == render::HeldSheet::PlayerSkin;
+    if ((fromItems && !atlas_.hasItems()) || (fromSkin && !atlas_.hasEntities())) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(built.vertices));
+
+    C3D_Mtx projection;
+    Mtx_PerspStereoTilt(&projection, C3D_AngleFromDegrees(config_.fovDegrees), 400.0f / 240.0f,
+                        kHeldItemNearPlane, farPlane(), iod * kHeldItemStereoScale,
+                        kHeldItemFocalBlocks, false);
+
+    // **The world's fragment state, restated -- and this is what made the hand
+    // invisible.**
+    //
+    // `drawSelection` and `drawCrosshair` both say they restore nothing "on
+    // purpose", because `applyWorldState` runs before every eye and states it
+    // all rather than inheriting it. That argument holds for as long as they
+    // are the *last* thing in the eye, and this pass is now after them. What
+    // they leave behind is a one-stage combiner that replaces both colour and
+    // alpha with the vertex's own, the alpha test switched off, and
+    // src-alpha/one-minus-src-alpha blending -- and the detail shader puts the
+    // **fog amount** in the vertex alpha, which for something 0.8 of a block
+    // from the eye is zero. So the hand was drawn, correctly, at an alpha of
+    // nothing.
+    //
+    // Calling the one function that states all of it is the fix, rather than
+    // undoing the crosshair's three settings here: a fourth thing either of
+    // those passes changes later would be the same bug again.
+    applyWorldState();
+
+    bindPipeline(detailPipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &projection);
+
+    if (fromItems) {
+        atlas_.bindItems(0);
+    } else if (fromSkin) {
+        atlas_.bindEntity(0);
+    }
+
+    // **Culling off and the depth test on**, which is the arrangement the
+    // detail passes already run under: the sprite's two faces and its sixty-four
+    // edge strips are wound the class file's way rather than this renderer's,
+    // and depth is what sorts them instead. Both after `applyWorldState`, which
+    // states the opposite of each.
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
+    C3D_DepthMap(true, kHeldItemDepthScale, kHeldItemDepthOffset);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, verts, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = built.vertices / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    // **Restored here and not left to applyWorldState**, unlike the cull mode
+    // and the depth test above: nothing else in this renderer touches the depth
+    // map, so there is no other statement of it to fall back on. Leaving it
+    // compressed would put the *whole world* in the top 5 % of the buffer on
+    // the next eye, which is a depth buffer with 3,000 usable levels in it.
+    C3D_DepthMap(true, kDepthMapScale, kDepthMapOffset);
+
+    // And the block atlas goes back, for the reason drawItemEntities gives.
+    if (fromItems || fromSkin) {
+        atlas_.bind(0, wireframe_);
+    }
+}
+
+// **Once a frame, before the first eye.** Both eyes draw the same lines at the
+// same place, and a buffer rewritten between them would be rewritten under a
+// draw the GPU has not run yet -- harmless only while the two builds agree.
+// Building once makes that a fact rather than a coincidence.
+void Renderer::buildChat()
+{
+    chatSpanCount_ = 0;
+    if (chat_ == nullptr || chat_->count() == 0 || chatFont_ == nullptr
+        || chatFont_->empty() || !atlas_.hasFont() || chatVerts_ == nullptr
+        || chatStrips_ == nullptr) {
+        return;
+    }
+    auto* verts = static_cast<mesh::DetailVertex*>(chatVerts_);
+    chatSpanCount_ = render::buildChatText(*chat_, *chatFont_, 240, verts,
+                                           render::kChatMaxVertices, chatSpans_,
+                                           mc::gui::kChatShownLines);
+    if (chatSpanCount_ == 0) {
+        return;
+    }
+
+    // `drawRect(2, y - 1, 322, y + 8, ...)`: two triangles a line, in screen
+    // pixels, which the strip pass's matrix takes as they are.
+    auto* strips = static_cast<render::OutlineVertex*>(chatStrips_);
+    int glyphVertices = 0;
+    for (int i = 0; i < chatSpanCount_; ++i) {
+        const float x0 = float(mc::gui::kChatLeft);
+        const float x1 = float(mc::gui::kChatLeft + mc::gui::kChatStripWidth);
+        const float y0 = float(chatSpans_[i].y - 1);
+        const float y1 = float(chatSpans_[i].y + 8);
+        render::OutlineVertex* s = strips + i * 6;
+        s[0] = {x0, y0, 0.0f};
+        s[1] = {x1, y0, 0.0f};
+        s[2] = {x1, y1, 0.0f};
+        s[3] = {x0, y0, 0.0f};
+        s[4] = {x1, y1, 0.0f};
+        s[5] = {x0, y1, 0.0f};
+        const int end = chatSpans_[i].firstVertex + chatSpans_[i].vertices;
+        glyphVertices = end > glyphVertices ? end : glyphVertices;
+    }
+    GSPGPU_FlushDataCache(strips, sizeof(render::OutlineVertex) * 6u * u32(chatSpanCount_));
+    if (glyphVertices > 0) {
+        GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(glyphVertices));
+    }
+}
+
+// **Last in the eye, flat, and at the screen plane.** An orthographic matrix
+// over the top screen's 400 x 240, the same `Mtx_OrthoTilt` citro2d builds for
+// the menu, and no interocular offset at all: the text sits on the glass in
+// both eyes, which is where a HUD belongs whatever the slider says.
+//
+// Two passes, strips then text, rather than alternating per line: the strips
+// of neighbouring lines meet but never overlap, so the order between lines
+// cannot be seen, and alternating would rebind the pipeline twenty times.
+// **Each line is its own draw in both passes**, because each fades on its own
+// and neither program can take a per-vertex alpha -- the outline program's
+// colour is a uniform, and the detail program spends vertex alpha on fog. So
+// the strip's alpha is the tint and the text's is the combiner's constant.
+//
+// Blended, with no alpha test and no depth test: `GuiIngame` disables
+// GL_ALPHA_TEST for the chat and draws it over everything. Nothing here is
+// restored -- `applyWorldState` restates all of it before the next eye.
+void Renderer::drawChat()
+{
+    if (chatSpanCount_ == 0) {
+        return;
+    }
+
+    C3D_Mtx screen;
+    Mtx_OrthoTilt(&screen, 0.0f, 400.0f, 240.0f, 0.0f, 1.0f, -1.0f, true);
+
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+
+    // The strips: the outline program, its colour straight through.
+    bindPipeline(outlinePipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, outlinePipeline_.uLocMvp, &screen);
+    C3D_TexEnv* env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+    for (int i = 1; i < 3; ++i) {
+        C3D_TexEnvInit(C3D_GetTexEnv(i));
+    }
+    C3D_BufInfo* strips = C3D_GetBufInfo();
+    BufInfo_Init(strips);
+    BufInfo_Add(strips, chatStrips_, sizeof(render::OutlineVertex), 1, 0x0);
+    for (int i = 0; i < chatSpanCount_; ++i) {
+        // `(alpha / 2) << 24` over black.
+        const float alpha = float(chatSpans_[i].alpha / 2) / 255.0f;
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, outlinePipeline_.uLocTint, 0.0f, 0.0f, 0.0f, alpha);
+        C3D_DrawArrays(GPU_TRIANGLES, i * 6, 6);
+        ++frameStats_.drawCalls;
+    }
+
+    // The text: the detail program off the font, glyph colour times vertex
+    // colour, glyph alpha times the line's.
+    bindPipeline(detailPipeline_);
+    C3D_Mtx glyphs = screen;
+    // The detail shader divides positions by 1024 and the builder wrote
+    // sixteen units a pixel, so a vertex arrives as pixels / 64.
+    Mtx_Scale(&glyphs, float(mesh::kDetailUnitsPerBlock / render::kChatUnitsPerPixel),
+              float(mesh::kDetailUnitsPerBlock / render::kChatUnitsPerPixel), 1.0f);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &glyphs);
+    atlas_.bindFont(0);
+    env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_MODULATE);
+    C3D_TexEnvSrc(env, C3D_Alpha, GPU_TEXTURE0, GPU_CONSTANT, GPU_CONSTANT);
+    C3D_TexEnvFunc(env, C3D_Alpha, GPU_MODULATE);
+    C3D_BufInfo text;
+    auto* base = static_cast<mesh::DetailVertex*>(chatVerts_);
+    for (int i = 0; i < chatSpanCount_; ++i) {
+        const render::ChatSpan& span = chatSpans_[i];
+        if (span.vertices < 4) {
+            continue;
+        }
+        // **Fetched again for every line.** `C3D_TexEnvColor` only writes a
+        // field; it is `C3D_GetTexEnv` that marks the stage dirty, and a stage
+        // not marked is not re-sent -- so reusing the pointer from above would
+        // draw every line at the first line's alpha.
+        C3D_TexEnvColor(C3D_GetTexEnv(0), (u32(span.alpha) << 24) | 0x00FFFFFFu);
+        // The shared index buffer counts from the buffer's base, so each line
+        // gets its own base rather than an offset into the indices.
+        BufInfo_Init(&text);
+        BufInfo_Add(&text, base + span.firstVertex, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&text);
+        const int quads = span.vertices / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+    }
+
+    atlas_.bind(0, wireframe_);
 }
 
 // The geometry-shader program. Three things differ from the two above.
@@ -379,13 +1341,15 @@ bool Renderer::buildQuadPipeline(const void* shbin, u32 shbinSize)
     pipeline->uLocFog = shaderInstanceGetUniformLocation(pipeline->program.vertexShader, "fogparam");
     uLocFaceBasis_ =
         shaderInstanceGetUniformLocation(pipeline->program.vertexShader, "faceBasis");
-    if (pipeline->uLocMvp < 0 || pipeline->uLocFog < 0 || uLocFaceBasis_ < 0) {
+    pipeline->uLocSeam = shaderInstanceGetUniformLocation(pipeline->program.vertexShader, "seam");
+    if (pipeline->uLocMvp < 0 || pipeline->uLocFog < 0 || uLocFaceBasis_ < 0
+        || pipeline->uLocSeam < 0) {
         return false;
     }
 
     AttrInfo_Init(&pipeline->attrs);
-    AttrInfo_AddLoader(&pipeline->attrs, 0, GPU_UNSIGNED_BYTE, 4);  // x,y,z,face       offset 0
-    AttrInfo_AddLoader(&pipeline->attrs, 1, GPU_UNSIGNED_BYTE, 4);  // tileX,tileY,l,ao offset 4
+    AttrInfo_AddLoader(&pipeline->attrs, 0, GPU_UNSIGNED_BYTE, 4);  // x,y,z,face         offset 0
+    AttrInfo_AddLoader(&pipeline->attrs, 1, GPU_UNSIGNED_BYTE, 4);  // slotX,slotY,l,ext  offset 4
     return true;
 }
 
@@ -409,6 +1373,37 @@ void Renderer::bindPipeline(const Pipeline& pipeline)
                           float(b.e1[2]), float(b.uvSign));
             C3D_FVUnifSet(GPU_VERTEX_SHADER, slot + 2, float(b.e2[0]), float(b.e2[1]),
                           float(b.e2[2]), 0.0f);
+        }
+    }
+
+    // **The seam**, for whichever cube program this is. Growth of
+    // `seam.x * w + seam.y` blocks at view distance w, and w is exactly the
+    // distance at which a block is `focal / w` pixels across -- so seam.x is a
+    // constant kSeamPixels on screen at any distance. The focal length comes
+    // from the same fov viewProjection hands Mtx_PerspStereoTilt, whose scale on
+    // both screen axes works out to 120 / tan(fov/2) pixels.
+    //
+    // **An eighth of a pixel.** The slivers it closes are the gap between a
+    // corner snapped to the rasteriser's 1/16-pixel grid and the edge it is
+    // meant to lie on, which is at most ~0.044 of a pixel; an eighth covers
+    // that with room for a face seen at a slant. What it costs is the texture
+    // of a merged quad sitting an eighth of a pixel out of line with its
+    // neighbour's, which is not a thing a 3DS screen can show. The floor is a
+    // thousandth of a block, for the far corners of a large quad close up,
+    // whose own w is larger than the corner-0 w the geometry path sizes by.
+    if (pipeline.uLocSeam >= 0) {
+        constexpr float kSeamPixels = 0.125f;
+        constexpr float kSeamFloorBlocks = 1.0f / 1024.0f;
+        const float focalPixels =
+            120.0f / std::tan(C3D_AngleFromDegrees(config_.fovDegrees) * 0.5f);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, pipeline.uLocSeam, kSeamPixels / focalPixels,
+                      kSeamFloorBlocks, 0.0f, 0.0f);
+    }
+    if (pipeline.uLocSeamDir >= 0) {
+        for (int seam = 0; seam < mesh::kSeamTableSize; ++seam) {
+            const mesh::SeamDirection d = mesh::seamDirection(seam);
+            C3D_FVUnifSet(GPU_VERTEX_SHADER, pipeline.uLocSeamDir + seam, float(d.x), float(d.y),
+                          float(d.z), 0.0f);
         }
     }
 
@@ -466,6 +1461,7 @@ bool Renderer::init(const Config& config, bool isNew3DS)
     C3D_RenderTargetSetOutput(eye_[1], GFX_TOP, GFX_RIGHT, kDisplayTransferFlags);
 
     if (!buildPipeline(&cubePipeline_, world_shader_shbin, world_shader_shbin_size, false)
+        || cubePipeline_.uLocSeam < 0 || cubePipeline_.uLocSeamDir < 0
         || !buildOutlinePipeline(outline_shader_shbin, outline_shader_shbin_size)
         || !buildPipeline(&detailPipeline_, detail_shader_shbin, detail_shader_shbin_size,
                           true)
@@ -499,6 +1495,11 @@ bool Renderer::init(const Config& config, bool isNew3DS)
     texture::AtlasImage fallback;
     if (config_.atlas == nullptr) {
         texture::buildDevArt(&fallback.rgba);
+        // The entity sheets have no pack behind them here either, and unlike
+        // the two above they are never optional: a caller with no menu still
+        // hangs paintings and still wants a boat with a skin on it.
+        texture::buildDevArtSkins(&fallback.entityRgba);
+        texture::buildDevArtArt(&fallback.artRgba);
     }
     const texture::AtlasImage& atlasImage =
         config_.atlas != nullptr ? *config_.atlas : fallback;
@@ -506,6 +1507,11 @@ bool Renderer::init(const Config& config, bool isNew3DS)
     if (!atlas_.init(atlasImage) || !lightmap_.init()) {
         return false;
     }
+
+    // **Not fatal if it fails.** The entity and art sheets are 32 KB and
+    // 256 KB of ordinary linear memory; a console that cannot spare them draws
+    // no paintings, which `hasArt()` gates, rather than refusing to start.
+    atlas_.initEntitySheets(atlasImage);
 
     // The pool is sized against what is left once the render targets and the
     // atlas have taken theirs, with a megabyte held back for the GUI and entity
@@ -665,6 +1671,14 @@ bool Renderer::setAtlas(const texture::AtlasImage& image)
         if (wireframe_ && !atlas_.ensureWireframe()) {
             wireframe_ = false;
         }
+        // The item sheet rides along. A pack without one is a pack -- see
+        // core/texture/atlas_image.hpp -- and `hasItems()` is what the item
+        // pass asks before it draws anything from it.
+        atlas_.initItems(image);
+        // ...and so do the entity sheets, which unlike the item sheet are
+        // always present: `buildEntitySkins` lays down stand-ins for whatever
+        // the pack does not carry.
+        atlas_.initEntitySheets(image);
         return true;
     }
 
@@ -740,6 +1754,18 @@ void Renderer::shutdown()
     if (indices_ != nullptr) {
         linearFree(indices_);
         indices_ = nullptr;
+    }
+    // These are per-renderer frame buffers, not process-lifetime resources.
+    // Returning from a world to the menu and opening another must not exhaust
+    // linear memory one renderer instance at a time.
+    for (void** buffer : {&outlineVerts_, &crosshairVerts_, &particleVerts_, &itemVerts_,
+                          &fallingVerts_, &paintingVerts_, &arrowVerts_, &boatVerts_,
+                          &minecartVerts_, &signVerts_, &heldVerts_, &chatVerts_,
+                          &chatStrips_}) {
+        if (*buffer != nullptr) {
+            linearFree(*buffer);
+            *buffer = nullptr;
+        }
     }
     for (Pipeline* pipeline : {&cubePipeline_, &detailPipeline_, &quadPipeline_}) {
         if (pipeline->dvlb != nullptr) {
@@ -1019,6 +2045,13 @@ constexpr u32 kCommandWordsPerSection = 1024;
 // because the margin is what the reserve is *for*.
 constexpr u32 kCommandWordsPerQuadSection = 2048;
 
+// The draws after the terrain passes are not section draws, so they cannot use
+// drawPass's per-section guard.  Keep enough room for every optional entity
+// pass, their pipeline changes, the selection outline and the crosshair.  This
+// is deliberately generous: omitting distant terrain is recoverable; writing
+// one word past citro3d's command buffer corrupts application memory.
+constexpr u32 kCommandWordsPerLatePasses = 65536;
+
 // Words left in the command buffer, across the current list and everything
 // after it. `size` shrinks by what each split handed over, so this is the whole
 // remaining budget and not just this list's share.
@@ -1145,7 +2178,7 @@ void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 orig
         // records into the command buffer, so the room for all of it has to be
         // there before any of it is written.
         const u32 reserve = geoQuads ? kCommandWordsPerQuadSection : kCommandWordsPerSection;
-        if (commandWordsFree() < reserve) {
+        if (commandWordsFree() < reserve + commandTailReserve_) {
             // What is left of *this* pass's list. The passes after it stop at
             // the top of drawPass and add nothing, so this reads as "the frame
             // ran out here" rather than as an exact count of missing geometry
@@ -1239,6 +2272,10 @@ void Renderer::drawPass(const C3D_Mtx& vp, Pass pass, i32 originChunkX, i32 orig
 
 void Renderer::drawEye(int eye, const Camera& camera, float iod)
 {
+    // This applies to this eye only.  The next eye re-establishes the same
+    // reserve before it records a section, so it too has space for its late
+    // passes even when the first eye consumed most of the frame budget.
+    commandTailReserve_ = kCommandWordsPerLatePasses;
     C3D_RenderTargetClear(eye_[eye], C3D_CLEAR_ALL, kSkyColour, 0);
     C3D_FrameDrawOn(eye_[eye]);
 
@@ -1269,7 +2306,13 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
         ++frameStats_.geoSplits;
     }
 
+    // **The cube pass samples the cube atlas**, where every tile is a 4x4
+    // repeat so a merged quad can repeat it -- see core/mesh/cube_atlas.hpp.
+    // Everything after the pass reads the ordinary atlas on unit 0, as every
+    // draw function here assumes, so it goes back straight afterwards.
+    atlas_.bindCube(0, wireframe_);
     drawPass(vp, Pass::Cube, originChunkX, originChunkZ);
+    atlas_.bind(0, wireframe_);
 
     // **And the drain on the way out, which is the one the hardware asked for.**
     // Without it the next pass's bind writes GPUREG_VSH_COM_MODE and
@@ -1296,6 +2339,23 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // and culling them would halve every cross.
     C3D_CullFace(GPU_CULL_NONE);
     drawPass(vp, Pass::Detail, originChunkX, originChunkZ);
+
+    // **Between the two terrain passes**, which is where
+    // `EntityRenderer.renderWorld` runs `renderParticles`: after the opaque
+    // pass so a fleck is occluded by the ground it is bouncing on, before the
+    // translucent one so it is visible *through* water rather than sorted
+    // against it. Culling is still off from the detail pass, which suits a
+    // billboard -- it faces the camera, but which way it is wound depends on
+    // where the camera is.
+    drawParticles(vp, originChunkX, originChunkZ);
+    drawItemEntities(vp, originChunkX, originChunkZ);
+    drawFallingBlocks(vp, originChunkX, originChunkZ);
+    drawPaintings(vp, originChunkX, originChunkZ);
+    drawArrows(vp, originChunkX, originChunkZ);
+    drawBoats(vp, originChunkX, originChunkZ);
+    drawMinecarts(vp, originChunkX, originChunkZ);
+    drawSigns(vp, originChunkX, originChunkZ);
+
     C3D_CullFace(GPU_CULL_BACK_CCW);
 
     // Water and ice, the two things a1.1.2 puts in its second terrain pass.
@@ -1318,9 +2378,20 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // sorted against water and glass, and the one thing it must always be is
     // visible on the block the crosshair is on.
     drawSelection(vp, originChunkX, originChunkZ);
+    drawCrosshair(vp, camera, originChunkX, originChunkZ);
+
+    // **Last, which is where `renderHand` runs.** After the crosshair rather
+    // than before it because the original draws the hand before the whole GUI,
+    // and the crosshair is part of that GUI even though this port draws it as
+    // geometry. The two never overlap -- one is the middle of the screen and
+    // the other its bottom right corner -- so the order is a statement of
+    // intent rather than something a player can see.
+    drawHeldItem(iod);
+    drawChat();
 
     C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+    commandTailReserve_ = 0;
 }
 
 void Renderer::applyWorldState()
@@ -1604,6 +2675,8 @@ void Renderer::drawFrame(const Camera& camera, void* overlayContext, Overlay2D o
             geoTrace(geoRampName_);
         }
     }
+
+    buildChat();
 
     for (int i = 0; i < (stereo_ ? 2 : 1); ++i) {
         applyWorldState();

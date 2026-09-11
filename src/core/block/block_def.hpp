@@ -118,19 +118,65 @@ enum class TickBehaviour : u8 {
     RedstoneWire,
     RedstoneOre,
     Button,
-    PressurePlate,
+
+    // **Two, because the trigger set is a constructor argument.** `al` --
+    // BlockPressurePlate -- takes a `js` (EnumMobType) beside the id and the
+    // texture, and the two plates a1.1.2 constructs disagree about it: block
+    // 70, the stone one, is `js.b` ("mobs"), and block 72, the wooden one, is
+    // `js.a` ("everything"). Everything else about them is identical.
+    //
+    // The alternative was one behaviour and a generated column beside it, and
+    // this is the shape the table already uses for the same situation: a
+    // flowing fluid and a still one are one class with a flag in the jar and
+    // two behaviours here. `js.c` ("players") exists in the enum and no block
+    // in this version takes it, so there is no third row.
+    PressurePlateAll,
+    PressurePlateMobs,
+
     Lever,
     Door,
     Rail,
     Ladder,
-    Sign,
+    SignPost,
+    SignWall,
     Tnt,
     Sponge,
-    Stairs,          // delegates to the block it is modelled on
+    Stairs,          // shapes itself from its neighbours; a full block under a solid one
+    Slab,            // merges with the slab under it into a double slab
+    Furnace,         // turns its mouth away from an opaque neighbour when put down
     Count,
 };
 
 const char* tickBehaviourName(TickBehaviour behaviour);
+
+// **What a block sounds like underfoot and when it breaks** -- `bb`, a1.1.2's
+// StepSound, which is nine singletons that seventy blocks point at.
+//
+// Two names rather than one, because two of the nine disagree: sand is walked
+// on as `step.sand` and **broken as `step.gravel`**, and glass is walked on as
+// `step.stone` and broken as `random.glass`. The other seven repeat themselves,
+// which is the class's base behaviour -- both getters return `"step." + name`.
+//
+// **`step` is also the sound a block makes when it is placed.** That is not a
+// guess: `ItemBlock.onItemUse` plays the step getter, not the break one, at the
+// break volume and pitch. Placing glass therefore sounds like stone, which is
+// era rather than oversight.
+//
+// The volume and pitch are the singleton's own and are applied differently by
+// each caller -- a footstep takes `volume * 0.15`, a break or a place takes
+// `(volume + 1) / 2` and `pitch * 0.8`. Those factors belong to the callers and
+// are not folded in here; see core/audio/block_sound.hpp.
+struct StepSound {
+    // "step.grass", "random.glass". Empty for the silent row, which no
+    // constructed block takes.
+    const char* step;
+    const char* breakSound;
+
+    float volume;
+    float pitch;
+
+    bool silent() const { return step == nullptr || step[0] == '\0'; }
+};
 
 struct BlockDef {
     const char* name;
@@ -155,8 +201,9 @@ struct BlockDef {
     //
     // Faces whose tile depends on the surrounding world (which way a chest
     // faces, snow on grass) or on block metadata (wheat's growth stage) hold
-    // the no-metadata, no-neighbours answer, and blocks.json records which
-    // those are. Nothing reads metadata yet.
+    // the no-metadata, no-neighbours answer. The one block whose world faces
+    // follow its own metadata and nothing else -- the furnace -- has a table
+    // beside this one; `block::worldFaces` is what the mesher asks.
     u16 faces[6];
 
     RenderType render;
@@ -164,6 +211,23 @@ struct BlockDef {
     // How the block collides. Beside `render` because the two are the same kind
     // of thing -- a dispatch column that keeps ids out of the code that uses it.
     Shape shape;
+
+    // **Whether the mesher's fast path can draw it**: a standard block that
+    // fills its cell for every metadata value.
+    //
+    // Beside `render` for a measured reason rather than a tidy one. The mesher
+    // asks this of every block in the world, and the two facts behind it live
+    // in two different generated tables -- the render type here, the bounds in
+    // the selection index. Reading both cost **3.3 us a section** on the dev
+    // host, because the second is a second cache line on the hottest loop in
+    // the project. Folded into the row the loop has already loaded, it is free.
+    //
+    // False does not mean "not a cube": a slab, a snow layer, both pressure
+    // plates and the button are all render type 0 and all false, because the
+    // 8- and 12-byte cube vertex formats store whole-block corners and cannot
+    // express any of them. Those go through core/mesh/box.hpp instead -- which
+    // is the fix for a slab and a double slab looking identical.
+    bool unitCube;
 
     // Ground friction for something standing on top. 0.6 for everything in
     // a1.1.2 except ice, which is 0.98 -- and the difference between those two
@@ -180,6 +244,21 @@ struct BlockDef {
     // no collision box and is still perfectly targetable, which is the whole
     // reason the selection shape is a separate table from the collision one.
     bool targetable;
+
+    // **The same question with `hitLiquids` true**, as a bit per metadata
+    // value: bit *m* is set when `canCollideCheck(m, true)` is.
+    //
+    // `hitLiquids` is the flag an item passes when it wants the ray to notice
+    // water and lava, and exactly one item in a1.1.2 does -- `ItemBucket`,
+    // looking for something to scoop. One class reads it, `jp`/BlockFluid,
+    // whose whole override is `hitLiquids && metadata == 0`. **That is why a
+    // bucket fills from a source block and not from a stream**, and it is also
+    // why this is a mask rather than a second bool: it is the only column in
+    // the table that varies inside a block.
+    //
+    // Generated, like `targetable`, from `canCollideCheck` asked both ways over
+    // all 1,120 (id, metadata) pairs. See tools/gen_selection.py.
+    u16 targetableLiquids;
 
     // The original's own material grouping, as a dense index -- 0 is air and
     // whatever else this version never constructs. Two questions are asked of
@@ -285,6 +364,10 @@ struct BlockDef {
     // opaque cube on purpose: a visible wrong block is a bug report, an
     // invisible one is a mystery.
     bool known;
+
+    // Row in `mcver::kStepSounds`. 0 is the silent row and no constructed
+    // block takes it; see `block::stepSoundOf`.
+    u8 stepSound;
 };
 
 }  // namespace mc::block

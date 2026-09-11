@@ -1,6 +1,7 @@
 #include "core/texture/pack_list.hpp"
 
 #include "core/texture/atlas_image.hpp"
+#include "core/texture/entity_skins.hpp"
 #include "core/texture/zip_archive.hpp"
 
 #include <algorithm>
@@ -152,6 +153,7 @@ bool describeZip(io::FileSystem& fs, const std::string& path, PackEntry* entry)
         names.push_back(e.name);
     }
     entry->hasTerrain = zip.find(kTerrainName) != nullptr;
+    entry->hasSkin = zip.find(kSkinFile) != nullptr;
     entry->textureCount = countKnown(names);
     return entry->hasTerrain;
 }
@@ -184,6 +186,7 @@ bool describeDirectory(io::FileSystem& fs, const std::string& path, PackEntry* e
     }
 
     entry->hasTerrain = std::find(names.begin(), names.end(), kTerrainName) != names.end();
+    entry->hasSkin = std::find(names.begin(), names.end(), kSkinFile) != names.end();
     entry->textureCount = countKnown(names);
     return entry->hasTerrain;
 }

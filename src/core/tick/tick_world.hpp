@@ -27,6 +27,7 @@
 #include "core/block/block_def.hpp"
 #include "core/block/registry.hpp"
 #include "core/tick/tick_scheduler.hpp"
+#include "core/util/aabb.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/types.hpp"
 #include "core/world/chunk.hpp"
@@ -56,6 +57,14 @@ struct TickAccess {
 // observable -- a redstone update that arrives from -x before +x can settle
 // differently -- so it is written down rather than left to a loop.
 enum class Side : u8 { NegX = 0, PosX, NegY, PosY, NegZ, PosZ };
+
+// `js` -- **EnumMobType**, which is the only thing in a1.1.2 that asks the
+// world about entities *by kind*. A pressure plate holds one of these and its
+// three values are the three list queries `al` can make: everything in the box
+// (`cn.b(kh,cf)` with a null exclusion), every `EntityLiving` in it, or every
+// `EntityPlayer`. The ordinals are the enum's own, so a table indexed by one
+// stays in step with the jar.
+enum class EntityFilter : u8 { Everything = 0, Mobs = 1, Players = 2 };
 
 class TickWorld {
 public:
@@ -99,6 +108,134 @@ public:
     bool chunksExist(i32 x1, int y1, i32 z1, i32 x2, int y2, i32 z2) const;
 
     bool chunkResident(i32 chunkX, i32 chunkZ) const;
+
+    // ---- entities ------------------------------------------------------
+    //
+    // **The one question block behaviour asks that is not about blocks.**
+    // `cn.b(kh,cf)Ljava/util/List;` and `cn.a(Ljava/lang/Class;cf)` build a
+    // list; the only caller in this version is `al.h`, which does nothing with
+    // it but ask whether it is empty -- so the seam is a predicate and not a
+    // list, and nothing has to allocate to answer it.
+    //
+    // **Not on `TickAccess`, deliberately.** `TickAccess` is how the tick
+    // reaches *chunks*, and it is built by `WorldStreamer`, which owns them.
+    // Nothing owns the player and the dropped items together except the thing
+    // running the frame, so that is what sets this, once, after both exist.
+    //
+    // Unset means **there are no entities**, which is the honest answer for
+    // every headless tool in this project: `--fly` moves a body through a
+    // world with no plates to press and the test suite builds worlds with
+    // nobody in them. A plate in such a world simply never arms, which is what
+    // it did before this existed.
+    using EntityQuery = bool (*)(void* ctx, const AABB& box, EntityFilter filter);
+    void setEntityQuery(EntityQuery query, void* ctx)
+    {
+        entityQuery_ = query;
+        entityQueryCtx_ = ctx;
+    }
+    bool anyEntityIn(const AABB& box, EntityFilter filter) const
+    {
+        return entityQuery_ != nullptr && entityQuery_(entityQueryCtx_, box, filter);
+    }
+
+    // `cn.a(Lkh;)Z` -- spawnEntityInWorld, narrowed to the one entity a block
+    // behaviour ever asks for: a dropped item, at a position, of an id, one
+    // deep. Set beside `setEntityQuery` and for the same reason -- the pool
+    // belongs to the frame loop, not to the chunks `TickAccess` reaches.
+    //
+    // **Unset means the drop is thrown away, not that it is skipped.**
+    // `core/tick/drop.cpp` still makes every draw it would have made, so a
+    // world ticked by a headless tool takes the same random path as one ticked
+    // with a pool behind it. That is the difference between "no entities here"
+    // and "a different world".
+    // `dh.h(Lcn;III)V`'s other half -- **`new ff(...)` and
+    // `World.spawnEntityInWorld`**, for the one block behaviour that spawns a
+    // moving copy of itself.
+    //
+    // **Unset is not "do nothing"; it is `BlockSand.fallInstantly`.** That flag
+    // is a real static on the class file, true while a chunk is populated, and
+    // with it set `tryToFall` runs the entity's own tick to a standstill rather
+    // than letting it live. Here the flag is "is there a pool to put it in":
+    // world generation and every headless tool have none, and
+    // `tick::fallingTick` takes the instant path for them -- which lands the
+    // block in the same cell, because that path *is* the entity's landing test
+    // run to completion. Returns whether the entity was taken.
+    using FallingBlockSink = bool (*)(void* ctx, i32 x, int y, i32 z, u16 block);
+    void setFallingBlockSink(FallingBlockSink sink, void* ctx)
+    {
+        fallingSink_ = sink;
+        fallingSinkCtx_ = ctx;
+    }
+    bool spawnFallingBlock(i32 x, int y, i32 z, block::BlockId id) const
+    {
+        return fallingSink_ != nullptr && fallingSink_(fallingSinkCtx_, x, y, z, u16(id));
+    }
+
+    // `cn.a(DDDLjava/lang/String;FF)V` -- **World.playSoundEffect**, the one
+    // thing a block behaviour does that is neither a block nor an entity.
+    //
+    // It is a seam for the same reason the other two are: `core/tick/` has no
+    // sound engine and must not grow one -- the tick runs on a worker, the
+    // mixer does not, and a `SoundEngine&` reaching into here would tie them
+    // together. Unset is silence, which is what every headless tool wants.
+    //
+    // **This is what a pressure plate was missing**, and it was reported as the
+    // plate feeling unresponsive rather than as a missing sound: a plate is
+    // flush with the floor and its state is two pixels of metadata, so the
+    // click *is* the feedback. The lever, the button and the door were in the
+    // same position.
+    //
+    // `key` is a pool name and outlives the call -- every caller passes a
+    // string literal.
+    using SoundSink = void (*)(void* ctx, const char* key, double x, double y, double z,
+                               float volume, float pitch);
+    void setSoundSink(SoundSink sink, void* ctx)
+    {
+        soundSink_ = sink;
+        soundSinkCtx_ = ctx;
+    }
+    void playSoundAt(const char* key, double x, double y, double z, float volume,
+                     float pitch) const
+    {
+        if (soundSink_ != nullptr) {
+            soundSink_(soundSinkCtx_, key, x, y, z, volume, pitch);
+        }
+    }
+
+    using DropSink = void (*)(void* ctx, double x, double y, double z, u16 item, int count);
+    void setDropSink(DropSink sink, void* ctx)
+    {
+        dropSink_ = sink;
+        dropSinkCtx_ = ctx;
+    }
+    void spawnItem(double x, double y, double z, u16 item, int count) const
+    {
+        if (dropSink_ != nullptr) {
+            dropSink_(dropSinkCtx_, x, y, z, item, count);
+        }
+    }
+
+    // `cn.l(III)V` -- **World.removeBlockTileEntity**, which `jt.b` --
+    // BlockContainer.onBlockRemoval -- calls on every removal of a block that
+    // has one, whoever removed it. The tile entities are held by the frame loop
+    // (core/world/sign_store.hpp), so this is a seam like the three above it.
+    //
+    // **This is why a sign stayed up when its wall went.** The player's break
+    // was the only thing that forgot the text; a sign dropped by
+    // `signNeighbourChanged` became air in the world and stayed in the store,
+    // and a sign is drawn from the store and not from the chunk.
+    using TileEntitySink = void (*)(void* ctx, i32 x, int y, i32 z);
+    void setTileEntityRemovedSink(TileEntitySink sink, void* ctx)
+    {
+        tileEntitySink_ = sink;
+        tileEntitySinkCtx_ = ctx;
+    }
+    void removeTileEntity(i32 x, int y, i32 z) const
+    {
+        if (tileEntitySink_ != nullptr) {
+            tileEntitySink_(tileEntitySinkCtx_, x, y, z);
+        }
+    }
 
     // ---- redstone power ------------------------------------------------
     //
@@ -309,6 +446,21 @@ private:
     // shift is taken on the signed reinterpretation.
     u32 updateLcg_;
     static constexpr u32 kUpdateLcgAddend = 1013904223u;
+
+    EntityQuery entityQuery_ = nullptr;
+    void* entityQueryCtx_ = nullptr;
+
+    DropSink dropSink_ = nullptr;
+    void* dropSinkCtx_ = nullptr;
+
+    FallingBlockSink fallingSink_ = nullptr;
+    void* fallingSinkCtx_ = nullptr;
+
+    SoundSink soundSink_ = nullptr;
+    void* soundSinkCtx_ = nullptr;
+
+    TileEntitySink tileEntitySink_ = nullptr;
+    void* tileEntitySinkCtx_ = nullptr;
 
     i64 time_ = 0;
     int skyDarken_ = 0;

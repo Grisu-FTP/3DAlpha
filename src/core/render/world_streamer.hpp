@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/entity/persistence.hpp"
+
 // The loaded world around the camera: which columns are in memory, which are
 // meshed, and the budget that keeps both off the frame time.
 //
@@ -22,6 +24,7 @@
 // columns are kept one ring wider than the render distance.
 
 #include "core/gui/progress.hpp"
+#include "core/item/use.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/scratch.hpp"
@@ -233,6 +236,23 @@ public:
     // saved.
     void setPlayerState(double x, double y, double z, float yaw, float pitch, i64 timeTicks);
 
+    // What the player is carrying, for the next save to write.
+    //
+    // **Separate from setPlayerState, and called far less often.** That one is
+    // four stores a frame; this copies up to forty stacks and the NBT each one
+    // preserved, so it belongs on the edit rather than on the frame. Call it
+    // when the hand or the backpack actually changes -- picking from the
+    // palette, moving a stack, cycling is not a change.
+    //
+    // A world never told about an inventory saves the one it was loaded with,
+    // untouched. That is what Spectator does and it is deliberate: a mode with
+    // no hand must not empty a hand the real client filled.
+    void setPlayerInventory(const std::vector<item::ItemStack>& stacks);
+
+    // Bind once after opening; restore saved pools before their first tick.
+    // The pools must outlive close(). Saves copy them before queuing I/O.
+    void bindEntities(const entity::EntityPools& pools);
+
     // Once a frame, with the wall clock. Separate from update() so the existing
     // signature and its harness callers stay put, and so core keeps having no
     // clock seam -- the value is passed in, exactly as open() and close() do.
@@ -298,6 +318,15 @@ public:
     void setCubeFormat(mesh::CubeFormat format, ChunkRenderer& renderer);
 
     mesh::CubeFormat cubeFormat() const { return builder_.cubeFormat(); }
+
+    // Greedy meshing on or off; see MeshBuilder::setGreedy. Both kinds of mesh
+    // are drawn the same way, so a pool holding a mixture is correct -- but a
+    // setting that only reached new sections would leave the A/B it exists for
+    // reading half of each, so this re-meshes everything the way
+    // setCubeFormat does, and wants the pool reset first for the same reason.
+    void setGreedy(bool on, ChunkRenderer& renderer);
+
+    bool greedy() const { return builder_.greedy(); }
 
     bool isOpen() const { return open_; }
     const world::LevelData& level() const { return level_; }
@@ -384,6 +413,42 @@ public:
     // resident -- an edit at the edge of the loaded grid is dropped rather than
     // written into a column that is about to be replaced.
     bool setBlock(ChunkRenderer& renderer, i32 x, int y, i32 z, block::BlockId id, u8 metadata);
+
+    // **A player's right-click**, with the renderer held for the whole of it
+    // rather than for each write.
+    //
+    // The same bracket as `setBlock` and for the same reason, but around the
+    // *decision* instead of around one cell: one click can be several writes --
+    // a door is two blocks, a door being opened is two metadata changes, a
+    // lever is a write and four notifications -- and every one of them has to
+    // reach the renderer. Bracketing per write would also drain the light queue
+    // once per cell, which is work the click has not caused yet.
+    //
+    // The decision itself is `item::rightClick`, in core and under test; this
+    // is the two lines of it that need a renderer.
+    bool rightClick(ChunkRenderer& renderer, item::ItemId held, const entity::RayHit& hit,
+                    const AABB& playerBox, float yawDegrees, const item::Effects& effects = {});
+
+    // **The item's own right-click**, under the same renderer bracket, and it
+    // is a second entry point rather than a flag on the one above because
+    // `Minecraft.clickMouse` has two: the block's, which needs a hit, and the
+    // item's, which does its own ray. See `item::useItem`.
+    //
+    // The residency test that `rightClick` does up front cannot be done here --
+    // there is no hit yet to test the column of -- so it is done against
+    // whatever the item's own ray lands on, inside `item::useItem`'s writes:
+    // `TickWorld` refuses a write to a column it does not hold, which is the
+    // same guard reached one layer down.
+    item::ItemUse useItem(ChunkRenderer& renderer, item::ItemId held, double eyeX,
+                          double eyeY, double eyeZ, double dirX, double dirY, double dirZ,
+                          const item::Effects& effects = {});
+
+    // The left hand: `PlayerController.onPlayerDestroyBlock`, under the same
+    // bracket as everything else here. Particles first, then the removal, then
+    // the sound -- `item::destroyBlock` owns that order and this owns the
+    // renderer.
+    bool breakBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
+                    const item::Effects& effects = {});
 
     // The incremental relighter, for the debug page. Null before a world opens.
     const world::LightUpdater* lighting() const { return light_.get(); }
@@ -657,6 +722,10 @@ private:
     bool neighboursReady(i32 chunkX, i32 chunkZ) const;
     void publishIfReady(i32 chunkX, i32 chunkZ, ChunkRenderer& renderer);
 
+    // Every loaded column back through the publish gate, so all of it is
+    // meshed again: the common half of setCubeFormat and setGreedy.
+    void republishAll(ChunkRenderer& renderer);
+
     bool meshSection(const VisibleSection& section, ChunkRenderer& renderer);
 
     io::PosixFileSystem fs_;
@@ -795,6 +864,9 @@ private:
 
     world::ChunkCache::Config cacheConfig_;
     world::ChunkCache::PlayerState player_;
+    entity::EntityPools entityPools_;
+    bool entitiesBound_ = false;
+    void snapshotEntities();
     int prefetchRings_ = 0;
     int autosaveSeconds_ = 0;
     i64 lastSaveMillis_ = 0;

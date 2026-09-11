@@ -2,6 +2,7 @@
 #include "texture_support.hpp"
 
 #include "core/block/block_def.hpp"
+#include "core/block/registry.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/mesh/vertex.hpp"
 #include "core/texture/atlas_image.hpp"
@@ -183,6 +184,31 @@ TEST(dev_art_carves_the_torch_tiles)
 // Scaling
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// **Two tiles of a loaded pack are not the pack's**, and the scaling tests
+// below have to skip them: the client generates fire rather than reading it,
+// and `buildAtlas` does the same -- see core/texture/texture_fx.hpp. That they
+// really are overwritten is asserted in texture_fx_test.cpp; here they are
+// simply not the pack's colours any more.
+//
+// Found through the render type rather than named, which is how
+// applyAnimatedTiles finds them too.
+bool tileIsGenerated(int tx, int ty)
+{
+    const int tile = ty * 16 + tx;
+    for (int id = 0; id < mcver::kBlockTableSize; ++id) {
+        const block::BlockDef& def = mcver::kBlocks[id];
+        if (def.known && def.render == block::RenderType::Fire
+            && (tile == int(def.texture) || tile == int(def.texture) + 16)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 TEST(a_16x_pack_is_copied_unchanged)
 {
     TempDir dir;
@@ -198,6 +224,9 @@ TEST(a_16x_pack_is_copied_unchanged)
 
     for (int ty = 0; ty < 16; ++ty) {
         for (int tx = 0; tx < 16; ++tx) {
+            if (tileIsGenerated(tx, ty)) {
+                continue;
+            }
             u8 want[4];
             expectedTile(tx, ty, want);
             const u8* got = atlasTexel(atlas, tx * 16 + 3, ty * 16 + 9);
@@ -228,6 +257,9 @@ TEST(an_hd_pack_is_box_filtered_down)
 
     for (int ty = 0; ty < 16; ++ty) {
         for (int tx = 0; tx < 16; ++tx) {
+            if (tileIsGenerated(tx, ty)) {
+                continue;
+            }
             u8 want[4];
             expectedTile(tx, ty, want);
             const u8* got = atlasTexel(atlas, tx * 16 + 5, ty * 16 + 2);
@@ -314,6 +346,9 @@ TEST(a_small_pack_is_replicated_not_interpolated)
     // Every texel is one of the source's exact colours -- no blend appears.
     for (int ty = 0; ty < 16; ++ty) {
         for (int tx = 0; tx < 16; ++tx) {
+            if (tileIsGenerated(tx, ty)) {
+                continue;
+            }
             u8 want[4];
             expectedTile(tx, ty, want);
             for (int i = 0; i < 4; ++i) {

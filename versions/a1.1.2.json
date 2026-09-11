@@ -42,7 +42,8 @@
     "hasNether": false,
     "hasBiomes": false,
     "hasHunger": false,
-    "hasServerSideDamage": false
+    "hasServerSideDamage": false,
+    "hasSlimSkins": false
   },
   "data": "data/a1.1.2"
 }

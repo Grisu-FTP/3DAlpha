@@ -15,6 +15,8 @@
 #include "core/mesh/shapes.hpp"
 #include "framework.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <set>
 #include <vector>
 
@@ -405,20 +407,87 @@ TEST(crops_show_a_later_tile_as_they_grow)
     }
 }
 
-TEST(a_doors_upper_half_shows_the_tile_a_row_up)
+// `BlockDoor.getBlockTexture(face, metadata)` for every metadata, one letter
+// per face in face order, as the running a1.1.2 jar answers it for both the
+// wooden door and the iron door (identical but for the base tile). `L` is the
+// block's own tile and `U` the one a row up; lower case is a negative answer,
+// which `renderBlockDoor` draws with u reversed.
+constexpr const char* kDoorFaces[16] = {
+    "LLLLLl", "LLLlLL", "LLLLlL", "LLlLLL", "LLlLLL", "LLLLLl", "LLLlLL", "LLLLlL",
+    "LLLLUu", "LLUuLL", "LLLLuU", "LLuULL", "LLuULL", "LLLLUu", "LLUuLL", "LLLLuU",
+};
+
+// A door's one box emits its six faces in face order, four vertices each, and
+// `kFaceCornerUV` gives corner 0 the low u end and corner 1 the high one on
+// every face -- so a face is mirrored exactly when those two come out the other
+// way round.
+struct DrawnFace {
+    int tile;
+    bool mirrored;
+};
+
+DrawnFace drawnFace(const MeshBuilder& m, int face)
+{
+    const DetailVertex* v = m.detailVertices() + face * 4;
+    i16 u = v[0].u;
+    i16 vv = v[0].v;
+    for (int c = 1; c < 4; ++c) {
+        u = std::min(u, v[c].u);
+        vv = std::min(vv, v[c].v);
+    }
+    const int column = u / mesh::kUvUnitsPerTile;
+    const int row = vv / mesh::kUvUnitsPerTile;
+    return DrawnFace{row * mesh::kAtlasTilesPerEdge + column, v[0].u > v[1].u};
+}
+
+TEST(a_door_draws_each_face_with_the_tile_and_mirror_the_jar_answers)
+{
+    int doors = 0;
+    for (int id = 1; id < mcver::kBlockTableSize; ++id) {
+        const block::BlockDef& def = mcver::kBlocks[id];
+        if (!def.known || def.render != block::RenderType::Door) {
+            continue;
+        }
+        ++doors;
+        for (u8 metadata = 0; metadata < 16; ++metadata) {
+            const MeshBuilder m = meshOne(u16(id), metadata);
+            CHECK_EQ(int(m.detailQuadCount()), 6);
+            for (int face = 0; face < mesh::kFaceCount; ++face) {
+                const char want = kDoorFaces[metadata][face];
+                const bool upperTile = want == 'U' || want == 'u';
+                const DrawnFace got = drawnFace(m, face);
+                CHECK_EQ(got.tile, int(def.texture) - (upperTile ? mesh::kAtlasTilesPerEdge : 0));
+                CHECK_EQ(got.mirrored, want == 'l' || want == 'u');
+            }
+        }
+    }
+    CHECK_EQ(doors, 2);
+}
+
+// The report this was fixed for, stated directly: the second door of a pair is
+// placed with the facing a quarter back and bit 2 set, which is the *same box*
+// as a plain closed door -- so the hinge side is carried by nothing but which
+// broad face is mirrored. Facing 0 and its flipped placement, ((0-1)&3)+4 = 7.
+TEST(the_second_door_of_a_pair_is_mirrored_the_other_way)
 {
     const int id = firstOfType(block::RenderType::Door);
     CHECK(id > 0);
 
-    const MeshBuilder lower = meshOne(u16(id), 0);
-    const MeshBuilder upper = meshOne(u16(id), 8);
-    CHECK(lower.detailQuadCount() > 0);
-    CHECK(upper.detailQuadCount() > 0);
+    AABB plainBox[block::kMaxCollisionBoxes];
+    AABB pairedBox[block::kMaxCollisionBoxes];
+    CHECK_EQ(block::collisionBoxes(block::BlockId(id), 0, plainBox, block::kMaxCollisionBoxes), 1);
+    CHECK_EQ(block::collisionBoxes(block::BlockId(id), 7, pairedBox, block::kMaxCollisionBoxes), 1);
+    CHECK_EQ(plainBox[0].minX, pairedBox[0].minX);
+    CHECK_EQ(plainBox[0].maxX, pairedBox[0].maxX);
+    CHECK_EQ(plainBox[0].minZ, pairedBox[0].minZ);
+    CHECK_EQ(plainBox[0].maxZ, pairedBox[0].maxZ);
 
-    // One row of the atlas up is exactly one tile's worth of v smaller.
-    const i16 lowerV = lower.detailVertices()[0].v;
-    const i16 upperV = upper.detailVertices()[0].v;
-    CHECK_EQ(int(lowerV - upperV), mesh::kUvUnitsPerTile);
+    const MeshBuilder plain = meshOne(u16(id), 0);
+    const MeshBuilder paired = meshOne(u16(id), 7);
+    CHECK(drawnFace(plain, mesh::kFacePosX).mirrored);
+    CHECK(!drawnFace(plain, mesh::kFaceNegX).mirrored);
+    CHECK(!drawnFace(paired, mesh::kFacePosX).mirrored);
+    CHECK(drawnFace(paired, mesh::kFaceNegX).mirrored);
 }
 
 TEST(a_ladder_draws_only_where_the_game_puts_one)
@@ -459,6 +528,49 @@ TEST(a_cactus_is_inset_at_the_sides_and_full_at_the_caps)
     // not, and that gap is what makes a column of cactus read as segments.
     CHECK(sawInset);
     CHECK(sawFullWidth);
+}
+
+// The spikes. `bc.b(ly,IIIFFF)` draws each side as the standard full-cell face
+// under `setTranslation` of a sixteenth, so the tile's outer texel columns --
+// where the spike pixels are -- hang past the neighbouring sides. A side
+// narrowed to the inset box maps only the middle fourteen columns and draws a
+// smooth post, which is what this used to do.
+TEST(a_cactus_side_spans_the_cell_a_sixteenth_in)
+{
+    const int id = firstOfType(block::RenderType::Cactus);
+    CHECK(id > 0);
+
+    const MeshBuilder m = meshOne(u16(id), 0);
+    int sides = 0;
+    for (usize q = 0; q < m.detailQuadCount(); ++q) {
+        const DetailVertex* quad = m.detailVertices() + q * 4;
+        const int face = quad[0].face;
+        if (face != mesh::kFaceNegZ && face != mesh::kFacePosZ && face != mesh::kFaceNegX
+            && face != mesh::kFacePosX) {
+            continue;
+        }
+        ++sides;
+
+        const bool alongX = face == mesh::kFaceNegX || face == mesh::kFacePosX;
+        const bool negative = face == mesh::kFaceNegX || face == mesh::kFaceNegZ;
+        const double depth = negative ? 1.0 / 16.0 : 15.0 / 16.0;
+        double lateralMin = 2.0, lateralMax = -1.0;
+        int uMin = 1 << 20, uMax = -(1 << 20);
+        for (int c = 0; c < 4; ++c) {
+            const double normal = local(alongX ? quad[c].x : quad[c].z, 8);
+            const double lateral = local(alongX ? quad[c].z : quad[c].x, 8);
+            CHECK(std::abs(normal - depth) < 1e-9);
+            lateralMin = std::min(lateralMin, lateral);
+            lateralMax = std::max(lateralMax, lateral);
+            uMin = std::min(uMin, int(quad[c].u));
+            uMax = std::max(uMax, int(quad[c].u));
+        }
+        CHECK(std::abs(lateralMin) < 1e-9);
+        CHECK(std::abs(lateralMax - 1.0) < 1e-9);
+        // The whole tile, less the edge margin every emitter takes.
+        CHECK_EQ(uMax - uMin, mesh::kUvUnitsPerTile - 2 * mesh::kUvInset);
+    }
+    CHECK_EQ(sides, 4);
 }
 
 // ---------------------------------------------------------------------------

@@ -107,6 +107,15 @@ public:
     // than 256 distinct ids does not occur in an Alpha world.
     bool mayTickRandomly() const;
 
+    // Whether any block id present here builds a tile entity -- the same
+    // palette-only question as above, asked by the save path rather than the
+    // tick. A column is reconciled against its `TileEntities` list only when it
+    // is written, but that still means sixteen sections, and fifteen of them
+    // are usually stone, dirt and air.
+    //
+    // Conservative for Direct16 for the same reason, and equally harmlessly.
+    bool mayHoldTileEntity() const;
+
     // Copies `count` blocks from flat index `start`.
     //
     // The point is what does *not* happen per block: the encoding switch, the

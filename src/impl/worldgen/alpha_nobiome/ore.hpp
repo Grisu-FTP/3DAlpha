@@ -27,10 +27,36 @@
 
 namespace mc::worldgen {
 
+// **The negative-quadrant ore bug, and the switch that turns it off.**
+//
+// The six bounds below are `(int)` casts in the original, and a Java `(int)`
+// truncates toward zero rather than flooring. At positive coordinates the two
+// agree; at negative ones truncation rounds *up*, so the whole box is shifted
+// one block towards zero -- the slice at its low end is never visited and is
+// never written, while the extra slice at its high end is outside the
+// ellipsoid and writes nothing. The vein comes out short, and it comes out
+// short in x and in z independently, so the quadrant at negative x and
+// negative z loses the most.
+//
+// It is a bug and not a rule: nothing else in the generator is asymmetric
+// about the origin, and the same seed generates different amounts of ore
+// depending only on which way the player walked. `FloorBounds` is what the
+// Extra Settings screen turns on; `TruncateBounds` is a1.1.2 and the default
+// everywhere, fixtures included.
+enum class OreBounds {
+    TruncateBounds,  // `(int)`, and the bug with it
+    FloorBounds,     // floor, and the same vein in every quadrant
+};
+
 // `cu.a(cn, Random, int, int, int)`. Always returns true in the original; the
 // bool is there for the WorldGenerator interface and every caller discards it.
+//
+// **`bounds` changes no random draw.** It is read after the stream has been
+// drawn from and only decides which blocks the already-chosen vein is written
+// into, so a world with the fix on and a world with it off are in step with
+// each other through every later pass.
 bool generateOreVein(PopulationView& view, JavaRandom& random, u8 blockId, i32 veinSize, i32 x,
-                     i32 y, i32 z);
+                     i32 y, i32 z, OreBounds bounds = OreBounds::TruncateBounds);
 
 // WorldGenClay -- class `gv`. **The same vein, with two changes**, which is
 // true of the original too: `gv` is a copy of `cu` with a guard bolted on.
@@ -43,6 +69,6 @@ bool generateOreVein(PopulationView& view, JavaRandom& random, u8 blockId, i32 v
 // guard rejects, which is the one place a generator's return value differs from
 // "always true".
 bool generateClayPatch(PopulationView& view, JavaRandom& random, i32 patchSize, i32 x, i32 y,
-                       i32 z);
+                       i32 z, OreBounds bounds = OreBounds::TruncateBounds);
 
 }  // namespace mc::worldgen

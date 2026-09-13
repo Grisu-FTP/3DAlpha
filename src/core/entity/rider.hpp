@@ -46,6 +46,19 @@ struct VehicleRider {
 // Where a vehicle puts its rider back, in world coordinates. The y is already
 // `vehicle.posY + getMountedYOffset()`; what the rider adds on top of that is
 // its own `yOffset`, which is the rider's business and not the vehicle's.
+//
+// **The same three numbers say where a rider lands when it gets off**, which
+// is the tail of `kh.g(Lkh;)V` -- mountEntity, called with the vehicle you are
+// already on, which is how a1.1.2 dismounts:
+//
+//     setLocationAndAngles(vehicle.posX, vehicle.boundingBox.minY + vehicle.height,
+//                          vehicle.posZ, rotationYaw, rotationPitch);
+//
+// and `setLocationAndAngles` puts `posY` at `y + yOffset`, so **the rider's
+// feet land on the vehicle's roof** rather than in its seat. For a boat and a
+// minecart that roof is something to stand on, so this is the difference
+// between stepping off a cart and sinking through it. `y` is the roof; the
+// rider adds its own `yOffset` exactly as it does for a seat.
 struct RiderSeat {
     bool valid = false;
     double x = 0.0, y = 0.0, z = 0.0;

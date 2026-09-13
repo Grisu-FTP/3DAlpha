@@ -5,7 +5,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace mc;
@@ -111,6 +113,90 @@ public:
             new FaultyFile(std::move(inner), allowedOps));
     }
 };
+
+// Counts what reaches the card. A batch read is worth having only if it costs
+// fewer operations than one read each, so that is the thing to assert -- not
+// the wall clock, which on a host with a page cache measures nothing.
+struct Counters {
+    int reads = 0;
+    u64 bytes = 0;
+};
+
+class CountingFile : public io::RandomAccessFile {
+public:
+    CountingFile(std::unique_ptr<io::RandomAccessFile> inner, Counters* counters)
+        : inner_(std::move(inner)), counters_(counters)
+    {
+    }
+
+    bool readAt(u64 offset, ByteSpan out) override
+    {
+        ++counters_->reads;
+        counters_->bytes += out.size();
+        return inner_->readAt(offset, out);
+    }
+
+    bool writeAt(u64 offset, ConstByteSpan data) override
+    {
+        return inner_->writeAt(offset, data);
+    }
+
+    bool size(u64* out) override { return inner_->size(out); }
+    bool flush() override { return inner_->flush(); }
+
+private:
+    std::unique_ptr<io::RandomAccessFile> inner_;
+    Counters* counters_ = nullptr;
+};
+
+class CountingFileSystem : public io::PosixFileSystem {
+public:
+    Counters counters;
+
+    std::unique_ptr<io::RandomAccessFile> openRandomAccess(const char* path,
+                                                           bool create) override
+    {
+        auto inner = io::PosixFileSystem::openRandomAccess(path, create);
+        if (inner == nullptr) {
+            return nullptr;
+        }
+        return std::unique_ptr<io::RandomAccessFile>(
+            new CountingFile(std::move(inner), &counters));
+    }
+};
+
+// Collects a batch into the order it arrived, which is the card's and not the
+// caller's. `stopAfter` of 0 never stops.
+struct Collected {
+    std::vector<std::pair<i32, i32>> order;
+    std::map<std::pair<i32, i32>, std::vector<u8>> payloads;
+    usize stopAfter = 0;
+
+    static bool visit(void* context, i32 x, i32 z, ConstByteSpan payload)
+    {
+        Collected& self = *static_cast<Collected*>(context);
+        self.order.emplace_back(x, z);
+        self.payloads[{x, z}].assign(payload.data(), payload.data() + payload.size());
+        return self.stopAfter == 0 || self.order.size() < self.stopAfter;
+    }
+};
+
+// The preprocessor sees a brace-initialised pair as two macro arguments, so
+// CHECK cannot hold one. This is what a batch handed back for one chunk.
+const std::vector<u8>& got(const Collected& batch, i32 x, i32 z)
+{
+    static const std::vector<u8> none;
+    const auto it = batch.payloads.find(std::pair<i32, i32>(x, z));
+    return it == batch.payloads.end() ? none : it->second;
+}
+
+// A region holding `count` chunks in a row, sized the way real ones are.
+void fillRow(RegionFile& region, i32 z, i32 count)
+{
+    for (i32 x = 0; x < count; ++x) {
+        CHECK(region.write(x, z, span(payload(usize(1194 + (x * 37) % 4678), u8(x + 1)))));
+    }
+}
 
 }  // namespace
 
@@ -463,4 +549,245 @@ TEST(staged_writes_reach_the_card_without_a_commit_per_chunk)
     RegionFile reopened;
     CHECK(reopened.open(fs, path.c_str(), 0, 0, false));
     CHECK_EQ(reopened.chunkCount(), u32(100));
+}
+
+TEST(a_batch_read_costs_far_fewer_operations_than_one_read_each)
+{
+    TempDir temp;
+    CountingFileSystem fs;
+    const std::string path = temp.at("r.0.0.3dr");
+
+    constexpr i32 kRows = 16;
+    constexpr i32 kPerRow = 32;
+    {
+        RegionFile region;
+        CHECK(region.open(fs, path.c_str(), 0, 0, true));
+        for (i32 z = 0; z < kRows; ++z) {
+            fillRow(region, z, kPerRow);
+        }
+        CHECK(region.commit());
+        CHECK(region.close());
+    }
+
+    std::vector<i32> xs;
+    std::vector<i32> zs;
+    for (i32 z = 0; z < kRows; ++z) {
+        for (i32 x = 0; x < kPerRow; ++x) {
+            xs.push_back(x);
+            zs.push_back(z);
+        }
+    }
+
+    // One read each, which is what loadChunk does a chunk at a time.
+    std::map<std::pair<i32, i32>, std::vector<u8>> oneByOne;
+    int singleReads = 0;
+    {
+        RegionFile region;
+        CHECK(region.open(fs, path.c_str(), 0, 0, false));
+        fs.counters = Counters();
+        for (usize i = 0; i < xs.size(); ++i) {
+            std::vector<u8> out;
+            CHECK(region.read(xs[i], zs[i], &out));
+            oneByOne[{xs[i], zs[i]}] = std::move(out);
+        }
+        singleReads = fs.counters.reads;
+        CHECK(region.close());
+    }
+    CHECK_EQ(singleReads, int(xs.size()));
+
+    // The same chunks as one batch.
+    Collected batch;
+    int batchReads = 0;
+    u64 batchBytes = 0;
+    {
+        RegionFile region;
+        CHECK(region.open(fs, path.c_str(), 0, 0, false));
+        fs.counters = Counters();
+        std::vector<u8> scratch;
+        CHECK(region.readMany(xs.data(), zs.data(), xs.size(), &scratch, &batch,
+                              &Collected::visit));
+        batchReads = fs.counters.reads;
+        batchBytes = fs.counters.bytes;
+        CHECK(region.close());
+    }
+
+    // Every chunk, and the same bytes -- fewer operations must not mean less
+    // payload or a payload that moved.
+    CHECK_EQ(batch.payloads.size(), oneByOne.size());
+    CHECK(batch.payloads == oneByOne);
+
+    // The point of the exercise. 512 chunks written in one pass sit close
+    // enough together that a 64 KB scratch swallows dozens at a time; the bar
+    // here is deliberately loose, because the exact figure is a property of
+    // the allocator's layout and not of this contract.
+    CHECK(batchReads * 8 < singleReads);
+    CHECK(batchReads > 0);
+
+    // Bytes go up, and that is the trade being made: an operation is modelled
+    // at ~4 ms, and the sectors swallowed are far cheaper than a second one.
+    // It must still be bounded -- a batch that read the whole file for every
+    // chunk would also pass the operation count.
+    u64 payloadBytes = 0;
+    for (const auto& [key, bytes] : oneByOne) {
+        (void) key;
+        payloadBytes += bytes.size();
+    }
+    CHECK(batchBytes >= payloadBytes);
+    CHECK(batchBytes < payloadBytes * 3);
+}
+
+TEST(a_batch_read_does_not_run_off_the_end_of_the_file)
+{
+    // The last payload in a region ends mid-sector -- `write` pads nothing --
+    // so a batch that read whole sectors would read past EOF and fail. The
+    // chunk written last is the one that proves it.
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string path = temp.at("r.0.0.3dr");
+
+    const std::vector<u8> last = payload(1194 + 7, 9);  // not a whole sector
+    {
+        RegionFile region;
+        CHECK(region.open(fs, path.c_str(), 0, 0, true));
+        fillRow(region, 0, 8);
+        CHECK(region.write(8, 0, span(last)));
+        CHECK(region.commit());
+        CHECK(region.close());
+    }
+
+    RegionFile region;
+    CHECK(region.open(fs, path.c_str(), 0, 0, false));
+    const i32 xs[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+    const i32 zs[] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    Collected batch;
+    std::vector<u8> scratch;
+    CHECK(region.readMany(xs, zs, 9, &scratch, &batch, &Collected::visit));
+    CHECK_EQ(batch.payloads.size(), usize(9));
+    CHECK(got(batch, 8, 0) == last);
+}
+
+TEST(a_batch_read_answers_for_what_the_region_does_not_hold_and_asks_once_for_the_rest)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string path = temp.at("r.0.0.3dr");
+    {
+        RegionFile region;
+        CHECK(region.open(fs, path.c_str(), 0, 0, true));
+        fillRow(region, 0, 4);
+        CHECK(region.commit());
+        CHECK(region.close());
+    }
+
+    RegionFile region;
+    CHECK(region.open(fs, path.c_str(), 0, 0, false));
+
+    // Two of these were never generated, and one is asked for twice.
+    const i32 xs[] = {2, 9, 0, 2, 17};
+    const i32 zs[] = {0, 0, 0, 0, 9};
+    Collected batch;
+    std::vector<u8> scratch;
+    CHECK(region.readMany(xs, zs, 5, &scratch, &batch, &Collected::visit));
+
+    // Four distinct chunks asked for, four answered -- the duplicate collapsed
+    // and the two that were never generated came back empty, so a caller
+    // counting them down still reaches zero.
+    CHECK_EQ(batch.order.size(), usize(4));
+    CHECK(got(batch, 9, 0).empty());
+    CHECK(got(batch, 17, 9).empty());
+
+    // And they came first, before a byte was read.
+    CHECK(got(batch, batch.order[0].first, batch.order[0].second).empty());
+    CHECK(got(batch, batch.order[1].first, batch.order[1].second).empty());
+
+    std::vector<u8> direct;
+    CHECK(region.read(2, 0, &direct));
+    CHECK(got(batch, 2, 0) == direct);
+    CHECK(!got(batch, 0, 0).empty());
+}
+
+TEST(a_batch_read_refuses_a_chunk_from_another_region)
+{
+    // regionSlot masks, so chunk 32 of region 1 would fold onto chunk 0 of
+    // region 0 and hand back the wrong terrain. Refused, not masked: a
+    // picture built out of the wrong chunks is not one anybody would distrust.
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string path = temp.at("r.0.0.3dr");
+    {
+        RegionFile region;
+        CHECK(region.open(fs, path.c_str(), 0, 0, true));
+        fillRow(region, 0, 4);
+        CHECK(region.commit());
+        CHECK(region.close());
+    }
+
+    RegionFile region;
+    CHECK(region.open(fs, path.c_str(), 0, 0, false));
+    const i32 xs[] = {0, 32};
+    const i32 zs[] = {0, 0};
+    Collected batch;
+    std::vector<u8> scratch;
+    CHECK(!region.readMany(xs, zs, 2, &scratch, &batch, &Collected::visit));
+
+    const i32 negative[] = {-1};
+    const i32 zero[] = {0};
+    CHECK(!region.readMany(negative, zero, 1, &scratch, &batch, &Collected::visit));
+}
+
+TEST(a_batch_read_the_visitor_stopped_is_not_a_failure)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string path = temp.at("r.0.0.3dr");
+    {
+        RegionFile region;
+        CHECK(region.open(fs, path.c_str(), 0, 0, true));
+        fillRow(region, 0, 16);
+        CHECK(region.commit());
+        CHECK(region.close());
+    }
+
+    RegionFile region;
+    CHECK(region.open(fs, path.c_str(), 0, 0, false));
+    std::vector<i32> xs;
+    std::vector<i32> zs;
+    for (i32 x = 0; x < 16; ++x) {
+        xs.push_back(x);
+        zs.push_back(0);
+    }
+    Collected batch;
+    batch.stopAfter = 3;
+    std::vector<u8> scratch;
+    CHECK(region.readMany(xs.data(), zs.data(), xs.size(), &scratch, &batch,
+                          &Collected::visit));
+    CHECK_EQ(batch.order.size(), usize(3));
+}
+
+TEST(a_batch_read_grows_its_scratch_for_one_payload_over_the_cap)
+{
+    // The cap bounds merging, never a chunk: a payload larger than it is read
+    // on its own rather than refused.
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string path = temp.at("r.0.0.3dr");
+    const std::vector<u8> huge = payload(kBatchReadBytes + 5000, 4);
+    {
+        RegionFile region;
+        CHECK(region.open(fs, path.c_str(), 0, 0, true));
+        CHECK(region.write(0, 0, span(huge)));
+        CHECK(region.write(1, 0, span(payload(2917, 5))));
+        CHECK(region.commit());
+        CHECK(region.close());
+    }
+
+    RegionFile region;
+    CHECK(region.open(fs, path.c_str(), 0, 0, false));
+    const i32 xs[] = {0, 1};
+    const i32 zs[] = {0, 0};
+    Collected batch;
+    std::vector<u8> scratch;
+    CHECK(region.readMany(xs, zs, 2, &scratch, &batch, &Collected::visit));
+    CHECK_EQ(batch.payloads.size(), usize(2));
+    CHECK(got(batch, 0, 0) == huge);
 }

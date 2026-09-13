@@ -2,6 +2,7 @@
 
 #include "core/tick/drop.hpp"
 
+#include "core/entity/primed_tnt.hpp"
 #include "core/tick/tick_world.hpp"
 
 #include "drops.hpp"  // generated; see tools/configure.py
@@ -50,18 +51,21 @@ u16 idDropped(const mcver::BlockDrop& rule, u8 metadata, JavaRandom& rand)
 
 }  // namespace
 
-void dropBlockAsItem(TickWorld& world, i32 x, int y, i32 z, block::BlockId self, u8 metadata)
+void dropBlockAsItem(TickWorld& world, i32 x, int y, i32 z, block::BlockId self, u8 metadata,
+                     float chance)
 {
     const mcver::BlockDrop& rule = dropRule(self);
     JavaRandom& rand = world.random();
 
     const int count = quantityDropped(rule, rand);
     for (int n = 0; n < count; ++n) {
-        // `if (world.rand.nextFloat() > f) continue;` with `f` at 1.0, so it
-        // never continues -- and still costs its draw. Written out rather than
-        // folded away, because folding it away is a different random stream.
+        // `if (world.rand.nextFloat() > f) continue;`. At the 1.0 every caller
+        // but the explosion passes it never continues -- and still costs its
+        // draw, which is why it is written out rather than folded away: folding
+        // it away is a different random stream. At the explosion's 0.3 it is
+        // the whole of "most of what a creeper takes down is gone".
         const float roll = rand.nextFloat();
-        if (roll > 1.0f) {
+        if (roll > chance) {
             continue;
         }
 
@@ -87,7 +91,11 @@ void blockDestroyedByPlayer(TickWorld& world, i32 x, int y, i32 z, block::BlockI
 {
     // Dispatch is on the behaviour, never on the id, for the reason
     // behaviour.hpp gives -- and the switch is this short because a1.1.2 has
-    // only three overrides and two of them do nothing here. See drop.hpp.
+    // only three overrides and one of them does nothing here. See drop.hpp.
+    if (block::def(self).tick == block::TickBehaviour::Tnt) {
+        tntDestroyedByPlayer(world, x, y, z);
+        return;
+    }
     if (block::def(self).tick != block::TickBehaviour::Crops) {
         return;
     }
@@ -130,6 +138,25 @@ void blockDestroyedByPlayer(TickWorld& world, i32 x, int y, i32 z, block::BlockI
         world.spawnItem(double(float(x) + ox), double(float(y) + oy), double(float(z) + oz),
                         u16(mcver::Item::Seeds), 1);
     }
+}
+
+
+void tntDestroyedByPlayer(TickWorld& world, i32 x, int y, i32 z)
+{
+    world.spawnPrimedTnt(x, y, z, entity::kPrimedTntFuse);
+    // `playSoundAtEntity`, which is `posY - yOffset` -- see drop.hpp.
+    world.playSoundAt("random.fuse", double(x) + 0.5,
+                      double(y) + 0.5 - entity::kPrimedTntHalf, double(z) + 0.5, 1.0f,
+                      1.0f);
+}
+
+void tntDestroyedByExplosion(TickWorld& world, i32 x, int y, i32 z)
+{
+    // `world.rand.nextInt(tnt.fuse / 4) + tnt.fuse / 8` on a fuse the
+    // constructor has just set to 80, and the draw is made either way.
+    const int fuse = world.random().nextInt(entity::kPrimedTntRelitSpread)
+                     + entity::kPrimedTntRelitFloor;
+    world.spawnPrimedTnt(x, y, z, fuse);
 }
 
 }  // namespace mc::tick

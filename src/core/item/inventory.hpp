@@ -106,6 +106,12 @@ struct Inventory {
     // this name is honest and always has been the half that only spends.
     ItemId dropOne();
 
+    // `eu.b(I)Z` -- **consumeInventoryItem**, which is how the bow finds its
+    // arrow: the first of the thirty-six slots holding `id` loses one, and a
+    // slot left with nothing is emptied. **The first, not the held one**, and
+    // the armour is never looked at. Returns false when there was none.
+    bool consumeOne(ItemId id);
+
     // Moves the selection by `delta`, wrapping both ways. **Wrapping rather
     // than clamping**: the original's mouse wheel wraps, and on a console where
     // this is two shoulder buttons, a selection that stops dead at slot 9 makes
@@ -145,6 +151,27 @@ struct Inventory {
     // sees no change, which is what a slot that will not take something looks
     // like in the original too -- the cursor keeps holding it.
     void swap(int a, int b);
+
+    // **A shift-click on the Creative Items page**, which is ours -- a1.1.2
+    // reads no modifier on a click. The Survival screens have the same move
+    // through `ContainerSession::quickMove`; this is the one for the page that
+    // has no container session, and it routes the same way:
+    //
+    //   * a piece of armour in the thirty-six goes on, when its slot is empty;
+    //   * the hand's stacks go to the backpack and the backpack's to the hand;
+    //   * a worn piece comes off into the backpack, then the hand.
+    //
+    // Topping up what is already there comes before an empty slot, under both
+    // the item's own stack size and the inventory's 64, and whatever does not
+    // fit stays where it was. Ids alone decide "the same item", as they do in
+    // `clickSlot`: nothing that stacks takes damage. False when nothing moved.
+    bool quickMove(int slot);
+
+    // **A shift-click on the palette**: a full stack of `id`, the item's own
+    // maximum, into the hand and then the backpack by the same top-up-first
+    // rule. What does not fit is not anywhere -- the palette is a catalogue.
+    // False when nothing went in.
+    bool giveStack(ItemId id);
 
     // Fills the nine hand slots from consecutive palette entries starting at
     // `firstPaletteIndex`, and leaves the selection where it is.

@@ -205,3 +205,52 @@ TEST(only_water_lava_and_fire_are_invisible_to_a_ray)
     CHECK_EQ(blind, 5 * 16);
     CHECK_EQ(test::kCollisionCaseCount - blind, test::kTargetableCases);
 }
+
+TEST(the_item_render_shape_matches_the_jar_for_every_block)
+{
+    // `Block.setBlockBoundsForItemRender`, which is the shape the hand, an
+    // inventory slot and a dropped stack draw -- and is neither of the two
+    // tables above. One box per id: nothing on that path has a metadata to
+    // give it.
+    for (int id = 0; id < 256; ++id) {
+        const test::CollisionBox& want = test::kItemRenderBoxes[id];
+        const AABB got = block::itemRenderBox(BlockId(id));
+        if (!same(got, want)) {
+            CHECK(same(got, want));
+            return;
+        }
+    }
+}
+
+TEST(the_button_and_the_plates_are_drawn_as_items_unlike_how_they_sit_in_the_world)
+{
+    // The negative control, and the bug that put this table here: a reader that
+    // ignored `setBlockBoundsForItemRender` and used `selectionBox(id, 0)`
+    // instead put a **full stone cube** in the hand and in the inventory slot
+    // where a1.1.2 draws a button, because a button's world bounds are written
+    // in `setBlockBoundsBasedOnState` and metadata 0 is not one of the four
+    // values it writes for.
+    //
+    // Three blocks moved, which is what the jar sweep counted.
+    CHECK_EQ(test::kItemRenderOverrides, 3);
+
+    const AABB unitCube{0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
+    const BlockId button = BlockId(mcver::Block::StoneButton);
+    CHECK(same(block::selectionBox(button, 0), test::CollisionBox{0.0, 0.0, 0.0, 1.0, 1.0, 1.0}));
+    const AABB held = block::itemRenderBox(button);
+    CHECK(!same(held, test::CollisionBox{unitCube.minX, unitCube.minY, unitCube.minZ,
+                                         unitCube.maxX, unitCube.maxY, unitCube.maxZ}));
+    // Six texels wide, four tall, four deep, centred in the cell -- `hu.e()V`.
+    CHECK(same(held, test::CollisionBox{0.3125, 0.375, 0.375, 0.6875, 0.625, 0.625}));
+
+    // A plate in the hand is full width and four texels thick in the middle of
+    // the cell, not the wafer on the floor that it is in the world.
+    for (mcver::Block plate : {mcver::Block::StonePressurePlate,
+                               mcver::Block::WoodenPressurePlate}) {
+        const BlockId id = BlockId(plate);
+        CHECK(same(block::itemRenderBox(id),
+                   test::CollisionBox{0.0, 0.375, 0.0, 1.0, 0.625, 1.0}));
+        CHECK(!same(block::selectionBox(id, 0),
+                    test::CollisionBox{0.0, 0.375, 0.0, 1.0, 0.625, 1.0}));
+    }
+}

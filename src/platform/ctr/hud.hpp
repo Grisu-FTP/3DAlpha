@@ -26,8 +26,8 @@
 //
 //     +----------------------------------------+  y = 0
 //     |  the hotbar, nine slots edge to edge    |  the hand
-//     +----------------------------------------+  y = 32
-//     |  " Bottom screen focused "  + a fade    |  the focus banner, or backdrop
+//     +----------------------------------------+  y = 40
+//     |  " Bottom screen focused "              |  the focus banner, or backdrop
 //     +----------------------------------------+  y = 48
 //     |                                        |
 //     |               the page                 |
@@ -35,6 +35,10 @@
 //     +----------------------------------------+  y = 216
 //     |  [ Map ] [ Items ] [ Blocks ] [ Look ] |  the tab strip
 //     +----------------------------------------+  y = 240
+//
+// ...in a gamemode that has a hotbar. **Spectator has none, and the whole
+// arrangement above it moves up forty pixels**: the banner goes to y = 0 and
+// the page starts at y = 8 with 208 rows instead of 168. See `pageTop`.
 //
 // **The hotbar and the tab strip changed places**, and the hotbar grew to the
 // full width of the screen while it was at it. Both were asked for and both are
@@ -60,10 +64,19 @@
 // theirs, which is where SELECT + Y is worth naming -- it is the one binding
 // that is not discoverable by touching the screen.
 //
-// **The hotbar band is reserved in every gamemode.** A page whose height
-// depended on whether the mode had a hotbar would be two layouts, two sets of
-// constants and two map window sizes to measure against the console; Spectator
-// gets 32 pixels of backdrop instead.
+// **The hotbar band used to be reserved in every gamemode**, on the argument
+// that a page whose height depended on the mode would be two layouts, two sets
+// of constants and two map window sizes to measure against the console.
+// Spectator got 32 pixels of backdrop and a smaller map for the sake of one
+// number.
+//
+// It is two layouts now, and the argument is answered rather than ignored:
+// every page is laid out by a `constexpr` function of the page's first row, so
+// there is one set of constants written once and evaluated twice, and both
+// answers are checked at compile time by static assertions against
+// `kBandedPageTop` and `kBarePageTop`. The map window is the one place that
+// really is two sizes, and the cost of the larger one is written down beside
+// it in map_screen.hpp.
 //
 // **It is here rather than over the world**, which is docs/3ds-performance.md
 // section 11 and not a new decision: the top screen draws nothing but the
@@ -71,6 +84,7 @@
 // the only screen that can be touched.
 
 #include "core/block/block_def.hpp"
+#include "core/gui/container_layout.hpp"
 #include "core/gui/paint.hpp"
 #include "core/gui/item_icon.hpp"
 #include "core/item/inventory.hpp"
@@ -85,13 +99,20 @@ inline constexpr int kScreenHeight = 240;
 inline constexpr int kColumns = kScreenWidth / kCell;   // 40
 inline constexpr int kRows = kScreenHeight / kCell;     // 30
 
-// **The hotbar band, at the top.** 32 pixels: a 28-pixel slot with two either
+// **The hotbar band, at the top.** 40 pixels: a 36-pixel slot with two either
 // side, which is what a 24-pixel icon needs with a bevel that is still visible
 // on a 320-pixel screen.
-inline constexpr int kHotbarHeight = 32;
+//
+// **It was 32, and the eight it grew are the eight the focus banner gave up.**
+// A slot is 35 or 36 pixels wide (see `hotbarSlotX`) and was 28 tall, which is
+// a landing strip rather than a cell: a1.1.2's own hotbar slot is square and
+// the one thing a player reads off this band at a glance is which square is
+// lit. 36 tall against 35 and 36 wide is that square, to the pixel, and the
+// page below it did not move to pay for it.
+inline constexpr int kHotbarHeight = 40;
 inline constexpr int kHotbarTop = 0;
 inline constexpr int kHotbarSlotY = kHotbarTop + 2;
-inline constexpr int kHotbarSlotHeight = kHotbarHeight - 4;   // 28
+inline constexpr int kHotbarSlotHeight = kHotbarHeight - 4;   // 36
 inline constexpr int kHotbarColumns = item::kHotbarSlots;
 
 // Where slot `i` starts, and where it ends -- **not a fixed width**, because
@@ -109,27 +130,54 @@ static_assert(hotbarSlotX(0) == 0, "the hotbar starts at the left edge");
 static_assert(hotbarSlotX(kHotbarColumns) == kScreenWidth,
               "the hotbar ends at the right edge");
 
-// **Sixteen pixels under the hotbar that nothing but the backdrop draws into**,
-// and that is a load-bearing promise rather than spare margin. The focus banner
-// *darkens* what is under it, which is an operation that cannot be applied
-// twice to the same pixels -- so it has to sit somewhere that is painted
-// exactly once, on a page clear, and never repainted underneath it. The map
-// alone would otherwise redraw through it on every block the player walks and
-// darken the strip a shade further each time, down to black over a minute or so.
+// **One character row under the hotbar that nothing but the backdrop and the
+// focus banner draw into**, and that reservation is a load-bearing promise
+// rather than spare margin: the banner is drawn on a page clear and the pages
+// redraw without one, so a page that painted into this row would erase it.
 //
 // Unfocused it is backdrop, and reads as the page having a margin.
-inline constexpr int kBannerTop = kHotbarHeight;               // 32
-inline constexpr int kBannerHeight = 16;
-inline constexpr int kPageTop = kBannerTop + kBannerHeight;    // 48
+//
+// **It was sixteen pixels and half of it was a gradient.** The banner used to
+// fade from its label row back into the page by *darkening* the pixels it
+// found, which is an operation that cannot be applied twice -- so the band had
+// to be painted exactly once per clear, and eight pixels of screen were spent
+// on a nicety with a fragile rule attached. The label row alone says the same
+// thing, the rule goes with the gradient, and the eight pixels went to the
+// hotbar above. See `drawFocusBanner`.
+inline constexpr int kBannerHeight = kCell;                    // 8
 
 // The tab strip, at the bottom. Three character rows so a label sits in the
 // middle of it with a row of pixels either side.
 inline constexpr int kTabHeight = 24;
 inline constexpr int kTabTop = kScreenHeight - kTabHeight;     // 216
 
-inline constexpr int kBodyTop = kBannerTop;                    // 32
-inline constexpr int kBodyHeight = kTabTop - kBodyTop;         // 184
-inline constexpr int kPageHeight = kTabTop - kPageTop;         // 168
+// **Where the page starts in a mode that has a hotbar**, which is every mode
+// but Spectator. It is the number every page was laid out from when there was
+// only one answer, and it is still what the static assertions measure against.
+inline constexpr int kBandedPageTop = kHotbarHeight + kBannerHeight;   // 48
+
+// **And the answer for a mode that has no hotbar**: the band is not reserved,
+// it is simply not there, and the banner and the page move up into it.
+inline constexpr int kBarePageTop = kBannerHeight;                     // 8
+
+// **Which of the two is in force**, set once per gamemode change by the Overlay
+// and read by every layout below.
+//
+// It is a setting on this file rather than an argument threaded through forty
+// call sites because it is a property of the *screen*, not of any one thing
+// drawn on it: there is one bottom screen, it is in one of two shapes, and a
+// drawing call and the hit test that has to agree with it must never be handed
+// different answers. Both page tops are laid out at compile time by the same
+// constexpr functions, so neither shape is the untested one.
+void setHotbarPresent(bool present);
+bool hotbarPresent();
+
+// 40 or 0 -- the band the hotbar occupies, and what everything else hangs off.
+int hotbarHeight();
+// The reserved row the focus banner is drawn in.
+int bannerTop();
+// The first row a page may paint.
+int pageTop();
 
 // The slot size the palette grid is built from. 24 pixels is what a 16-pixel
 // atlas tile needs with a border either side that is still visible on a
@@ -225,8 +273,7 @@ int tabAt(const TabStrip& tabs, int touchX, int touchY);
 // four armour slots beside them** -- slots 100..103, which the save file has
 // always carried and the screen had nowhere to show. `cursor` is the cell the
 // bottom-screen focus is on, or -1; `held` is the slot a stack has been picked
-// up from and is following the cursor, or -1, and is drawn hollow so a move in
-// progress is visible.
+// up from, or -1, and is drawn hollow so a move in progress is visible.
 //
 // **It lost its own hotbar row**, because the hotbar is a band of its own on
 // every page now. Two hotbars on one screen would have had to agree about which
@@ -235,14 +282,16 @@ int tabAt(const TabStrip& tabs, int touchX, int touchY);
 // **And it fills the page rather than sitting in a small panel in the middle of
 // it.** The old frame was 232 x 112 with the pack's darkened dirt showing on
 // every side of it, which reads as an unfinished screen; there is nothing else
-// on this page, so the panel is the page. That is what pays for the 30-pixel
-// slots -- 56 % more area than the 24-pixel ones, on a resistive screen where
-// that is the difference between aiming and prodding. 30 rather than 32 because
-// nine columns and an armour column have to share 320 pixels: nine 32s is 288
-// and leaves no room beside them for the armour at all.
+// on this page, so the panel is the page. That is what pays for the 31-pixel
+// slots -- 67 % more area than the 24-pixel ones, on a resistive screen where
+// that is the difference between aiming and prodding. 31 rather than 32 because
+// nine columns and an armour column have to share 320 pixels: ten 32s is 320
+// exactly and leaves the panel no edge at all, and a bevel a player cannot see
+// is a slot they cannot find the corner of. The panel's own margin is down to
+// one pixel a side for the same reason the slot grew -- see `itemsLayout`.
 inline constexpr int kItemsColumns = 9;
 inline constexpr int kItemsRows = item::kBackpackSlots / kItemsColumns;
-inline constexpr int kItemsSlotPixels = 30;
+inline constexpr int kItemsSlotPixels = 31;
 
 // The cursor space of the Items page: the backpack, and then the armour. So
 // cell `kBackpackSlots + n` is armour slot `n`, and `itemsSlotForCell` is the
@@ -255,8 +304,18 @@ inline constexpr int kItemsCells = item::kBackpackSlots + kItemsArmourCells;
 // second one.
 int itemsSlotForCell(int cell);
 
+// The same mapping the other way about, or -1 for a slot this page does not
+// draw -- which is the nine in the hand, since those are the band's.
+int itemsCellForSlot(int slot);
+
+// `carried` is the cell the picked-up stack is **hovering over**, or -1 when it
+// is hovering somewhere else or nothing is in hand. It is a separate question
+// from `held`: `held` is where the stack came from and is drawn hollow,
+// `carried` is where it is now. See `Overlay::carriedPosition` for how the two
+// are decided, and `drawCarried` in hud.cpp for why the stack is drawn exactly
+// once.
 void drawItemsPage(const gui::Surface& surface, const item::Inventory& inventory,
-                   const gui::IconSheets& sheets, int cursor, int held);
+                   const gui::IconSheets& sheets, int cursor, int held, int carried);
 
 // Which cell of the Items page a touch landed on, or -1. Covers the armour
 // column as well as the backpack grid; put it through `itemsSlotForCell`.
@@ -282,12 +341,39 @@ inline constexpr int kIconPixels = 24;
 // focus is off or on the grid below -- drawn differently from
 // `inventory.selected`, because the two are different questions: one is what is
 // in your hand and the other is what A would act on.
+//
+// `carried` is a hotbar index the picked-up stack is hovering over, or -1, and
+// means on this band what it means on the Items page above.
 void drawHotbar(const gui::Surface& surface, const item::Inventory& inventory,
-                const gui::IconSheets& sheets, int cursor, int held);
+                const gui::IconSheets& sheets, int cursor, int held, int carried);
 
 // Which hotbar slot a touch landed on, or -1 -- including every touch outside
 // the band, so a page can pass it every press it sees.
 int hotbarSlotAt(int touchX, int touchY);
+
+// **An open container screen**: the workbench, the furnace, a chest, or the
+// Survival inventory with its 2 x 2 grid. Where the slots go is
+// core/gui/container_layout.hpp's; this draws them.
+//
+// `cursor` is a slot index in the session's numbering -- the slot the next
+// press acts on, and the one the stack on the cursor hovers over -- and
+// `showCursor` whether it is outlined, which is only while the screen has the
+// buttons. The page and the band are two calls for the reason the hotbar is
+// always its own: the hand is in the band, and a cursor moving between the two
+// has to redraw both while a furnace's arrow redraws neither.
+void drawContainerPage(const gui::Surface& surface, const gui::ContainerLayout& layout,
+                       const item::ContainerSession& session, const item::Inventory& inventory,
+                       const gui::IconSheets& sheets, int cursor, bool showCursor);
+void drawContainerBand(const gui::Surface& surface, const gui::ContainerLayout& layout,
+                       const item::ContainerSession& session, const item::Inventory& inventory,
+                       const gui::IconSheets& sheets, int cursor, bool showCursor);
+
+// **Only the furnace's arrow and flame**, which move on the world's ticks
+// rather than on a press -- a whole page of icons redrawn twenty times a second
+// to grow an arrow by a pixel would be the bottom screen's most expensive
+// frame.
+void drawContainerProgress(const gui::Surface& surface, const gui::ContainerLayout& layout,
+                           const item::ContainerSession& session);
 
 // **The Creative block palette, which is its own page and not the inventory.**
 // They are different things: the palette is a catalogue of every block this
@@ -315,23 +401,23 @@ void drawBlocksPage(const gui::Surface& surface, const gui::IconSheets& sheets, 
 // page-relative: add `page * kPalettePerPage` for a palette index.
 int paletteCellAt(int touchX, int touchY);
 
-// **The focus banner: a dark gradient under the tab strip with a line of text
-// on it.** Drawn while X has the bottom screen focused, and it exists because
-// the focus is otherwise invisible -- the d-pad quietly means something else
-// and nothing on the screen says so, which is the worst kind of mode.
+// **The focus banner: one dark row under the hotbar with a line of text on
+// it.** Drawn while X has the bottom screen focused, and it exists because the
+// focus is otherwise invisible -- the d-pad quietly means something else and
+// nothing on the screen says so, which is the worst kind of mode.
 //
-// It lives in the reserved band at `kBannerTop`, which nothing but the backdrop
-// ever paints -- see the note there. That is what makes it safe for the fade to
-// be *destructive*: it darkens the pixels it finds, so a strip anything else
-// redrew under it would darken a shade further every time. Leaving the focus is
-// a full page redraw rather than an attempt to undo it.
+// It lives in the reserved row at `bannerTop()`, which nothing but the backdrop
+// ever paints -- see the note there -- so a page redraw cannot erase it and
+// leaving the focus is a full page redraw rather than an attempt to undo it.
 //
-// The label row is flat rather than graded, and that is libctru's doing, not a
-// choice: `consoleDrawChar` writes all 64 pixels of a cell, so a character row
-// has exactly one background colour. The gradient is the rows underneath it,
-// fading from that colour back into the page.
+// The row is flat, and that is libctru's doing rather than a choice:
+// `consoleDrawChar` writes all 64 pixels of a cell, so a character row has
+// exactly one background colour. **There used to be a gradient under it** that
+// faded that colour back into the page by darkening the pixels it found; it
+// cost a second character row of screen and it carried a rule -- never draw it
+// twice over the same pixels -- that every page underneath had to respect. The
+// eight pixels are the hotbar's now.
 inline constexpr int kFocusBannerLabelHeight = kCell;
-inline constexpr int kFocusBannerFadeHeight = kBannerHeight - kFocusBannerLabelHeight;
 void drawFocusBanner(const gui::Surface& surface, const char* text);
 
 // The two page arrows on the palette's title row: -1 for the previous page, +1
@@ -354,8 +440,22 @@ int paletteArrowAt(int touchX, int touchY);
 void drawLookPage(const gui::Surface& surface);
 void drawCompassRibbon(const gui::Surface& surface, float yawDegrees);
 
+// **The game-over page** -- `au`, GuiGameOver: "Game over!", the score, and the
+// two buttons, Respawn over Title menu. `cursor` is the button the d-pad is on,
+// 0 or 1. Drawn over the page band only; the tabs and the hotbar stay where
+// they are, emptied by the death that put this up.
+//
+// The original scales its title to twice the size of everything else. A
+// console cell cannot be scaled, so the title is marked by the panel's own row
+// instead.
+void drawGameOverPage(const gui::Surface& surface, int score, int cursor);
+
+// Which of the two buttons a touch landed on: 0 Respawn, 1 Title menu, -1
+// neither.
+int gameOverButtonAt(int touchX, int touchY);
+
 // The first pixel row of the look pad's drag area. A touch above it belongs to
 // the tab strip and to the banner band, neither of which is the camera's.
-inline constexpr int kLookPadTop = kPageTop;
+inline int lookPadTop() { return pageTop(); }
 
 }  // namespace mc::ctr::hud

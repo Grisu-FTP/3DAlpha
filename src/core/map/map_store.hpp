@@ -5,7 +5,8 @@
 //
 // **This is what "the map saves its render" means here, and it is now two
 // things rather than one, because a console said so.** Sampling a chunk is 256
-// downward scans, so the sample is kept and a chunk is scanned once, ever. That
+// downward scans, so the sample is kept and a chunk is scanned once and then
+// only when the world under it is written into -- see `store`'s `serial`. That
 // was the whole of it, and it left the *shading* to be redone for every pixel
 // of every redraw -- which a New 3DS measured at **5,000 microseconds for one
 // 192 x 192 window**, a third of a frame, on every block the player crosses.
@@ -95,7 +96,7 @@ public:
     struct Stats {
         int chunks = 0;      // held right now
         usize bytes = 0;     // what they cost
-        u32 stored = 0;      // chunks handed in over the session
+        u32 stored = 0;      // stores that changed the picture; see `store`
         u32 evicted = 0;     // ...and chunks pushed out to make room
         u32 drawn = 0;       // patches drawn, which is the cost a redraw avoids
     };
@@ -116,7 +117,24 @@ public:
     // Stores or replaces one chunk's sample. Replacing matters: a chunk the
     // player has built in gets sampled again and must overwrite rather than
     // accumulate.
-    void store(i32 chunkX, i32 chunkZ, const MapChunkSample& sample);
+    //
+    // `serial` is whatever the caller uses to decide that a held sample has
+    // gone out of date -- this keeps it and hands it back from `sampleSerial`
+    // and asks nothing about it. For the console that is
+    // `WorldStreamer::columnBlockSerial`.
+    //
+    // **True when the picture actually changed**, which a re-sample often does
+    // not: a player mining a tunnel rewrites the blocks under a chunk dozens of
+    // times a second and none of it reaches the surface the map draws. An
+    // identical sample keeps the serial and the drawn patch and advances
+    // nothing, so the redraw the screen hangs off `stats().stored` happens when
+    // there is something new to see and not merely when something was dug. The
+    // comparison is 768 bytes against a re-shade of the window; it is the
+    // cheaper half by three orders of magnitude.
+    bool store(i32 chunkX, i32 chunkZ, const MapChunkSample& sample, u32 serial = 0);
+
+    // What `serial` this chunk was stored with, or 0 when it is not held.
+    u32 sampleSerial(i32 chunkX, i32 chunkZ) const;
 
     // Marks a chunk as still wanted, so eviction takes something else first.
     // The screen calls it for the chunks under the visible window.
@@ -157,6 +175,7 @@ private:
         i32 z = 0;
         u32 used = 0;   // the tick it was last stored or touched at
         u32 stamp = 0;  // what `patch` was drawn with; 0 is "not drawn"
+        u32 serial = 0; // the caller's token for the world this was sampled from
         MapChunkSample sample;
         MapChunkPatch patch;
     };

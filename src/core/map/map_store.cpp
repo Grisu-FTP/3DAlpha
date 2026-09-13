@@ -22,6 +22,12 @@ u32 hashChunk(i32 x, i32 z)
 
 }  // namespace
 
+// `store` compares two samples with `memcmp`, which is only an answer about
+// their contents if there is nothing between or after the three arrays.
+static_assert(sizeof(MapChunkSample)
+                  == sizeof(block::BlockId) * kChunkSamples + 2 * kChunkSamples,
+              "MapChunkSample must be its three arrays and no padding");
+
 i32 tileOfBlock(i32 blockX) { return floorDiv(blockX + kTileBlocks / 2, kTileBlocks); }
 
 i32 tileOriginBlock(i32 tile) { return tile * kTileBlocks - kTileBlocks / 2; }
@@ -126,10 +132,40 @@ void MapStore::rebuildIndex()
     }
 }
 
-void MapStore::store(i32 chunkX, i32 chunkZ, const MapChunkSample& sample)
+u32 MapStore::sampleSerial(i32 chunkX, i32 chunkZ) const
+{
+    const Entry* entry = entryAt(chunkX, chunkZ);
+    return entry == nullptr ? 0 : entry->serial;
+}
+
+bool MapStore::store(i32 chunkX, i32 chunkZ, const MapChunkSample& sample, u32 serial)
 {
     if (index_.empty()) {
-        return;
+        return false;
+    }
+
+    // Already here: overwrite in place. A chunk the player has changed is
+    // sampled again, and the second sample is the true one.
+    //
+    // **Unless it is the same one**, which is the common answer for a chunk
+    // that was re-sampled because a block was written into it: most blocks are
+    // under the surface and the map draws the surface. Then all that has
+    // happened is that this chunk is now known to be current as of `serial`,
+    // and nothing about the picture -- this patch, the one to the south, or the
+    // count the screen watches -- has any reason to move.
+    const int slot = slotOf(chunkX, chunkZ);
+    if (slot >= 0) {
+        Entry& entry = entries_[usize(index_[usize(slot)])];
+        entry.used = ++tick_;
+        entry.serial = serial;
+        if (std::memcmp(&entry.sample, &sample, sizeof(MapChunkSample)) == 0) {
+            return false;
+        }
+        ++stats_.stored;
+        invalidateSouthOf(chunkX, chunkZ);
+        entry.sample = sample;
+        entry.stamp = 0;
+        return true;
     }
 
     ++stats_.stored;
@@ -140,17 +176,6 @@ void MapStore::store(i32 chunkX, i32 chunkZ, const MapChunkSample& sample)
     // insert below, because that one can evict and move entries about.
     invalidateSouthOf(chunkX, chunkZ);
 
-    // Already here: overwrite in place. A chunk the player has changed is
-    // sampled again, and the second sample is the true one.
-    const int slot = slotOf(chunkX, chunkZ);
-    if (slot >= 0) {
-        Entry& entry = entries_[usize(index_[usize(slot)])];
-        entry.sample = sample;
-        entry.used = ++tick_;
-        entry.stamp = 0;
-        return;
-    }
-
     if (entries_.size() < usize(capacity_)) {
         entries_.emplace_back();
         Entry& entry = entries_.back();
@@ -158,6 +183,7 @@ void MapStore::store(i32 chunkX, i32 chunkZ, const MapChunkSample& sample)
         entry.z = chunkZ;
         entry.used = ++tick_;
         entry.stamp = 0;
+        entry.serial = serial;
         entry.sample = sample;
 
         const usize mask = index_.size() - 1;
@@ -169,7 +195,7 @@ void MapStore::store(i32 chunkX, i32 chunkZ, const MapChunkSample& sample)
 
         stats_.chunks = int(entries_.size());
         stats_.bytes = entries_.size() * sizeof(MapChunkSample);
-        return;
+        return true;
     }
 
     // Full: the oldest use goes. Found by a scan rather than by a linked list,
@@ -186,9 +212,11 @@ void MapStore::store(i32 chunkX, i32 chunkZ, const MapChunkSample& sample)
     entries_[oldest].z = chunkZ;
     entries_[oldest].used = ++tick_;
     entries_[oldest].stamp = 0;
+    entries_[oldest].serial = serial;
     entries_[oldest].sample = sample;
     ++stats_.evicted;
     rebuildIndex();
+    return true;
 }
 
 void MapStore::invalidateSouthOf(i32 chunkX, i32 chunkZ)

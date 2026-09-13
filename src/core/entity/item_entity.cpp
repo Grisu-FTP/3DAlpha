@@ -5,6 +5,9 @@
 
 #include "core/block/fluid_flow.hpp"
 #include "core/block/registry.hpp"
+#include "core/entity/block_contact.hpp"
+#include "core/entity/explosion.hpp"
+#include "core/entity/fire_entry.hpp"
 #include "core/entity/sweep.hpp"
 #include "core/item/inventory.hpp"
 #include "core/item/registry.hpp"
@@ -62,6 +65,20 @@ u8 packedLightAt(const tick::TickWorld& world, double x, double y, double z)
 // against a wall from sitting inside it. Finds the nearest face of the cell
 // that is *not* another solid and shoves the item that way; a cell walled in on
 // all six sides leaves it where it is, which is the original's answer too.
+// `dx.a(Lkh;I)Z` -- **attackEntityFrom for a dropped stack**, which is the
+// whole method: subtract, and `setDead()` at or below zero. No invulnerability
+// window, no sound, no drop. Returns whether the stack is now gone, because
+// every caller here is inside the tick loop and must stop touching it.
+bool hurt(ItemEntity& e, int amount)
+{
+    e.health = i16(e.health - amount);
+    if (e.health <= 0) {
+        e.count = 0;
+        return true;
+    }
+    return false;
+}
+
 void pushOutOfBlocks(const tick::TickWorld& world, ItemEntity& e, JavaRandom& rand)
 {
     const i32 bx = MathHelper::floorDouble(e.x);
@@ -140,46 +157,33 @@ void ItemEntitySystem::removeAt(int index)
     items_.swapRemove(index);
 }
 
-bool ItemEntitySystem::combine(ItemEntity& a, ItemEntity& b)
+void ItemEntitySystem::takeBlast(const tick::TickWorld& world, const Explosion& blast)
 {
-    if (&a == &b || !a.alive() || !b.alive()) {
-        return false;
-    }
-    // `itemstack1.getItem() != itemstack.getItem()`, and the damage beside it:
-    // a half-worn pick does not join a fresh one, which is the same rule
-    // `Inventory::addStack` applies at the other end of the journey.
-    if (a.item != b.item || a.damage != b.damage) {
-        return false;
-    }
-
-    // `if (itemstack1.stackSize < itemstack.stackSize) return entityitem.combineItems(this);`
-    // -- the bigger stack is the survivor, and on a tie it is `b`. Written as a
-    // swap of references rather than as the original's recursive call, which is
-    // the same two lines with one less stack frame.
-    ItemEntity* keep = &b;
-    ItemEntity* give = &a;
-    if (b.count < a.count) {
-        keep = &a;
-        give = &b;
+    int damage = 0;
+    double vx = 0.0;
+    double vy = 0.0;
+    double vz = 0.0;
+    for (int i = 0; i < items_.size(); ++i) {
+        ItemEntity& e = items_[i];
+        if (!e.alive()
+            || !blast.effectOn(world, e.x, e.y, e.z, e.box, &damage, &vx, &vy, &vz)) {
+            continue;
+        }
+        hurt(e, damage);
+        e.motionX += vx;
+        e.motionY += vy;
+        e.motionZ += vz;
     }
 
-    const int limit = int(item::def(keep->item).stack);
-    if (keep->count + give->count > limit) {
-        return false;
+    // The same sweep `tick` ends with; see there.
+    for (int i = 0; i < items_.size();) {
+        if (items_[i].alive()) {
+            ++i;
+            continue;
+        }
+        removeAt(i);
     }
-
-    keep->count += give->count;
-    // `Math.max` on the delay and `Math.min` on the age: merging must not make
-    // an item pickable sooner than either half was, nor age the pair by the
-    // older one's clock.
-    if (give->pickupDelay > keep->pickupDelay) {
-        keep->pickupDelay = give->pickupDelay;
-    }
-    if (give->age < keep->age) {
-        keep->age = give->age;
-    }
-    give->count = 0;
-    return true;
+    items_.trim();
 }
 
 bool ItemEntitySystem::spawn(const tick::TickWorld& world, double px, double py, double pz,
@@ -268,13 +272,52 @@ bool ItemEntitySystem::dropFromPlayer(const tick::TickWorld& world, double eyeX,
     return true;
 }
 
+bool ItemEntitySystem::dropOnDeath(const tick::TickWorld& world, double eyeX, double eyeY,
+                                   double eyeZ, item::ItemId id, int count, i16 damage,
+                                   JavaRandom& thrower)
+{
+    // The same `posY - 0.3 + 0.12` a throw leaves from.
+    ItemEntity* dropped = place(world, eyeX, eyeY - 0.30000001192092896 + 0.12, eyeZ, id, count,
+                                damage, kItemPickupDelay, true);
+    if (dropped == nullptr) {
+        return false;
+    }
+    ItemEntity& e = *dropped;
+    e.pickupDelay = kItemDropPickupDelay;
+
+    // The `flag == true` branch, with `MathHelper` throughout.
+    constexpr float kPi = 3.1415927f;
+    const float speed = thrower.nextFloat() * 0.5f;
+    const float angle = thrower.nextFloat() * kPi * 2.0f;
+    e.motionX = double(-MathHelper::sin(angle) * speed);
+    e.motionZ = double(MathHelper::cos(angle) * speed);
+    e.motionY = 0.20000000298023224;
+    return true;
+}
+
+bool ItemEntitySystem::spawnMoving(const tick::TickWorld& world, double px, double py, double pz,
+                                   item::ItemId id, int count, i16 damage, double motionX,
+                                   double motionY, double motionZ)
+{
+    ItemEntity* spawned = place(world, px, py, pz, id, count, damage, kItemPickupDelay, true);
+    if (spawned == nullptr) {
+        return false;
+    }
+    spawned->motionX = motionX;
+    spawned->motionY = motionY;
+    spawned->motionZ = motionZ;
+    return true;
+}
+
 void ItemEntitySystem::tick(const tick::TickWorld& world)
 {
     for (int i = 0; i < items_.size(); ++i) {
         ItemEntity& e = items_[i];
 
-        // Emptied by a merge earlier in this same pass. The sweep at the
-        // bottom is what reclaims it.
+        // Emptied and not yet swept. A stack dies by having its count zeroed
+        // -- the walk below holds a reference into the pool, so nothing may
+        // remove an entry while it runs -- and the sweep at the bottom is what
+        // reclaims it.
         if (!e.alive()) {
             continue;
         }
@@ -282,11 +325,11 @@ void ItemEntitySystem::tick(const tick::TickWorld& world)
         // **An item outside a loaded column does not tick.** a1.1.2 gets this
         // for free -- its entities live in the chunk and go out with it -- and
         // ours cannot, because the pool is flat and outlives the columns. So
-        // the residency test is written down here instead: no physics, no
-        // light resample, no merge, and above all **no ageing**, which is the
-        // half that matters. Without it a drop left behind while the player
-        // walks two hundred blocks away has quietly spent its five minutes by
-        // the time they walk back.
+        // the residency test is written down here instead: no physics, no light
+        // resample, and above all **no ageing**, which is the half that
+        // matters. Without it a drop left behind while the player walks two
+        // hundred blocks away has quietly spent its five minutes by the time
+        // they walk back.
         if (!world.chunkResident(MathHelper::floorDouble(e.x) >> 4,
                                  MathHelper::floorDouble(e.z) >> 4)) {
             continue;
@@ -294,6 +337,46 @@ void ItemEntitySystem::tick(const tick::TickWorld& world)
 
         // ---- `kh.y()` -- Entity.onEntityUpdate, which `dx.e_()` calls first --
         //
+        // **The splash, which is the first thing that method does.** A stack
+        // thrown into a lake is loud in proportion to how fast it arrived;
+        // one that a current washes in is nearly silent. The position is
+        // `posY - yOffset`, and an item's `yOffset` is half its height, so it
+        // is the bottom of the box -- which is what `playSoundAtEntity`
+        // passes. See core/entity/water_entry.hpp.
+        {
+            const bool inWater = block::handleWaterMovement(world, e.box, kWaterMaterial,
+                                                            &e.motionX, &e.motionY, &e.motionZ);
+            const WaterEntryResult wet =
+                updateWaterEntry(e.water, inWater, e.motionX, e.motionY, e.motionZ);
+            if (wet.splash) {
+                world.playSoundAt(kSplashSound, e.x, e.y - kItemHalf, e.z, wet.volume,
+                                  splashPitch(rand_));
+                // ...and the two rows of spray that go with it. A dropped stack
+                // is 0.25 across, so six bubbles and six splashes -- the
+                // smallest entry in the game makes.
+                waterEntryParticles(world, rand_, e.x, e.box.minY, e.z, float(kItemSize),
+                                    e.motionX, e.motionY, e.motionZ);
+            }
+        }
+
+        // **`kh.y()`'s water branch puts a burning stack out**, which is the
+        // line after the splash: `fire = 0`.
+        if (e.water.inWater) {
+            e.fire = 0;
+        }
+
+        // **`kh.y()`'s fire counter.** One point every twentieth tick while it
+        // burns, and a stack has five of them -- so an item that catches light
+        // and is then carried out of the flame by its own hop still dies, a
+        // hundred ticks later. `attackEntityFrom` for a `dx` is a subtraction
+        // and a `setDead`, with no invulnerability window to blunt it.
+        if (e.fire > 0) {
+            if (e.fire % 20 == 0 && hurt(e, 1)) {
+                continue;
+            }
+            --e.fire;
+        }
+
         // **Lava destroys a dropped item, and it destroys it outright.** The
         // arithmetic is not close: `attackEntityFrom(null, 10)` against
         // `dx.f`, which the constructor sets to **5**, and `dx.a(Lkh;I)Z`
@@ -306,11 +389,13 @@ void ItemEntitySystem::tick(const tick::TickWorld& world)
         // item thrown into lava jumped about convincingly and then lay there
         // for five minutes.
         //
-        // **Fire does not do this.** Nothing in a1.1.2 sets an entity's fire
-        // counter except this branch -- `og` has no `onEntityCollidedWithBlock`
-        // at all and no other class writes `kh.aT` -- so a stack lying in a
-        // flame is untouched. That is the version, not a gap here; see
-        // docs/status.md.
+        // **Fire does it too, more slowly**, through `moveEntity`'s tail at the
+        // bottom of this loop. This comment used to say that nothing in
+        // a1.1.2 could set an entity's fire counter except this branch, on the
+        // evidence that `og` has no `onEntityCollidedWithBlock` and no class
+        // outside `kh` writes `kh.aT`. Both are true and the conclusion was
+        // wrong: `kh.c(DDD)V` writes its own counter from a box test. See
+        // core/entity/fire_entry.hpp.
         if (materialInBox(world, e.box.expand(0.0, kLavaProbeInset, 0.0), kLavaMaterial)) {
             e.count = 0;
             continue;
@@ -345,13 +430,27 @@ void ItemEntitySystem::tick(const tick::TickWorld& world)
             e.motionY = 0.20000000298023224;
             e.motionX = double((rand_.nextFloat() - rand_.nextFloat()) * 0.2f);
             e.motionZ = double((rand_.nextFloat() - rand_.nextFloat()) * 0.2f);
+            // **The fizz, which used to be the one thing missing here.** It is
+            // its own volume and its own pitch and neither matches the entity
+            // splash above: `0.4F` and `2.0F + rand.nextFloat() * 0.4F`, a
+            // single draw rather than two, so every one of them is above two.
+            //
+            // The three draws before it are the jar's order and have to stay
+            // in it -- this pool shares one generator where a1.1.2 gives every
+            // entity its own, so moving the sound's draw ahead of the motion's
+            // would change where the stack hops to.
+            world.playSoundAt("random.fizz", e.x, e.y - kItemHalf, e.z, 0.4f,
+                              2.0f + rand_.nextFloat() * 0.4f);
         }
 
         pushOutOfBlocks(world, e, rand_);
 
-        // `handleWaterMovement()`, which is where a river carries a dropped
-        // item downstream. Its answer -- "is this in water" -- is thrown away
-        // by `dx.e_()`, which calls it for the push alone.
+        // `handleWaterMovement()` **again**, which is where a river carries a
+        // dropped item downstream. Its answer -- "is this in water" -- is
+        // thrown away by `dx.e_()`, which calls it for the push alone. The
+        // splash above made the same call for the same reason a tick earlier
+        // in the method, so an item in a current is carried twice; that is the
+        // jar's, and see core/entity/water_entry.hpp.
         block::handleWaterMovement(world, e.box, kWaterMaterial, &e.motionX, &e.motionY,
                                    &e.motionZ);
 
@@ -381,6 +480,39 @@ void ItemEntitySystem::tick(const tick::TickWorld& world)
         if (e.motionY != dy) e.motionY = 0.0;
         if (e.motionZ != dz) e.motionZ = 0.0;
 
+        // **`moveEntity`'s tail begins with the blocks the box is standing
+        // in**, and for a dropped stack that is what a cactus is for: five
+        // health, one point a tick and no invulnerability window, so a stack
+        // that lands on one is gone a quarter of a second later. It used to lie
+        // there for the full five minutes. See core/entity/block_contact.hpp.
+        {
+            const int hits = blockContactHits(world, e.box);
+            bool gone = false;
+            for (int hit = 0; hit < hits && !gone; ++hit) {
+                gone = hurt(e, kContactDamage);
+            }
+            if (gone) {
+                continue;
+            }
+        }
+
+        // **`moveEntity`'s tail, which is what burns a stack left in a fire.**
+        // One point a tick with no invulnerability window, so five ticks; the
+        // counter it lights on top of that only matters for a stack that hops
+        // out. See core/entity/fire_entry.hpp.
+        {
+            const FireEntryResult burn =
+                updateFireEntry(&e.fire, boundingBoxBurning(world, e.box),
+                                fireWetProbe(world, e.box));
+            if (burn.fizz) {
+                world.playSoundAt(kFizzSound, e.x, e.y - kItemHalf, e.z, 0.7f,
+                                  fizzPitch(rand_));
+            }
+            if (burn.damage && hurt(e, 1)) {
+                continue;
+            }
+        }
+
         // **The horizontal drag is the floor's slipperiness**, which is why an
         // item slides a long way on ice and stops on grass. The block asked
         // about is one below the *box's* bottom, not below the centre.
@@ -407,35 +539,17 @@ void ItemEntitySystem::tick(const tick::TickWorld& world)
 
         e.light = packedLightAt(world, e.x, e.y, e.z);
 
-        // **The merge scan**, on the original's own cadence and not every
-        // tick. `age` here is the value *before* the increment below, so a
-        // pair dropped together merges on the tick they land rather than
-        // waiting a second and a quarter for the first multiple of 25.
-        if (e.age % kItemMergeInterval == 0) {
-            const AABB reach = e.box.expand(kItemMergeReach, 0.0, kItemMergeReach);
-            for (int j = 0; j < items_.size(); ++j) {
-                if (j == i || !items_[j].alive() || !items_[j].box.intersects(reach)) {
-                    continue;
-                }
-                if (combine(e, items_[j]) && !e.alive()) {
-                    // This one lost: it is the stack that was poured away.
-                    break;
-                }
-            }
-            if (!e.alive()) {
-                continue;
-            }
-        }
-
         // `if (age >= 6000) setDead()`, after the increment -- five minutes.
         if (++e.age >= kItemMaxAge) {
             e.count = 0;
         }
     }
 
-    // The sweep. Everything a merge or the age limit emptied goes here, in one
+    // The sweep. Everything the age limit or a death emptied goes here, in one
     // pass, once the walk above is finished and no reference into the pool is
-    // still live.
+    // still live. Emptying rather than removing is what lets the walk hold an
+    // `ItemEntity&` across a death: `removeAt` swaps the last entry into the
+    // hole, which would move the pool under it.
     for (int i = 0; i < items_.size();) {
         if (items_[i].alive()) {
             ++i;

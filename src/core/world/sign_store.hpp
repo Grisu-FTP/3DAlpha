@@ -15,16 +15,14 @@
 // entity pools here is the shape -- a fixed array, no allocation, and no
 // persistence.
 //
-// **It does not survive the world closing**, and that is the same open box
-// the tile entity subsystem sits in: `TileEntities` round-trips as opaque
-// preserved NBT (`src/core/nbt/preserved.hpp`) and nothing parses it. A sign
-// written and a world reloaded is a blank sign. See docs/todo-m3.md step 5 --
-// this is the half of that box signs need, and closing it is what would make
-// the text last.
+// **The text survives the world closing**, which it did not until the
+// `TileEntities` list stopped being an opaque blob. `readSigns` takes a
+// column's decoded tile entities as it joins the world and `writeSigns` puts
+// them back just before it is saved; `core/world/tile_entity.hpp` is the list
+// and the argument for modelling all four of its tenants at once.
 //
-// The save format is settled even though the writing is not, because it is one
-// line: `Text1` through `Text4`, four TAG_Strings, beside the `x`/`y`/`z` and
-// the `id` of `"Sign"` that every tile entity carries.
+// The format is one line: `Text1` through `Text4`, four TAG_Strings, beside
+// the `x`/`y`/`z` and the `id` of `"Sign"` that every tile entity carries.
 
 #include "core/util/segmented_pool.hpp"
 #include "core/util/types.hpp"
@@ -88,6 +86,12 @@ public:
     // in the same hole.
     void erase(i32 x, int y, i32 z);
 
+    // Forgets every sign in a column. The column has left the loaded world and
+    // its text is already on its way to the card; keeping it would grow the
+    // store for the length of the session and hand stale text to whatever is
+    // built in those coordinates next.
+    void eraseColumn(i32 chunkX, i32 chunkZ);
+
     // Writes one line, truncated to fifteen characters and always terminated.
     void setLine(int index, int line, std::string_view text);
 
@@ -110,10 +114,14 @@ public:
         }
     }
 
-    // **The sign the last placement made**, taken once and cleared -- the same
-    // seam `ArrowSystem::struckLastTick` uses. A placement has to tell the
-    // caller to put a keyboard up, and the caller is the only thing that has
-    // one; `item::rightClick` returns a bool and cannot say which sign.
+    // **The sign the last placement made**, taken once and cleared. A placement
+    // has to tell the caller to put a keyboard up, and the caller is the only
+    // thing that has one; `item::rightClick` returns a bool and cannot say
+    // which sign.
+    //
+    // `ArrowSystem::struckLastTick` used to be the other seam of this shape and
+    // is gone: a sound needs no caller, because `TickWorld::playSoundAt` is
+    // const and the arrow knows where it is. A keyboard does.
     int takeJustPlaced()
     {
         const int index = justPlaced_;
@@ -132,5 +140,22 @@ private:
     int justPlaced_ = -1;
     u32 refused_ = 0;
 };
+
+class ChunkColumn;
+
+// **The text of every sign in a column**, taken out of its decoded
+// `TileEntities` as the column joins the loaded world -- `cn.b(Lcu;)V`.
+//
+// The board's shape is not in the NBT: `ob` stores four strings and nothing
+// else, and whether a sign is a post or hangs on a wall, and which way it
+// turns, is the block and its metadata. Both are read off the column here,
+// which is the only place that has all three at once. Returns how many were
+// taken; a sign whose block is no longer a sign is skipped, the way the
+// original's lazy `getChunkBlockTileEntity` would never have built one.
+int readSigns(const ChunkColumn& column, SignStore& store);
+
+// ...and back, just before the column is written. Only signs inside this
+// column are touched. Returns how many entries were written.
+int writeSigns(const SignStore& store, ChunkColumn& column);
 
 }  // namespace mc::world

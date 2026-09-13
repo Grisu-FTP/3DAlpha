@@ -80,6 +80,15 @@ public:
         c->setSkyLight(int(x & 15), y, int(z & 15), v);
     }
 
+    // Block light starts at 0 everywhere, which is what a world with no torch
+    // in it holds -- and, unlike the sky light above, is what ice and snow
+    // read.
+    void setBlockLight(i32 x, int y, i32 z, u8 v)
+    {
+        world::ChunkColumn* c = columnAt(this, x >> 4, z >> 4);
+        c->setBlockLight(int(x & 15), y, int(z & 15), v);
+    }
+
     // A flat floor of the given block at y, across every column held.
     void floorOf(mcver::Block b, int y)
     {
@@ -378,30 +387,78 @@ TEST(sand_uses_its_own_tick_rate_of_three)
     CHECK(block::def(bid(mcver::Block::Lava)).tickRandomly);
 }
 
-TEST(ice_melts_into_water_in_bright_light)
+TEST(ice_melts_into_water_under_a_light_source)
 {
+    // The threshold is `11 - lightOpacity[ice]`, and ice's opacity is 3, so it
+    // survives at a block light of 8 and melts at 9. **Block light, not sky
+    // light**: `he.a` reads `cn.a(by.b, ...)` and `by.b` is EnumSkyBlock.Block
+    // -- see behaviour.cpp above `iceTick`.
     TestWorld t;
     t.floorOf(mcver::Block::Stone, 60);
     t.set(0, 61, 0, mcver::Block::Ice);
 
+    t.setBlockLight(0, 61, 0, 8);
+    tick::updateTick(t.w(), 0, 61, 0, bid(mcver::Block::Ice), t.w().random());
+    CHECK_EQ((long long) t.get(0, 61, 0), (long long) bid(mcver::Block::Ice));
+
+    t.setBlockLight(0, 61, 0, 9);
     tick::updateTick(t.w(), 0, 61, 0, bid(mcver::Block::Ice), t.w().random());
     CHECK_EQ((long long) t.get(0, 61, 0), (long long) bid(mcver::Block::Water));
 }
 
-TEST(ice_in_the_dark_stays_ice)
+// **The regression that made a winter world thaw and refreeze forever.** Ice
+// and snow used to read the stored *sky* light, which is 15 on anything the
+// sky can see -- above every threshold here -- so every exposed block melted
+// on its first random tick, and `TickWorld::snowAndIce`, which does read block
+// light, put it straight back. Under an open sky at full daylight nothing may
+// melt, whatever the hour.
+TEST(ice_and_snow_under_an_open_sky_never_melt)
 {
-    // The threshold is `11 - lightOpacity[ice]`, and ice's opacity is 3, so it
-    // survives at a stored sky light of 8 and melts at 9.
     TestWorld t;
     t.floorOf(mcver::Block::Stone, 60);
     t.set(0, 61, 0, mcver::Block::Ice);
-    t.setSkyLight(0, 61, 0, 8);
-    tick::updateTick(t.w(), 0, 61, 0, bid(mcver::Block::Ice), t.w().random());
-    CHECK_EQ((long long) t.get(0, 61, 0), (long long) bid(mcver::Block::Ice));
+    t.set(1, 61, 0, mcver::Block::SnowLayer);
+    t.set(2, 61, 0, mcver::Block::SnowBlock);
 
-    t.setSkyLight(0, 61, 0, 9);
-    tick::updateTick(t.w(), 0, 61, 0, bid(mcver::Block::Ice), t.w().random());
-    CHECK_EQ((long long) t.get(0, 61, 0), (long long) bid(mcver::Block::Water));
+    // Full sky light, no block light -- an ordinary winter noon. The TestWorld
+    // already fills the sky light in; this says so at the point it matters.
+    t.setSkyLight(0, 61, 0, 15);
+    t.setSkyLight(1, 61, 0, 15);
+    t.setSkyLight(2, 61, 0, 15);
+
+    for (int pass = 0; pass < 8; ++pass) {
+        tick::updateTick(t.w(), 0, 61, 0, bid(mcver::Block::Ice), t.w().random());
+        tick::updateTick(t.w(), 1, 61, 0, bid(mcver::Block::SnowLayer), t.w().random());
+        tick::updateTick(t.w(), 2, 61, 0, bid(mcver::Block::SnowBlock), t.w().random());
+    }
+
+    CHECK_EQ((long long) t.get(0, 61, 0), (long long) bid(mcver::Block::Ice));
+    CHECK_EQ((long long) t.get(1, 61, 0), (long long) bid(mcver::Block::SnowLayer));
+    CHECK_EQ((long long) t.get(2, 61, 0), (long long) bid(mcver::Block::SnowBlock));
+}
+
+// Both snow blocks melt above block light 11 and leave nothing behind, which
+// is the one threshold they do not share with ice.
+TEST(both_snows_melt_above_block_light_eleven)
+{
+    TestWorld t;
+    t.floorOf(mcver::Block::Stone, 60);
+    t.set(0, 61, 0, mcver::Block::SnowLayer);
+    t.set(1, 61, 0, mcver::Block::SnowBlock);
+
+    t.setBlockLight(0, 61, 0, 11);
+    t.setBlockLight(1, 61, 0, 11);
+    tick::updateTick(t.w(), 0, 61, 0, bid(mcver::Block::SnowLayer), t.w().random());
+    tick::updateTick(t.w(), 1, 61, 0, bid(mcver::Block::SnowBlock), t.w().random());
+    CHECK_EQ((long long) t.get(0, 61, 0), (long long) bid(mcver::Block::SnowLayer));
+    CHECK_EQ((long long) t.get(1, 61, 0), (long long) bid(mcver::Block::SnowBlock));
+
+    t.setBlockLight(0, 61, 0, 12);
+    t.setBlockLight(1, 61, 0, 12);
+    tick::updateTick(t.w(), 0, 61, 0, bid(mcver::Block::SnowLayer), t.w().random());
+    tick::updateTick(t.w(), 1, 61, 0, bid(mcver::Block::SnowBlock), t.w().random());
+    CHECK_EQ((long long) t.get(0, 61, 0), 0LL);
+    CHECK_EQ((long long) t.get(1, 61, 0), 0LL);
 }
 
 TEST(sugar_cane_grows_three_tall_beside_water_and_no_further)
@@ -714,6 +771,108 @@ TEST(lava_reaches_less_far_than_water_because_its_level_drops_by_two)
     // the last one -- against water's eighth.
     CHECK(t.w().blockAt(3, 61, 0) != bid(mcver::Block::Air));
     CHECK_EQ((long long) t.w().blockAt(4, 61, 0), (long long) bid(mcver::Block::Air));
+}
+
+// **The two cases that decide whether a world can drown itself**, both added
+// after a playthrough reported a blob of world full of water from bedrock to
+// ground level. Neither reproduced it; they are here so that a change which
+// does reproduce it fails loudly instead.
+
+TEST(a_spring_falling_into_a_chamber_matches_the_jars_own_waterfall)
+{
+    // **What population leaves behind fifty times a chunk**: one flowing block
+    // with a drop under it. This is the scene a playthrough's report pointed
+    // at -- a blob of world full of water from bedrock to ground level -- and
+    // the question it asks is whether a waterfall can turn a chamber into
+    // source blocks and keep going.
+    //
+    // The expected profile is **not hand-written**. It was taken from a real
+    // a1.1.2 `cn` World built with the same floor, the same chamber and the
+    // same spring, its clock advanced a tick at a time and `cn.a(false)`
+    // (tickUpdates) pumped until it went quiet. `S` is metadata 0 -- a source
+    // -- `f` is any other level, and `.` is air; the still and flowing *forms*
+    // are deliberately not distinguished, because which of the two a settled
+    // cell holds is a matter of whether an update is still pending and not of
+    // what the water is doing.
+    TestWorld t;
+    t.floorOf(mcver::Block::Stone, 50);
+    placeSource(t, 0, 58, 0, mcver::Block::FlowingWater);
+    CHECK(settle(t) < 4000);
+
+    static const char* kJar[] = {
+        ".......fSf.......",  // 58, the spring: the only source in the scene
+        ".......fff.......",  // 57
+        ".......fff.......",  // 56
+        ".......fff.......",  // 55
+        ".......fff.......",  // 54
+        ".......fff.......",  // 53
+        ".......fff.......",  // 52
+        "fffffffffffffffff",  // 51, the floor pool -- seven blocks each way
+    };
+
+    for (int row = 0; row < 8; ++row) {
+        const int y = 58 - row;
+        for (int i = 0; i < 17; ++i) {
+            const i32 x = i32(i - 8);
+            const BlockId b = t.w().blockAt(x, y, 0);
+            const char got = b == bid(mcver::Block::Air) ? '.'
+                                                         : (t.dataAt(x, y, 0) == 0 ? 'S' : 'f');
+            if (got != kJar[row][i]) {
+                // Report where, in a form that can be looked at.
+                CHECK_EQ((long long) got, (long long) kJar[row][i]);
+                CHECK_EQ((long long) y, -1LL);
+                CHECK_EQ((long long) x, -1LL);
+            }
+        }
+    }
+
+    // The part that matters for the report: **one source in, one source out.**
+    // A waterfall does not manufacture them, so a cave with a spring in it
+    // cannot fill from the floor up.
+    int sources = 0;
+    for (i32 x = -10; x <= 10; ++x) {
+        for (i32 z = -10; z <= 10; ++z) {
+            for (int y = 51; y <= 60; ++y) {
+                if (t.w().blockAt(x, y, z) != bid(mcver::Block::Air) && t.dataAt(x, y, z) == 0) {
+                    ++sources;
+                }
+            }
+        }
+    }
+    CHECK_EQ((long long) sources, 1LL);
+}
+
+TEST(still_water_over_a_hole_does_not_drain_until_something_disturbs_it)
+{
+    // **Why an ocean does not empty itself into the caves under it.** Terrain
+    // generation writes still water and carves caves under it in the same pass,
+    // and it schedules nothing; a still fluid has no random tick either --
+    // `water` is the one fluid of the four whose table row says so. So the sea
+    // sits on the hole until a neighbour update reaches it, which in a1.1.2
+    // means until a player breaks something.
+    TestWorld t;
+    t.floorOf(mcver::Block::Stone, 50);
+    for (i32 dx = -3; dx <= 3; ++dx) {
+        for (i32 dz = -3; dz <= 3; ++dz) {
+            t.set(dx, 51, dz, mcver::Block::Water);
+            t.w().setDataRaw(dx, 51, dz, 0);
+        }
+    }
+    t.set(0, 50, 0, mcver::Block::Air);  // the cave mouth, directly under it
+
+    CHECK(t.w().scheduler().empty());
+    const TickWorld::Centre centre{0, 0};
+    for (int i = 0; i < 400; ++i) {
+        t.w().tick(&centre, 1, 1);
+    }
+    CHECK_EQ((long long) t.w().blockAt(0, 49, 0), (long long) bid(mcver::Block::Air));
+    CHECK_EQ((long long) t.w().blockAt(0, 51, 0), (long long) bid(mcver::Block::Water));
+
+    // Disturb it, and then it does go down -- so the case above is about what
+    // schedules an update, not about water that cannot flow.
+    t.w().notifyNeighbours(0, 50, 0, bid(mcver::Block::Air));
+    settle(t);
+    CHECK(t.w().blockAt(0, 49, 0) != bid(mcver::Block::Air));
 }
 
 TEST(lava_meeting_water_turns_to_stone)

@@ -4,6 +4,7 @@
 #include "core/entity/falling_block.hpp"
 
 #include "core/block/registry.hpp"
+#include "core/entity/fire_entry.hpp"
 #include "core/entity/sweep.hpp"
 #include "core/tick/behaviour.hpp"
 #include "core/tick/drop.hpp"
@@ -132,6 +133,26 @@ void FallingBlockSystem::tick(tick::TickWorld& world)
         if (e.motionX != dx) e.motionX = 0.0;
         if (e.motionY != dy) e.motionY = 0.0;
         if (e.motionZ != dz) e.motionZ = 0.0;
+
+
+        // **`moveEntity`'s tail**, which for a falling block is the counter and the
+        // hiss and nothing else: `kh.a(Lkh;I)Z` is `return false` and `ff`
+        // does not override it, so fire chars one in flight without harming it.
+        // See core/entity/fire_entry.hpp.
+        {
+            const FireEntryResult burn = updateFireEntry(
+                &e.fire, boundingBoxBurning(world, e.box), fireWetProbe(world, e.box));
+            if (burn.fizz) {
+                // **The pitch comes off the world's generator**, because this
+                // pool has none of its own and `ff` draws nothing else. The
+                // jar's own draw is off `kh.aQ`, which is an *unseeded*
+                // `new Random()` and reproduces nothing in either build -- so
+                // one stream is as faithful as another here. See
+                // core/tick/fluid.cpp, which says the same about `jp.i`.
+                world.playSoundAt(kFizzSound, e.x, e.y, e.z, 0.7f,
+                                  fizzPitch(world.random()));
+            }
+        }
 
         e.motionX *= kFallingBlockDrag;
         e.motionY *= kFallingBlockDrag;

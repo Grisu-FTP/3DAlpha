@@ -91,9 +91,19 @@ TEST(out_of_range_is_refused_rather_than_clamped)
     // game moves you somewhere else, and nothing says so.
     CHECK(rejected("32000001 64 0"));
     CHECK(rejected("0 64 -32000001"));
-    CHECK(rejected("0 0 0"));    // y below the camera's floor
-    CHECK(rejected("0 255 0"));  // and above its ceiling
-    CHECK(rejected("0 -5 0"));
+    CHECK(rejected("0 32000001 0"));
+    CHECK(rejected("0 -32000001 0"));
+}
+
+// The world is 128 blocks tall and the teleport is not held to that: above it
+// to look down on terrain, below it to look up at the underside.
+TEST(y_is_not_held_to_the_world_height)
+{
+    CHECK_EQ(ok("0 0 0").y, 0.0);
+    CHECK_EQ(ok("0 -5 0").y, -5.0);
+    CHECK_EQ(ok("0 255 0").y, 255.0);
+    CHECK_EQ(ok("0 5000 0").y, 5000.0);
+    CHECK_EQ(ok("0 -32000000 0").y, -32000000.0);
 }
 
 // The reason this is hand-written instead of three strtod calls. Each of these
@@ -158,7 +168,7 @@ TEST(surrounding_whitespace_alone_is_accepted)
 // pressing OK against a dialog that refuses without saying why.
 TEST(every_rejection_carries_a_message)
 {
-    for (const char* text : {"", "   ", "10", "ten 64 20", "1-2 3", "nan 64 0", "0 255 0",
+    for (const char* text : {"", "   ", "10", "ten 64 20", "1-2 3", "nan 64 0", "0 32000001 0",
                              "32000001 64 0", "10 64 20 30"}) {
         CoordTriple out;
         const char* error = parseCoordinateTriple(text, &out);

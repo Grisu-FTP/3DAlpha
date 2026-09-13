@@ -24,6 +24,7 @@
 // with `-Werror=stack-usage=8192` against a 32 KB main thread.
 
 #include "core/block/collision.hpp"
+#include "core/entity/water_entry.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/types.hpp"
 
@@ -83,6 +84,65 @@ inline constexpr float kAirAcceleration = 0.02f;
 // which is what a boat does.
 inline constexpr float kRiderAcceleration = kAirAcceleration;
 inline constexpr double kSneakProbe = 0.05;
+
+// **A sneaking player moves at 30 %, and this one really is a1.1.2's.** The
+// crouch is split across two classes in this jar and only one half of it
+// survived: `Entity.isSneaking` is a hardcoded `false`, so the stance and the
+// walk-back `kSneakProbe` feeds are dead -- but the *slowdown* never asks the
+// entity anything. It is the tail of `gd.a(dm)`, which is
+// `MovementInputFromOptions.updatePlayerMoveState` reading the sneak key
+// straight out of its own array:
+//
+//     this.e = this.f[5];                            // sneak, from the keys
+//     if (this.e) {
+//         this.a = (float)((double)this.a * 0.3D);   // moveStrafe
+//         this.b = (float)((double)this.b * 0.3D);   // moveForward
+//     }
+//
+// b1.6.2, b1.8.1 and 1.8.9 all disassemble to that same guarded pair of
+// multiplications, differing only in the obfuscated names, so unlike
+// `kSneakEyeHeight` below this number needs no era label: it is period, and it
+// was simply missing here.
+//
+// **It scales the stick, not the speed**, and those are not the same thing. The
+// 0.3 lands before `moveFlying` turns the input into motion, so friction and
+// whatever momentum the player already had dilute it -- a sneak is not a cap at
+// 30 % of walking pace, it is a weaker push. Scaling the acceleration or the
+// resulting velocity instead would both be wrong, and wrong differently.
+inline constexpr double kSneakMoveScale = 0.3;
+
+// **How far the camera drops when the player crouches, and a1.1.2 has no
+// answer to give.** `Entity.isSneaking` is a hardcoded `false` in this jar --
+// the walk-back `kSneakProbe` feeds is dead code there -- so there is nothing
+// to transcribe for what a crouch *looks* like, only for what it does.
+//
+// The Betas do not settle it either, and it is worth saying which way they go
+// so nobody re-derives it: b1.6.2 and b1.8.1 leave `yOffset` at 1.62 while
+// sneaking and lower only the *model*, by 0.125, in `RenderPlayer` -- so their
+// camera does not move at all. `EntityRenderer.orientCamera` there is
+// `posY - (yOffset - 1.62)`, which is the same line this body's `renderEyeY`
+// is, and a sneaking player feeds it the same 1.62.
+//
+// The eye drop is a release-era thing, and **0.08 is 1.8.9's**, read out of
+// `EntityPlayer.getEyeHeight`:
+//
+//     float f = 1.62F;
+//     if (isPlayerSleeping()) f = 0.2F;
+//     if (isSneaking()) f -= 0.08F;
+//
+// -- so the sneaking eye is `1.62f - 0.08f`, which is exactly `1.54f`, and the
+// drop is that subtraction done the way the jar does it rather than the 0.08
+// it is written as. It is instant there, with no smoothing of its own, and it
+// is instant here for the same reason: 0.08 of a block is a tenth of the half
+// block `ySize` exists to glide over.
+//
+// **This is the camera and nothing else.** `yOffset` stays 1.62, so `eyeY()`
+// -- the physics' `posY`, and what `Pos[1]` saves -- is untouched: a crouching
+// player who saves and reloads comes back where they were, not 0.08 lower
+// every time. Same separation 1.8.9 has, where `getEyeHeight` is a query and
+// `posY` is the position.
+inline constexpr float kSneakEyeHeight = kEyeHeight - 0.08f;   // 1.54f exactly
+inline constexpr double kSneakEyeDrop = double(kEyeHeight) - double(kSneakEyeHeight);
 inline constexpr float kYSizeDecay = 0.4f;
 inline constexpr float kHeadingPi = 3.1415927f;               // the float literal in moveFlying
 
@@ -164,6 +224,42 @@ struct PlayerInput {
     bool sprint = false;
 };
 
+// The tail of `MovementInputFromOptions.updatePlayerMoveState`, run over an
+// input that has been filled in and not yet read.
+//
+// **This is core and not the 3DS input code** for the reason
+// core/entity/sprint_gesture.hpp is: it is game logic that happens to live in
+// an input class upstream, and a host test can reach it here. It is just as
+// deliberately *not* inside `PlayerBody::move` -- the jar scales the stick
+// before `EntityLiving` is handed it, and the generated cases in
+// tests/player_body_vectors.hpp drive `moveEntityWithHeading` directly, so a
+// body that scaled its own input would disagree with its own oracle.
+//
+// The float-double-float round trip is the jar's `f2d; dmul; d2f` rather than
+// decoration: `0.3f` and `(double)0.3` are different numbers, and for plenty of
+// sticks the two orders land a ulp apart -- 0.7 comes out 0.20999999344348907
+// here and 0.21000001 the float-only way.
+inline void applySneakSlowdown(PlayerInput& input)
+{
+    if (!input.sneak) {
+        return;
+    }
+    input.strafe = float(double(input.strafe) * kSneakMoveScale);
+    input.forward = float(double(input.forward) * kSneakMoveScale);
+}
+
+// **The dimensions are fields, because this is `EntityLiving`'s body and not
+// only the player's.** Everything below `move` is `kh.c(DDD)` and `ge.b(FF)`,
+// which a pig runs exactly as a player does -- the same sweep, the same
+// 0.5 step, the same ground friction, the same ladder. What differs between one
+// living entity and the next is four numbers, so they are four fields with the
+// player's values as the default rather than four constants baked into the
+// code. See `LivingBody` below and core/entity/mob.hpp.
+//
+// `yOffset` is 1.62 for the player and **0 for every mob**: `Entity`'s
+// constructor leaves it at zero and only `EntityPlayer` sets it, so a mob's
+// `posY` is its feet and its own save file says so.
+
 // A floor to int that agrees with Java's, for the three helpers below. The
 // physics itself goes through MathHelper::floorDouble, which is the original's
 // own; this is here so the header needs no include of it.
@@ -174,6 +270,16 @@ inline i64 floorToInt(double v)
 }
 
 struct PlayerBody {
+    // **What kind of living thing this is**, as the four numbers that differ.
+    // The defaults are `EntityPlayer`'s; a mob overwrites them once, at the
+    // point it is spawned, and never again. Floats rather than doubles because
+    // the original's are floats and `setPosition` halves the width **in float**
+    // before widening it -- see the note on `kPlayerWidth`.
+    float width = kPlayerWidth;
+    float height = kPlayerHeight;
+    float yOffset = kEyeHeight;
+    float stepHeight = kStepHeight;
+
     // Feet. See the header note -- the original stores the eye here.
     double x = 0.0, y = 0.0, z = 0.0;
 
@@ -191,6 +297,18 @@ struct PlayerBody {
     float ySize = 0.0f;
 
     float fallDistance = 0.0f;
+
+    // **The fall this body just landed from**, which is what `moveEntity`
+    // hands to `ge.c(F)V` -- fall damage -- the moment `onGround` becomes true
+    // with a distance banked: `if (fallDistance > 0) { c(fallDistance);
+    // fallDistance = 0; }`.
+    //
+    // A field rather than a call for the reason `stepSoundDue` is one: `move`
+    // takes a `const TickWorld&` and the body has no health. Whoever owns the
+    // player's vitals reads it after the tick and zeroes it; nothing in the body
+    // reads it back. Left at zero by every path that clears `fallDistance`
+    // without landing -- water, ladders, flight -- because none of those hurt.
+    float landedFall = 0.0f;
 
     bool onGround = false;
     bool collidedHorizontally = false;
@@ -218,6 +336,12 @@ struct PlayerBody {
 
     AABB box{};
 
+    // `ge.a(FF)` -- **setSize**, which is the one line every mob's constructor
+    // runs and the player's never does. It does not move the body: the box is
+    // rebuilt around the feet it already has, which is what `setPosition`
+    // immediately afterwards would do anyway.
+    void setSize(float w, float h, float offset = 0.0f, float step = kStepHeight);
+
     // Places the body with its feet at (x, y, z) and rebuilds the box.
     void setFeet(double fx, double fy, double fz);
 
@@ -236,6 +360,19 @@ struct PlayerBody {
         return prevEyeY + (posY - prevEyeY) * double(partial);
     }
     double renderZ(float partial) const { return prevZ + (z - prevZ) * double(partial); }
+
+    // **Where the camera goes, which is not always where the eye is.** A
+    // crouching player's view sits `kSneakEyeDrop` below `renderEyeY` and
+    // their saved `Pos[1]` does not move at all -- see the note on that
+    // constant for where the number comes from and why the two are separate.
+    //
+    // Whatever reads this must also aim with it: the crosshair is a ray out of
+    // the camera, and a view that dropped while the reach did not would put the
+    // outline off the block the player is looking at.
+    double cameraEyeY(float partial) const
+    {
+        return renderEyeY(partial) - (sneaking ? kSneakEyeDrop : 0.0);
+    }
 
     // Forgets where the body was, so the next frame draws it where it is. Every
     // teleport needs this -- a body moved without it is drawn sliding from the
@@ -293,6 +430,46 @@ struct PlayerBody {
     // world and this is where the world is.
     block::BlockId stepSoundDue = block::kAir;
 
+    // **The cell whose `Block.onEntityWalking` this move earned**, and whether
+    // there was one. The same footstep `stepSoundDue` came from -- one `if` in
+    // `moveEntity` pays out both -- but it is a separate field because the two
+    // do not always agree: a liquid underfoot silences the sound and snow on
+    // top substitutes its own, while the block that was *trodden on* is this
+    // one either way.
+    //
+    // **Not applied here**, for the reason `tick::entityCollidedWithBlocks` is
+    // not either: `move()` takes a `const TickWorld&` so that moving a body
+    // cannot write blocks. Whoever owns the tick hands this to
+    // `tick::entityWalkedOnBlock` straight after the move, which is the order
+    // `moveEntity` runs them in.
+    bool steppedOn = false;
+    i32 stepBlockX = 0;
+    int stepBlockY = 0;
+    i32 stepBlockZ = 0;
+
+    // **`kh.y()`'s water state**, which is `aV` and `c`. It is a field here
+    // and not a local because the splash is an *edge*: it fires on the tick
+    // water is first touched and never again until the body leaves it.
+    WaterEntry water{};
+
+    // **`Entity.onEntityUpdate`'s water branch**, which is a separate call and
+    // deliberately not the first line of `tick()`.
+    //
+    // `tick()` is `ge.j()` and `ge.b(FF)` -- onLivingUpdate and
+    // moveEntityWithHeading. `y()` is a different method that runs *before*
+    // them, and the two callers reach it by different routes: a mob runs it
+    // inside `MobSystem::updateCounters`, which is `ge.y()`, and the player
+    // runs it from the frame loop just before ticking the body. Folding it
+    // into `tick()` would run it twice for every animal.
+    //
+    // It clears `fallDistance`, as the branch does. It does not clear a fire
+    // counter because a player body has none -- see `Mob::fire`, which does.
+    //
+    // The caller plays the splash: this returns the volume and
+    // `entity::splashPitch` draws the pitch, for the reason `stepSoundDue`
+    // gives above.
+    WaterEntryResult updateWaterEntry(const tick::TickWorld& world);
+
     // The liquid half of `moveEntityWithHeading`, shared by water and lava.
     void swim(const tick::TickWorld& world, const PlayerInput& input, double drag);
 
@@ -321,6 +498,19 @@ struct PlayerBody {
     // body's own `yOffset` on top, which is the rider's business and not the
     // vehicle's.
     void tickRiding(const PlayerInput& input, double seatX, double seatY, double seatZ);
+
+    // **The position half of `tickRiding`, for a vehicle that moves after its
+    // rider does.** A boat and a minecart are ticked inside the body's own loop
+    // because they read the rider's motion from that same tick; a pig is not --
+    // it ignores its rider entirely and is ticked with the other animals, after
+    // the body. Without this the rider would sit a tick behind the animal it is
+    // on, which at a walking pace is a fifth of a block of the world sliding
+    // under them.
+    //
+    // It does **not** snapshot the previous position: `tickRiding` already did
+    // that this tick, and doing it twice would flatten the camera's
+    // interpolation to nothing.
+    void followSeat(double seatX, double seatY, double seatZ);
 
     // `kh.g_()` and `kh.G()`. Both shrink the body's box by 0.4 top and bottom
     // before asking, so a puddle at the ankles is not water to swim in.
@@ -389,5 +579,15 @@ struct PlayerBody {
     // clear, which is the ordinary case for a world with a saved player.
     int liftOutOfGround(const tick::TickWorld& world, int maxBlocks = 8);
 };
+
+// **The same struct under the name a mob calls it by.** `ge` -- EntityLiving --
+// is what holds this physics in the jar, and `EntityPlayer` is one of its
+// subclasses rather than the other way round; a pig and a player run the same
+// `moveEntity` and the same `moveEntityWithHeading`, differing only in the four
+// dimensions above and in who fills `PlayerInput`. An alias rather than a
+// rename because this file's name and its 22-case oracle are the player's, and
+// a mob reading `body.tick(world, input)` should not have to read "player" to
+// find out what it is. See core/entity/mob.hpp.
+using LivingBody = PlayerBody;
 
 }  // namespace mc::entity

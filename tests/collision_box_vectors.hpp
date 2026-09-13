@@ -1225,6 +1225,278 @@ inline constexpr CollisionBox kSelectionBoxes[kCollisionCaseCount] = {
     {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 85 meta 15
 };
 
+// **The bounds an item render uses**, one box per block id rather than one per
+// (id, metadata) pair: `RenderBlocks.renderBlockAsItem` has no metadata to
+// consult and calls `Block.setBlockBoundsForItemRender` on the singleton before
+// it draws. Block's own is empty, so this is the constructor's bounds for all
+// but the two classes that override it -- `hu`, the button, and `al`, both
+// pressure plates -- and those two are exactly the blocks whose world bounds
+// are set in setBlockBoundsBasedOnState and are therefore leftovers at
+// metadata 0. An id this version does not construct is a unit cube here, as it
+// is everywhere else.
+inline constexpr CollisionBox kItemRenderBoxes[256] = {
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 0 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 1
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 2
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 3
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 4
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 5
+    {0.09999999403953552, 0.0, 0.09999999403953552, 0.8999999761581421, 0.800000011920929, 0.8999999761581421},   // 6
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 7
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 8
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 9
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 10
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 11
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 12
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 13
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 14
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 15
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 16
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 17
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 18
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 19
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 20
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 21 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 22 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 23 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 24 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 25 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 26 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 27 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 28 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 29 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 30 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 31 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 32 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 33 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 34 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 35
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 36 -- not a block in this version
+    {0.30000001192092896, 0.0, 0.30000001192092896, 0.699999988079071, 0.6000000238418579, 0.699999988079071},   // 37
+    {0.30000001192092896, 0.0, 0.30000001192092896, 0.699999988079071, 0.6000000238418579, 0.699999988079071},   // 38
+    {0.30000001192092896, 0.0, 0.30000001192092896, 0.699999988079071, 0.4000000059604645, 0.699999988079071},   // 39
+    {0.30000001192092896, 0.0, 0.30000001192092896, 0.699999988079071, 0.4000000059604645, 0.699999988079071},   // 40
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 41
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 42
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 43
+    {0.0, 0.0, 0.0, 1.0, 0.5, 1.0},   // 44
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 45
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 46
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 47
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 48
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 49
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 50
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 51
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 52
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 53
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 54
+    {0.0, 0.0, 0.0, 1.0, 0.0625, 1.0},   // 55
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 56
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 57
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 58
+    {0.0, 0.0, 0.0, 1.0, 0.25, 1.0},   // 59
+    {0.0, 0.0, 0.0, 1.0, 0.9375, 1.0},   // 60
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 61
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 62
+    {0.25, 0.0, 0.25, 0.75, 1.0, 0.75},   // 63
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 64
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 65
+    {0.0, 0.0, 0.0, 1.0, 0.125, 1.0},   // 66
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 67
+    {0.25, 0.0, 0.25, 0.75, 1.0, 0.75},   // 68
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 69
+    {0.0, 0.375, 0.0, 1.0, 0.625, 1.0},   // 70  <- setBlockBoundsForItemRender
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 71
+    {0.0, 0.375, 0.0, 1.0, 0.625, 1.0},   // 72  <- setBlockBoundsForItemRender
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 73
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 74
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 75
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 76
+    {0.3125, 0.375, 0.375, 0.6875, 0.625, 0.625},   // 77  <- setBlockBoundsForItemRender
+    {0.0, 0.0, 0.0, 1.0, 0.125, 1.0},   // 78
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 79
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 80
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 81
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 82
+    {0.125, 0.0, 0.125, 0.875, 1.0, 0.875},   // 83
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 84
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 85
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 86 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 87 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 88 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 89 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 90 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 91 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 92 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 93 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 94 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 95 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 96 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 97 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 98 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 99 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 100 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 101 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 102 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 103 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 104 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 105 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 106 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 107 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 108 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 109 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 110 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 111 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 112 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 113 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 114 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 115 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 116 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 117 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 118 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 119 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 120 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 121 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 122 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 123 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 124 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 125 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 126 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 127 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 128 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 129 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 130 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 131 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 132 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 133 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 134 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 135 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 136 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 137 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 138 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 139 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 140 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 141 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 142 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 143 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 144 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 145 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 146 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 147 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 148 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 149 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 150 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 151 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 152 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 153 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 154 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 155 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 156 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 157 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 158 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 159 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 160 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 161 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 162 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 163 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 164 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 165 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 166 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 167 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 168 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 169 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 170 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 171 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 172 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 173 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 174 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 175 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 176 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 177 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 178 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 179 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 180 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 181 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 182 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 183 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 184 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 185 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 186 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 187 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 188 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 189 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 190 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 191 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 192 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 193 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 194 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 195 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 196 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 197 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 198 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 199 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 200 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 201 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 202 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 203 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 204 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 205 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 206 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 207 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 208 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 209 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 210 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 211 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 212 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 213 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 214 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 215 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 216 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 217 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 218 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 219 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 220 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 221 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 222 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 223 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 224 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 225 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 226 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 227 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 228 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 229 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 230 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 231 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 232 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 233 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 234 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 235 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 236 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 237 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 238 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 239 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 240 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 241 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 242 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 243 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 244 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 245 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 246 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 247 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 248 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 249 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 250 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 251 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 252 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 253 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 254 -- not a block in this version
+    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},   // 255 -- not a block in this version
+};
+
+// How many blocks moved their bounds in setBlockBoundsForItemRender. A reader
+// that ignored the call entirely would still match every other row.
+inline constexpr int kItemRenderOverrides = 3;
+
 // Block.canCollideCheck(metadata, false), which in a1.1.2 is just isCollidable():
 // whether the ray notices the block before it looks at its shape.
 inline constexpr bool kTargetable[kCollisionCaseCount] = {

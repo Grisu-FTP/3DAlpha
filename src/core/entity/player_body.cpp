@@ -23,8 +23,15 @@ constexpr u8 kLavaMaterial = mcver::kBlocks[int(mcver::Block::Lava)].material;
 
 // True when the box, dropped a block, would land on nothing -- the test the
 // sneak walk-back uses to find the edge of a ledge.
+//
+// It is `getCollidingBoundingBoxes(...).isEmpty()`, so a boat or a minecart
+// counts as ground here the same way a block does: sneaking off a ledge stops
+// at the edge of a cart parked below it.
 bool nothingBelow(const tick::TickWorld& world, const AABB& probe)
 {
+    if (world.anySolidBoxIn(probe)) {
+        return false;
+    }
     const BlockRange range = sweepRange(probe);
     AABB boxes[block::kMaxCollisionBoxes];
     for (i32 bx = range.x0; bx < range.x1; ++bx) {
@@ -100,6 +107,13 @@ void PlayerBody::tickRiding(const PlayerInput& input, double seatX, double seatY
     collidedHorizontally = false;
     collidedVertically = false;
 
+    // **A rider takes no steps.** `moveEntity` is what earns one and it is the
+    // call being skipped, so neither half of the footstep may be left over from
+    // the tick before the mount -- a stale `steppedOn` would trample the cell
+    // under the vehicle once a tick.
+    stepSoundDue = block::kAir;
+    steppedOn = false;
+
     // `Entity.updateRidden`: the position is the vehicle's, plus the vehicle's
     // mounted offset (already in `seatY`), plus the rider's own `yOffset`.
     //
@@ -112,10 +126,30 @@ void PlayerBody::tickRiding(const PlayerInput& input, double seatX, double seatY
     x = seatX;
     y = seatY;
     z = seatZ;
-    const double half = double(kPlayerWidth / 2.0f);
-    box = AABB{x - half, y, z - half, x + half, y + double(kPlayerHeight), z + half};
+    const double half = double(width / 2.0f);
+    box = AABB{x - half, y, z - half, x + half, y + double(height), z + half};
     ySize = 0.0f;
-    posY = y + double(kEyeHeight);
+    posY = y + double(yOffset);
+}
+
+void PlayerBody::followSeat(double seatX, double seatY, double seatZ)
+{
+    x = seatX;
+    y = seatY;
+    z = seatZ;
+    const double half = double(width / 2.0f);
+    box = AABB{x - half, y, z - half, x + half, y + double(height), z + half};
+    ySize = 0.0f;
+    posY = y + double(yOffset);
+}
+
+void PlayerBody::setSize(float w, float h, float offset, float step)
+{
+    width = w;
+    height = h;
+    yOffset = offset;
+    stepHeight = step;
+    setFeet(x, y, z);
 }
 
 void PlayerBody::setFeet(double fx, double fy, double fz)
@@ -124,10 +158,10 @@ void PlayerBody::setFeet(double fx, double fy, double fz)
     y = fy;
     z = fz;
     // Halved in float and widened once, the way `Entity.setPosition` does it.
-    const double half = double(kPlayerWidth / 2.0f);
+    const double half = double(width / 2.0f);
     box = AABB{fx - half, fy, fz - half,
-               fx + half, fy + double(kPlayerHeight), fz + half};
-    posY = fy + double(kEyeHeight) - double(ySize);
+               fx + half, fy + double(height), fz + half};
+    posY = fy + double(yOffset) - double(ySize);
     // A placement is a teleport, and a teleport has no previous position to
     // interpolate from. `Entity.setPositionAndRotation` does the same thing for
     // the same reason.
@@ -247,7 +281,7 @@ void PlayerBody::move(const tick::TickWorld& world, double dx, double dy, double
         const AABB flatBox = box;
 
         dx = origDx;
-        dy = double(kStepHeight);
+        dy = double(stepHeight);
         dz = origDz;
         box = startBox;
 
@@ -277,16 +311,19 @@ void PlayerBody::move(const tick::TickWorld& world, double dx, double dy, double
     y = box.minY;
     z = (box.minZ + box.maxZ) / 2.0;
     // Taken here, with this tick's ySize, and **before** the decay below.
-    posY = box.minY + double(kEyeHeight) - double(ySize);
+    posY = box.minY + double(yOffset) - double(ySize);
 
     collidedHorizontally = origDx != dx || origDz != dz;
     collidedVertically = origDy != dy;
     onGround = origDy != dy && origDy < 0.0;
 
     if (onGround) {
-        // Where the original would deal fall damage. That is a Survival rule
-        // and it is not implemented; the distance is still tracked, so it is
-        // there when it is.
+        // `if (fallDistance > 0.0F) { c(fallDistance); fallDistance = 0.0F; }`
+        // -- fall damage, handed out through `landedFall` because the body has
+        // no health to spend it on. See core/entity/player_vitals.hpp.
+        if (fallDistance > 0.0f) {
+            landedFall = fallDistance;
+        }
         fallDistance = 0.0f;
     } else if (dy < 0.0) {
         // Widened, subtracted **in double**, then narrowed -- `f2d dsub d2f`,
@@ -323,6 +360,7 @@ void PlayerBody::move(const tick::TickWorld& world, double dx, double dy, double
                             * 0.6);
 
     stepSoundDue = block::kAir;
+    steppedOn = false;
     if (!sneakingOnGround) {
         // **The block under the feet, found by flooring `posY - 0.2 -
         // yOffset`** -- in that order, and with 0.2f widened. `posY - yOffset`
@@ -330,7 +368,7 @@ void PlayerBody::move(const tick::TickWorld& world, double dx, double dy, double
         // a step still asks about the block they are standing on.
         const i32 bx = MathHelper::floorDouble(x);
         const int by = int(MathHelper::floorDouble(posY - 0.20000000298023224
-                                                   - double(kEyeHeight)));
+                                                   - double(yOffset)));
         const i32 bz = MathHelper::floorDouble(z);
         const block::BlockId under = world.blockAt(bx, by, bz);
 
@@ -352,11 +390,19 @@ void PlayerBody::move(const tick::TickWorld& world, double dx, double dy, double
                 stepSoundDue = under;
             }
 
-            // `Block.onEntityWalking` runs here too, and in a1.1.2 the only
-            // override is redstone ore lighting up. Not done: this method
-            // takes a const world, and making it mutable to light one block is
-            // a bigger change than the effect is worth. Named rather than
-            // missed.
+            // **`Block.onEntityWalking` is paid out by the same `if`**, on
+            // the cell underfoot rather than on whatever the snow and liquid
+            // rules above left in `stepSoundDue`. Two blocks in a1.1.2 answer
+            // it: farmland, which is what makes a field trample back to dirt
+            // as it is walked over, and redstone ore, which lights up.
+            //
+            // Recorded rather than run, because this method takes a const
+            // world on purpose -- see `tick::entityWalkedOnBlock`, which the
+            // owner of the tick calls with this the moment the move returns.
+            steppedOn = true;
+            stepBlockX = bx;
+            stepBlockY = by;
+            stepBlockZ = bz;
         }
     }
 
@@ -466,6 +512,20 @@ bool PlayerBody::handleWaterMovement(const tick::TickWorld& world)
                                       &motionZ);
 }
 
+// `kh.y()`'s water branch. `g_()` is the mutating `handleWaterMovement`, so
+// asking whether the body is in water is also being carried by the current --
+// which is why this runs before the tick rather than being folded into a test
+// the tick already makes.
+WaterEntryResult PlayerBody::updateWaterEntry(const tick::TickWorld& world)
+{
+    const WaterEntryResult result =
+        entity::updateWaterEntry(water, handleWaterMovement(world), motionX, motionY, motionZ);
+    if (result.inWater) {
+        fallDistance = 0.0f;
+    }
+    return result;
+}
+
 bool PlayerBody::inLava(const tick::TickWorld& world) const
 {
     return materialInBox(world, box.expand(0.0, kLiquidProbeInset, 0.0), kLavaMaterial);
@@ -488,6 +548,10 @@ bool PlayerBody::offsetPositionFree(const tick::TickWorld& world, double dx, dou
                                     double dz) const
 {
     const AABB probe = box.offset(dx, dy, dz);
+
+    if (world.anySolidBoxIn(probe)) {
+        return false;
+    }
 
     const BlockRange range = sweepRange(probe);
     AABB boxes[block::kMaxCollisionBoxes];
@@ -686,14 +750,16 @@ void PlayerBody::tickFlying(const tick::TickWorld& world, const PlayerInput& inp
     // credit per block travelled and pays every one of them out the instant you
     // cross low ground -- a burst of footsteps from a player who never touched
     // it. Saving and restoring the two counters around the move is what says
-    // "this travel was not walking"; clearing `stepSoundDue` covers the one
-    // tick that could still have earned a step while skimming a floor.
+    // "this travel was not walking"; clearing `stepSoundDue` and `steppedOn`
+    // covers the one tick that could still have earned a step -- and a
+    // trampled furrow -- while skimming a floor.
     const float bankedDistance = distanceWalked;
     const int bankedStep = nextStepDistance;
     move(world, motionX, motionY, motionZ);
     distanceWalked = bankedDistance;
     nextStepDistance = bankedStep;
     stepSoundDue = block::kAir;
+    steppedOn = false;
 
     // No fall is in progress and none is banked. See the note on the header.
     fallDistance = 0.0f;

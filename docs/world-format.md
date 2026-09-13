@@ -138,6 +138,27 @@ uint8_t nibble = (arr[i >> 1] >> ((i & 1) * 4)) & 0xF;   // Data / BlockLight / 
 
 `HeightMap` is ZX order: `heightMap[z * 16 + x]`.
 
+`TileEntities` is **modelled** -- decoded into `world::ChunkColumn::tileEntities` and re-encoded
+on save. `Entities` is still carried through as an opaque preserved tag. Every element of
+`TileEntities` carries `ic`'s own four tags and then its subclass's:
+
+```
+    String  id          one of Furnace, Chest, Sign, MobSpawner
+    Int     x, y, z     absolute block coordinates, not chunk-relative
+
+    Furnace     List<Compound> Items (3 slots), Short BurnTime, Short CookTime
+    Chest       List<Compound> Items (27 slots)
+    Sign        String Text1 .. Text4, each truncated to 15 characters on read
+    MobSpawner  String EntityId, Short Delay
+```
+
+`Items` is sparse -- one compound per occupied slot, each carrying a `Byte Slot` beside the
+`id`/`Count`/`Damage` of an ordinary stack -- and a slot index outside the array is dropped, which
+is what the original does. An element with no `id`, or with an incomplete position, is dropped
+too: `ic.c(hm)` prints `Skipping TileEntity with id` and hands back null, and the original never
+writes it back either. An `id` this build does not know is kept whole and written back verbatim.
+See `src/core/world/tile_entity.hpp`.
+
 Alpha's axis convention as documented: X increases south, Z increases west, Y up. Our engine uses
 the conventional Minecraft axes internally; the conversion is identity for array indexing but
 matters when interpreting entity rotations. Verify against a real world before trusting it.
@@ -374,9 +395,11 @@ found by reading the raw bytes of the real file and comparing them with ours. **
 diff is necessary, not sufficient** — for anything where the original's exact encoding is
 observable, check the bytes.
 
-Still untested: worlds with negative coordinates on *both* axes at scale (this one has a handful),
-and chests/furnaces/signs with contents (the richest chunk here has 3 tile entities and 2 entities,
-which round-tripped, but they travel as preserved blobs and are not yet parsed).
+Still untested: worlds with negative coordinates on *both* axes at scale (this one has a handful).
+Chests, furnaces, signs and spawners with contents **are** tested: `--rewrite` loads and rewrites
+every chunk of a copy and `tools/nbtdiff.py difftree` compares it against the untouched original.
+Over the real World1 that is 1,119 chunks, 66 tile entities and 195 item stacks, and the only
+difference reported is `level.dat`'s `LastPlayed`.
 
 Unknown NBT tags in chunks and `level.dat` must be **preserved verbatim** through a load/save cycle.
 Servers and third-party tools of the era wrote extra data; dropping it silently corrupts worlds.

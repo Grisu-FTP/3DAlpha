@@ -61,6 +61,29 @@ bool indirectlyProvidesPowerTo(const TickWorld& world, i32 x, int y, i32 z, int 
 void wirePropagate(TickWorld& world, i32 x, int y, i32 z, block::BlockId self);
 
 void wireNeighbourChanged(TickWorld& world, i32 x, int y, i32 z, block::BlockId self);
+
+// **`q.a(Lcn;IIIII)V`** -- BlockTNT's onNeighborBlockChange, and the fourth and
+// last way a1.1.2 lights TNT. The other three are a break, a fire and a blast;
+// this is the one that needed a subsystem, and the subsystem is here now.
+//
+// ```
+// if (l > 0 && Block.blocksList[l].canProvidePower()
+//     && world.isBlockIndirectlyGettingPowered(i, j, k)) {
+//     onBlockDestroyedByPlayer(world, i, j, k, 0);
+//     world.setBlockWithNotify(i, j, k, 0);
+// }
+// ```
+//
+// **The gate is the same one a door uses** -- only a block that can provide
+// power is worth re-reading the world for -- and it is why a block of TNT with
+// a wire running past it costs nothing until something on that wire changes.
+//
+// **The order is the reverse of every other ignition path**: the entity is
+// spawned while the block is *still there*, and the cell is cleared on the
+// next line. Nothing observes the difference (the entity's first tick is a
+// frame away and the cell is air by then), but it is the class file's and is
+// transcribed rather than tidied.
+void tntNeighbourChanged(TickWorld& world, i32 x, int y, i32 z, block::BlockId fromId);
 void wirePlaced(TickWorld& world, i32 x, int y, i32 z, block::BlockId self);
 void wireRemoved(TickWorld& world, i32 x, int y, i32 z, block::BlockId self);
 

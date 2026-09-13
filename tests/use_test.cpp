@@ -17,6 +17,7 @@
 #include "core/item/use.hpp"
 #include "core/tick/behaviour.hpp"
 #include "core/tick/tick_world.hpp"
+#include "core/util/java_random.hpp"
 #include "core/entity/boat.hpp"
 #include "drop_catcher.hpp"
 #include "framework.hpp"
@@ -634,17 +635,17 @@ TEST(a_boat_under_the_crosshair_is_hit_instead_of_the_block_behind_it)
     };
     for (int hit = 0; hit < 4; ++hit) {
         CHECK(aim().kind == mc::item::EntityTarget::Kind::Boat);
-        CHECK(mc::item::attackEntity(scene.w(), aim(), effects));
+        CHECK(mc::item::attackEntity(scene.w(), aim(), kEmptyHand, effects));
         CHECK_EQ(boats.count(), 1);
     }
-    CHECK(mc::item::attackEntity(scene.w(), aim(), effects));
+    CHECK(mc::item::attackEntity(scene.w(), aim(), kEmptyHand, effects));
     CHECK_EQ(boats.count(), 0);
     CHECK_EQ(caught.countOf(u16(mcver::Block::Planks)), entity::kBoatPlanksDropped);
 
     // And with the boat gone the same click finds nothing, which is what tells
     // the caller to break the block behind it instead.
     CHECK(!aim().found());
-    CHECK(!mc::item::attackEntity(scene.w(), aim(), effects));
+    CHECK(!mc::item::attackEntity(scene.w(), aim(), kEmptyHand, effects));
 }
 
 TEST(a_left_click_with_no_pools_wired_hits_nothing)
@@ -658,6 +659,296 @@ TEST(a_left_click_with_no_pools_wired_hits_nothing)
     const mc::item::EntityTarget target =
         mc::item::pickEntity(mc::item::EntityPools{}, 0.5, 64.5, -3.0, 0.0, 0.0, 1.0, block);
     CHECK(!target.found());
-    CHECK(!mc::item::attackEntity(scene.w(), target, mc::item::Effects{}));
-    CHECK(!mc::item::interactWithEntity(target, mc::item::EntityPools{}));
+    CHECK(!mc::item::attackEntity(scene.w(), target, kEmptyHand, mc::item::Effects{}));
+    CHECK(!mc::item::interactWithEntity(scene.w(), target, mc::item::EntityPools{}, 0).taken);
+}
+
+// ---------------------------------------------------------------------------
+// The hoe
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The five hoes, found by the generated column rather than written down --
+// `ItemDef::tills` is `instanceof ItemHoe`, asked of the jar. See item_def.hpp.
+item::ItemId firstHoe()
+{
+    for (item::ItemId id = 0; id < item::ItemId(mcver::kItemTableSize); ++id) {
+        if (item::def(id).known && item::def(id).tills) {
+            return id;
+        }
+    }
+    return 0;
+}
+
+int hoeCount()
+{
+    int n = 0;
+    for (item::ItemId id = 0; id < item::ItemId(mcver::kItemTableSize); ++id) {
+        if (item::def(id).known && item::def(id).tills) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+}  // namespace
+
+TEST(a_hoe_turns_grass_and_dirt_into_farmland)
+{
+    // All five of them, and each on both grounds: the behaviour is the class's
+    // and none of the five overrides any part of it.
+    CHECK_EQ(hoeCount(), 5);
+    for (item::ItemId hoe = 0; hoe < item::ItemId(mcver::kItemTableSize); ++hoe) {
+        if (!item::def(hoe).known || !item::def(hoe).tills) {
+            continue;
+        }
+        Ground g;
+        g.scene.place(0, 64, 0, bid(mcver::Block::Grass), 0);
+        g.scene.place(2, 64, 0, bid(mcver::Block::Dirt), 0);
+        CHECK(g.click(hoe, 0, 64, 0, mesh::kFacePosY));
+        CHECK(g.click(hoe, 2, 64, 0, mesh::kFacePosY));
+        CHECK_EQ((long long) g.id(0, 64, 0), (long long) int(mcver::Block::Farmland));
+        CHECK_EQ((long long) g.id(2, 64, 0), (long long) int(mcver::Block::Farmland));
+    }
+}
+
+TEST(a_hoe_refuses_anything_that_is_not_grass_or_dirt)
+{
+    Ground g;
+    const item::ItemId hoe = firstHoe();
+    // The stone floor itself, and sand -- which is neither of the two ids the
+    // method names, however much it looks like ground.
+    g.scene.place(2, 64, 0, bid(mcver::Block::Sand), 0);
+    CHECK(!g.click(hoe, 0, 63, 0, mesh::kFacePosY));
+    CHECK(!g.click(hoe, 2, 64, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) g.id(0, 63, 0), (long long) int(mcver::Block::Stone));
+    CHECK_EQ((long long) g.id(2, 64, 0), (long long) int(mcver::Block::Sand));
+}
+
+TEST(a_solid_block_stops_grass_from_being_tilled_and_not_dirt)
+{
+    // `(above.isSolid() || id != grass) && id != dirt` -- the cover is only
+    // ever asked about on the grass branch, so **dirt under stone still
+    // tills** and grass under stone does not. Getting the precedence wrong
+    // reads the same on grass and differs here.
+    Ground g;
+    const item::ItemId hoe = firstHoe();
+    g.scene.place(0, 64, 0, bid(mcver::Block::Grass), 0);
+    g.scene.place(0, 65, 0, bid(mcver::Block::Stone), 0);
+    g.scene.place(2, 64, 0, bid(mcver::Block::Dirt), 0);
+    g.scene.place(2, 65, 0, bid(mcver::Block::Stone), 0);
+
+    CHECK(!g.click(hoe, 0, 64, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) g.id(0, 64, 0), (long long) int(mcver::Block::Grass));
+    CHECK(g.click(hoe, 2, 64, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) g.id(2, 64, 0), (long long) int(mcver::Block::Farmland));
+
+    // And a torch overhead is not solid, so it stops nothing.
+    g.scene.place(4, 64, 0, bid(mcver::Block::Grass), 0);
+    g.scene.place(4, 65, 0, bid(mcver::Block::Torch), 5);
+    CHECK(g.click(hoe, 4, 64, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) g.id(4, 64, 0), (long long) int(mcver::Block::Farmland));
+}
+
+TEST(a_hoe_tills_the_cell_it_struck_from_any_face)
+{
+    // The face parameter is never read: the struck cell is what changes, so a
+    // click on the underside or the side of a dirt block tills *that* block
+    // and not the cell the face points into. This is the difference between
+    // the hoe and every ItemBlock, and it is why `places` cannot describe it.
+    const item::ItemId hoe = firstHoe();
+    for (mesh::Face face : {mesh::kFaceNegY, mesh::kFaceNegX, mesh::kFacePosX,
+                            mesh::kFaceNegZ, mesh::kFacePosZ, mesh::kFacePosY}) {
+        Ground g;
+        g.scene.place(0, 64, 0, bid(mcver::Block::Dirt), 0);
+        CHECK(g.click(hoe, 0, 64, 0, face));
+        CHECK_EQ((long long) g.id(0, 64, 0), (long long) int(mcver::Block::Farmland));
+        // Nothing landed in the cell the face points into.
+        CHECK_EQ((long long) g.id(0, 65, 0), 0LL);
+        CHECK_EQ((long long) g.id(0, 63, 0), (long long) int(mcver::Block::Stone));
+    }
+}
+
+TEST(hoeing_grass_drops_a_seed_one_time_in_eight)
+{
+    // `if (world.rand.nextInt(8) != 0) return true;` and then one seed. The
+    // roll is driven rather than sampled: the world's own generator is the one
+    // the method draws from, so seeding it decides the outcome.
+    Ground g;
+    mc::test::DropCatcher caught;
+    caught.watch(g.w());
+    const item::ItemId hoe = firstHoe();
+
+    // Find a seed whose first draw is the winning one, and one whose is not.
+    // **The seeds are spread rather than counted up**: `setSeed` only xors, so
+    // consecutive small seeds share their whole high word and `nextInt(8)` --
+    // which for a power of two is the top three bits -- answers the same
+    // number for every one of them. A stride large enough to move the high
+    // bits is what makes this a search instead of a loop over one answer.
+    constexpr i64 kStride = 2654435761LL;
+    JavaRandom probe{0};
+    i64 winner = -1;
+    i64 loser = -1;
+    for (i64 n = 1; n < 64 && (winner < 0 || loser < 0); ++n) {
+        const i64 s = n * kStride;
+        probe.setSeed(s);
+        if (probe.nextInt(8) == 0) {
+            if (winner < 0) {
+                winner = s;
+            }
+        } else if (loser < 0) {
+            loser = s;
+        }
+    }
+    CHECK(winner >= 0);
+    CHECK(loser >= 0);
+
+    g.scene.place(0, 64, 0, bid(mcver::Block::Grass), 0);
+    g.w().random().setSeed(loser);
+    CHECK(g.click(hoe, 0, 64, 0, mesh::kFacePosY));
+    CHECK_EQ(caught.total(), 0);
+
+    g.scene.place(2, 64, 0, bid(mcver::Block::Grass), 0);
+    g.w().random().setSeed(winner);
+    CHECK(g.click(hoe, 2, 64, 0, mesh::kFacePosY));
+    CHECK_EQ(caught.countOf(u16(mcver::Item::Seeds)), 1);
+
+    // `float f2 = 1.2F` is a constant and not a draw, so the seed rises to a
+    // fixed height above the cell while x and z scatter over the middle 70 %.
+    const mc::test::Drop& d = caught.drops.back();
+    CHECK_EQ(d.y, double(float(64) + 1.2f));
+    CHECK(d.x > 2.0 && d.x < 3.0);
+    CHECK(d.z > 0.0 && d.z < 1.0);
+}
+
+TEST(hoeing_dirt_costs_the_roll_and_drops_nothing)
+{
+    // The `nextInt(8)` happens before the block is compared against grass, so
+    // tilling dirt spends a draw on a seed it can never get. A build that
+    // skipped it would leave the world's random one step behind, which every
+    // later random tick would read.
+    Ground g;
+    mc::test::DropCatcher caught;
+    caught.watch(g.w());
+    const item::ItemId hoe = firstHoe();
+
+    g.scene.place(0, 64, 0, bid(mcver::Block::Dirt), 0);
+    g.w().random().setSeed(4321);
+    CHECK(g.click(hoe, 0, 64, 0, mesh::kFacePosY));
+    CHECK_EQ(caught.total(), 0);
+
+    JavaRandom expected{0};
+    expected.setSeed(4321);
+    expected.nextInt(8);
+    CHECK_EQ(g.w().random().nextInt(1 << 20), expected.nextInt(1 << 20));
+}
+
+// ---------------------------------------------------------------------------
+// What is in the hand decides how hard the click lands
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The seed, which is the one placement in a1.1.2 that asks nothing
+// ---------------------------------------------------------------------------
+
+TEST(a_seed_plants_a_crop_on_the_farmland_it_struck)
+{
+    Ground g;
+    g.scene.place(0, 64, 0, bid(mcver::Block::Farmland), 0);
+    CHECK(g.click(item::ItemId(mcver::Item::Seeds), 0, 64, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) g.id(0, 65, 0), (long long) int(mcver::Block::Wheat));
+
+    // `ItemSeeds.onItemUse` is the top face and the top face only, and it is
+    // the *struck* block that has to be farmland -- not the one under it.
+    Ground side;
+    side.scene.place(0, 64, 0, bid(mcver::Block::Farmland), 0);
+    CHECK(!side.click(item::ItemId(mcver::Item::Seeds), 0, 64, 0, mesh::kFacePosX));
+    CHECK(!side.click(item::ItemId(mcver::Item::Seeds), 0, 63, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) side.id(0, 65, 0), 0LL);
+}
+
+TEST(a_seed_planted_under_bedrock_breaks_the_bedrock)
+{
+    // **a1.1.2's own bug, kept.** `ItemSeeds.onItemUse` writes the crop into
+    // the cell above the farmland with no air test, no `canPlaceBlockAt` and
+    // no `canBlockBePlacedAt` -- the only placement in the game that asks
+    // nothing at all. Farmland is fifteen sixteenths tall, so its top face is
+    // still clickable through the gap under a block sitting on it, and the
+    // crop replaces whatever that block is. Bedrock is the one worth naming:
+    // nothing else in the game removes it.
+    Ground g;
+    g.scene.place(0, 64, 0, bid(mcver::Block::Farmland), 0);
+    g.scene.place(0, 65, 0, bid(mcver::Block::Bedrock), 0);
+    CHECK(g.click(item::ItemId(mcver::Item::Seeds), 0, 64, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) g.id(0, 65, 0), (long long) int(mcver::Block::Wheat));
+
+    // It is not bedrock-specific, and it is not a hole in the block table: any
+    // block over farmland goes the same way.
+    Ground stone;
+    stone.scene.place(0, 64, 0, bid(mcver::Block::Farmland), 0);
+    stone.scene.place(0, 65, 0, bid(mcver::Block::Stone), 0);
+    CHECK(stone.click(item::ItemId(mcver::Item::Seeds), 0, 64, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) stone.id(0, 65, 0), (long long) int(mcver::Block::Wheat));
+
+    // The ordinary placement path still refuses what it always refused: the
+    // hole is in the seed, not in `canBePlacedAt`.
+    Ground blocked;
+    blocked.scene.place(0, 64, 0, bid(mcver::Block::Farmland), 0);
+    blocked.scene.place(0, 65, 0, bid(mcver::Block::Bedrock), 0);
+    CHECK(!blocked.click(kStoneItem, 0, 64, 0, mesh::kFacePosY));
+    CHECK_EQ((long long) blocked.id(0, 65, 0), (long long) int(mcver::Block::Bedrock));
+}
+
+TEST(a_sword_hits_harder_than_a_fist)
+{
+    // `getDamageVsEntity`, straight out of the jar and into the table: an
+    // empty hand and anything ordinary answer 1, `ItemTool` answers
+    // material + kind, `ItemSword` answers 4 + material * 2. **Gold sits
+    // beside wood**, which is the row a name-based guess gets wrong.
+    CHECK_EQ(int(item::def(kEmptyHand).damageVsEntity), 1);
+    CHECK_EQ(int(item::def(kStoneItem).damageVsEntity), 1);
+
+    const struct {
+        mcver::Item item;
+        int damage;
+    } kRows[] = {
+        {mcver::Item::WoodenSword, 4},   {mcver::Item::GoldenSword, 4},
+        {mcver::Item::StoneSword, 6},    {mcver::Item::IronSword, 8},
+        {mcver::Item::DiamondSword, 10}, {mcver::Item::WoodenShovel, 1},
+        {mcver::Item::DiamondAxe, 6},    {mcver::Item::WoodenHoe, 1},
+    };
+    for (const auto& row : kRows) {
+        CHECK_EQ(int(item::def(item::ItemId(row.item)).damageVsEntity), row.damage);
+    }
+}
+
+TEST(a_boat_goes_down_in_one_hit_from_a_diamond_sword)
+{
+    // Five punches or one sword: the boat's health is the same, and the only
+    // thing that changed is the number `attackEntity` passes it. Compare with
+    // `a_punched_boat_breaks_and_leaves_planks` above, which is the same scene
+    // with a bare hand.
+    SceneWorld scene{0, 0};
+    mc::test::DropCatcher caught;
+    caught.watch(scene.w());
+    entity::BoatSystem boats{1234};
+    CHECK(boats.place(scene.w(), 0.5, 64.0, 0.5));
+
+    mc::item::Effects effects;
+    effects.entities.boats = &boats;
+
+    const double eyeX = -3.0;
+    const double eyeY = boats[0].y;
+    const double eyeZ = boats[0].z;
+    const entity::RayHit block =
+        entity::rayTrace(scene.w(), eyeX, eyeY, eyeZ, 1.0, 0.0, 0.0);
+    const mc::item::EntityTarget target =
+        mc::item::pickEntity(effects.entities, eyeX, eyeY, eyeZ, 1.0, 0.0, 0.0, block);
+    CHECK(target.kind == mc::item::EntityTarget::Kind::Boat);
+
+    CHECK(mc::item::attackEntity(scene.w(), target,
+                                 item::ItemId(mcver::Item::DiamondSword), effects));
+    CHECK_EQ(boats.count(), 0);
+    CHECK_EQ(caught.countOf(u16(mcver::Block::Planks)), entity::kBoatPlanksDropped);
 }

@@ -9,6 +9,7 @@
 #include "core/entity/arrow.hpp"
 #include "core/entity/boat.hpp"
 #include "core/entity/minecart.hpp"
+#include "core/entity/mob.hpp"
 #include "core/world/sign_store.hpp"
 #include "core/entity/painting.hpp"
 #include "core/entity/particle.hpp"
@@ -244,7 +245,14 @@ bool useBlock(tick::TickWorld& world, BlockId placed, const entity::RayHit& hit,
     // -- the furnace, the staircase -- have a 0 here, so they start from the
     // same 0. tests/placement_test.cpp runs this order for every block and
     // face in the jar's sweep and gets the jar's metadata back.
-    const u8 metadata = block::placementMetadata(placed, face);
+    //
+    // **The table is measured against a stone cube, and the struck block is
+    // not always one.** A torch clicked onto the top of another torch beside a
+    // wall hangs on the wall in a1.1.2, not on the torch -- `onBlockPlaced`
+    // only overrides `onBlockAdded` when the struck face holds the block up.
+    // See tick::attachedPlacementMetadata.
+    const u8 metadata = tick::attachedPlacementMetadata(world, placed, x, y, z,
+                                                        block::placementMetadata(placed, face));
 
     if (!canBePlacedAt(world, placed, metadata, x, y, z, playerBox)) {
         return false;
@@ -334,6 +342,171 @@ bool useDoor(tick::TickWorld& world, BlockId door, const entity::RayHit& hit,
     // to `ItemBlock`, and a door is not one. It is a real difference and this
     // is where it would otherwise be papered over.
     (void) effects;
+    return true;
+}
+
+// ------------------------------------------------------------------- the hoe
+
+// The block a hoe makes, found by its tick behaviour rather than by its id --
+// the same rule `signPostBlock` and the door and fire branches follow. A
+// version without one leaves it air and `useHoe` refuses.
+BlockId farmlandBlock()
+{
+    for (int id = 0; id < mcver::kBlockTableSize; ++id) {
+        if (mcver::kBlocks[id].known && mcver::kBlocks[id].tick == TickBehaviour::Farmland) {
+            return BlockId(id);
+        }
+    }
+    return block::kAir;
+}
+
+// `fu.a(Lev;Ldm;Lcn;IIII)Z` -- **ItemHoe.onItemUse**, the whole of what a hoe
+// is. There is no other method on the class.
+//
+// ```
+// int i1 = world.getBlockId(i, j, k);
+// Material above = world.getBlockMaterial(i, j + 1, k);
+// if ((above.isSolid() || i1 != Block.grass.blockID) && i1 != Block.dirt.blockID) return false;
+// Block tilled = Block.tilledField;
+// world.playSoundEffect(i + 0.5, j + 0.5, k + 0.5, tilled.stepSound.getStepSound(),
+//                       (tilled.stepSound.getVolume() + 1.0F) / 2.0F,
+//                       tilled.stepSound.getPitch() * 0.8F);
+// world.setBlockWithNotify(i, j, k, tilled.blockID);
+// itemstack.damageItem(1, entityplayer);
+// if (world.rand.nextInt(8) != 0) return true;
+// if (i1 != Block.grass.blockID) return true;
+// int count = 1;
+// for (int j1 = 0; j1 < count; j1++) {
+//     float f = 0.7F;
+//     float f1 = world.rand.nextFloat() * f + (1.0F - f) * 0.5F;
+//     float f2 = 1.2F;
+//     float f3 = world.rand.nextFloat() * f + (1.0F - f) * 0.5F;
+//     EntityItem e = new EntityItem(world, i + f1, j + f2, k + f3, new ItemStack(Item.seeds));
+//     e.delayBeforeCanPickup = 10;
+//     world.entityJoinedWorld(e);
+// }
+// return true;
+// ```
+//
+// Five things in it are not what a reader would guess, and four of them are
+// visible in play:
+//
+//   * **The struck cell is the one that changes**, not the cell the face points
+//     into. That is why `ItemDef::places` measures 0 for all five hoes and why
+//     `tills` had to be a column of its own -- see item_def.hpp.
+//   * **The face is never read.** `l` is a parameter and the method does not
+//     mention it, so a hoe tills from underneath and from the side, and hoeing
+//     the side of a dirt cliff turns that cell into farmland the crop on top
+//     of it cannot use.
+//   * **`isSolid` guards grass and not dirt.** Only the grass branch asks what
+//     is above, so *dirt under a stone slab still tills*. Grass under anything
+//     solid does not, which is the same material test that decides whether
+//     grass dies -- but a torch, a flower or snow overhead is not solid and
+//     does not stop it.
+//   * **The place cue, exactly.** `stepSound.getStepSound()` at
+//     `(volume + 1) / 2` and `pitch * 0.8` is `ItemBlock.onItemUse`'s row of
+//     the table in core/audio/block_sound.hpp, arithmetic and all, so this is
+//     that cue and not a second transcription of it.
+//   * **The seed roll happens on dirt too.** `nextInt(8)` is drawn before the
+//     block is compared against grass, so tilling dirt costs the world's random
+//     a draw and yields nothing. Skipping it would be a different world
+//     downstream, which is the reason `dropBlockAsItem` writes its own dead
+//     draw out rather than folding it away.
+//
+// `count` is a literal 1: the loop is the shape the later versions grew a
+// fortune roll into, and here it runs once. The offsets are float the whole
+// way down -- the block coordinate is widened to float and the sum taken there
+// -- exactly as the crop's seeds in core/tick/drop.cpp are, and `1.2F` is a
+// constant rather than a third draw, so a successful roll costs two.
+//
+// **Durability is not spent.** `damageItem` has nowhere to go in this build --
+// see `ItemDef::durability` -- and that is the one line of the method this does
+// not perform.
+bool useHoe(tick::TickWorld& world, const entity::RayHit& hit, const Effects& effects)
+{
+    const BlockId farmland = farmlandBlock();
+    if (farmland == block::kAir) {
+        return false;
+    }
+
+    const i32 x = hit.x;
+    const int y = hit.y;
+    const i32 z = hit.z;
+
+    const BlockId struck = world.blockAt(x, y, z);
+    const bool grass = struck == BlockId(mcver::Block::Grass);
+    const bool dirt = struck == BlockId(mcver::Block::Dirt);
+    // `getBlockMaterial(i, j + 1, k).isSolid()`, which above the top of the
+    // world is air's and so is false.
+    const bool coveredBySolid =
+        y + 1 < mcver::kWorldHeight && block::def(world.blockAt(x, y + 1, z)).solid;
+    if ((coveredBySolid || !grass) && !dirt) {
+        return false;
+    }
+
+    playAt(effects, audio::placeCue(farmland), x, y, z);
+    world.setBlockWithNotify(x, y, z, farmland);
+
+    // One in eight, drawn whether or not there is any grass to pay for it.
+    JavaRandom& rand = world.random();
+    if (rand.nextInt(8) != 0 || !grass) {
+        return true;
+    }
+
+    constexpr float kSpread = 0.7f;
+    constexpr float kEdge = (1.0f - kSpread) * 0.5f;
+    constexpr float kRise = 1.2f;
+    const float ox = rand.nextFloat() * kSpread + kEdge;
+    const float oz = rand.nextFloat() * kSpread + kEdge;
+    world.spawnItem(double(float(x) + ox), double(float(y) + kRise), double(float(z) + oz),
+                    u16(mcver::Item::Seeds), 1);
+    return true;
+}
+
+// ------------------------------------------------------------------ the seeds
+
+// `jn.a(Lev;Ldm;Lcn;IIII)Z` -- **ItemSeeds.onItemUse**, which is seven lines
+// and one of them is missing a test:
+//
+// ```
+// if (l != 1) return false;
+// int i1 = world.getBlockId(i, j, k);
+// if (i1 == Block.tilledField.blockID) {
+//     world.setBlockWithNotify(i, j + 1, k, blockType);
+//     itemstack.stackSize--;
+//     return true;
+// }
+// return false;
+// ```
+//
+// **It writes the crop over whatever is above the farmland.** There is no
+// `isAirBlock`, no `canBlockBePlacedAt` and no `canPlaceBlockAt` anywhere in
+// it: the only questions asked are "was the top face clicked" and "is the
+// struck block farmland". Every other placement in the game goes through
+// `ItemBlock.onItemUse` and is tested three ways; this one is not, and the
+// later versions fixed it by adding the air test this transcribes without.
+//
+// So **a seed breaks bedrock**, and it is a legitimate thing to do in a1.1.2:
+// farmland is fifteen sixteenths tall, so the sixteenth of a block above it
+// stays clickable with a solid block sitting on top, and a crop written into
+// that cell replaces it. Anything replaceable this way is replaced -- bedrock
+// is the one worth naming, because nothing else in the game removes it.
+//
+// The seed is spent on the write either way, exactly as `stackSize--` is
+// reached whether or not `setBlockWithNotify` did anything; a write above the
+// top of the world is refused by the world and the seed is still gone.
+//
+// **No sound**, which is the original's: `ItemBlock`'s place cue is in
+// `ItemBlock`, and a crop is not placed by one.
+bool useSeeds(tick::TickWorld& world, BlockId crop, const entity::RayHit& hit)
+{
+    if (int(hit.face) != 1) {
+        return false;
+    }
+    if (block::def(world.blockAt(hit.x, hit.y, hit.z)).tick != TickBehaviour::Farmland) {
+        return false;
+    }
+    world.setBlockWithNotify(hit.x, hit.y + 1, hit.z, crop);
     return true;
 }
 
@@ -523,8 +696,21 @@ ItemUse useBucket(tick::TickWorld& world, ItemId held, const ItemDef& heldDef, d
 }  // namespace
 
 bool rightClick(tick::TickWorld& world, ItemId held, const entity::RayHit& hit,
-                const AABB& playerBox, float yawDegrees, const Effects& effects)
+                const AABB& playerBox, float yawDegrees, const Effects& effects,
+                bool* itemTook)
 {
+    if (itemTook != nullptr) {
+        *itemTook = false;
+    }
+    // Every item branch below reports through this; the block's own answer
+    // does not, which is the whole of the distinction Survival needs.
+    const auto byItem = [itemTook](bool taken) {
+        if (taken && itemTook != nullptr) {
+            *itemTook = true;
+        }
+        return taken;
+    };
+
     if (!hit.hit) {
         return false;
     }
@@ -537,8 +723,8 @@ bool rightClick(tick::TickWorld& world, ItemId held, const entity::RayHit& hit,
         if (effects.entities.minecarts == nullptr) {
             return false;
         }
-        return effects.entities.minecarts->place(
-            world, hit.x, hit.y, hit.z, entity::MinecartType(def(held).spawnVariant));
+        return byItem(effects.entities.minecarts->place(
+            world, hit.x, hit.y, hit.z, entity::MinecartType(def(held).spawnVariant)));
     }
 
     // **The block is asked first** for every other item, and an empty hand still
@@ -561,7 +747,14 @@ bool rightClick(tick::TickWorld& world, ItemId held, const entity::RayHit& hit,
         if (effects.entities.paintings == nullptr) {
             return false;
         }
-        return effects.entities.paintings->place(world, hit.x, hit.y, hit.z, hit.face);
+        return byItem(effects.entities.paintings->place(world, hit.x, hit.y, hit.z, hit.face));
+    }
+
+    // **A hoe, which changes the cell it struck rather than the one past it**
+    // and so cannot be routed by the block it places -- it places none. Its
+    // column says so; see `ItemDef::tills` and `useHoe`.
+    if (held != 0 && def(held).tills) {
+        return byItem(useHoe(world, hit, effects));
     }
 
     // **The item decides the block.** The hand holds an *item*; what goes into
@@ -582,7 +775,7 @@ bool rightClick(tick::TickWorld& world, ItemId held, const entity::RayHit& hit,
     // column is a sign post.
     if (block::def(placed).tick == TickBehaviour::SignPost
         || block::def(placed).tick == TickBehaviour::SignWall) {
-        return useSign(world, hit, yawDegrees, effects);
+        return byItem(useSign(world, hit, yawDegrees, effects));
     }
 
     // **Dispatched on the block being placed, not on the item.** a1.1.2 makes
@@ -591,7 +784,7 @@ bool rightClick(tick::TickWorld& world, ItemId held, const entity::RayHit& hit,
     // that says a door is a door. The two agree for every item in the table:
     // the only items that place a door block are the two door items.
     if (block::def(placed).tick == TickBehaviour::Door) {
-        return useDoor(world, placed, hit, yawDegrees, effects);
+        return byItem(useDoor(world, placed, hit, yawDegrees, effects));
     }
     // **And the same argument for fire.** Flint and steel is `nx`, not `av`,
     // and the two behave differently enough to be seen -- see useIgnite. The
@@ -600,9 +793,17 @@ bool rightClick(tick::TickWorld& world, ItemId held, const entity::RayHit& hit,
     // by the palette or obtainable in a world, so routing it here as well is a
     // difference nothing can observe.
     if (block::def(placed).tick == TickBehaviour::Fire) {
-        return useIgnite(world, placed, hit, effects);
+        return byItem(useIgnite(world, placed, hit, effects));
     }
-    return useBlock(world, placed, hit, playerBox, effects);
+    // **And the same argument once more for the seeds.** `jn` is not `av`
+    // either: it plants on the block it struck rather than past it, asks none
+    // of the three questions a placement asks, and is the one item in a1.1.2
+    // that can overwrite a block that is already there. The only item in the
+    // table that puts a crop down is item 295. See useSeeds.
+    if (block::def(placed).tick == TickBehaviour::Crops) {
+        return byItem(useSeeds(world, placed, hit));
+    }
+    return byItem(useBlock(world, placed, hit, playerBox, effects));
 }
 
 ItemUse useItem(tick::TickWorld& world, ItemId held, double eyeX, double eyeY, double eyeZ,
@@ -719,44 +920,86 @@ EntityTarget pickEntity(const EntityPools& pools, double eyeX, double eyeY, doub
             }
         }
     }
+    // **An animal is collidable while it is alive and while it is dying**:
+    // `ge.c_()` answers `!isDead`, and a mob that has run out of health is not
+    // dead until its twenty death ticks are up -- so a corpse can still be hit,
+    // exactly as it can in the original.
+    if (pools.mobs != nullptr) {
+        for (int i = 0; i < pools.mobs->count(); ++i) {
+            if ((*pools.mobs)[i].alive) {
+                consider(EntityTarget::Kind::Mob, i, (*pools.mobs)[i].body.box);
+            }
+        }
+    }
     return best;
 }
 
-bool attackEntity(tick::TickWorld& world, const EntityTarget& target, const Effects& effects)
+bool attackEntity(tick::TickWorld& world, const EntityTarget& target, ItemId held,
+                  const Effects& effects, const Attacker& attacker)
 {
-    // `InventoryPlayer.getDamageVsEntity` with nothing worth naming in the
-    // hand. See the header for why this is a constant and not a column.
-    constexpr int kHandDamage = 1;
+    // `int i = inventory.getDamageVsEntity(entity)`, which is the held item's
+    // own answer -- and the unknown row carries `InventoryPlayer`'s own
+    // empty-slot 1, so the bare hand falls out of the same lookup rather than
+    // out of a branch. See `ItemDef::damageVsEntity`.
+    const int damage = int(def(held).damageVsEntity);
+    // `if (i > 0)`. Nothing in a1.1.2's table answers zero, but the guard is
+    // the jar's and a version whose table does would otherwise land a free hit.
+    if (damage <= 0) {
+        return false;
+    }
 
     const EntityPools& pools = effects.entities;
     switch (target.kind) {
     case EntityTarget::Kind::Painting:
         return pools.paintings != nullptr && pools.paintings->attack(world, target.index);
     case EntityTarget::Kind::Boat:
-        return pools.boats != nullptr && pools.boats->attack(world, target.index, kHandDamage);
+        return pools.boats != nullptr && pools.boats->attack(world, target.index, damage);
     case EntityTarget::Kind::Minecart:
         return pools.minecarts != nullptr
-               && pools.minecarts->attack(world, target.index, kHandDamage);
+               && pools.minecarts->attack(world, target.index, damage);
+    case EntityTarget::Kind::Mob:
+        // **The hit is `fromPlayer`**, which is what shears a sheep: `bo`'s
+        // `attackEntityFrom` drops wool only when an `EntityLiving` did the
+        // hitting, and the player is the only one in this build.
+        return pools.mobs != nullptr
+               && pools.mobs->attack(world, target.index, damage, true, attacker.x,
+                                     attacker.z, attacker.present, false,
+                                     attacker.provokes);
     case EntityTarget::Kind::None:
         break;
     }
     return false;
 }
 
-bool interactWithEntity(const EntityTarget& target, const EntityPools& pools)
+EntityInteraction interactWithEntity(tick::TickWorld& world, const EntityTarget& target,
+                                     const EntityPools& pools, ItemId held)
 {
+    EntityInteraction result;
+    result.becomes = held;
     switch (target.kind) {
     case EntityTarget::Kind::Boat:
-        return pools.boats != nullptr && pools.boats->mount(target.index);
+        result.taken = pools.boats != nullptr && pools.boats->mount(target.index);
+        break;
     case EntityTarget::Kind::Minecart:
         // `mount` refuses a chest or a furnace cart, which is `interact`'s own
         // split -- those two open something this build has nowhere to put.
-        return pools.minecarts != nullptr && pools.minecarts->mount(target.index);
+        result.taken = pools.minecarts != nullptr && pools.minecarts->mount(target.index);
+        break;
+    case EntityTarget::Kind::Mob: {
+        if (pools.mobs == nullptr) {
+            break;
+        }
+        const entity::MobSystem::Interaction answer =
+            pools.mobs->interact(world, target.index, held);
+        result.taken = answer.taken;
+        result.becomes = answer.becomes;
+        break;
+    }
     case EntityTarget::Kind::Painting:
     case EntityTarget::Kind::None:
         break;
     }
-    return false;
+    return result;
 }
 
 bool destroyBlock(tick::TickWorld& world, i32 x, int y, i32 z, const Effects& effects)

@@ -31,6 +31,7 @@
 #include "core/mesh/visibility.hpp"
 #include "core/render/chunk_renderer.hpp"
 #include "core/tick/tick_world.hpp"
+#include "core/util/chunk_queue.hpp"
 #include "core/util/worker.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
@@ -236,6 +237,12 @@ public:
     // saved.
     void setPlayerState(double x, double y, double z, float yaw, float pitch, i64 timeTicks);
 
+    // Health and its counters, for the next save to write -- six stores, so
+    // every frame is fine. A world never told leaves the ones it read alone,
+    // which is Spectator's case. See core/entity/player_vitals.hpp.
+    void setPlayerVitals(i16 health, i16 hurtTime, i16 deathTime, i16 attackTime, i16 air,
+                         i16 fire);
+
     // What the player is carrying, for the next save to write.
     //
     // **Separate from setPlayerState, and called far less often.** That one is
@@ -374,6 +381,60 @@ public:
     // honest gate.
     const world::ChunkColumn* residentColumn(i32 chunkX, i32 chunkZ) const;
 
+    // **When a column joins the grid and when it leaves it.**
+    //
+    // `cn.b(Lcu;)V` -- World.chunkLoaded -- walks a chunk's tile entities and
+    // adds them to the world's tick list, and the unload walks them back off
+    // it. That is the only road a saved tile entity takes into a running game,
+    // and there is no other moment to take it: the contents are in the chunk
+    // NBT, and the chunk NBT is only in memory while the column is.
+    //
+    // Both run on the main thread, inside `update()`. `adopted` fires for a
+    // column that came off the card *and* for one the generator made, which is
+    // right -- a generated column's `TileEntities` is empty, so the reader
+    // finds nothing and costs one `find`. The column reference is good only for
+    // the length of the call.
+    //
+    // A column can be adopted twice without being dropped in between (a
+    // re-read over a cell that already held it), so whatever the sink builds
+    // has to replace rather than accumulate.
+    // **And the third, which is the one that makes any of it persist**:
+    // `saving` fires on a resident column immediately before it is queued for
+    // the card, whether that is the autosave flushing a tick-dirty column or a
+    // column being let go. It is where a session store puts its state back --
+    // the text on a sign, the mob in a cage -- because the column is the only
+    // thing the card ever sees and the stores are not part of it.
+    //
+    // It runs **before** `dropped`, so a sink that erases its entries for a
+    // column cannot erase them out from under the one that writes them.
+    //
+    // It does not fire for a column the generator hands over: nothing in the
+    // session has seen that column yet, and what it carries came from the
+    // generator itself.
+    using ColumnAdoptedSink = void (*)(void* ctx, const world::ChunkColumn& column);
+    using ColumnDroppedSink = void (*)(void* ctx, i32 chunkX, i32 chunkZ);
+    using ColumnSavingSink = void (*)(void* ctx, world::ChunkColumn& column);
+    void setColumnSinks(ColumnAdoptedSink adopted, ColumnDroppedSink dropped,
+                        ColumnSavingSink saving, void* ctx)
+    {
+        columnAdopted_ = adopted;
+        columnDropped_ = dropped;
+        columnSaving_ = saving;
+        columnSinkCtx_ = ctx;
+    }
+
+    // **`ga.f()` -- setChunkModified**, reached from `ic.j_()`, which is what a
+    // tile entity calls when its contents change without any block changing.
+    // `nv` (GuiEditSign) calls it as the keyboard closes, and `fe.a(int, ev)`
+    // on every stack put into a chest; without it the text a player types onto
+    // a sign already in the world would never reach the card, because nothing
+    // else about that column is dirty.
+    //
+    // Takes block coordinates rather than chunk ones, because every caller has
+    // a block. A column that is not resident is silently ignored -- it cannot
+    // be edited either.
+    void markColumnModified(i32 x, i32 z);
+
     // ---- the world tick ------------------------------------------------
     //
     // **Why the tick lives here and not beside the camera.** It needs the
@@ -401,13 +462,13 @@ public:
     // core/tick/ already implements. What it does *not* do on its own is
     // redraw, and that is the trap this method exists to close.
     //
-    // `TickWorld`'s change callback only invalidates renderer sections while
-    // `tickRenderer_` is set, and `stepTicks` is the only thing that sets it.
-    // An edit made straight from the input handler would mark its column dirty,
-    // queue its lighting, and then be **invisible** until something else
-    // happened to touch that section. So this brackets the write exactly the
-    // way stepTicks brackets a tick, and drains the light the edit queued while
-    // the renderer is still in hand.
+    // `TickWorld`'s change callback only invalidates renderer sections while a
+    // renderer is held -- `RenderBracket`, below, is what holds one. An edit
+    // made straight from the input handler with no bracket round it would mark
+    // its column dirty, queue its lighting, and then be **invisible** until
+    // something else happened to touch that section. So this brackets the write
+    // exactly the way stepTicks brackets a tick, and the light the edit queued
+    // is drained while the renderer is still in hand.
     //
     // False when the position is outside the world or its column is not
     // resident -- an edit at the edge of the loaded grid is dropped rather than
@@ -427,7 +488,8 @@ public:
     // The decision itself is `item::rightClick`, in core and under test; this
     // is the two lines of it that need a renderer.
     bool rightClick(ChunkRenderer& renderer, item::ItemId held, const entity::RayHit& hit,
-                    const AABB& playerBox, float yawDegrees, const item::Effects& effects = {});
+                    const AABB& playerBox, float yawDegrees, const item::Effects& effects = {},
+                    bool* itemTook = nullptr);
 
     // **The item's own right-click**, under the same renderer bracket, and it
     // is a second entry point rather than a flag on the one above because
@@ -450,6 +512,39 @@ public:
     bool breakBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
                     const item::Effects& effects = {});
 
+    // **The bracket on its own, for the frame loop's own writes.**
+    //
+    // Everything above is one player action with a renderer held around it, and
+    // that covers everything the *player* does. It does not cover what the
+    // entities do: `moveEntity`'s tail writes blocks -- a footstep tramples
+    // farmland and takes the crop standing on it with it, a dropped stack
+    // presses a wooden plate, a falling block empties one cell and fills
+    // another -- and the pools run straight out of the frame loop with
+    // `worldTick()` in hand, not out of `stepTicks`.
+    //
+    // Without a renderer held those writes mark their column dirty for the
+    // saver, queue their light, and are then **invisible** until something else
+    // happens to touch the section: the trap `setBlock` above documents,
+    // reached by a different door. A trampled furrow keeps its crop standing on
+    // screen while the world underneath it says dirt.
+    //
+    // Scoped rather than a pair of calls, because the entity loops `continue`
+    // out of the middle of themselves and a renderer left held past the frame
+    // would invalidate sections against a renderer that has moved on. Nesting
+    // is safe: the previous holder is restored rather than cleared.
+    class RenderBracket {
+    public:
+        RenderBracket(WorldStreamer& streamer, ChunkRenderer& renderer);
+        ~RenderBracket();
+
+        RenderBracket(const RenderBracket&) = delete;
+        RenderBracket& operator=(const RenderBracket&) = delete;
+
+    private:
+        WorldStreamer& streamer_;
+        ChunkRenderer* previous_;
+    };
+
     // The incremental relighter, for the debug page. Null before a world opens.
     const world::LightUpdater* lighting() const { return light_.get(); }
 
@@ -461,6 +556,116 @@ public:
     // spreading fluid touches one column hundreds of times in a second and
     // each hand-over is an 18 KB clone.
     u32 tickDirtyColumns() const { return tickDirtyCells_; }
+
+    // ---- what the map watches ------------------------------------------
+    //
+    // **A serial rather than a flag, because the map outlives the grid.**
+    // `MapScreen` keeps a sample of every chunk it has ever drawn, including
+    // ground this streamer has long since handed back to the card, and a
+    // sample taken before a block changed is a picture of a world that is no
+    // longer there -- a house that does not appear, a lake that never drained,
+    // leaves that decayed a minute ago and are still on the map.
+    //
+    // A dirty flag would have to be consumed by exactly one reader and cleared
+    // by it, which `tickDirty` already is (the saver's). A serial can be *read*
+    // by anyone, as often or as rarely as they like, and compared against what
+    // they last saw -- so the map asks a chunk "have you changed since I drew
+    // you?" and gets a true answer however many frames ago that was.
+    //
+    // `columnBlockSerial` is **0 for a column that is not resident**, which no
+    // live column's serial ever is: `adoptColumn` stamps a fresh one on the way
+    // in. That stamp matters as much as the bumps do. A cell reused for other
+    // ground and then given this chunk back is a column the map's sample may
+    // predate by an entire visit, and a per-column counter that restarted at
+    // the same number it left at would say nothing had happened. Every value
+    // comes from one session-wide counter, so a serial is never seen twice.
+    //
+    // The whole-world figure is what lets a reader skip the per-chunk pass
+    // entirely: unchanged since last frame means nothing anywhere went stale.
+    u32 blockChangeSerial() const { return blockSerial_; }
+    u32 columnBlockSerial(i32 chunkX, i32 chunkZ) const;
+
+    // **Which columns the world wrote into, as a list to be worked through
+    // rather than a state to be scanned for.**
+    //
+    // `blockChangeSerial` above answers "did anything change?" in one compare,
+    // and that was enough while the map's answer to "yes" was to walk its whole
+    // window asking every chunk in it. It is not enough any more, and the case
+    // that settles it is a fluid: a lake draining moves the serial on every
+    // tick for a minute, so the cheap gate is open on every frame of that
+    // minute and the expensive pass behind it -- up to 650 chunks, two lookups
+    // each -- runs every one of them, to find the two chunks that actually
+    // moved.
+    //
+    // This is those two chunks. Each coordinate appears **once** however many
+    // blocks changed in it (see ChunkQueue), it is filled by the same
+    // `tickBlockChanged` choke point every write in the game goes through, and
+    // a column joining the grid is on it too -- so a reader that drains it every
+    // frame learns about new ground and changed ground by the same road.
+    //
+    // **It is for exactly one reader**, because taking a coordinate off removes
+    // it. Today that is the bottom screen's map. A second consumer would need
+    // its own list, not a second pass over this one.
+    //
+    // Main thread only, like everything that writes it.
+    bool takeChangedColumn(i32* chunkX, i32* chunkZ);
+    int changedColumns() const { return mapDirty_.size(); }
+
+    // **True when more columns changed than the list could hold**, so a reader
+    // that must miss nothing has to fall back to looking at everything. Reading
+    // it clears it: the answer to losing any number of coordinates is to
+    // recover once. It can only happen when nobody drained the list for a while
+    // -- the list is as long as the grid has cells.
+    bool changedColumnsOverflowed() { return mapDirty_.overflowed(); }
+
+    // ------------------------------------------------------------------
+    // **Read-only work over resident columns, run on the generation worker
+    // when it has nothing to generate.**
+    //
+    // A New 3DS gives this process core 2 and the generation worker is the only
+    // thing on it, so a console standing still in a world that is already made
+    // has a whole core doing nothing. The map's sampling is 256 downward scans
+    // per chunk and needs nothing but the column, which makes it exactly the
+    // kind of work that can go there.
+    //
+    // **Generation keeps priority, and the worker enforces it rather than the
+    // caller.** The loop takes a column that is owed before it looks at this at
+    // all, and between two columns of a batch it looks again and stops the
+    // batch early if one has appeared. So an offer is never a delay to the
+    // world being made; it is work done in the gaps between it.
+    //
+    // **What makes it safe is when it may be in flight, not a lock.** The
+    // worker borrows the columns; nothing may free or write them while it
+    // reads. `update()` withdraws the offer before it does anything to the grid
+    // -- cancelling it outright if the worker never started, waiting out the
+    // one chunk it is inside if it did -- so the borrow lives only from the
+    // offer to the next `update()`, and the console's frame writes no blocks in
+    // that interval: the player's edits and the world tick both run earlier in
+    // the frame than the map does. A wait here is therefore the length of one
+    // chunk's work and happens only when a frame was missed entirely.
+    //
+    // `work` runs on the worker thread. `index` is the position of the column
+    // in the array as it was offered *after compaction* -- see below.
+    using ColumnWork = void (*)(void* ctx, int index, const world::ChunkColumn& column);
+    static constexpr int kColumnWorkMax = 8;
+
+    // Offers up to `count` columns. **Coordinates whose column is not resident
+    // are dropped here**, on the main thread where the grid is settled, and the
+    // ones that were taken are moved to the front of `chunkX`/`chunkZ` -- so
+    // the return is both how many were taken and how much of the caller's array
+    // still means anything. 0 when there is no worker, or when an offer is
+    // already outstanding.
+    int offerColumnWork(i32* chunkX, i32* chunkZ, int count, ColumnWork work, void* ctx);
+
+    // **Collects the offer.** `*done` gets how many of the offered columns the
+    // work actually ran over, which is 0 when the worker never reached it and
+    // the offer was withdrawn. False when there was no offer outstanding, in
+    // which case `*done` is untouched.
+    bool takeColumnWork(int* done);
+
+    // Whether offering is worth trying at all: there is a worker thread, and it
+    // is not this one.
+    bool columnWorkAvailable() const;
 
     // **The world coming into being, as a picture.** One `gui::ChunkState` per
     // cell of a square centred on `centreX`/`centreZ`, row-major from the
@@ -618,6 +823,12 @@ private:
         // It also gives dropCell somewhere to look: a column that leaves the
         // grid with this set has edits the card has never seen.
         bool tickDirty = false;
+
+        // **When this column last became something a map would draw
+        // differently**: adoption, or a block written into it. See
+        // `blockChangeSerial` for why it is a serial off one session-wide
+        // counter and not a per-column count.
+        u32 mapSerial = 0;
     };
 
     // Sizes cells_ and spiral_ to loadRadius_. Shared by open() and
@@ -702,8 +913,22 @@ private:
     void workerMain();
     static void workerEntry(void* self);
 
+    // Takes the offered column work back, so nothing on the main thread can
+    // move a column the worker is reading. Cancels it if the worker has not
+    // begun; waits out the column it is inside if it has. See `offerColumnWork`.
+    void reclaimColumnWork();
+
+    // Runs one offered batch on the worker, dropping and retaking `guard`
+    // around each column so a batch can be cut short. Worker thread.
+    void runColumnWorkLocked(std::unique_lock<std::mutex>& guard);
+
     // Takes the columns the worker has finished into the grid. Main thread.
     void drainGenerated(ChunkRenderer& renderer);
+
+    ColumnAdoptedSink columnAdopted_ = nullptr;
+    ColumnDroppedSink columnDropped_ = nullptr;
+    ColumnSavingSink columnSaving_ = nullptr;
+    void* columnSinkCtx_ = nullptr;
 
     // Puts a finished column into the grid and into the save. Shared by the
     // loaded and the generated paths, because from here on they are the same
@@ -830,6 +1055,27 @@ private:
     bool queuePaused_ = false;
 
     bool jobActive_ = false;
+
+    // ---------------------------------------------------------------------
+    // The offered column work, and the three booleans that say where it is.
+    // All of it under queueLock_. See `offerColumnWork` for the lifetime rule
+    // these encode, which is the part that matters.
+    //
+    //   posted  -- offered, and the worker may still start it
+    //   busy    -- the worker is inside it right now
+    //   ready   -- it is over, and the result is waiting to be collected
+    //
+    // `posted` is cleared to withdraw: the worker checks it between columns, so
+    // a withdrawal stops a batch that has begun as well as one that has not.
+    // ---------------------------------------------------------------------
+    ColumnWork columnWork_ = nullptr;
+    void* columnWorkCtx_ = nullptr;
+    const world::ChunkColumn* columnWorkColumns_[kColumnWorkMax] = {};
+    int columnWorkCount_ = 0;
+    int columnWorkDone_ = 0;
+    bool columnWorkPosted_ = false;
+    bool columnWorkBusy_ = false;
+    bool columnWorkReady_ = false;
     std::vector<std::unique_ptr<world::ChunkColumn>> finished_;
 
     // Sweeps that returned nothing, counted on whichever thread ran them and
@@ -898,6 +1144,20 @@ private:
     // How many cells are carrying tick edits. Maintained alongside
     // Cell::tickDirty so the debug page costs nothing to draw.
     u32 tickDirtyCells_ = 0;
+
+    // Hands out `Cell::mapSerial`. Wraps after four billion block changes,
+    // which is a comparison against a stale value coming back equal once in
+    // 2^32 -- and the consequence of that is one chunk of the map drawn from a
+    // sample one edit old until the next edit in it. Named rather than
+    // guarded: a counter wide enough to make it impossible costs eight bytes a
+    // cell for a failure nobody would ever reach.
+    u32 blockSerial_ = 0;
+
+    // The columns `blockSerial_` has just been moved for, in the order they
+    // moved, each one on it once. Sized with the grid in buildGrid(), which is
+    // the most distinct coordinates that can be on it at any moment. See
+    // `takeChangedColumn`.
+    ChunkQueue mapDirty_;
 
     // How often countResidency() adds up per-column memory usage, which is the
     // expensive half of it; see countResidency().

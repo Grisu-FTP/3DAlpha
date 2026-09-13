@@ -1,6 +1,7 @@
 #include "core/tick/fire.hpp"
 
 #include "core/block/registry.hpp"
+#include "core/tick/drop.hpp"
 #include "core/tick/tick_world.hpp"
 
 namespace mc::tick {
@@ -70,10 +71,11 @@ void tryToCatch(TickWorld& world, i32 x, int y, i32 z, int bound, BlockId self,
 
     if (wasTnt) {
         // `Block.tnt.onBlockDestroyedByPlayer(world, x, y, z, 0)`, which primes
-        // it. TNT needs an entity to be primed into and there is none, so the
-        // block is destroyed and nothing explodes -- named here rather than
-        // left as a silent difference.
-        (void) wasTnt;
+        // it -- **after** the branch above has already written fire or air over
+        // the cell, exactly as `og.a` has it. So a fire that spreads into TNT
+        // leaves the block gone either way and lights a full 80-tick fuse on
+        // top of it; the metadata argument is a literal 0 and nothing reads it.
+        tntDestroyedByPlayer(world, x, y, z);
     }
 }
 

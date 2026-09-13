@@ -34,13 +34,44 @@ namespace mc::block {
 // produces when every side connects.
 inline constexpr int kMaxRenderBoxes = 9;
 
+// A bit per face, in the `mc::mesh::Face` order `BlockDef::faces` is written in
+// -- 0 -Y, 1 +Y, 2 -Z, 3 +Z, 4 -X, 5 +X. Named here rather than taken from the
+// mesher because core/block does not know about geometry, and `faces[6]` on the
+// row next door already commits to the same order.
+inline constexpr int kRenderFaceNegY = 1 << 0;
+inline constexpr int kRenderFacePosY = 1 << 1;
+inline constexpr int kRenderFaceNegZ = 1 << 2;
+inline constexpr int kRenderFacePosZ = 1 << 3;
+inline constexpr int kRenderFaceNegX = 1 << 4;
+inline constexpr int kRenderFacePosX = 1 << 5;
+inline constexpr int kAllRenderFaces = 0x3F;
+
 // Boxes in **block-local** coordinates, the same convention `collisionBoxes`
 // uses: 0,0,0 is the block's own corner and a full cube is 0,0,0 -> 1,1,1.
 //
 // `connections` is a bit per horizontal direction -- -X, +X, -Z, +Z -- for the
 // shapes that reach towards their neighbours. Zero is the right answer for an
 // inventory icon, which has no neighbours, and gives a bare fence post.
-int renderBoxes(BlockId id, u8 metadata, int connections, AABB* out, int max);
+//
+// **`faceMask`, when given, is which faces of each box to draw**, one entry per
+// box. Every shape here but one wants all six and says so; the cactus is the
+// exception, and is the reason the parameter exists. Its three boxes overlap
+// deliberately -- they are the same cell drawn three times, contributing two
+// faces each -- so a caller that ignored the mask would draw eighteen quads,
+// four of them through the middle of the block.
+int renderBoxes(BlockId id, u8 metadata, int connections, AABB* out, int max,
+                int* faceMask = nullptr);
+
+// **The same question asked of a block that is not in the world**: one in the
+// hand, one in an inventory slot, one lying on the ground as a dropped stack.
+//
+// It is a second entry point rather than "call the one above with metadata 0"
+// because a1.1.2 asks a different method there. `RenderBlocks.renderBlockAsItem`
+// calls `Block.setBlockBoundsForItemRender` first, and for the button and the
+// two pressure plates that answers with a shape their world bounds never hold
+// at metadata 0 -- see `block::itemRenderBox`. Everything else, the fence's
+// connections included, is `renderBoxes` with no neighbours.
+int itemRenderBoxes(BlockId id, AABB* out, int max, int* faceMask = nullptr);
 
 // Bit positions for `connections`, in the order the four horizontal
 // `mc::mesh::Face` values run.

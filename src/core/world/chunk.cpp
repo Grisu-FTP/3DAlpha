@@ -19,6 +19,7 @@ ChunkColumn ChunkColumn::clone() const
     std::memcpy(copy.heightMap, heightMap, sizeof(heightMap));
     copy.preserved = preserved;
     copy.preservedRoot = preservedRoot;
+    copy.tileEntities = tileEntities;
     for (int sy = 0; sy < kSectionCount; ++sy) {
         copy.sections_[sy] = sections_[sy].clone();
     }
@@ -31,7 +32,8 @@ usize ChunkColumn::memoryUsage() const
     for (const Section& s : sections_) {
         bytes += s.memoryUsage();
     }
-    return bytes + preserved.memoryUsage() + preservedRoot.memoryUsage();
+    return bytes + preserved.memoryUsage() + preservedRoot.memoryUsage() +
+           tileEntityMemoryUsage(tileEntities);
 }
 
 }  // namespace mc::world

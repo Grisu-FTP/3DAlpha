@@ -247,6 +247,96 @@ TEST(sneaking_walks_the_step_back_rather_than_off_the_ledge)
     CHECK(sneaker.x < walker.x);
 }
 
+TEST(sneaking_lowers_the_camera_and_not_the_saved_position)
+{
+    // The drop is 1.8.9's `EntityPlayer.getEyeHeight` -- `1.62F - 0.08F` --
+    // because a1.1.2 has no sneaking to read and the Betas lower only the
+    // model. See the note on kSneakEyeDrop.
+    PlayerBody body;
+    body.setFeet(0.0, 65.0, 0.0);
+    body.snapRenderPosition();
+
+    const double standing = body.cameraEyeY(1.0f);
+    CHECK_EQ(standing, body.renderEyeY(1.0f));
+    CHECK_EQ(standing, 65.0 + double(entity::kEyeHeight));
+
+    body.sneaking = true;
+    // The sneaking eye is 1.54 above the feet, and 1.54 the way the jar
+    // computes it: `1.62f - 0.08f` in float, widened once.
+    CHECK_EQ(body.cameraEyeY(1.0f), 65.0 + double(entity::kSneakEyeHeight));
+    CHECK_EQ(standing - body.cameraEyeY(1.0f), entity::kSneakEyeDrop);
+
+    // What the save file and the physics read is untouched: a crouch is a
+    // camera, not a position. Reloading a world saved while sneaking must not
+    // start the player lower than they were.
+    CHECK_EQ(body.eyeY(), 65.0 + double(entity::kEyeHeight));
+    CHECK_EQ(body.renderEyeY(1.0f), 65.0 + double(entity::kEyeHeight));
+    CHECK_EQ(body.y, 65.0);
+}
+
+TEST(sneaking_scales_the_stick_and_slows_the_walk)
+{
+    // The half of sneaking this jar *does* implement, and it is a1.1.2's own
+    // rather than borrowed: `MovementInputFromOptions.updatePlayerMoveState`
+    // scales moveStrafe and moveForward by 0.3D the moment the sneak key reads
+    // true, without asking the entity anything. See kSneakMoveScale.
+    PlayerInput standing;
+    standing.strafe = 0.7f;
+    standing.forward = -1.0f;
+    entity::applySneakSlowdown(standing);
+    CHECK_EQ(double(standing.strafe), double(0.7f));
+    CHECK_EQ(double(standing.forward), -1.0);
+
+    PlayerInput crouched = standing;
+    crouched.sneak = true;
+    entity::applySneakSlowdown(crouched);
+    // 0.7 * 0.3 the jar's way -- widen, multiply as a double, narrow -- and the
+    // bits are the point: `0.7f * 0.3f` stays in float and lands a ulp away, on
+    // 0.21000001. Picked for exactly that reason; most values agree.
+    CHECK_EQ(bitsOf(crouched.strafe), bitsOf(0.20999999344348907f));
+    CHECK(crouched.strafe != 0.7f * 0.3f);
+    CHECK_EQ(bitsOf(crouched.forward), bitsOf(-0.30000001192092896f));
+
+    // And it reaches the physics rather than stopping at the struct.
+    SceneWorld scene(0, 0);
+    for (i32 x = -8; x <= 8; ++x) {
+        for (i32 z = -8; z <= 8; ++z) {
+            scene.place(x, 64, z, BlockId(mcver::Block::Stone), 0);
+        }
+    }
+
+    PlayerBody walker;
+    walker.setFeet(0.0, 65.0, 0.0);
+    walker.onGround = true;
+    PlayerBody sneaker = walker;
+
+    PlayerInput walking;
+    walking.forward = 1.0f;
+    PlayerInput crouching = walking;
+    crouching.sneak = true;
+    entity::applySneakSlowdown(crouching);
+
+    for (int t = 0; t < 20; ++t) {
+        walker.tick(scene.w(), walking);
+        sneaker.tick(scene.w(), crouching);
+    }
+
+    // Yaw 0 faces +Z, so a held forward runs long in z. Twenty ticks takes the
+    // walker a little over four blocks and the sneaker a little over one.
+    CHECK(sneaker.z > 0.0);  // slowed, not stopped
+    CHECK(sneaker.z < walker.z);
+
+    // **Three tenths of the distance, not merely less**, and that is a
+    // statement about where the 0.3 goes in. `moveFlying` divides by
+    // `max(1, |input|)`, so an input inside the unit circle is never normalised
+    // back up and the whole tick stays linear in it: a third of the push is a
+    // third of the acceleration is a third of the ground covered. The slack is
+    // for float rounding, which is all that separates the ratio from the 0.3
+    // the input was scaled by.
+    const double ratio = sneaker.z / walker.z;
+    CHECK(ratio > 0.29999 && ratio < 0.30001);
+}
+
 // ---------------------------------------------------------------------------
 // Ladders
 // ---------------------------------------------------------------------------

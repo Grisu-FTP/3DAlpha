@@ -2,6 +2,7 @@
 
 #include "core/texture/dev_art.hpp"
 #include "core/texture/entity_skins.hpp"
+#include "core/texture/icon_sheet.hpp"
 #include "core/texture/texture_fx.hpp"
 #include "core/texture/zip_archive.hpp"
 
@@ -17,6 +18,7 @@ constexpr char kTerrainName[] = "terrain.png";
 // core/texture/jar_import.hpp. Forward slashes because that is what a zip
 // stores, and the loose-directory reader joins with the same separator.
 constexpr char kItemsName[] = "gui/items.png";
+constexpr char kIconsName[] = "gui/icons.png";
 
 std::string join(std::string_view dir, std::string_view name)
 {
@@ -238,19 +240,32 @@ void itemsToAtlas(const std::vector<u8>& png, AtlasImage* out)
     scaleToAtlas(image, &out->itemsRgba);
 }
 
-PackError buildAtlasInner(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+// gui/icons.png into its plane, scaled to the 256 x 256 `lu` addresses by
+// texel. **A failure leaves the plane as it was**, which is the stand-in the
+// caller laid down first -- a pack whose icons will not decode still shows
+// hearts rather than none.
+void iconsToSheet(const std::vector<u8>& png, AtlasImage* out)
 {
-    // **Always built, for every pack and for Dev Art.** Unlike the two planes
-    // above, these two are never absent: `buildEntitySkins` lays the generated
-    // stand-ins down first and paints whatever the pack carries over them, so
-    // a pack with no `item/boat.png` gets a boat with a placeholder skin rather
-    // than a boat with no skin. See core/texture/entity_skins.hpp.
-    buildEntitySkins(fs, packPath, &out->entityRgba);
-    buildArtSheet(fs, packPath, &out->artRgba);
+    Image image;
+    if (decodePng(png, &image, kMaxTerrainPixels) != PngError::Ok) {
+        return;
+    }
+    if (image.width != image.height) {
+        return;
+    }
+    std::vector<u8> scaled;
+    scaleSquare(image, kIconSheetEdge, &scaled);
+    if (scaled.size() == kIconSheetBytes) {
+        out->iconsRgba.swap(scaled);
+    }
+}
 
+// terrain.png into the block atlas, generated tiles and all -- the half of a
+// pack that `buildTerrainAtlas` hands out on its own.
+PackError buildTerrainInner(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+{
     if (packPath.empty()) {
         buildDevArt(&out->rgba);
-        buildDevArtItems(&out->itemsRgba);
         return PackError::Ok;
     }
 
@@ -279,6 +294,31 @@ PackError buildAtlasInner(io::FileSystem& fs, std::string_view packPath, AtlasIm
     // Dev Art is left alone: its tiles are already ours and already synthetic,
     // and the whole point of that pack is that a wrong texture index is visible.
     applyAnimatedTiles(&out->rgba);
+    return PackError::Ok;
+}
+
+PackError buildAtlasInner(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+{
+    // **Always built, for every pack and for Dev Art.** Unlike the two planes
+    // above, these two are never absent: `buildEntitySkins` lays the generated
+    // stand-ins down first and paints whatever the pack carries over them, so
+    // a pack with no `item/boat.png` gets a boat with a placeholder skin rather
+    // than a boat with no skin. See core/texture/entity_skins.hpp.
+    buildEntitySkins(fs, packPath, &out->entityRgba);
+    buildArtSheet(fs, packPath, &out->artRgba);
+
+    const PackError terrain = buildTerrainInner(fs, packPath, out);
+    if (terrain != PackError::Ok) {
+        return terrain;
+    }
+    // The icon sheet's stand-in goes down first, for the reason the entity
+    // sheets' do: whatever the pack carries is painted over it, and whatever it
+    // does not stays generated.
+    buildIconStandIn(&out->iconsRgba);
+    if (packPath.empty()) {
+        buildDevArtItems(&out->itemsRgba);
+        return PackError::Ok;
+    }
 
     // A second card read, and the same trade readPackFile already makes: the
     // pack is opened once more rather than held open across two files the
@@ -286,6 +326,10 @@ PackError buildAtlasInner(io::FileSystem& fs, std::string_view packPath, AtlasIm
     std::vector<u8> itemsPng;
     if (readPackFile(fs, packPath, kItemsName, &itemsPng) == PackError::Ok) {
         itemsToAtlas(itemsPng, out);
+    }
+    std::vector<u8> iconsPng;
+    if (readPackFile(fs, packPath, kIconsName, &iconsPng) == PackError::Ok) {
+        iconsToSheet(iconsPng, out);
     }
     return PackError::Ok;
 }
@@ -298,8 +342,20 @@ PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* 
     out->itemsRgba.clear();
     out->entityRgba.clear();
     out->artRgba.clear();
+    out->iconsRgba.clear();
     out->sourceEdge = 0;
     return buildAtlasInner(fs, packPath, out);
+}
+
+PackError buildTerrainAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* out)
+{
+    out->rgba.clear();
+    out->itemsRgba.clear();
+    out->entityRgba.clear();
+    out->artRgba.clear();
+    out->iconsRgba.clear();
+    out->sourceEdge = 0;
+    return buildTerrainInner(fs, packPath, out);
 }
 
 }  // namespace mc::texture

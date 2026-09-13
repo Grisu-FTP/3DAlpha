@@ -376,6 +376,47 @@ for byte. See "The chunk generator" below. **WorldGenDungeons** still places a c
 are dropped, because that needs tile entities — today `ChunkColumn` round-trips those as opaque
 blobs and has never parsed one.
 
+### The two generator bugs the Extra Settings screen can switch off
+
+Both are a1.1.2's, both are reproduced by default, and both are optional per world from
+World Settings → Extra Settings. The switches live in `<world>/3dalpha.ini`
+(`core/settings/world_settings.hpp`) and reach the generator through
+`worldgen::GeneratorOptions`, which `WorldStreamer::open` fills by reading that file. **Neither
+switch changes a single random draw** — each only widens what the already-drawn shape is written
+into — so a world with one on stays in step with a1.1.2 through every later pass.
+
+**The negative-quadrant ore bug.** `cu.a` computes its per-step bounding box with six `(int)`
+casts, and a Java `(int)` truncates toward zero rather than flooring. At non-negative coordinates
+the two agree. At negative ones truncation rounds *up*, so the box is shifted one block toward
+zero: the row at its low end is never visited, and the extra row at its high end fails the
+ellipsoid test and writes nothing. It costs a row only when the fractional part falls the wrong
+way — roughly half the steps — and it applies to x and z independently, y being always positive.
+
+Measured with `tests/ore_test.cpp` (`ore_veins_lose_blocks_in_the_negative_quadrants`), the same
+vein mirrored into all four quadrants over 400 seeds, as a fraction of what the positive quadrant
+places:
+
+| vein size | −x | −z | −x and −z |
+|---|---|---|---|
+| 8 (iron, gold) | −14.5% | −14.8% | −24.8% |
+| 16 (coal) | −3.5% | −5.2% | −12.6% |
+| 32 (dirt, gravel, clay) | −1.9% | −3.1% | −5.5% |
+
+Small veins suffer most, which is what a per-step edge row predicts — and diamond and redstone are
+size 7. `OreBounds::FloorBounds` floors instead, and makes all four quadrants place *exactly* the
+same count; that equality is what makes this a derivation rather than a guess, since no other
+cause would be removed by flooring the box. Clay goes through the same switch, because it is the
+same generator with a different block and a world symmetric in its ore and asymmetric in its clay
+would be neither thing.
+
+**The bedrock hole.** `nw.b`'s floor test is `y <= random.nextInt(6) - 1`, drawn on every one of
+the 128 steps of every column — the draw that gives bedrock its ragged underside, and which cannot
+be hoisted or guarded without desynchronising every column after the first. At `y = 0` it fails
+whenever the draw returns 0, so about a sixth of a1.1.2's columns have stone rather than bedrock
+at the bottom of the world. Measured over 4,096 columns in `tests/terrain_test.cpp`. The switch
+lays bedrock at `y = 0` unconditionally and **still makes the draw**. It is generation-only: it
+does not fill in a hole that is already on the card, and the screen says so.
+
 ### Liquid springs, transcribed
 
 `src/impl/worldgen/alpha_nobiome/liquids.{hpp,cpp}`, and this one gets an **exhaustive** oracle

@@ -10,11 +10,13 @@
 // of that and giving up the debug pages. `consoleInit` leaves the screen as a
 // plain RGB565 framebuffer with double buffering off, so the map is written
 // straight into it beside the text, and the text is given the panel's own
-// background colour so the two do not fight. See hud.hpp.
+// background colour so the two do not fight. See hud.hpp. (The main menu's
+// three preview screens are the one place a render target borrows the bottom
+// screen, and only while no world is open -- see menu_preview.hpp.)
 //
 //     +----------------------------------------+
 //     | [ Map ] [ Items ] [ Blocks ] [ Look ]  |  the tab strip, hud.hpp's
-//     |  focus banner band, or backdrop         |  hud.hpp's kBannerTop
+//     |  focus banner row, or backdrop           |  hud.hpp's bannerTop()
 //     |+-------+ +---------------------------+ |
 //     ||       | |                           | |
 //     ||x  -12 | |                           | |
@@ -58,9 +60,43 @@
 // **What it costs.** A redraw happens only when something moved: the player
 // crossed into a new block, turned far enough to move the marker, or a chunk
 // was sampled -- or the grid or the zoom changed under the d-pad. Standing
-// still costs nothing at all. Sampling is budgeted to a chunk or two a frame,
-// which is what keeps a newly opened world from spending a frame scanning a
-// hundred columns.
+// still costs nothing at all.
+//
+// **And a chunk is sampled again when the world writes into it**, which is
+// what makes this a map of the world rather than of the world as it was the
+// first time the player walked past: a house appears as it is built, a lake
+// drains as it drains, leaves go when they decay. The map does not watch the
+// player -- it watches the block writes, so a fluid spreading two hundred
+// blocks away updates on the same rule as a block placed underfoot, and so
+// does anything a future entity does to the ground.
+//
+// **The game never waits for any of it.** That is a rule and not an
+// aspiration, and it is what the three pieces below are for.
+//
+//   * **A queue, and a chunk is on it once.** `WorldStreamer` hands over the
+//     columns the world wrote into -- deduped there, so a lake draining for a
+//     minute puts two chunks on a list rather than twenty thousand -- and the
+//     window walk adds the ground the map has never had. Nothing here scans for
+//     work; work arrives, and it arrives once.
+//
+//   * **A slice of the frame, not a number of chunks.** `update` works the
+//     queue down until its microsecond allowance is gone and then stops, in the
+//     middle of the queue, and picks it up next frame. A world with a thousand
+//     chunks to re-sample costs exactly what a world with three does; it simply
+//     takes longer to catch up. The one guarantee is that a frame always does
+//     at least one chunk, so the queue cannot stall.
+//
+//   * **Core 2, when it is free.** On a New 3DS the generation worker has a
+//     core to itself, and a console standing still in a world that is already
+//     made leaves it idle. A batch of sampling goes there -- see
+//     `WorldStreamer::offerColumnWork` -- and generation keeps priority: the
+//     worker looks at what the world is owed before it looks at the map, and
+//     drops a half-finished batch the moment a column comes up.
+//
+// The sampling itself is one chunk's 256 downward scans, and the re-shade it
+// would normally force is skipped when the new sample is identical to the old
+// one -- which is the answer for every block a player mines under a roof. See
+// map_store.hpp's `store` and `WorldStreamer::takeChangedColumn`.
 //
 // **The first hardware run measured a redraw at 5,000 microseconds**, which is
 // a third of a frame on every block the player crosses, and it was spent
@@ -81,9 +117,11 @@
 #include "core/gui/paint.hpp"
 #include "core/map/map_palette.hpp"
 #include "core/map/map_render.hpp"
+#include "core/map/map_sample.hpp"
 #include "core/map/map_store.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/texture/atlas_image.hpp"
+#include "core/util/chunk_queue.hpp"
 #include "platform/ctr/hud.hpp"
 #include "platform/ctr/renderer.hpp"
 
@@ -92,30 +130,52 @@ namespace mc::ctr {
 // The map's rectangle on the 320x240 bottom screen, and the column of text
 // beside it.
 //
-// **208 by 158, and both bands the screen grew are why.** It was 208 by 200 --
-// 41,600 pixels against the 36,864 that were measured at about 700 microseconds
-// a redraw on a New 3DS, so an estimated 790. The hotbar took the bottom 32
-// pixels and the focus banner the top 16 (see hud.hpp), which leaves 32,864:
-// **below** the window the 700 was actually measured on, so the estimate goes
-// the other way, to roughly 625. For once a layout change made a measured cost
-// smaller rather than larger.
+// **It is two rectangles now, because the screen is two shapes.** A gamemode
+// with a hotbar starts its pages at 48 and the window is 212 by 162; Spectator
+// has no hotbar, starts at 8, and the window is 212 by 202 -- the forty pixels
+// the band is not taking, which is the whole of what "use the space" means on
+// this page. `mapTop`/`mapHeight` answer for whichever is in force.
 //
-// The 8 pixels below are the margin that keeps terrain from sitting under a
-// hotbar slot; the frame's two pixels above put it flush with the page's top.
-inline constexpr int kMapWidth = 208;
-inline constexpr int kMapTop = hud::kPageTop + 2;
-inline constexpr int kMapHeight = hud::kTabTop - kMapTop - 8;      // 158
+// **What that costs, carried forward from the one number that was measured.**
+// 36,864 pixels redrew in about 700 microseconds on a New 3DS. The banded
+// window is 34,344, so roughly 650; the bare one is 42,824, so roughly 815.
+// Both are estimates scaled off that single measurement and neither has been
+// run on hardware -- docs/3ds-performance.md owes this page a figure either
+// way, and the larger one is the one to take it on.
+//
+// The 4 pixels below are the margin that keeps terrain off the tab strip -- it
+// was 8, and half of it was backdrop nobody was using; the frame's two pixels
+// above put it flush with the page's top.
+inline constexpr int kMapWidth = 212;
 inline constexpr int kMapLeft = 104;
+
+constexpr int mapTopFor(int pageTop) { return pageTop + 2; }
+constexpr int mapHeightFor(int pageTop) { return hud::kTabTop - mapTopFor(pageTop) - 4; }
+
+inline int mapTop() { return mapTopFor(hud::pageTop()); }
+inline int mapHeight() { return mapHeightFor(hud::pageTop()); }
+
+// **The tallest the window can be**, which is what the chunk store has to
+// cover: sizing it for the banded window would thrash the moment a player
+// switched to Spectator. See `configure`.
+inline constexpr int kMapMaxHeight = mapHeightFor(hud::kBarePageTop);   // 202
 
 // How many characters wide the column beside it is. The frame around the map
 // starts at pixel 102, so twelve columns -- 96 pixels -- is the most that can
 // be printed without a glyph landing on it.
 inline constexpr int kMapTextColumns = 12;
 
+constexpr bool mapFits(int pageTop)
+{
+    return mapTopFor(pageTop) + mapHeightFor(pageTop) <= hud::kTabTop
+           && mapTopFor(pageTop) - 2 >= hud::kBannerHeight;
+}
 static_assert(kMapTextColumns * hud::kCell + 6 <= kMapLeft,
               "the text column must stop before the map's frame");
-static_assert(kMapTop + kMapHeight <= hud::kTabTop, "the map must clear the tab strip");
-static_assert(kMapTop - 2 >= hud::kPageTop, "the map's frame must clear the banner band");
+static_assert(kMapLeft + kMapWidth + 2 <= hud::kScreenWidth,
+              "the map's frame must stop before the right edge");
+static_assert(mapFits(hud::kBandedPageTop), "the map must fit under a hotbar");
+static_assert(mapFits(hud::kBarePageTop), "the map must fit without one");
 
 class MapScreen {
 public:
@@ -208,10 +268,20 @@ public:
     void clearPan();
     bool panned() const { return panX_ != 0.0 || panZ_ != 0.0; }
 
-    // Once a frame, wherever the streamer's columns are known to be settled.
-    // Samples at most a chunk or two, so a world that has just opened fills the
-    // map in over a second or so rather than in one frame.
-    void update(const render::WorldStreamer& world, const Camera& camera);
+    // Once a frame, wherever the streamer's columns are known to be settled --
+    // on the console that is after the world tick and before the draw.
+    //
+    // **Nothing in the game waits for any of this.** It collects what the world
+    // changed, puts what that owes onto a queue, and spends a fixed slice of the
+    // frame working the queue down; whatever is left waits for the next frame.
+    // A world where a lake is draining and a forest is burning does not make
+    // this call more expensive, it makes the queue longer.
+    //
+    // **The streamer is not const**, and that is the whole design: this takes
+    // the changed columns off it rather than scanning for them, and hands it a
+    // batch of sampling to run on the generation worker when that worker has
+    // nothing to generate.
+    void update(render::WorldStreamer& world, const Camera& camera);
 
     // Draws the page: the panel and its coordinates, the frame, and the map.
     // `force` is for after anything cleared or overwrote the bottom screen --
@@ -334,33 +404,83 @@ private:
     i32 touchedOriginZ_ = 0;
     bool touched_ = false;
 
-    // Chunks sampled per frame once the window is full. Eight on an old 3DS,
-    // sixteen on a New one.
+    // **The chunks this still owes a sample, each one on it once.**
     //
-    // **This was one and two, and it is why the map came up blank.** Sampling
-    // is 1.3 us on the host against the window copy's 16.9, which scales to
-    // roughly 50 us on the console -- so one a frame was not a budget, it was
-    // an accident: a cold window is up to 196 chunks, which at one a frame is
-    // six seconds of a mostly empty picture, and because the scan ran in raster
-    // order from the north-west corner, the ground under the marker was not
-    // reached until halfway through it. What the player saw was a map that
-    // stayed blank until they had walked about for a while. Sixteen a frame is
-    // under a millisecond, and the steady case is a handful of chunks arriving
-    // from the streamer rather than a full window.
-    int sampleBudget_ = 8;
+    // Two things put coordinates here and neither of them samples anything: the
+    // streamer's change list, drained whole every frame, and the window walk,
+    // which finds ground the map has never had. What comes off it is worked
+    // through under a clock, so the length of the queue is not a frame cost --
+    // it is how far behind the map is, which is a different thing and a
+    // recoverable one.
+    //
+    // **The dedupe is the load-bearing part.** Without it a chunk under a
+    // waterfall is queued twenty times a second for as long as the water runs,
+    // and the frame's whole allowance goes on re-sampling one chunk that has
+    // already been re-sampled. `ChunkQueue::push` answers the second offer of a
+    // coordinate in a probe and a compare.
+    ChunkQueue pending_;
 
-    // **The cold-start budget**, spent until the map has caught up with the
+    // **Look at every chunk in the window and ask whether its sample is still
+    // true.** The expensive pass, and the fallback rather than the mechanism:
+    // it runs when the streamer says its change list overflowed, which is the
+    // one case where "what changed" is not knowable any other way.
+    bool resync_ = false;
+
+    // **How long a frame may spend sampling**, in microseconds, checked after
+    // each chunk so a frame always does at least one.
+    //
+    // It was a count of chunks -- eight on an old 3DS, sixteen on a New one --
+    // and a count is the wrong unit for a rule that reads "never make the game
+    // wait". These are the same work those counts allowed, at the ~50 us a
+    // chunk sample is estimated to cost on an ARM11, said in the unit the rule
+    // is actually about; if a sample turns out to cost more than that on
+    // hardware, this holds and the count would not have.
+    u32 sampleMicros_ = 400;
+
+    // **The cold-start allowance**, spent until the map has caught up with the
     // streamer for the first time.
     //
     // At world entry the store is empty and the streamer has published almost
-    // nothing, so there is nothing to sample yet and this costs a hash lookup
-    // per chunk. Columns then arrive over the next second or two and this takes
-    // them as fast as they come. 64 chunks is about 3 ms on the console -- a
-    // frame's worth of hitch at most, at the one moment the game is already
-    // known to be catching up. It ends the first time a whole pass finds
-    // nothing left to take.
-    static constexpr int kPrimeBudget = 64;
+    // nothing, so there is nothing to sample yet and this costs nothing.
+    // Columns then arrive over the next second or two and this takes them as
+    // fast as they come. 3.2 ms is a frame's worth of hitch at most, at the one
+    // moment the game is already known to be catching up. It ends the first
+    // time a frame empties the queue.
+    static constexpr u32 kPrimeMicros = 3200;
     bool primed_ = false;
+
+    // ------------------------------------------------------------------
+    // **What is out on the generation worker.** See
+    // `WorldStreamer::offerColumnWork`: the batch is offered at the end of one
+    // frame's `update` and collected at the start of the next one's, and the
+    // streamer withdraws it before it touches a cell.
+    //
+    // The samples land here rather than in the store because the store is the
+    // main thread's -- `MapStore::store` moves an LRU cursor, invalidates a
+    // neighbour's patch and may evict, none of which another thread may do
+    // behind this class's back. The worker writes 1 KB into a slot of its own
+    // and the main thread puts it away.
+    // ------------------------------------------------------------------
+    static constexpr int kOffload = render::WorldStreamer::kColumnWorkMax;
+    static void sampleOnWorker(void* ctx, int index, const world::ChunkColumn& column);
+
+    i32 offloadX_[kOffload] = {};
+    i32 offloadZ_[kOffload] = {};
+    // Read on the main thread when the batch is offered, so a block written
+    // into one of these columns afterwards leaves the stored serial behind the
+    // column's and the chunk is queued again. Conservative in the one direction
+    // that is safe.
+    u32 offloadSerial_[kOffload] = {};
+    map::MapChunkSample offloadSample_[kOffload];
+    int offloadCount_ = 0;
+
+    // One chunk of the queue, sampled on this thread. False when there was
+    // nothing to do -- the column is not resident, or the sample the store
+    // already holds is current.
+    bool sampleOne(const render::WorldStreamer& world, i32 chunkX, i32 chunkZ,
+                   map::MapChunkSample* scratch);
+    void collectOffload(render::WorldStreamer& world);
+    void postOffload(render::WorldStreamer& world);
 };
 
 }  // namespace mc::ctr

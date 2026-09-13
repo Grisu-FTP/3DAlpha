@@ -44,19 +44,21 @@ bool gamemodeImplemented(Gamemode mode)
     // Spectator is not aspirational here: free flight through the world with no
     // body is the whole of what the mode means and the whole of what it does.
     //
-    // **Creative joined it at M3 step 3.** There is a body now, it collides, it
-    // reaches four blocks, it breaks and places, and it has nine slots and a
-    // palette to fill them from. Survival is still false and the reason is
-    // specific rather than general: everything it adds -- fall damage, block
-    // hardness and break progress, drops, stack depletion -- is a rule on top
-    // of the same body, and a mode that is selectable but plays exactly like
-    // Creative would be a label that lies. See docs/todo-m3.md step 4.
+    // **Creative joined it at M3 step 3**, with a body that collides, reaches,
+    // breaks and places. **Survival joined at step 4**, once the rules it adds
+    // on top of that body were all there: health and death, fall and fire and
+    // drowning, break progress and harvest drops, tool wear and spent stacks,
+    // and the crafting grids, the furnace and the chest. It was held back
+    // until then because a selectable mode that played like Creative would
+    // have been a label that lies. See docs/todo-m3.md step 4.
+    //
+    // Kept as a function, and asked by the menus, so a mode added later starts
+    // greyed out rather than half-working.
     switch (mode) {
     case Gamemode::Spectator:
     case Gamemode::Creative:
-        return true;
     case Gamemode::Survival:
-        break;
+        return true;
     }
     return false;
 }
@@ -73,6 +75,75 @@ bool gamemodeFromToken(std::string_view token, Gamemode* out)
     }
     if (token == "creative") {
         *out = Gamemode::Creative;
+        return true;
+    }
+    return false;
+}
+
+const char* difficultyToken(Difficulty level)
+{
+    switch (level) {
+    case Difficulty::Peaceful:
+        return "peaceful";
+    case Difficulty::Easy:
+        return "easy";
+    case Difficulty::Hard:
+        return "hard";
+    case Difficulty::Normal:
+        break;
+    }
+    return "normal";
+}
+
+const char* difficultyLabel(Difficulty level)
+{
+    switch (level) {
+    case Difficulty::Peaceful:
+        return "Peaceful";
+    case Difficulty::Easy:
+        return "Easy";
+    case Difficulty::Hard:
+        return "Hard";
+    case Difficulty::Normal:
+        break;
+    }
+    return "Normal";
+}
+
+bool difficultyFromToken(std::string_view token, Difficulty* out)
+{
+    if (token == "peaceful") {
+        *out = Difficulty::Peaceful;
+        return true;
+    }
+    if (token == "easy") {
+        *out = Difficulty::Easy;
+        return true;
+    }
+    if (token == "normal") {
+        *out = Difficulty::Normal;
+        return true;
+    }
+    if (token == "hard") {
+        *out = Difficulty::Hard;
+        return true;
+    }
+    return false;
+}
+
+const char* boolToken(bool value)
+{
+    return value ? "true" : "false";
+}
+
+bool boolFromToken(std::string_view token, bool* out)
+{
+    if (token == "true" || token == "1" || token == "yes") {
+        *out = true;
+        return true;
+    }
+    if (token == "false" || token == "0" || token == "no") {
+        *out = false;
         return true;
     }
     return false;
@@ -105,11 +176,52 @@ bool loadWorldSettings(io::FileSystem& fs, std::string_view worldDir, WorldSetti
         if (key == "gamemode") {
             Gamemode mode = Gamemode::Spectator;
             if (gamemodeFromToken(value, &mode)) {
-                *out = WorldSettings{mode};
+                out->gamemode = mode;
             }
             // An unrecognised mode keeps the default and leaves the file
             // alone. A card can be edited on a PC, and a word this build does
             // not know is more likely a newer build's than a mistake.
+            continue;
+        }
+        if (key == "difficulty") {
+            Difficulty level = Difficulty::Normal;
+            if (difficultyFromToken(value, &level)) {
+                out->difficulty = level;
+            }
+            continue;
+        }
+        if (key == "fix_ore_generation") {
+            boolFromToken(value, &out->fixOreGeneration);
+            continue;
+        }
+        if (key == "fix_bedrock_hole") {
+            boolFromToken(value, &out->fixBedrockHole);
+            continue;
+        }
+        if (key == "improved_fence_placement") {
+            boolFromToken(value, &out->improvedFencePlacement);
+            continue;
+        }
+        if (key == "texture_pack") {
+            // Kept verbatim, including a name this console has no pack for:
+            // the card may have been carried from one that does, and a pack
+            // that is missing today is a row the menu draws as missing rather
+            // than a choice to forget on the player's behalf.
+            out->texturePack.assign(value);
+            continue;
+        }
+        if (key == "panorama_tile_x") {
+            int tile = 0;
+            if (parseInt(value, &tile)) {
+                out->panoramaTileX = i32(tile);
+            }
+            continue;
+        }
+        if (key == "panorama_tile_z") {
+            int tile = 0;
+            if (parseInt(value, &tile)) {
+                out->panoramaTileZ = i32(tile);
+            }
             continue;
         }
         // Unknown keys are dropped, and saving will not write them back. Said
@@ -126,6 +238,32 @@ bool saveWorldSettings(io::FileSystem& fs, std::string_view worldDir,
     text += "# a real client ignores this file. Rewritten by the game.\n";
     text += "gamemode=";
     text += gamemodeToken(settings.gamemode);
+    text += '\n';
+    text += "difficulty=";
+    text += difficultyToken(settings.difficulty);
+    text += '\n';
+
+    // The Extra Settings rows. Written unconditionally rather than only when
+    // they differ from the default, so a player who opens this file on a PC
+    // sees the whole set and can tell an off switch from a key this build did
+    // not know about.
+    text += "fix_ore_generation=";
+    text += boolToken(settings.fixOreGeneration);
+    text += '\n';
+    text += "fix_bedrock_hole=";
+    text += boolToken(settings.fixBedrockHole);
+    text += '\n';
+    text += "improved_fence_placement=";
+    text += boolToken(settings.improvedFencePlacement);
+    text += '\n';
+    text += "texture_pack=";
+    text += settings.texturePack;
+    text += '\n';
+    text += "panorama_tile_x=";
+    text += std::to_string((long long)settings.panoramaTileX);
+    text += '\n';
+    text += "panorama_tile_z=";
+    text += std::to_string((long long)settings.panoramaTileZ);
     text += '\n';
 
     const std::string path = worldSettingsPath(worldDir);

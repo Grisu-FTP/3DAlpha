@@ -208,10 +208,17 @@ bool collectChildren(void* context, const io::DirEntry& entry)
     return true;
 }
 
+struct MeasureStop {
+    void* context = nullptr;
+    SizeScanContinue keepGoing = nullptr;
+
+    bool asked() const { return keepGoing == nullptr || keepGoing(context); }
+};
+
 bool measureTree(io::FileSystem& fs, const std::string& path, u64 clusterSize,
-                 WorldSize* out, int depth)
+                 const MeasureStop& stop, WorldSize* out, int depth)
 {
-    if (depth > kMaxDeleteDepth) {
+    if (depth > kMaxDeleteDepth || !stop.asked()) {
         return false;
     }
     Children found;
@@ -226,9 +233,15 @@ bool measureTree(io::FileSystem& fs, const std::string& path, u64 clusterSize,
     out->onDiskBytes += clusterSize;
 
     for (const auto& entry : found.entries) {
+        // **Between entries, not between directories.** A leaf directory is a
+        // stat per chunk file, so a scan asked to stop inside one should stop
+        // inside one rather than finish the 1,024 stats it is in the middle of.
+        if (!stop.asked()) {
+            return false;
+        }
         const std::string child = path + "/" + entry.first;
         if (entry.second) {
-            if (!measureTree(fs, child, clusterSize, out, depth + 1)) {
+            if (!measureTree(fs, child, clusterSize, stop, out, depth + 1)) {
                 return false;
             }
             continue;
@@ -284,7 +297,8 @@ bool copyTree(io::FileSystem& fs, const std::string& source, const std::string& 
 
 }  // namespace
 
-bool worldSize(io::FileSystem& fs, std::string_view worldDir, WorldSize* out)
+bool worldSize(io::FileSystem& fs, std::string_view worldDir, WorldSize* out,
+               void* context, SizeScanContinue keepGoing)
 {
     *out = WorldSize();
 
@@ -295,7 +309,8 @@ bool worldSize(io::FileSystem& fs, std::string_view worldDir, WorldSize* out)
     const u64 clusterSize = io::queryVolumeInfo(std::string(worldDir).c_str(), &volume)
                                 ? volume.clusterSize
                                 : 0;
-    return measureTree(fs, std::string(worldDir), clusterSize, out, 0);
+    const MeasureStop stop{context, keepGoing};
+    return measureTree(fs, std::string(worldDir), clusterSize, stop, out, 0);
 }
 
 bool copyWorld(io::FileSystem& fs, std::string_view sourceDir, std::string_view targetDir)

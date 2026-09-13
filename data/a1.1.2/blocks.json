@@ -21,8 +21,10 @@
     "`slipperiness` is Block.slipperiness, the ground friction EntityLiving.moveEntityWithHeading multiplies by 0.91. 0.6 everywhere but ice.",
     "`targetable` is Block.canCollideCheck -- isCollidable() in a1.1.2 -- which decides whether a ray notices the block at all. False only for water, lava and fire.",
     "`tick` names the block's behaviour. The two signs get one name each and so do the two pressure plates, rather than sharing one apiece: a sign post asks what is under it and a wall sign asks the face its metadata names, and `lr` tells them apart by a boolean constructor argument this table has nowhere else to put. Likewise for the plates: `al`'s third constructor argument is a `js` (EnumMobType), and the jar passes `js.b` (\"mobs\") for block 70 and `js.a` (\"everything\") for block 72 -- so a dropped item presses the wooden plate and not the stone one.",
+    "`contact` is what `ly.b(Lcn;IIILkh;)V` -- onEntityCollidedWithBlock -- does to an entity whose box overlaps the block, called from the tail of `kh.c(DDD)V` for every cell it touches. Two classes override it in a1.1.2: `hy`, the cactus, whose whole body is attackEntityFrom(null, 1), and `al`, both pressure plates. Absent means the base class, which does nothing. See src/core/block/block_def.hpp.",
     "`stepSound` names one of `stepSounds`, by the field letter Block stores the singleton in -- the same shape `material` uses. `step` is what walking on the block plays and what *placing* it plays; `break` is what breaking it plays, and the two differ only for sand (which breaks like gravel) and glass.",
-    "`model` is the block a block is built from (a Block-typed constructor argument): a staircase's planks or cobblestone, which it turns into with something solid on top of it."
+    "`model` is the block a block is built from (a Block-typed constructor argument): a staircase's planks or cobblestone, which it turns into with something solid on top of it.",
+    "`worldTexture` names the rule a block's faces follow when the tile depends on a *neighbouring* cell rather than on the block itself -- the one thing `faces` cannot carry, since it is a table and this is a question about the world. It is ours and assigned by hand, as `tick` is: the extractor can only report which faces need the world (`worldDependentFaces`), because the rule is a branch and not a value. The extractor names four ids (2, 53, 54, 67); the two staircases are there only because they forward to a model block whose world overload reads the metadata and then ignores it, so the blocks that genuinely read a *neighbour* are grass and the chest, and the chest is the one that is ported -- `b.a(Lnm;IIII)I` turns its front away from the blocks around it and joins a neighbouring chest into one two-cell picture. See src/core/block/world_texture.hpp."
   ],
   "version": "a1.1.2",
   "renderTypes": [
@@ -941,6 +943,7 @@
       "id": 52,
       "name": "mob_spawner",
       "render": "cube",
+      "tick": "mob_spawner",
       "shape": "full_cube",
       "slipperiness": 0.6,
       "targetable": true,
@@ -1003,6 +1006,8 @@
         26
       ],
       "opaqueCube": true,
+      "worldTexture": "chest",
+      "tick": "chest",
       "canBurn": true,
       "stepSound": "f"
     },
@@ -1075,6 +1080,7 @@
     {
       "id": 58,
       "name": "crafting_table",
+      "tick": "workbench",
       "render": "cube",
       "shape": "full_cube",
       "slipperiness": 0.6,
@@ -1638,6 +1644,7 @@
       "tickRandomly": true,
       "tickRate": 20,
       "tick": "pressure_plate_mobs",
+      "contact": "pressure_plate",
       "stepSound": "i"
     },
     {
@@ -1688,6 +1695,7 @@
       "tickRandomly": true,
       "tickRate": 20,
       "tick": "pressure_plate_all",
+      "contact": "pressure_plate",
       "stepSound": "f"
     },
     {
@@ -1906,6 +1914,7 @@
       "opaqueCube": false,
       "tickRandomly": true,
       "tick": "cactus",
+      "contact": "hurt",
       "stepSound": "l"
     },
     {

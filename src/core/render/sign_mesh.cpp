@@ -11,7 +11,9 @@
 namespace mc::render {
 namespace {
 
-constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
+// See kSignUnitsPerBlock: coarser than the other entity meshes, so the short
+// reaches as far as the game draws a sign.
+constexpr double kUnits = double(kSignUnitsPerBlock);
 constexpr double kLimit = 32000.0 / kUnits;
 
 constexpr float kPi = 3.1415927f;
@@ -105,8 +107,14 @@ SignFrame frameOf(const world::SignText& sign, double originX, double originY,
     f.x = px - originX;
     f.y = py - originY;
     f.z = pz - originZ;
-    *inRange = !(f.x < -kLimit || f.x > kLimit || f.y < -kLimit || f.y > kLimit
-                 || f.z < -kLimit || f.z > kLimit);
+    // The dispatcher's distance, measured from the sign's own block rather
+    // than from the board's stepped-back corner, and then the short's reach.
+    const double cx = double(sign.x) + 0.5 - originX;
+    const double cy = double(sign.y) + 0.5 - originY;
+    const double cz = double(sign.z) + 0.5 - originZ;
+    *inRange = cx * cx + cy * cy + cz * cz < kSignDrawDistanceSq
+               && !(f.x < -kLimit || f.x > kLimit || f.y < -kLimit || f.y > kLimit
+                    || f.z < -kLimit || f.z > kLimit);
 
     // **`glScalef(f, -f, -f)`**, which is not the `(-1, -1, 1)` every entity
     // model gets: a sign is mirrored on z rather than on x. Times the model
@@ -186,14 +194,21 @@ int buildSignBoards(const world::SignStore& store, double originX, double origin
             continue;
         }
 
+        // **`buildBox` writes the detail format's own 1/1024**, and the draw
+        // scales everything by `kSignUnitScale` -- so the board has to be
+        // handed in already shrunk by the same factor, origin and axes both.
+        // Unshrunk, the board and post were drawn twice as far from the eye's
+        // block as they are, sliding the opposite way from every step the
+        // player took while the text stayed put.
+        const double shrink = 1.0 / double(kSignUnitScale);
         Placement place;
-        place.x = f.x;
-        place.y = f.y;
-        place.z = f.z;
+        place.x = f.x * shrink;
+        place.y = f.y * shrink;
+        place.z = f.z * shrink;
         for (int a = 0; a < 3; ++a) {
-            place.ax[a] = f.ax[a];
-            place.ay[a] = f.ay[a];
-            place.az[a] = f.az[a];
+            place.ax[a] = float(double(f.ax[a]) * shrink);
+            place.ay[a] = float(double(f.ay[a]) * shrink);
+            place.az[a] = float(double(f.az[a]) * shrink);
         }
 
         const u8 light = sign.light;

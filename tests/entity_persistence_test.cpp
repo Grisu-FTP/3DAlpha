@@ -1,6 +1,7 @@
 // Entity saves exercise the real level codec and streamer save boundaries:
 // an entity-only edit must survive both autosave and closing the world.
 #include "framework.hpp"
+#include "core/entity/mob.hpp"
 #include "core/entity/persistence.hpp"
 #include "core/entity/player_body.hpp"
 #include "core/block/registry.hpp"
@@ -11,6 +12,7 @@
 #include "low_heap.hpp"
 #include "scene_world.hpp"
 
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
@@ -25,9 +27,11 @@ struct Pools {
     entity::MinecartSystem minecarts{4};
     entity::ItemEntitySystem items{5};
     entity::FallingBlockSystem falling;
+    entity::PrimedTntSystem tnt{7};
+    entity::MobSystem mobs{6};
     entity::EntityPools bindings()
     {
-        return {&paintings, &arrows, &boats, &minecarts, &items, &falling};
+        return {&paintings, &arrows, &boats, &minecarts, &items, &falling, &tnt, &mobs};
     }
 };
 std::shared_ptr<entity::PersistentEntities> sample()
@@ -65,6 +69,58 @@ std::shared_ptr<entity::PersistentEntities> sample()
     f.setPosition(1, 68, 2); f.block = block::BlockId(mcver::Block::Sand);
     f.fallTime = 7; f.motionY = -0.28;
     s->fallingBlocks.push(f);
+
+    // TNT part way through its fuse. The counter is the whole of what `jd`
+    // saves and is the one field here that decides whether the world comes
+    // back with a blast still coming.
+    entity::PrimedTnt t{};
+    t.setPosition(-6.5, 70.0, 11.5); t.active = true;
+    t.fuse = 37; t.motionY = 0.12; t.motionZ = -0.02;
+    s->primedTnt.push(t);
+
+    // Four animals, one of each, each carrying the state that is its own: a
+    // saddled pig, a shorn sheep, a hurt cow that has been alive a while, and a
+    // chicken part way to its next egg.
+    entity::Mob pig{};
+    pig.alive = true; pig.type = entity::MobType::Pig; pig.health = 7;
+    pig.body.setSize(0.9f, 0.9f, 0.0f); pig.body.setFeet(3.5, 64.0, -4.5);
+    pig.body.motionX = 0.11; pig.flag = true; pig.yaw = 42.0f;
+    s->mobs.push(pig);
+    entity::Mob sheep{};
+    sheep.alive = true; sheep.type = entity::MobType::Sheep;
+    sheep.health = 10; sheep.body.setSize(0.9f, 1.3f, 0.0f);
+    sheep.body.setFeet(-8.5, 64.0, 12.5); sheep.flag = true;
+    s->mobs.push(sheep);
+    entity::Mob cow{};
+    cow.alive = true; cow.type = entity::MobType::Cow; cow.health = 6;
+    cow.body.setSize(0.9f, 1.3f, 0.0f); cow.body.setFeet(0.5, 70.0, 0.5);
+    cow.entityAge = 4000;
+    s->mobs.push(cow);
+    entity::Mob chicken{};
+    chicken.alive = true; chicken.type = entity::MobType::Chicken; chicken.health = 4;
+    chicken.body.setSize(0.3f, 0.4f, 0.0f); chicken.body.setFeet(6.5, 64.0, 6.5);
+    chicken.eggTime = 7321;
+    s->mobs.push(chicken);
+
+    // Three monsters, each carrying the state that is its own: a creeper part
+    // way through its fuse, a slime of a size its box has to be rebuilt from,
+    // and a skeleton on the slime's back so the jockey's index has something to
+    // survive.
+    entity::Mob creeper{};
+    creeper.alive = true; creeper.type = entity::MobType::Creeper; creeper.health = 13;
+    creeper.body.setSize(0.6f, 1.8f, 0.0f); creeper.body.setFeet(20.5, 40.0, -11.5);
+    creeper.fuse = 17; creeper.creeperState = 1; creeper.targetingPlayer = true;
+    s->mobs.push(creeper);
+    entity::Mob slime{};
+    slime.alive = true; slime.type = entity::MobType::Slime; slime.health = 16;
+    slime.slimeSize = 4; slime.body.setSize(2.4f, 2.4f, 0.0f);
+    slime.body.setFeet(-30.5, 12.0, 7.5); slime.hopDelay = 9;
+    s->mobs.push(slime);
+    entity::Mob jockey{};
+    jockey.alive = true; jockey.type = entity::MobType::Skeleton; jockey.health = 20;
+    jockey.body.setSize(0.6f, 1.8f, 0.0f); jockey.body.setFeet(-30.5, 13.0, 7.5);
+    jockey.mountIndex = 5;  // the slime, which is the sixth mob pushed
+    s->mobs.push(jockey);
     return s;
 }
 struct TempDir {
@@ -109,12 +165,65 @@ TEST(entity_persistence_restores_all_pools_and_simulation_state)
     CHECK_EQ(pools.items[0].pickupDelay, 9);
     CHECK_EQ(pools.falling[0].fallTime, 7);
     CHECK_EQ(pools.falling[0].motionY, -0.28);
+    CHECK_EQ(pools.tnt.count(), 1);
+    CHECK_EQ(pools.tnt[0].fuse, 37);
+    CHECK_EQ(pools.tnt[0].motionZ, -0.02);
+    CHECK_EQ(pools.tnt[0].prevY, pools.tnt[0].y);
+
+    // The animals, and the things about them that are not a position: the one
+    // boolean each kind uses, the despawn clock and the egg clock.
+    CHECK_EQ(pools.mobs.count(), 7);
+    CHECK(pools.mobs[0].type == entity::MobType::Pig);
+    CHECK_EQ(pools.mobs[0].health, 7);
+    CHECK(pools.mobs[0].flag);  // saddled
+    CHECK_EQ(pools.mobs[0].body.x, 3.5);
+    CHECK_EQ(pools.mobs[0].body.motionX, 0.11);
+    CHECK_EQ(double(pools.mobs[0].yaw), 42.0);
+    // **Nothing is riding it after a reload**, exactly as a boat is not.
+    CHECK_EQ(pools.mobs.riddenIndex(), -1);
+    CHECK(pools.mobs[1].flag);  // shorn, and it stays shorn
+    CHECK_EQ(pools.mobs[2].health, 6);
+    CHECK_EQ(pools.mobs[2].entityAge, 4000);
+    CHECK_EQ(pools.mobs[3].eggTime, 7321);
+    // The box is rebuilt from the type rather than saved as a size.
+    CHECK(std::abs((pools.mobs[2].body.box.maxY - pools.mobs[2].body.box.minY)
+                   - double(entity::mobDef(entity::MobType::Cow).height))
+          < 1e-6);
+
+    // The monsters. A creeper keeps its fuse -- a reloaded world should not
+    // hand back a lit creeper with the timer reset -- and `prevFuse` comes back
+    // equal to it, because the renderer interpolates between the two and a
+    // reload has no previous tick.
+    CHECK(pools.mobs[4].type == entity::MobType::Creeper);
+    CHECK_EQ(int(pools.mobs[4].fuse), 17);
+    CHECK_EQ(int(pools.mobs[4].prevFuse), 17);
+    CHECK_EQ(int(pools.mobs[4].creeperState), 1);
+    CHECK(pools.mobs[4].targetingPlayer);
+
+    // **A slime's box is its size, not the table's**, so this is the one row
+    // whose dimensions cannot be rebuilt from `MobDef`.
+    CHECK(pools.mobs[5].type == entity::MobType::Slime);
+    CHECK_EQ(int(pools.mobs[5].slimeSize), 4);
+    CHECK_EQ(int(pools.mobs[5].health), 16);
+    CHECK(std::abs((pools.mobs[5].body.box.maxY - pools.mobs[5].body.box.minY)
+                   - double(entity::kSlimeSizeUnit * 4.0f))
+          < 1e-6);
+    CHECK_EQ(int(pools.mobs[5].hopDelay), 9);
+
+    // The jockey's index survives because the pool is written and read in
+    // order.
+    CHECK_EQ(int(pools.mobs[6].mountIndex), 5);
 
     // Opening a world restores entities before any columns are resident.
     test::SceneWorld scene{100, 100};
     pools.falling.tick(scene.w());
     CHECK_EQ(pools.falling.count(), 1);
     CHECK_EQ(pools.falling[0].fallTime, 7);
+    // The same for TNT, and it matters more: a fuse that ran down over an
+    // unloaded chunk would go off the moment the world came back.
+    pools.tnt.tick(scene.w());
+    CHECK_EQ(pools.tnt.count(), 1);
+    CHECK_EQ(pools.tnt[0].fuse, 37);
 }
 
 TEST(entity_persistence_rejects_truncation_and_drops_nonfinite_entities)
@@ -148,6 +257,8 @@ TEST(entity_persistence_rejects_truncation_and_drops_nonfinite_entities)
     CHECK_EQ(decoded.entities->boats.count(), 1);
     CHECK_EQ(decoded.entities->items.count(), 1);
     CHECK_EQ(decoded.entities->fallingBlocks.count(), 1);
+    CHECK_EQ(decoded.entities->primedTnt.count(), 1);
+    CHECK_EQ(decoded.entities->primedTnt[0].fuse, 37);
 }
 
 TEST(entity_persistence_puts_a_nonfinite_player_back_at_spawn)

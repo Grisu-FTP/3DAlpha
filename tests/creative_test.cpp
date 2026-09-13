@@ -66,7 +66,7 @@ TEST(palette_offers_every_item_this_version_defines)
     }
 
     // **And it really is everything, not most things.** The palette used to
-    // require `places != 0`, which offered 63 of the table's 147 rows and left
+    // require `places != 0`, which offered 63 of the table's 149 rows and left
     // the swords, the ingots, the smelted ores and every piece of armour out of
     // a Creative hand -- which is where they are put into a chest, into a save,
     // or on the ground. The two exclusions that remain are both duplicates:
@@ -77,6 +77,7 @@ TEST(palette_offers_every_item_this_version_defines)
             ++known;
         }
     }
+    known += mcver::kItemsOutsideTable;
     CHECK(paletteSize() > known / 2);
     CHECK(paletteSize() < known);
 
@@ -85,6 +86,49 @@ TEST(palette_offers_every_item_this_version_defines)
     CHECK(sword != 0);
     CHECK_EQ(int(item::def(sword).places), 0);
     CHECK(paletteIndexOf(sword) >= 0);
+}
+
+TEST(the_two_music_discs_are_in_the_table_and_in_the_palette)
+{
+    // **They are 1,910 ids past the end of the item run**, so they are not rows
+    // of the contiguous array -- they reach `item::def` through a two-entry
+    // side table. Before that they had no icon and no name, and one in a hotbar
+    // slot drew as an empty slot.
+    //
+    // They are obtainable: `dd.b(Lkh;)V` drops one when a **skeleton** kills a
+    // creeper, and that is a1.1.2's only source of a record. So a drop that
+    // could not be drawn was a real hole and not a curiosity.
+    CHECK_EQ(mcver::kItemsOutsideTable, 2);
+
+    for (const ItemId id : {ItemId(2256), ItemId(2257)}) {
+        const item::ItemDef& def = item::def(id);
+        CHECK(def.known);
+        CHECK(def.palette);
+        // An icon on the items sheet, which is what draws it: `di.aQ.a(240)`
+        // and `di.aR.a(241)` in the class file.
+        CHECK(def.sheet == item::IconSheet::Items);
+        CHECK(def.icon >= 240);
+        // A record does not stack -- `lg`'s constructor sets `maxStackSize` to
+        // 1 -- and it places no block.
+        CHECK_EQ(int(def.stack), 1);
+        CHECK_EQ(int(def.places), 0);
+        // Named, rather than `item_2256`. `lg`'s second argument is the record
+        // name that `World.playRecord` takes, and `getItemName` is null for
+        // both, which is why they used to fall through to the id.
+        CHECK(std::string(def.name).rfind("record_", 0) == 0);
+        // And in the palette, findable both ways.
+        const int at = paletteIndexOf(id);
+        CHECK(at >= 0);
+        CHECK_EQ(int(paletteItem(at)), int(id));
+    }
+
+    // They are the last two, because the palette is in id order.
+    CHECK_EQ(int(paletteItem(paletteSize() - 2)), 2256);
+    CHECK_EQ(int(paletteItem(paletteSize() - 1)), 2257);
+
+    // An id in neither the array nor the side table is still the unknown item
+    // rather than a read past the end.
+    CHECK(!item::def(ItemId(9999)).known);
 }
 
 TEST(palette_is_in_id_order_and_invertible)
@@ -447,4 +491,100 @@ TEST(inventory_load_forgets_the_last_world)
     // Every modelled slot is empty again, and only the stranger came across.
     CHECK(inventory.empty());
     CHECK_EQ(int(inventory.unmodelled.size()), 1);
+}
+
+TEST(a_creative_quick_move_crosses_between_hand_and_backpack_topping_up_first)
+{
+    Inventory inventory;
+    inventory.clear();
+    const ItemId stone = paletteItem(0);
+    const int ceiling = int(item::def(stone).stack);
+    CHECK(ceiling > 10);
+
+    // The hand's stack tops up the backpack's before it takes an empty cell.
+    inventory.set(kHotbarSlots + 4, stone, i8(ceiling - 3));
+    inventory.set(2, stone, 10);
+    CHECK(inventory.quickMove(2));
+    CHECK_EQ(int(inventory.main[kHotbarSlots + 4].count), ceiling);
+    CHECK_EQ(int(inventory.main[kHotbarSlots].id), int(stone));
+    CHECK_EQ(int(inventory.main[kHotbarSlots].count), 7);
+    CHECK_EQ(int(inventory.main[kHotbarSlots].slot), kHotbarSlots);
+    CHECK(inventory.main[2].empty());
+    CHECK_EQ(int(inventory.main[2].slot), 2);
+
+    // And back: the backpack goes to the hand's first empty slot.
+    CHECK(inventory.quickMove(kHotbarSlots));
+    CHECK_EQ(int(inventory.main[0].id), int(stone));
+    CHECK_EQ(int(inventory.main[0].count), 7);
+    CHECK(inventory.main[kHotbarSlots].empty());
+
+    // A full hand leaves the stack where it was.
+    const ItemId dirt = paletteItem(2);
+    for (int i = 0; i < kHotbarSlots; ++i) {
+        inventory.set(i, dirt, 1);
+    }
+    inventory.set(kHotbarSlots + 5, stone, 4);
+    CHECK(!inventory.quickMove(kHotbarSlots + 5));
+    CHECK_EQ(int(inventory.main[kHotbarSlots + 5].count), 4);
+    CHECK(!inventory.quickMove(kHotbarSlots + 6));
+}
+
+TEST(a_creative_quick_move_puts_armour_on_and_takes_it_off)
+{
+    using mc::item::ItemDef;
+    ItemId boots = 0;
+    for (int id = 1; id < mcver::kItemTableSize && boots == 0; ++id) {
+        const ItemDef& d = item::def(ItemId(id));
+        if (d.known && d.armour == 3) {
+            boots = ItemId(id);
+        }
+    }
+    CHECK(boots != 0);
+    const int bootsSlot = Inventory::armourSlotFor(boots);
+
+    Inventory inventory;
+    inventory.clear();
+    inventory.set(kHotbarSlots + 3, boots, 1);
+    CHECK(inventory.quickMove(kHotbarSlots + 3));
+    CHECK_EQ(int(inventory.at(bootsSlot).id), int(boots));
+    CHECK_EQ(int(inventory.at(bootsSlot).slot), bootsSlot);
+    CHECK(inventory.main[kHotbarSlots + 3].empty());
+
+    // A second pair has nowhere to be worn and crosses to the hand instead.
+    inventory.set(kHotbarSlots + 3, boots, 1);
+    CHECK(inventory.quickMove(kHotbarSlots + 3));
+    CHECK_EQ(int(inventory.main[0].id), int(boots));
+
+    // Off again: the backpack before the hand.
+    CHECK(inventory.quickMove(bootsSlot));
+    CHECK(inventory.at(bootsSlot).empty());
+    CHECK_EQ(int(inventory.main[kHotbarSlots].id), int(boots));
+}
+
+TEST(a_palette_quick_move_gives_a_full_stack_to_the_hand_then_the_backpack)
+{
+    Inventory inventory;
+    inventory.clear();
+    const ItemId stone = paletteItem(0);
+    const int ceiling = int(item::def(stone).stack);
+    const int full = ceiling < 64 ? ceiling : 64;
+
+    inventory.set(4, stone, i8(full - 1));
+    CHECK(inventory.giveStack(stone));
+    CHECK_EQ(int(inventory.main[4].count), full);
+    CHECK_EQ(int(inventory.main[0].id), int(stone));
+    CHECK_EQ(int(inventory.main[0].count), full - 1);
+
+    // A full hand spills into the backpack; a full inventory takes nothing.
+    const ItemId dirt = paletteItem(2);
+    for (int i = 0; i < kHotbarSlots; ++i) {
+        inventory.set(i, dirt, i8(full));
+    }
+    CHECK(inventory.giveStack(stone));
+    CHECK_EQ(int(inventory.main[kHotbarSlots].count), full);
+    for (int i = 0; i < kMainSlots; ++i) {
+        inventory.set(i, dirt, i8(full));
+    }
+    CHECK(!inventory.giveStack(stone));
+    CHECK(!inventory.giveStack(0));
 }

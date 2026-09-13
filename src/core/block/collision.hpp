@@ -106,6 +106,29 @@ inline AABB selectionBox(BlockId id, u8 metadata)
                 double(b[3]), double(b[4]), double(b[5])};
 }
 
+// **The shape a block is drawn as when it is an item**, which is neither of the
+// other two: `RenderBlocks.renderBlockAsItem` calls
+// `Block.setBlockBoundsForItemRender` on the singleton and draws what that
+// leaves behind. There is no metadata anywhere on that path -- a hand, an
+// inventory slot and a dropped stack all hold a bare id -- so this table is one
+// box per block.
+//
+// `Block`'s own method is empty, so for all but three blocks this is the
+// constructor's bounds and agrees with `selectionBox(id, 0)`. The three are the
+// button and the two pressure plates, whose classes override it, and they are
+// exactly the blocks whose world shape is written in
+// `setBlockBoundsBasedOnState` and is therefore a **leftover** at metadata 0 --
+// which is why reading the selection table for them put a full stone cube in
+// the hand where a1.1.2 draws a button. Measured, not reasoned: see
+// `kItemRenderBoxes` in tests/collision_box_vectors.hpp.
+inline AABB itemRenderBox(BlockId id)
+{
+    const int shape = id < mcver::kSelectionIndexSize ? int(mcver::kItemRenderIndex[id]) : 0;
+    const float* b = mcver::kSelectionShapes[shape];
+    return AABB{double(b[0]), double(b[1]), double(b[2]),
+                double(b[3]), double(b[4]), double(b[5])};
+}
+
 // **What the struck face makes of a block a player puts down.**
 // `Block.onBlockPlaced`, which `ItemBlock.onItemUse` runs straight after
 // `setBlockWithNotify` -- so a torch clicked onto a wall becomes a wall torch.

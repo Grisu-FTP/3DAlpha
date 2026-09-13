@@ -342,3 +342,27 @@ TEST(a_swing_bends_the_item_away_from_where_it_rests)
     // And it is still on the right-hand side of the screen while it swings.
     CHECK(mx > 0.0);
 }
+
+TEST(a_button_in_the_hand_is_smaller_than_the_stone_it_is_made_of)
+{
+    // The other half of "the stone button is a normal stone block in the
+    // inventory and hand". The hand draws `block::itemRenderBoxes`, which for a
+    // button is `setBlockBoundsForItemRender`'s six-by-four-by-four box and not
+    // the full cube its world bounds hold at metadata 0.
+    const Built button = build(ItemId(mcver::Block::StoneButton), 1.0f, 0.0f);
+    const Built stone = build(ItemId(mcver::Block::Stone), 1.0f, 0.0f);
+    CHECK(button.mesh.sheet == HeldSheet::Terrain);
+    CHECK_EQ(button.mesh.vertices, stone.mesh.vertices);
+
+    const auto widest = [](const std::vector<mesh::DetailVertex>& verts) {
+        i16 lo = verts.front().x;
+        i16 hi = verts.front().x;
+        for (const mesh::DetailVertex& v : verts) {
+            lo = v.x < lo ? v.x : lo;
+            hi = v.x > hi ? v.x : hi;
+        }
+        return int(hi) - int(lo);
+    };
+    CHECK(widest(button.verts) > 0);
+    CHECK(widest(button.verts) < widest(stone.verts));
+}

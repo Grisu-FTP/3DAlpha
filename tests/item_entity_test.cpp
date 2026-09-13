@@ -8,7 +8,10 @@
 // and that the inventory arithmetic underneath is
 // `addItemStackToInventory`'s.
 
+#include "core/entity/explosion.hpp"
+#include "core/entity/fire_entry.hpp"
 #include "core/entity/item_entity.hpp"
+#include "core/entity/mob.hpp"
 #include "core/item/creative_palette.hpp"
 #include "core/item/inventory.hpp"
 #include "core/item/registry.hpp"
@@ -161,7 +164,7 @@ TEST(a_drop_the_heap_will_not_hold_replaces_the_oldest_item)
     // refusal is a drop that silently never appears.
     Ground g;
     // One item left to age on its own, then the rest spawned fresh with no tick
-    // after -- so it is the single oldest and nothing has merged.
+    // after -- so it is the single oldest.
     CHECK(g.items.spawn(g.world.w(), 0.5, 66.0, 0.5, stoneItem(), 1, 0));
     for (int t = 0; t < 100; ++t) {
         g.items.tick(g.world.w());
@@ -270,97 +273,65 @@ TEST(adding_to_a_full_inventory_gives_the_whole_stack_back)
 }
 
 // ---------------------------------------------------------------------------
-// Merging, and the clock that only runs while somebody is there
+// Two heaps stay two heaps, and the clock that only runs while somebody is
+// there
 // ---------------------------------------------------------------------------
 //
-// Neither of these is a1.1.2's: this version's `dx.e_()` has no merge step at
-// all, and its entities live inside chunks rather than in a flat pool. Both
-// are marked as deviations in core/entity/item_entity.hpp; what the tests pin
-// is the *later* version's arithmetic, which is what they were transcribed
-// from.
+// **Nothing merges on the ground**, which is a1.1.2's own behaviour: `dx.e_()`
+// has no such step and no version does until `EntityItem.combineItems` in
+// 1.3.1. These tests pin that, because the merge was once here and was taken
+// out again. The residency rule below is the deviation, and it is marked as
+// one in core/entity/item_entity.hpp.
 
-TEST(two_stacks_of_the_same_item_lying_together_become_one)
+TEST(two_stacks_of_the_same_item_lying_together_stay_two)
 {
     Ground g;
     CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), 3, 0));
     CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), 5, 0));
     CHECK_EQ(g.items.count(), 2);
 
-    g.run(1);
-    CHECK_EQ(g.items.count(), 1);
-    CHECK_EQ(g.items[0].count, 8);
+    // Long enough to pass every multiple of 25 the merge scan used to wake on.
+    g.run(120);
+    CHECK_EQ(g.items.count(), 2);
+    CHECK_EQ(g.items[0].count, 3);
+    CHECK_EQ(g.items[1].count, 5);
 }
 
-TEST(the_survivor_of_a_merge_keeps_the_younger_age)
+TEST(a_heap_of_like_stacks_stays_a_heap)
 {
-    // `entityitem.age = Math.min(entityitem.age, age)`. Without it a fresh
-    // stack thrown on to a four-minute-old one inherits four minutes and
-    // vanishes under the player's feet.
+    // The pile a broken chest or a Creative handful leaves: eight stacks of one
+    // item in one block, and eight entities five minutes later. This is the
+    // thing the merge was there to shrink, so it is the thing that pins its
+    // absence.
+    Ground g;
+    for (int i = 0; i < 8; ++i) {
+        CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), 1, 0));
+    }
+    g.run(120);
+    CHECK_EQ(g.items.count(), 8);
+    for (int i = 0; i < g.items.count(); ++i) {
+        CHECK_EQ(g.items[i].count, 1);
+    }
+}
+
+TEST(an_old_stack_does_not_have_its_clock_reset_by_a_fresh_one)
+{
+    // The merge kept the younger of the two ages, so a fresh stack thrown on to
+    // an old one used to hold the pair open. Without it each stack despawns on
+    // its own clock, which is what the original does.
     Ground g;
     CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), 1, 0));
     g.run(500);
     CHECK_EQ(g.items.count(), 1);
-    CHECK(g.items[0].age >= 500);
+    const int old = g.items[0].age;
+    CHECK(old >= 500);
 
-    // Land the second one on top of the first, and give the pair a tick on a
-    // multiple of 25 to find each other.
     CHECK(g.items.spawn(g.world.w(), g.items[0].x, g.items[0].y, g.items[0].z,
                         stoneItem(), 1, 0));
-    for (int i = 0; i < 30 && g.items.count() > 1; ++i) {
-        g.items.tick(g.world.w());
-    }
-    CHECK_EQ(g.items.count(), 1);
-    CHECK_EQ(g.items[0].count, 2);
-    CHECK(g.items[0].age < 100);
-}
-
-TEST(two_stacks_that_would_overflow_a_slot_do_not_merge)
-{
-    // `if (itemstack1.stackSize + itemstack.stackSize > itemstack1.getMaxStackSize())
-    //      return false;` -- a merge never leaves a stack over the ceiling, and
-    // never splits the remainder either.
-    Ground g;
-    const int limit = int(item::def(stoneItem()).stack);
-    CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), limit, 0));
-    CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), 1, 0));
-
-    g.run(60);
+    g.run(30);
     CHECK_EQ(g.items.count(), 2);
-}
-
-TEST(two_different_items_lying_together_stay_two)
-{
-    Ground g;
-    CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, item::paletteItem(0), 1, 0));
-    CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, item::paletteItem(1), 1, 0));
-    CHECK(item::paletteItem(0) != item::paletteItem(1));
-
-    g.run(60);
-    CHECK_EQ(g.items.count(), 2);
-}
-
-TEST(a_worn_stack_does_not_merge_with_a_fresh_one)
-{
-    // The damage half of the same rule, which `Inventory::addStack` already
-    // applies at the other end of the journey.
-    Ground g;
-    CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), 1, 0));
-    CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), 1, 7));
-
-    g.run(60);
-    CHECK_EQ(g.items.count(), 2);
-}
-
-TEST(items_far_enough_apart_do_not_reach_each_other)
-{
-    // `boundingBox.expand(0.5, 0.0, 0.5)`. Two heaps two blocks apart are two
-    // heaps.
-    Ground g;
-    CHECK(g.items.spawn(g.world.w(), 0.5, 65.0, 0.5, stoneItem(), 1, 0));
-    CHECK(g.items.spawn(g.world.w(), 4.5, 65.0, 0.5, stoneItem(), 1, 0));
-
-    g.run(60);
-    CHECK_EQ(g.items.count(), 2);
+    CHECK(g.items[0].age >= old + 30);
+    CHECK(g.items[1].age <= 30);
 }
 
 TEST(an_item_outside_a_loaded_column_does_not_age_out)
@@ -419,18 +390,203 @@ TEST(an_item_beside_lava_rather_than_in_it_survives)
     CHECK_EQ(g.items.count(), 1);
 }
 
-TEST(fire_does_not_burn_a_dropped_item)
+TEST(fire_burns_up_a_dropped_item)
 {
-    // **a1.1.2's, and it surprises.** Nothing in the client sets an entity's
-    // fire counter except the lava branch above: `og` has no
-    // `onEntityCollidedWithBlock` at all and no class outside `kh` writes
-    // `kh.aT`. So a stack lying in a flame is untouched. Pinned rather than
-    // left as a gap, because "fire should burn items" is what everybody
-    // expects and the evidence says otherwise.
+    // **`moveEntity`'s tail is what lights it**, and this test used to say the
+    // opposite. The old reading was that nothing in a1.1.2 can set an entity's
+    // fire counter except the lava branch, because `og` has no
+    // `onEntityCollidedWithBlock` and no class outside `kh` writes `kh.aT`.
+    // Both are true; the conclusion was wrong. `kh.c(DDD)V` writes its own
+    // counter four times from `isBoundingBoxBurning`, and `dealFireDamage(1)`
+    // goes with it -- one point a tick against five health and no
+    // invulnerability window, so a stack lying in a flame is gone in five
+    // ticks. See core/entity/fire_entry.hpp.
     Ground g;
     g.world.place(0, 64, 0, block::BlockId(mcver::Block::Fire), 0);
 
     CHECK(g.items.spawn(g.world.w(), 0.5, 64.5, 0.5, stoneItem(), 1, 0));
+    g.run(4);
+    CHECK_EQ(g.items.count(), 1);   // four points gone, one left
+    g.run(1);
+    CHECK_EQ(g.items.count(), 0);
+}
+
+TEST(an_item_beside_a_fire_rather_than_in_it_survives)
+{
+    // `isBoundingBoxBurning` is generous -- it runs to `floor(max + 1)` on each
+    // axis, so it reaches a cell the box only touches the plane of -- but a
+    // stack two cells away is still two cells away.
+    Ground g;
+    g.world.place(2, 64, 0, block::BlockId(mcver::Block::Fire), 0);
+
+    CHECK(g.items.spawn(g.world.w(), 0.5, 64.5, 0.5, stoneItem(), 1, 0));
+    g.run(40);
+    CHECK_EQ(g.items.count(), 1);
+    CHECK(g.items[0].health == entity::kItemHealth);
+    CHECK(g.items[0].fire <= 0);
+}
+
+TEST(a_stack_carried_out_of_a_fire_still_burns_to_nothing)
+{
+    // The counter outlives the flame: `fire = 300` on the tick it catches, and
+    // `kh.y()` spends one of the stack's five points every twentieth tick of
+    // it. So a stack that is lit and then moved out of the fire has about a
+    // hundred ticks left, not five minutes.
+    // **One tick in the open first**, which parks the counter at its fuse of
+    // -1: a counter sitting at the constructor's zero goes to one rather than
+    // catching, because `fire++` runs before `if (fire == 0)`. See
+    // tests/fire_entry_test.cpp.
+    Ground g;
+    CHECK(g.items.spawn(g.world.w(), 0.5, 64.5, 0.5, stoneItem(), 1, 0));
+    g.run(1);
+    CHECK_EQ(g.items.count(), 1);
+
+    g.world.place(0, 64, 0, block::BlockId(mcver::Block::Fire), 0);
+    g.run(1);
+    CHECK_EQ(g.items.count(), 1);
+    CHECK_EQ(int(g.items[0].fire), entity::kCaughtFireTicks);
+
+    // Put the fire out and move the stack clear of where it was.
+    g.world.place(0, 64, 0, block::kAir, 0);
+    g.run(200);
+    CHECK_EQ(g.items.count(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Cactus
+// ---------------------------------------------------------------------------
+//
+// A dropped stack wanders: `dx`'s constructor gives it +-0.1 of horizontal
+// motion and the air drag is 0.98, so one that falls a long way can glide a
+// block or more. These lay a patch of cactus rather than a single one wherever
+// the answer must not depend on where it drifts to.
+
+namespace {
+
+// Cactus over the stone, from -3 to 3 on both axes.
+void layCactus(Ground& g)
+{
+    for (i32 x = -3; x <= 3; ++x) {
+        for (i32 z = -3; z <= 3; ++z) {
+            g.world.place(x, 64, z, block::BlockId(mcver::Block::Cactus), 0);
+        }
+    }
+}
+
+}  // namespace
+
+TEST(a_cactus_destroys_a_stack_that_lands_on_it)
+{
+    // `hy.b(Lcn;IIILkh;)V` is `attackEntityFrom(null, 1)` and nothing else,
+    // called from `moveEntity`'s tail once per cell the box overlaps. A stack
+    // has five health and no invulnerability window, so a cactus destroys what
+    // lands on it in a quarter of a second -- where before this it lay there
+    // for the full five minutes and the despawn clock did the work.
+    Ground g;
+    layCactus(g);
+
+    CHECK(g.items.spawn(g.world.w(), 0.5, 68.0, 0.5, stoneItem(), 1, 0));
+    CHECK_EQ(g.items.count(), 1);
+
+    g.run(60);
+    CHECK_EQ(g.items.count(), 0);
+}
+
+TEST(a_cactus_costs_a_stack_one_point_a_tick)
+{
+    // Spawned in the cell rather than dropped into it, so what is counted is
+    // the damage and not the fall: five hits, one a tick, and no window
+    // between them.
+    Ground g;
+    layCactus(g);
+
+    CHECK(g.items.spawn(g.world.w(), 0.5, 64.5, 0.5, stoneItem(), 1, 0));
+    for (int tick = 1; tick <= 4; ++tick) {
+        g.run(1);
+        CHECK_EQ(g.items.count(), 1);
+        CHECK_EQ(int(g.items[0].health), entity::kItemHealth - tick);
+    }
+    g.run(1);
+    CHECK_EQ(g.items.count(), 0);
+}
+
+TEST(a_stack_resting_on_top_of_a_cactus_is_inside_its_cell)
+{
+    // The detail that makes the whole thing work. A cactus collides at
+    // 0.9375 of its cell, so a stack settles with its box bottom there -- and
+    // the loop in `moveEntity`'s tail floors the box's bounds with none of the
+    // thousandth-of-a-block inset later versions add, so that floor is the
+    // cactus's own y. An implementation that inset the bounds would leave a
+    // stack sitting on the spikes for ever.
+    Ground g;
+    layCactus(g);
+
+    CHECK(g.items.spawn(g.world.w(), 0.5, 65.4, 0.5, stoneItem(), 1, 0));
+    // Long enough to land and settle, short enough that it is the landing that
+    // killed it and not five minutes of ageing.
+    g.run(40);
+    CHECK_EQ(g.items.count(), 0);
+}
+
+TEST(a_stack_two_cells_from_a_cactus_is_not_touching_it)
+{
+    // The hits are the cells the box overlaps and nothing wider, so a stack a
+    // wall away from a cactus is untouched however long it lies there.
+    //
+    // **The wall has to be a real block**, and that is not padding for the
+    // test: a cactus's collision box is inset a sixteenth, so something pushed
+    // up against its side is standing *in its cell* while still outside the
+    // box it collides with -- which is exactly why walking into a cactus hurts
+    // in the original. A stack that drifts against one really is destroyed by
+    // it, and only a cell that is not the cactus's keeps it off.
+    Ground g;
+    for (int y = 64; y <= 65; ++y) {
+        g.world.place(1, y, 0, block::BlockId(mcver::Block::Stone), 0);
+        g.world.place(-1, y, 0, block::BlockId(mcver::Block::Stone), 0);
+        g.world.place(0, y, 1, block::BlockId(mcver::Block::Stone), 0);
+        g.world.place(0, y, -1, block::BlockId(mcver::Block::Stone), 0);
+    }
+    g.world.place(2, 64, 0, block::BlockId(mcver::Block::Cactus), 0);
+
+    CHECK(g.items.spawn(g.world.w(), 0.5, 64.5, 0.5, stoneItem(), 1, 0));
     g.run(100);
     CHECK_EQ(g.items.count(), 1);
+    CHECK_EQ(int(g.items[0].health), entity::kItemHealth);
+}
+
+TEST(a_blast_destroys_the_stacks_beside_it_and_throws_the_ones_further_out)
+{
+    // `je` calls `attackEntityFrom` on every entity in its box, and `dx`'s is
+    // five points of health with no invulnerability. Beside a creeper the
+    // damage is 25; at 5.5 blocks out of its 6.0 reach it is 3, which a stack
+    // survives -- and is pushed away from the centre either way.
+    Ground g;
+    CHECK(g.items.spawn(g.world.w(), 0.5, 64.5, 0.5, stoneItem(), 1, 0));
+    CHECK(g.items.spawn(g.world.w(), 6.0, 64.5, 0.5, stoneItem(), 1, 0));
+    CHECK(g.items.spawn(g.world.w(), 20.5, 64.5, 0.5, stoneItem(), 1, 0));
+    CHECK_EQ(g.items.count(), 3);
+    const double farMotion = g.items[1].motionX;
+
+    entity::Explosion blast(0.5, 64.5, 0.5, entity::kCreeperBlast);
+    blast.cast(g.world.w());
+    entity::MobSurroundings around;
+    around.items = &g.items;
+    entity::applyBlast(g.world.w(), blast, nullptr, &around);
+    blast.destroy(g.world.w());
+
+    CHECK_EQ(g.items.count(), 2);
+    int thrown = 0;
+    int untouched = 0;
+    for (int i = 0; i < g.items.count(); ++i) {
+        if (g.items[i].x > 10.0) {
+            CHECK_EQ(int(g.items[i].health), int(entity::kItemHealth));
+            ++untouched;
+        } else {
+            CHECK(g.items[i].health > 0 && g.items[i].health < entity::kItemHealth);
+            CHECK(g.items[i].motionX > farMotion);
+            ++thrown;
+        }
+    }
+    CHECK_EQ(thrown, 1);
+    CHECK_EQ(untouched, 1);
 }

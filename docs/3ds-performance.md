@@ -1154,8 +1154,9 @@ own helper, which is what says so — inverts to
 d(i) = far*near / ((i/128)*(far - near) + near)
 ```
 
-so with the near plane at 0.2 blocks and the far plane at 176, the **whole fog ramp from 40 to 160
-blocks lands between LUT index 0.015 and index 0.495.** Entry 0 and entry 1 are the only two the
+so with the near plane at 0.2 blocks (what it was then; it is 0.05 now, which crowds the ramp
+further still) and the far plane at 176, the **whole fog ramp from 40 to 160 blocks lands between
+LUT index 0.015 and index 0.495.** Entry 0 and entry 1 are the only two the
 fog ever reads, and the hardware interpolates linearly between them. What comes out:
 
 | distance | a1.1.2 | what the LUT gave |
@@ -1342,6 +1343,58 @@ costs nothing here — libctru's devoptab `lseek` for `SEEK_SET` is arithmetic o
 application's own memory, no IPC, and `read` then hands the stored offset to `FSFILE_Read`. Only
 `SEEK_END` would cost a round trip, and nothing seeks that way.
 
+### Batch reads: 576 operations down to 98, measured
+
+Packed mode removed the opens; what was left was still **one `readAt` per chunk**, and the World
+screen's diorama needs 576 of them for one world. At the 4 ms an operation this codebase models
+(`MC_IO_LATENCY_US`) that is 2.3 s of card against ~90 ms of CPU for the same chunks — the picture
+was waiting on round trips, not on work.
+
+`RegionFile::readMany` sorts a batch by sector offset, merges runs within `kBatchGapSectors` while
+they fit `kBatchReadBytes`, and issues one `readAt` per merged run. `WorldPeek::loadChunks` groups a
+request by region and feeds each group through it; a folder world falls back to one read each,
+because a chunk there is its own file and no ordering removes an open.
+
+**How many chunks are asked for at once is the whole lever**, and it is a scheduling decision, not a
+tuning constant. Measured over a real packed world's 576-chunk diorama window (1.52 MB of payload,
+four regions, 64 KB scratch, 16-sector gap):
+
+| how the reads are grouped | card reads | transferred | modelled at 4 ms/op |
+|---|---|---|---|
+| one chunk at a time | 588 | 1.58 MB | 2.35 s |
+| one batch per tile | 176 | 3.41 MB | 0.70 s |
+| **the centre tile, then the other eight** | **98** | **3.02 MB** | **0.39 s** |
+| the whole table as one batch | 75 | 2.87 MB | 0.30 s |
+
+(Counts include the 12 reads that open four regions — two header copies and a directory each.)
+
+A tile is 8 chunks out of a 32-wide region row, so a tile's chunks are eight short runs with the
+rest of the row between them; batching *across* tiles is what puts those runs next to each other.
+`menu_preview` therefore reads the centre tile alone — so something lands on the table as fast as it
+ever did, 36 reads — and then all eight remaining tiles together.
+
+**A batch that reaches the screen only when it finishes is a stall, and on hardware it showed.** The
+first console run of the two-pass schedule put the centre tile up immediately, sat for several
+seconds, then filled the other eight back to back — because nothing was posted until all 512 chunks
+were read and folded. So `WorldPeek::loadChunks` reports *every* chunk asked for, absent ones first
+and with no payload, which lets `readDioramaTiles` count each tile down and hand it over the moment
+its last chunk lands. The reads are still one batch; the meshing is still per tile. Measured on the
+host, the nine tiles now come back at 9, 24, 43, 45, 58, 62, 78, 80 and 81 ms into a read that takes
+81 ms, against all nine at the end of it — for the same 98 card reads, since an absent chunk costs
+no I/O.
+
+Splitting the *read* instead was measured and does not work: a second pass over any four outer tiles
+already spans the region's whole sector range, so three passes cost 143 reads and five cost 153 —
+worse than the 86 two passes cost, with no more progress to show for it.
+
+Widening the gap and the cap was measured and rejected. Per tile, a 64-sector gap and a 256 KB
+scratch reaches 62 reads but transfers 6.08 MB — four times the payload, for a buffer an Old 3DS
+should not spend. Batching more chunks at once is strictly better than merging more aggressively
+across a bigger gap: 98 reads for 3.02 MB beats 62 for 6.08 MB on both axes that matter.
+
+**The wall-clock figure is owed on hardware**, like the rest of this section. What is measured here
+is the operation count, which holds whatever the card does.
+
 ## 8. Faster inflate
 
 Every chunk file and every `0x33` Map Chunk payload is a deflate stream. On a 268 MHz ARM11 this is
@@ -1405,6 +1458,62 @@ The bottom screen only needs redrawing when it changes: track a dirty flag and s
 and its draw on unchanged frames.
 
 Touch also solves the button shortage for inventory and crafting without modal key combinations.
+
+### The hearts are on the top screen, and that is a deviation from this section
+
+**Decided with the user at M3 step 4.** Everything else this section asks for is where it says:
+the hotbar, the inventory, the four container screens, the chat and the debug pages are all on the
+bottom screen and the world has the top screen to itself. **The health, armour and air row is the
+exception** — `core/render/hud_mesh.hpp` builds a1.1.2's own `lu` layout as screen-space
+`DetailVertex` quads and `Renderer::drawHud` draws it over the world, once per eye.
+
+The argument for it is not a performance one and is not pretending to be. Health is the one number
+a player reads *while looking at the thing that is hurting them*; a heart bar on the other screen
+is a heart bar nobody looks at until it is too late. Everything that can be checked at leisure
+stays where this section put it.
+
+What it costs, stated so it can be measured rather than argued about:
+
+- **At most 150 quads**, and usually far fewer: ten hearts, up to ten armour icons and up to ten
+  bubbles, each a container tile plus an overlay. Nothing is drawn at full health with no armour
+  and a dry head except the ten containers and their hearts.
+- **Two draw calls, one per eye**, at the screen plane with zero stereo offset — so the row does
+  not swim in depth, and the second eye costs the same fill as the first.
+- **The fill is 16.875 x 16.875 pixels per icon on a 400 x 240 screen**, alpha-tested rather than
+  blended, which is the cheapest way a textured quad can reach the framebuffer on a PICA200. That
+  is `kHudTexelUnits` (30 sixteenths of a pixel, so 1.875) times the sheet's own 9 x 9 cell: at 1:1
+  the row was legible in a screenshot and not on the panel. **It was a flat 2.0 and came down by
+  6.25 % on the user's ask**, which no integer scale can do — the trade is that a heart's nine texel
+  rows are no longer all the same height on screen, one pixel in eight. Worst case — ten hearts
+  flashing with their outlines, ten armour icons and ten bubbles — is a shade under 18,000 texels,
+  a little under 2% of one eye.
+- **The rows sit in the top two corners rather than across the bottom centre**, which is where
+  a1.1.2 puts them: its layout is measured outwards from the hotbar it sits on top of, and the
+  hotbar here is on the other screen. Hearts top left, armour top right, bubbles under the hearts.
+  See `docs/physics-a1.1.2.md`, *The HUD*.
+
+**Owed on hardware: a fill-rate number for this pass**, measured the way §2's quad cost was — a
+frame with the row up against one with it suppressed, at the same position and render distance.
+Until that exists this entry is a decision with an estimate attached, not a measurement.
+`docs/status.md` carries it as open.
+
+### And the bottom screen's map redraw, which is now two sizes
+
+The map window on the bottom screen is 212 x 162 in a gamemode with a hotbar and 212 x 202 in
+Spectator, which has no hotbar band to reserve — see `platform/ctr/map_screen.hpp`. The only
+measurement there has ever been is **36,864 pixels in about 700 microseconds on a New 3DS**, so
+scaling off it gives roughly 650 for the banded window (34,344 pixels) and roughly 815 for the bare
+one (42,824). Both are estimates from one point, and the larger one is the one worth taking to
+hardware: it is the first time this screen's redraw has been asked to cost more than the number
+that was measured. The Info page already reports what a map redraw cost, so the figure is one
+session in Spectator away.
+
+**What is not an estimate** is the chunk store behind it. At zoom -1 the bare window covers
+424 x 404 blocks, which touches 28 x 27 = 756 chunk patches against the banded window's 588, so the
+store capacities went to 1,024 on an old 3DS (1.5 MB) and 2,048 on a New one (3 MB) — 4% of the
+newlib heap each console gets, and the same headroom over the widest window they had before. A
+store that cannot hold the window does not degrade; it thrashes, because the ring scan touches the
+centre first and so the least-recently-used entry is the ground under the player.
 
 ## 12. New 3DS
 

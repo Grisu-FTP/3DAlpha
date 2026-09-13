@@ -6,6 +6,7 @@
 // harness whose main job is to prove that core compiles and links away from
 // libctru, and to expose the world tools that do not need a console.
 
+#include "core/audio/effect_preload.hpp"
 #include "core/audio/sample.hpp"
 #include "core/audio/sound_engine.hpp"
 #include "core/audio/vorbis_stream.hpp"
@@ -19,7 +20,14 @@
 #include "core/mesh/cube_atlas.hpp"
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/visibility.hpp"
+#include "core/entity/mob.hpp"
+#include "core/entity/mob_spawn.hpp"
+#include "core/entity/mob_spawner.hpp"
 #include "core/entity/player_body.hpp"
+#include "core/entity/player_vitals.hpp"
+#include "core/item/block_breaking.hpp"
+#include "core/item/inventory.hpp"
+#include "core/item/use.hpp"
 #include "core/render/chunk_renderer.hpp"
 #include "core/render/vbo_pool.hpp"
 #include "core/render/world_streamer.hpp"
@@ -31,12 +39,14 @@
 #include "core/util/math.hpp"
 #include "core/world/any_storage.hpp"
 #include "core/world/chunk.hpp"
+#include "core/world/tile_entity.hpp"
 #include "core/world/chunk_cache.hpp"
 #include "core/world/format/converter.hpp"
 #include "core/world/world_format.hpp"
 #include "core/world/world_list.hpp"
 #include "platform/host/audio_wav.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_generator.hpp"
+#include "items.hpp"  // generated; see tools/configure.py
 #include "version_config.hpp"
 #include "version_slots.hpp"
 
@@ -808,6 +818,258 @@ int walk(const char* worldDir, int distance, int ticks, bool generate)
     return failures == 0 ? 0 : 1;
 }
 
+// **Survival, on a real world rather than on a fixture.** `--walk` proves the
+// body moves; this proves the three rules laid on top of it hurt, resist and
+// drop the way a1.1.2's do, against terrain nobody built for the test.
+//
+// Three things it refuses to let pass, which is the whole reason it exists:
+//
+//   * a fall of more than three blocks that costs no health (`ge.c(F)V`)
+//   * water the player can stand in for ever (`ge.y()`'s air counter)
+//   * stone broken with a bare hand that leaves cobblestone on the ground
+//     (`dm.b(Lly;)Z` -- canHarvestBlock, and a pickaxe is the only way)
+//
+// It runs on a **copy** of a world, like every other harness mode here, and it
+// does write blocks: it needs a cell of water and a cell of stone at a known
+// place and a real world does not promise either within reach. Both are put
+// back after the check, so what is on the card at the end is what came off it
+// -- but the copy is still what it is run on.
+int survive(const char* worldDir, int ticks, bool generate)
+{
+    HostVboAllocator allocator;
+
+    render::ChunkRendererConfig config;
+    config.meshDistance = 4;
+    config.budget = flyBudget(4);
+    config.meshBudgetPerFrame = 4;
+
+    render::ChunkRenderer renderer;
+    renderer.reset(&allocator, config);
+
+    render::WorldStreamer streamer;
+    streamer.setGenerateMissing(generate);
+    if (!streamer.open(worldDir, 4, nowMillis())) {
+        std::printf("cannot open %s\n", worldDir);
+        return 2;
+    }
+
+    double spawnX = 0.0;
+    double spawnY = 0.0;
+    double spawnZ = 0.0;
+    streamer.spawnPosition(&spawnX, &spawnY, &spawnZ);
+    const double feetY = streamer.level().player.present
+                             ? spawnY - double(entity::kEyeHeight)
+                             : spawnY;
+
+    entity::PlayerBody body;
+    body.setFeet(spawnX, feetY, spawnZ);
+
+    render::WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 2;
+    for (int i = 0; i < 400; ++i) {
+        Frustum frustum;
+        frustum.setOrigin(body.chunkX(), body.chunkZ());
+        renderer.beginFrame(u32(i), frustum, body.chunkX(), int(std::floor(body.y / 16.0)),
+                            body.chunkZ());
+        streamer.update(renderer, body.chunkX(), body.chunkZ(), budget);
+    }
+
+    tick::TickWorld* world = streamer.worldTick();
+    if (world == nullptr) {
+        std::printf("no tick world\n");
+        return 2;
+    }
+    body.liftOutOfGround(*world);
+
+    std::printf("world      %s\n", worldDir);
+    std::printf("spawn      feet %.3f %.3f %.3f\n", body.x, body.y, body.z);
+    std::printf("\n");
+
+    // What a break leaves on the ground. Counted rather than spawned: the
+    // entity pool is the console's, and what is being checked is whether the
+    // drop happened at all.
+    static int droppedItem = 0;
+    static int droppedCount = 0;
+    droppedItem = 0;
+    droppedCount = 0;
+    world->setDropSink(
+        [](void*, double, double, double, u16 id, int count) {
+            droppedItem = int(id);
+            droppedCount += count;
+        },
+        nullptr);
+
+    item::Inventory inventory;
+    entity::PlayerVitals vitals(1234);
+    entity::PlayerContext ctx{*world, body, inventory, nullptr, 2, 0.0f};
+    int failures = 0;
+
+    // ---- The fall. **Ten blocks of air made rather than found**: a real
+    // world's spawn can be under a tree or in a cave, and a drop that lands on
+    // a branch two blocks down tests nothing. The column over the highest solid
+    // block at the body's own (x, z) is emptied, the body dropped down it, and
+    // every block put back exactly as it was.
+    const i32 fx = i32(std::floor(body.x));
+    const i32 fz = i32(std::floor(body.z));
+    constexpr int kDropHeight = 12;
+    int topY = int(std::floor(body.y)) - 1;
+    for (int y = 120; y > 0; --y) {
+        if (world->opaqueAt(fx, y, fz)) {
+            topY = y;
+            break;
+        }
+    }
+    block::BlockId wasColumn[kDropHeight];
+    for (int i = 0; i < kDropHeight; ++i) {
+        wasColumn[i] = world->blockAt(fx, topY + 1 + i, fz);
+        world->setBlockWithNotify(fx, topY + 1 + i, fz, block::kAir);
+    }
+
+    body.setFeet(double(fx) + 0.5, double(topY + kDropHeight), double(fz) + 0.5);
+    body.motionY = 0.0;
+    body.fallDistance = 0.0f;
+    body.landedFall = 0.0f;
+    int fell = 0;
+    for (int t = 0; t < 200 && body.landedFall == 0.0f; ++t) {
+        entity::PlayerInput input;
+        input.yawDegrees = 0.0f;
+        body.tick(*world, input);
+        ++fell;
+    }
+    const float fallDistance = body.landedFall;
+    const entity::Harm fallHarm = vitals.fall(ctx, fallDistance);
+    body.landedFall = 0.0f;
+    for (int i = kDropHeight - 1; i >= 0; --i) {
+        world->setBlockWithNotify(fx, topY + 1 + i, fz, wasColumn[i]);
+    }
+    std::printf("fall       %.2f blocks over %d ticks, health %d\n", double(fallDistance), fell,
+                vitals.health);
+    if (fallDistance <= entity::kPlayerSafeFall) {
+        std::printf("FAIL: a %d-block drop banked only %.2f blocks of fall\n", kDropHeight,
+                    double(fallDistance));
+        ++failures;
+    } else if (!fallHarm.landed || vitals.health >= entity::kPlayerMaxHealth) {
+        std::printf("FAIL: a %.2f-block fall cost no health\n", double(fallDistance));
+        ++failures;
+    }
+    vitals.respawn();
+
+    // ---- Drowning. A cell of water over the body's head, held until the air
+    // runs out. `ge.y()` drains one a tick from 300 and deals two at -20, so
+    // the whole of it is 320 ticks and the budget has to clear that.
+    const i32 wx = i32(std::floor(body.x));
+    const i32 wz = i32(std::floor(body.z));
+    const int wy = int(std::floor(body.y)) + 1;
+    const block::BlockId wasHead = world->blockAt(wx, wy, wz);
+    const block::BlockId wasAbove = world->blockAt(wx, wy + 1, wz);
+    world->setBlockWithNotify(wx, wy, wz, block::BlockId(mcver::Block::Water));
+    world->setBlockWithNotify(wx, wy + 1, wz, block::BlockId(mcver::Block::Water));
+    const bool eyeWet = entity::playerEyeInWater(*world, body);
+    int airTicks = 0;
+    const int airBudget = ticks > 400 ? ticks : 400;
+    while (airTicks < airBudget && vitals.health >= entity::kPlayerMaxHealth) {
+        vitals.tick(ctx, true);
+        ++airTicks;
+    }
+    std::printf("drowning   eye in water %s, air %d after %d ticks, health %d\n",
+                eyeWet ? "yes" : "no", vitals.air, airTicks, vitals.health);
+    if (!eyeWet) {
+        std::printf("FAIL: two cells of water over the feet and the eye is dry\n");
+        ++failures;
+    } else if (vitals.health >= entity::kPlayerMaxHealth) {
+        std::printf("FAIL: %d ticks under water and nothing drowned\n", airTicks);
+        ++failures;
+    }
+    world->setBlockWithNotify(wx, wy + 1, wz, wasAbove);
+    world->setBlockWithNotify(wx, wy, wz, wasHead);
+    vitals.respawn();
+
+    // ---- Stone, by hand and then with a pickaxe. The cell is two blocks in
+    // front of the feet at eye level, which is inside reach and outside the
+    // body.
+    const i32 sx = wx + 2;
+    const int sy = wy;
+    const block::BlockId wasStone = world->blockAt(sx, sy, wz);
+    const item::Effects effects;
+
+    struct Attempt {
+        const char* what;
+        item::ItemId held;
+        int ticksTaken;
+        int drop;
+        int count;
+        bool broke;
+    };
+    Attempt attempts[2] = {{"hand", item::ItemId(0), 0, 0, 0, false},
+                           {"stone pickaxe", item::ItemId(mcver::Item::StonePickaxe), 0, 0, 0,
+                            false}};
+
+    for (Attempt& attempt : attempts) {
+        world->setBlockWithNotify(sx, sy, wz, block::BlockId(mcver::Block::Stone));
+        inventory.clear();
+        if (attempt.held != 0) {
+            inventory.set(0, attempt.held, 1);
+        }
+        inventory.selected = 0;
+        droppedItem = 0;
+        droppedCount = 0;
+
+        item::BlockBreaker breaker;
+        item::BreakContext breakCtx{*world, inventory, effects, false, true};
+        // `nj.a(IIII)V` first -- a block soft enough goes on the click -- then
+        // one `c(IIII)V` a tick until it gives.
+        attempt.broke = breaker.click(breakCtx, sx, sy, wz, 1);
+        while (!attempt.broke && attempt.ticksTaken < 400) {
+            breaker.update();
+            attempt.broke = breaker.damage(breakCtx, sx, sy, wz, 1);
+            ++attempt.ticksTaken;
+        }
+        attempt.drop = droppedItem;
+        attempt.count = droppedCount;
+        std::printf("stone      %-13s %3d ticks, %s, dropped %d x %d, wear %d\n", attempt.what,
+                    attempt.ticksTaken, attempt.broke ? "broke" : "DID NOT BREAK", attempt.count,
+                    attempt.drop, int(inventory.at(0).damage));
+    }
+    world->setBlockWithNotify(sx, sy, wz, wasStone);
+
+    if (!attempts[0].broke || !attempts[1].broke) {
+        std::printf("FAIL: stone did not break within 400 ticks\n");
+        ++failures;
+    }
+    if (attempts[0].ticksTaken <= 1) {
+        std::printf("FAIL: stone broke instantly; there is no break progress\n");
+        ++failures;
+    }
+    if (attempts[0].count != 0) {
+        std::printf("FAIL: stone broken by hand dropped %d x %d\n", attempts[0].count,
+                    attempts[0].drop);
+        ++failures;
+    }
+    if (attempts[1].drop != int(mcver::Block::Cobblestone) || attempts[1].count == 0) {
+        std::printf("FAIL: stone broken with a pickaxe dropped %d x %d, not cobblestone\n",
+                    attempts[1].count, attempts[1].drop);
+        ++failures;
+    }
+    if (attempts[1].ticksTaken >= attempts[0].ticksTaken) {
+        std::printf("FAIL: the pickaxe was no faster than the hand (%d vs %d ticks)\n",
+                    attempts[1].ticksTaken, attempts[0].ticksTaken);
+        ++failures;
+    }
+    if (inventory.at(0).damage <= 0) {
+        std::printf("FAIL: the pickaxe broke a block and took no damage\n");
+        ++failures;
+    }
+
+    // The sink is a local lambda and the streamer outlives this scope only as
+    // far as close(), but a dangling function pointer is not something to leave
+    // lying about.
+    world->setDropSink(nullptr, nullptr);
+    streamer.close(nowMillis());
+
+    std::printf("\n%s\n", failures == 0 ? "survive ok" : "survive FAILED");
+    return failures == 0 ? 0 : 1;
+}
+
 void fly(const char* worldDir, int distance, int frames, int switchTo,
          mesh::CubeFormat cubeFormat, bool flipFormat, bool generate, bool cacheThreaded,
          int prefetchRings, world::WorldFormat createAs)
@@ -1231,6 +1493,93 @@ bool collect(void* context, i32 x, i32 z)
     auto* found = static_cast<std::vector<std::pair<i32, i32>>*>(context);
     found->emplace_back(x, z);
     return true;
+}
+
+// **Load every chunk and write it straight back**, which is the whole of the
+// round-trip claim: a world this build has opened and saved must be the same
+// world. Nothing is changed on purpose, so every difference `tools/nbtdiff.py
+// difftree` reports afterwards is a bug in the codec.
+//
+// It exists because the modelled tags are no longer only the ones nothing
+// cares about. `TileEntities` used to go out as the bytes it came in as and
+// could not be wrong; it is decoded and re-encoded now, and a chest whose
+// contents did not survive would be invisible until somebody opened the world
+// in a real client.
+//
+// Point it at a **copy**. Opening a world writes `session.lock` and closing it
+// rewrites `level.dat`, and this rewrites every chunk in it besides.
+//
+// `reconcile` additionally runs the heal-and-drop pass over every column before
+// writing it, which is what the game does at a save. It is off by default
+// because it is a *change*: the pure round trip is the one whose diff must be
+// empty. Over a real world the pass should find nothing to do, and saying so
+// takes measuring it.
+int rewriteWorld(const char* worldDir, bool reconcile)
+{
+    io::PosixFileSystem fs;
+    world::AnyStorage storage(fs);
+
+    const world::OpenResult opened = storage.open(worldDir, nowMillis());
+    if (opened != world::OpenResult::Ok) {
+        std::printf("cannot open %s: %s\n", worldDir, world::describeOpenResult(opened));
+        return 1;
+    }
+
+    std::vector<std::pair<i32, i32>> coords;
+    if (!storage.forEachChunk(&coords, collect)) {
+        std::printf("scan failed\n");
+        return 1;
+    }
+
+    int read = 0;
+    int written = 0;
+    int failed = 0;
+    int tiles = 0;
+    int byKind[5] = {};
+    int stacks = 0;
+    int healed = 0;
+
+    for (const auto& c : coords) {
+        world::ChunkColumn column;
+        if (!storage.loadChunk(c.first, c.second, &column)) {
+            ++failed;
+            continue;
+        }
+        ++read;
+        for (const world::TileEntity& tile : column.tileEntities) {
+            ++tiles;
+            ++byKind[int(tile.kind)];
+            stacks += int(tile.items.size());
+        }
+        if (reconcile) {
+            healed += world::reconcileTileEntities(column);
+        }
+        if (storage.saveChunk(column)) {
+            ++written;
+        } else {
+            ++failed;
+        }
+    }
+    storage.commit();
+    storage.close(nowMillis());
+
+    static const char* kKindNames[5] = {"Furnace", "Chest", "Sign", "MobSpawner", "unknown"};
+    std::printf("rewrite    %s\n", worldDir);
+    std::printf("  chunks        %6d read, %d written, %d failed\n", read, written, failed);
+    std::printf("  tile entities %6d\n", tiles);
+    for (int i = 0; i < 5; ++i) {
+        if (byKind[i] > 0) {
+            std::printf("    %-12s%6d\n", kKindNames[i], byKind[i]);
+        }
+    }
+    std::printf("  item stacks   %6d\n", stacks);
+    if (reconcile) {
+        // Entries added plus dropped. **Must be zero on a world a real client
+        // wrote**: anything else means the pass disagrees with the original
+        // about which blocks carry a tile entity.
+        std::printf("  reconciled    %6d\n", healed);
+    }
+    return failed == 0 ? 0 : 1;
 }
 
 int meshWorld(const char* worldDir, mesh::CubeFormat cubeFormat, bool greedy)
@@ -2280,6 +2629,35 @@ int audioList(const char* resources)
                 "move %.3f (0.3/0.5)\n",
                 double(audio::interfaceGain(1.0f, 1.0f)),
                 double(audio::interfaceGain(0.3f, 1.0f)));
+
+    // **The whole boot set, decoded, so the console's sample cap is a
+    // measurement and not a guess.**
+    //
+    // `ctr::kMaxSamples` has to hold every entry this prints, because loading
+    // is all-or-nothing per key: `playSoundFX` draws its variant before it
+    // knows whether that file is resident, so a key with four of its eight
+    // variants loaded is a footstep that is silent half the time. The cap is
+    // therefore a property of the *player's* folder, and this is the only
+    // place it can be read off one. A modern resources tree carries more
+    // variants per step than the a1.1.2-era one did, so the honest number is
+    // the bigger of the two.
+    //
+    // The click above is already decoded and `preloadEffects` names it again;
+    // `preloadSound` is idempotent per path, so the total below is the set and
+    // not a sum with a double-count in it.
+    audio::preloadEffects(engine);
+
+    usize bytes = 0;
+    usize frames = 0;
+    for (const audio::Sample& sample : sink.samples()) {
+        frames += sample.frames();
+        bytes += sample.frames() * usize(sample.channels) * sizeof(i16);
+    }
+    std::printf("\nboot effect set (what preloadEffects decodes):\n");
+    std::printf("  %zu samples, %zu frames, %.1f KB of PCM\n", sink.samples().size(), frames,
+                double(bytes) / 1024.0);
+    std::printf("  ctr::kMaxSamples must be at least %zu for this folder\n",
+                sink.samples().size());
     return 0;
 }
 
@@ -2399,6 +2777,363 @@ int audioDump(const char* resources, const char* outPath, i64 seed, int minutes)
 }
 
 
+// `--spawns`: where the monsters go, in a real world, on the host.
+//
+// **This exists because "nothing is spawning" cannot be answered from a unit
+// test.** A fixture world is a floor and some air: every drawn point that is
+// not the floor is air, so the spawner never takes `az`'s early return and a
+// probe over one reports a spawn rate no real world has. A generated world is
+// mostly stone, most of `k`'s y draws land inside it, and the pass ends on the
+// first chunk it tries -- which is the original's shape and the thing a
+// synthetic scene cannot show.
+//
+// It runs the console's own loop for the mobs: the same streamer, the same
+// `stepTicks`, the same `spawnMonsters`/`spawnAnimals` pair out of one random,
+// and the same entity query wired over the mob pool -- which is the seam that
+// hid a bug once already. What it adds is `SpawnCounters` and a y histogram, so
+// "no monsters" and "monsters, 90 blocks below you" stop looking alike.
+//
+// **Point it at a copy.** `open()` writes session.lock and `close()` rewrites
+// level.dat, like every other mode here.
+struct SpawnScene {
+    const entity::MobSystem* mobs = nullptr;
+    AABB player;
+    bool playerPresent = false;
+
+    static bool query(void* ctx, const AABB& box, tick::EntityFilter filter)
+    {
+        const SpawnScene* self = static_cast<const SpawnScene*>(ctx);
+        if (self->playerPresent && self->player.intersects(box)) {
+            return true;
+        }
+        if (filter == tick::EntityFilter::Players || self->mobs == nullptr) {
+            return false;
+        }
+        for (int i = 0; i < self->mobs->count(); ++i) {
+            const entity::Mob& mob = (*self->mobs)[i];
+            if (mob.alive && mob.body.box.intersects(box)) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+int spawnProbe(const char* worldDir, int distance, int ticks, i64 timeOfDay, bool generate,
+               const double* standAt)
+{
+    HostVboAllocator allocator;
+
+    render::ChunkRendererConfig config;
+    config.meshDistance = distance;
+    config.budget = flyBudget(distance);
+    config.meshBudgetPerFrame = 4;
+
+    render::ChunkRenderer renderer;
+    renderer.reset(&allocator, config);
+
+    render::WorldStreamer streamer;
+    streamer.setGenerateMissing(generate);
+    if (generate) {
+        // The same recipe --fly uses: an empty directory becomes a world, an
+        // existing one opens as it is.
+        io::PosixFileSystem fs;
+        world::AnyStorage probe(fs);
+        if (probe.open(worldDir, nowMillis()) == world::OpenResult::Ok) {
+            probe.close(nowMillis());
+        } else if (probe.create(worldDir, 1234567890LL, nowMillis(),
+                                world::WorldFormat::Folder)
+                   != world::OpenResult::Ok) {
+            std::printf("cannot create %s\n", worldDir);
+            return 2;
+        } else {
+            probe.close(nowMillis());
+            std::printf("created    %s (seed 1234567890)\n", worldDir);
+        }
+    }
+    // **The block spawners, wired the way the console wires them** -- before
+    // the settling loop below, so the columns it pulls in hand their tile
+    // entities over as they arrive. See core/entity/mob_spawner.hpp.
+    entity::MobSpawnerStore spawners;
+    streamer.setColumnSinks(
+        [](void* ctx, const world::ChunkColumn& column) {
+            entity::readMobSpawners(column.tileEntities,
+                                    *static_cast<entity::MobSpawnerStore*>(ctx));
+        },
+        [](void* ctx, i32 chunkX, i32 chunkZ) {
+            static_cast<entity::MobSpawnerStore*>(ctx)->eraseColumn(chunkX, chunkZ);
+        },
+        [](void* ctx, world::ChunkColumn& column) {
+            world::reconcileTileEntities(column);
+            entity::writeMobSpawners(*static_cast<entity::MobSpawnerStore*>(ctx), column);
+        },
+        &spawners);
+
+    if (!streamer.open(worldDir, distance, nowMillis())) {
+        std::printf("cannot open %s\n", worldDir);
+        return 2;
+    }
+
+    double px = 0.0, py = 0.0, pz = 0.0;
+    streamer.spawnPosition(&px, &py, &pz);
+    // **Somewhere other than the spawn point**, which is what `at=` is for: a
+    // dungeon's spawner does nothing until a player is within sixteen blocks
+    // of it, and a world's spawn point is on the surface. `spawner blocks`
+    // below prints where the nearest ones are, so the second run of this
+    // command can stand on one.
+    if (standAt != nullptr) {
+        px = standAt[0];
+        py = standAt[1];
+        pz = standAt[2];
+    }
+
+    render::WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 2;
+
+    const int chunkX = int(std::floor(px / 16.0));
+    const int chunkZ = int(std::floor(pz / 16.0));
+    for (int i = 0; i < 600; ++i) {
+        Frustum frustum;
+        frustum.setOrigin(chunkX, chunkZ);
+        renderer.beginFrame(u32(i), frustum, chunkX, int(std::floor(py / 16.0)), chunkZ);
+        streamer.update(renderer, chunkX, chunkZ, budget);
+    }
+
+    tick::TickWorld* world = streamer.worldTick();
+    if (world == nullptr) {
+        std::printf("no tick world\n");
+        return 2;
+    }
+    world->setTime(timeOfDay);
+
+    entity::MobSystem mobs(4242LL);
+    SpawnScene scene;
+    scene.mobs = &mobs;
+    scene.playerPresent = true;
+    scene.player = AABB{px - 0.3, py, pz - 0.3, px + 0.3, py + 1.8, pz + 0.3};
+    world->setEntityQuery(&SpawnScene::query, &scene);
+
+    entity::SpawnContext context;
+    context.playerPresent = true;
+    context.playerX = px;
+    context.playerY = py;
+    context.playerZ = pz;
+    context.spawnX = streamer.level().spawnX;
+    context.spawnY = streamer.level().spawnY;
+    context.spawnZ = streamer.level().spawnZ;
+    context.difficulty = 2;
+    context.worldSeed = streamer.level().randomSeed;
+
+    entity::MobSurroundings around;
+    around.player.present = true;
+    around.player.x = px;
+    around.player.y = py;
+    around.player.z = pz;
+    around.difficulty = 2;
+
+    JavaRandom rand(i64(nowMillis()) ^ 0x5a2d);
+    entity::SpawnCounters monsterCount;
+    entity::SpawnCounters animalCount;
+    entity::MobSpawnerCounters blockCount;
+
+    // Sixteen bands of eight, which is the resolution that separates "in the
+    // caves" from "on the ground" without a page of output.
+    int band[16] = {0};
+    int byType[entity::kMobTypeCount] = {0};
+    int offset[9][9] = {{0}};
+    int resident = 0;
+
+    // How many of the 9x9 the spawner asks for are actually loaded. A monster
+    // that cannot spawn because its column is absent is a streaming answer, not
+    // a spawning one.
+    for (i32 dz = -4; dz <= 4; ++dz) {
+        for (i32 dx = -4; dx <= 4; ++dx) {
+            if (world->chunkResident(chunkX + dx, chunkZ + dz)) {
+                ++resident;
+            }
+        }
+    }
+
+    std::printf("world      %s\n", worldDir);
+    std::printf("player     %.1f %.1f %.1f, chunk (%d, %d)\n", px, py, pz, chunkX, chunkZ);
+    std::printf("spawn      %d %d %d, seed %lld\n", int(context.spawnX), context.spawnY,
+                int(context.spawnZ), (long long)context.worldSeed);
+    std::printf("chunks     %d of %d in the spawner's square are resident after settling\n",
+                resident, entity::kEligibleChunks);
+    std::printf("time       %lld, sky light subtracted %d\n", (long long)timeOfDay,
+                world->skyDarken());
+    std::printf("ticks      %d\n\n", ticks);
+
+    for (int t = 0; t < ticks; ++t) {
+        // **Held, not advanced.** A 6,000-tick run covers a quarter of a day
+        // and would average night and morning together; the question here is
+        // what one time of day does, so every tick starts at the same one.
+        world->setTime(timeOfDay);
+        streamer.stepTicks(renderer, 1);
+        mobs.tick(*world, around);
+
+        const int before = mobs.count();
+        entity::spawnMonsters(*world, mobs, rand, context, &monsterCount);
+        for (int i = before; i < mobs.count(); ++i) {
+            const entity::Mob& mob = mobs[i];
+            const int y = int(mob.body.y);
+            band[y < 0 ? 0 : (y > 127 ? 15 : y / 8)] += 1;
+            byType[int(mob.type)] += 1;
+            const int ox = int(std::floor(mob.body.x / 16.0)) - chunkX + 4;
+            const int oz = int(std::floor(mob.body.z / 16.0)) - chunkZ + 4;
+            if (ox >= 0 && ox < 9 && oz >= 0 && oz < 9) {
+                offset[oz][ox] += 1;
+            }
+        }
+        entity::spawnAnimals(*world, mobs, rand, context, &animalCount);
+
+        // The tile-entity tick list, which is one member long in this version.
+        // Out of the world's random, like the two above are out of `rand` --
+        // and note that the mobs it makes are **not** counted in the bands: a
+        // dungeon spawner's zombies are not `k`'s and mixing them would make
+        // the histogram lie.
+        entity::tickMobSpawners(spawners, *world, mobs, world->random(), context,
+                                &blockCount);
+
+        Frustum frustum;
+        frustum.setOrigin(chunkX, chunkZ);
+        renderer.beginFrame(u32(t + 1000), frustum, chunkX, int(std::floor(py / 16.0)), chunkZ);
+        streamer.update(renderer, chunkX, chunkZ, budget);
+    }
+
+    // The world's own time moved while it ticked; report where it ended so a
+    // run long enough to reach dawn says so rather than quietly measuring day.
+    std::printf("time       ended at %lld, sky light subtracted %d\n\n",
+                (long long)world->time(), world->skyDarken());
+
+    const auto report = [](const char* what, const entity::SpawnCounters& c) {
+        std::printf("%s\n", what);
+        std::printf("  passes          %d\n", c.passes);
+        std::printf("  chunks tried    %d\n", c.chunksTried);
+        std::printf("  ended in solid  %d\n", c.abortedSolid);
+        std::printf("  positions       %d\n", c.positions);
+        std::printf("    no floor      %d\n", c.noFloor);
+        std::printf("    too near      %d\n", c.tooNear);
+        std::printf("    refused       %d\n", c.checkRejected);
+        std::printf("    spawned       %d\n", c.spawned);
+    };
+    report("monsters", monsterCount);
+    std::printf("\n");
+    report("animals", animalCount);
+
+    // **The block spawners**, which are a different question from the two
+    // above: `az` and `k` sweep the world, and these sit in dungeons and wait.
+    // What matters here is whether the world *has* any -- a run reporting no
+    // spawners at all in a world with dungeons means the `TileEntities` read
+    // is not finding them, and that is invisible from the mob counts.
+    std::printf("\nspawner blocks\n");
+    std::printf("  resident        %d\n", spawners.count());
+    {
+        int byMob[entity::kMobTypeCount] = {0};
+        int unknownMobs = 0;
+        for (int i = 0; i < spawners.count(); ++i) {
+            if (spawners[i].known) {
+                byMob[int(spawners[i].mob)] += 1;
+            } else {
+                ++unknownMobs;
+            }
+        }
+        for (int i = 0; i < entity::kMobTypeCount; ++i) {
+            if (byMob[i] != 0) {
+                std::printf("    %-10s %d\n", entity::mobDef(entity::MobType(i)).saveId,
+                            byMob[i]);
+            }
+        }
+        if (unknownMobs != 0) {
+            std::printf("    unknown    %d\n", unknownMobs);
+        }
+    }
+    double lastSpawnerDistSq = -1.0;
+    for (int shown = 0, best = -1; shown < 3; ++shown, best = -1) {
+        // The nearest three, each printed once: a selection sort over a list
+        // that is thirteen long on the world this was measured against.
+        double bestSq = 1e18;
+        for (int i = 0; i < spawners.count(); ++i) {
+            const double dx = double(spawners[i].x) + 0.5 - px;
+            const double dy = double(spawners[i].y) + 0.5 - py;
+            const double dz = double(spawners[i].z) + 0.5 - pz;
+            const double d = dx * dx + dy * dy + dz * dz;
+            if (d < bestSq && d > (shown == 0 ? -1.0 : lastSpawnerDistSq)) {
+                bestSq = d;
+                best = i;
+            }
+        }
+        if (best < 0) {
+            break;
+        }
+        lastSpawnerDistSq = bestSq;
+        std::printf("    nearest    %s at %d %d %d, %.1f blocks away\n",
+                    spawners[best].entityId, int(spawners[best].x), spawners[best].y,
+                    int(spawners[best].z), std::sqrt(bestSq));
+    }
+    std::printf("  visited         %d\n", blockCount.visited);
+    std::printf("    in range      %d\n", blockCount.inRange);
+    std::printf("    fired         %d\n", blockCount.fired);
+    std::printf("      crowded     %d\n", blockCount.crowded);
+    std::printf("      refused     %d\n", blockCount.refused);
+    std::printf("      spawned     %d\n", blockCount.spawned);
+
+    std::printf("\nmonsters by kind\n");
+    for (int i = entity::kAnimalTypeCount; i < entity::kMobTypeCount; ++i) {
+        std::printf("  %-10s %d\n", entity::mobDef(entity::MobType(i)).saveId, byType[i]);
+    }
+
+    std::printf("\nwhere they appeared\n");
+    for (int i = 0; i < 16; ++i) {
+        if (band[i] == 0) {
+            continue;
+        }
+        std::printf("  y %3d-%3d  %d\n", i * 8, i * 8 + 7, band[i]);
+    }
+
+    // **Which chunk of the square they came out of**, which is the question
+    // `az`'s early return makes worth asking: a pass that ends on the first
+    // solid draw only ever reaches the chunks its iteration order puts first.
+    std::printf("\nby chunk, player at the centre (rows north to south)\n");
+    for (int oz = 0; oz < 9; ++oz) {
+        std::printf("  ");
+        for (int ox = 0; ox < 9; ++ox) {
+            std::printf("%4d", offset[oz][ox]);
+        }
+        std::printf("\n");
+    }
+
+    int liveMonsters = 0;
+    int highest = -1;
+    double nearestSq = 1e18;
+    for (int i = 0; i < mobs.count(); ++i) {
+        const entity::Mob& mob = mobs[i];
+        if (!mob.alive || int(mob.type) < entity::kAnimalTypeCount) {
+            continue;
+        }
+        ++liveMonsters;
+        if (int(mob.body.y) > highest) {
+            highest = int(mob.body.y);
+        }
+        const double dx = mob.body.x - px;
+        const double dy = mob.body.y - py;
+        const double dz = mob.body.z - pz;
+        const double d = dx * dx + dy * dy + dz * dz;
+        if (d < nearestSq) {
+            nearestSq = d;
+        }
+    }
+    std::printf("\nalive      %d monsters, %d animals\n", liveMonsters,
+                mobs.count() - liveMonsters);
+    if (liveMonsters > 0) {
+        std::printf("highest    y %d\n", highest);
+        std::printf("nearest    %.1f blocks away\n", std::sqrt(nearestSq));
+    }
+
+    streamer.close(nowMillis());
+    return monsterCount.spawned > 0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -2500,6 +3235,11 @@ int main(int argc, char** argv)
         return audioDump(argv[2], argv[3], seed, minutes);
     }
 
+    if (argc > 2 && std::strcmp(argv[1], "--rewrite") == 0) {
+        const bool reconcile = argc > 3 && std::strcmp(argv[3], "reconcile") == 0;
+        return rewriteWorld(argv[2], reconcile);
+    }
+
     if (argc > 2 && std::strcmp(argv[1], "--world-info") == 0) {
         return worldInfo(argv[2]);
     }
@@ -2534,6 +3274,44 @@ int main(int argc, char** argv)
         return walk(argv[2], distance, ticks, generate);
     }
 
+    // Falling, drowning and breaking stone, on a real world. See survive.
+    if (argc > 2 && std::strcmp(argv[1], "--survive") == 0) {
+        const int ticks = (argc > 3 && !(trailingWord && argc == 4)) ? std::atoi(argv[3]) : 400;
+        return survive(argv[2], ticks, generate);
+    }
+
+    // Where the monsters go, in a real world. See spawnProbe.
+    if (argc > 2 && std::strcmp(argv[1], "--spawns") == 0) {
+        // The two positional arguments, skipping any `at=` and any trailing
+        // word: a keyword argument must not be read as a tick count.
+        const char* positional[2] = {nullptr, nullptr};
+        int positionalCount = 0;
+        for (int i = 3; i < argc && positionalCount < 2; ++i) {
+            if (std::strncmp(argv[i], "at=", 3) == 0
+                || (trailingWord && i == argc - 1)) {
+                continue;
+            }
+            positional[positionalCount++] = argv[i];
+        }
+        const int ticks = positional[0] != nullptr ? std::atoi(positional[0]) : 6000;
+        // Midnight, because that is the only time of day the surface can be
+        // asked about: `dq.a()Z` reads the *stored* sky light for its first
+        // clause and the day-subtracted one for its second, so the time changes
+        // the second and nothing else.
+        const i64 when = positional[1] != nullptr ? i64(std::atoll(positional[1])) : i64(18000);
+        // `at=x,y,z` -- where the player stands. Anywhere in the argument
+        // list, like `zoom=` on --map, because the two positional arguments
+        // before it both have defaults worth keeping.
+        double at[3] = {0.0, 0.0, 0.0};
+        bool haveAt = false;
+        for (int i = 3; i < argc; ++i) {
+            if (std::strncmp(argv[i], "at=", 3) == 0) {
+                haveAt = std::sscanf(argv[i] + 3, "%lf,%lf,%lf", &at[0], &at[1], &at[2]) == 3;
+            }
+        }
+        return spawnProbe(argv[2], 8, ticks, when, generate, haveAt ? at : nullptr);
+    }
+
     if (argc > 2 && std::strcmp(argv[1], "--fly") == 0) {
         const int distance = argc > 3 ? std::atoi(argv[3]) : 8;
         const int frames = argc > 4 ? std::atoi(argv[4]) : 200;
@@ -2563,6 +3341,12 @@ int main(int argc, char** argv)
     std::printf("        the body falls through the world, goes NaN or never moves. Point it\n");
     std::printf("        at a copy -- opening a world writes to it. `gen` generates the\n");
     std::printf("        chunks it walks into, so the walk is not bounded by what exists\n");
+    std::printf("  --survive <world-dir> [ticks] [gen]\n");
+    std::printf("        the Survival rules on a real world: fall, drown, break stone. A\n");
+    std::printf("        check, not a measurement: non-zero exit when a fall of more than\n");
+    std::printf("        three blocks costs no health, when water never drowns, or when\n");
+    std::printf("        stone broken by hand drops cobblestone. It writes blocks and puts\n");
+    std::printf("        them back, so point it at a copy like everything else here\n");
     std::printf("  --pack <zip|dir|devart>              assemble a texture pack's atlas and\n");
     std::printf("        report what scaling it needed; writes atlas.pam to look at\n");
     std::printf("  --extract-jar <jar> <packs-dir>      turn a client jar into a texture pack,\n");
@@ -2585,7 +3369,20 @@ int main(int argc, char** argv)
     std::printf("        render that schedule to a .wav, silence between tracks included,\n");
     std::printf("        so the music can be listened to without a 3DS\n");
     std::printf("  --world-info <world-dir>             format, seed and what it occupies;\n");
+    std::printf("  --rewrite <world-dir> [reconcile]    load every chunk and write it back,\n");
+    std::printf("        unchanged, then `tools/nbtdiff.py difftree` it against the copy\n");
+    std::printf("        it was made from. `reconcile` also runs the heal-and-drop pass,\n");
+    std::printf("        which must find nothing on a real world. Point it at a copy\n");
     std::printf("        the gap between content and on-disk is cluster slack\n");
+    std::printf("  --spawns <world-dir> [ticks] [time] [at=x,y,z] [gen]\n");
+    std::printf("        run the monster and animal spawners over a real world and report\n");
+    std::printf("        where the attempts went -- passes, chunks, the positions each\n");
+    std::printf("        check refused, and the height band every monster appeared in.\n");
+    std::printf("        Default 6000 ticks at time 18000, which is midnight. Non-zero\n");
+    std::printf("        exit when nothing spawned at all. Point it at a copy.\n");
+    std::printf("        It also reports the world's mob spawner *blocks* and where the\n");
+    std::printf("        nearest three are; `at=x,y,z` stands the player somewhere other\n");
+    std::printf("        than the spawn point, which is how one of those is reached\n");
     std::printf("  --fly <world-dir> [distance] [frames] [switch-to] [quads|flip]\n");
     std::printf("        run the console's render loop; switch-to changes the render\n");
     std::printf("        distance halfway, the way the debug settings page does\n");

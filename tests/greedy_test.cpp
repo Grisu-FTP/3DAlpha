@@ -524,9 +524,12 @@ TEST(every_tile_a_cube_block_can_show_has_a_cube_atlas_slot)
         CHECK(mesh::kCubeAtlas.slotOfTile[mcver::kUnknownBlock.faces[face]] != mesh::kNoCubeSlot);
     }
 
-    // a1.1.2 needs 54 of the 64, measured when the atlas was designed. Pinned,
-    // so a regenerated table that quietly grows toward the limit says so.
-    CHECK_EQ(mesh::kCubeAtlas.slotCount, 54);
+    // a1.1.2 needs 58 of the 64: 54 named by the block table, measured when the
+    // atlas was designed, plus the four halves of a double chest's picture,
+    // which are a rule's and appear in no `faces` row (core/block/world_texture
+    // .hpp -- without a slot they sampled tile 0 and wore grass). Pinned, so a
+    // regenerated table that quietly grows toward the limit says so.
+    CHECK_EQ(mesh::kCubeAtlas.slotCount, 58);
 
     // The two tables are each other's inverse, and slots go to tiles in
     // ascending order so the layout is stable from build to build.

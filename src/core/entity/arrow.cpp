@@ -3,11 +3,14 @@
 
 #include "core/entity/arrow.hpp"
 
+#include "core/entity/mob.hpp"
+
 #include "core/block/fluid_flow.hpp"
 #include "core/block/registry.hpp"
 #include "core/entity/boat.hpp"
 #include "core/entity/minecart.hpp"
 #include "core/entity/painting.hpp"
+#include "core/entity/particle.hpp"
 #include "core/entity/ray_trace.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/math_helper.hpp"
@@ -85,7 +88,7 @@ bool segmentBoxHit(const AABB& box, double ox, double oy, double oz, double dx, 
 }
 
 struct EntityHit {
-    enum Kind { None, Painting, Boat, Minecart };
+    enum Kind { None, Painting, Boat, Minecart, Mob, Player };
     Kind kind = None;
     int index = -1;
     double distance = 0.0;
@@ -93,7 +96,8 @@ struct EntityHit {
 
 // `entityHit.attackEntityFrom(shootingEntity, 4)`. Each pool drops what it
 // leaves through the world's drop sink, exactly as the hand's hit does.
-bool strike(const tick::TickWorld& world, const ArrowTargets& targets, const EntityHit& hit)
+bool strike(tick::TickWorld& world, const ArrowTargets& targets, const EntityHit& hit,
+            const Arrow& a)
 {
     switch (hit.kind) {
     case EntityHit::Painting:
@@ -102,6 +106,25 @@ bool strike(const tick::TickWorld& world, const ArrowTargets& targets, const Ent
         return targets.boats->attack(world, hit.index, kArrowDamage);
     case EntityHit::Minecart:
         return targets.minecarts->attack(world, hit.index, kArrowDamage);
+    case EntityHit::Mob:
+        // **`fromPlayer` is true for any arrow**, and that is not a shortcut:
+        // the flag stands for "an `EntityLiving` did the hitting", which is
+        // what `bo.a(Lkh;I)Z` tests before it sheds wool -- and both a player
+        // and a skeleton are one. `knockback` likewise: `ge.a(Lkh;IDD)V` runs
+        // for an arrow exactly as it does for a fist, measured from where the
+        // arrow is.
+        return targets.mobs->attack(world, hit.index, kArrowDamage, true, a.x, a.z, true,
+                                    a.shooter == ArrowShooter::Skeleton);
+    case EntityHit::Player:
+        if (targets.hurtPlayer != nullptr) {
+            targets.hurtPlayer(targets.hurtPlayerCtx, kArrowDamage, DamageSource::Arrow, a.x,
+                               a.z);
+        }
+        // **An arrow that reaches the player is spent whether or not anything
+        // took the damage**, which is what `attackEntityFrom` returning true
+        // means here: it struck. An invulnerable Creative player still takes
+        // the arrow out of the air.
+        return true;
     case EntityHit::None:
         break;
     }
@@ -138,6 +161,16 @@ bool ArrowSystem::shoot(const tick::TickWorld& world, double eyeX, double eyeY, 
     a.prevZ = pz;
     a.yaw = a.prevYaw = yawDegrees;
     a.pitch = a.prevPitch = pitchDegrees;
+
+    // **The shooter's own footprint**, which the player's shot needs every bit
+    // as much as a skeleton's: the muzzle offset is 0.16 against a half-width
+    // of 0.3, so the arrow is born inside the box of whoever loosed it and the
+    // first tick's segment would otherwise strike them. `eyeX/eyeZ` is the
+    // player's `posX/posZ` -- the eye only moves the y -- so it is the place to
+    // record, not the offset muzzle. See `Arrow::shooterGrace`.
+    a.shooterX = eyeX;
+    a.shooterZ = eyeZ;
+    a.shooterGrace = i8(kArrowSelfGrace);
 
     // The launch heading, straight out of the constructor. Note motionX uses
     // **-sin(yaw)** and motionZ **+cos(yaw)** -- the opposite pairing to the
@@ -177,10 +210,76 @@ bool ArrowSystem::shoot(const tick::TickWorld& world, double eyeX, double eyeY, 
     return true;
 }
 
-void ArrowSystem::tick(const tick::TickWorld& world, const ArrowTargets& targets)
+// **`random.drr`, at the arrow rather than at whoever is listening.** Both of
+// `kg.e_()`'s sites play it with the same numbers -- volume 1.0 and a pitch of
+// `1.2F / (rand.nextFloat() * 0.2F + 0.9F)`, which is a divisor and so runs
+// *down* from 1.33 as the draw runs up.
+//
+// This used to be a count the frame loop read back and play at the player's own
+// ears, which made an arrow landing forty blocks away sound like one landing at
+// your feet. `TickWorld::playSoundAt` is const and the attenuation belongs to
+// the listener, so there is nothing the caller was needed for.
+void ArrowSystem::playStruck(const tick::TickWorld& world, const Arrow& a)
 {
-    struck_ = 0;
+    world.playSoundAt("random.drr", a.x, a.y, a.z, 1.0f,
+                      1.2f / (rand_.nextFloat() * 0.2f + 0.9f));
+}
 
+bool ArrowSystem::shootFrom(const tick::TickWorld& world, double x, double y, double z,
+                            double dx, double dy, double dz, float velocity, float inaccuracy,
+                            ArrowShooter shooter)
+{
+    Arrow* slot = arrows_.push();
+    if (slot == nullptr) {
+        ++refused_;
+        return false;
+    }
+
+    Arrow a{};
+    a.alive = true;
+    a.shooter = shooter;
+    a.setPosition(x, y, z);
+    a.prevX = x;
+    a.prevY = y;
+    a.prevZ = z;
+    a.shooterX = x;
+    a.shooterZ = z;
+    a.shooterGrace = i8(kArrowSelfGrace);
+
+    // `kg.a(DDDFF)V` -- setThrowableHeading, the same method the player's shot
+    // ends with and with different numbers in it: normalise, scatter each axis
+    // by a gaussian scaled by the inaccuracy, then multiply by the velocity.
+    const float length = MathHelper::sqrtDouble(dx * dx + dy * dy + dz * dz);
+    if (length <= 0.0f) {
+        arrows_.swapRemove(arrows_.size() - 1);
+        return false;
+    }
+    double mx = dx / double(length);
+    double my = dy / double(length);
+    double mz = dz / double(length);
+    mx += rand_.nextGaussian() * kArrowScatter * double(inaccuracy);
+    my += rand_.nextGaussian() * kArrowScatter * double(inaccuracy);
+    mz += rand_.nextGaussian() * kArrowScatter * double(inaccuracy);
+    mx *= double(velocity);
+    my *= double(velocity);
+    mz *= double(velocity);
+
+    a.motionX = mx;
+    a.motionY = my;
+    a.motionZ = mz;
+
+    const float horizontal = MathHelper::sqrtDouble(mx * mx + mz * mz);
+    a.yaw = a.prevYaw = float(std::atan2(mx, mz) * kRadiansToDegrees);
+    a.pitch = a.prevPitch = float(std::atan2(my, double(horizontal)) * kRadiansToDegrees);
+    a.ticksInAir = 0;
+    a.light = packedLightAt(world, x, y, z);
+
+    *slot = a;
+    return true;
+}
+
+void ArrowSystem::tick(tick::TickWorld& world, const ArrowTargets& targets)
+{
     for (int i = 0; i < arrows_.size();) {
         Arrow& a = arrows_[i];
         a.prevX = a.x;
@@ -202,6 +301,22 @@ void ArrowSystem::tick(const tick::TickWorld& world, const ArrowTargets& targets
                                  MathHelper::floorDouble(a.z) >> 4)) {
             ++i;
             continue;
+        }
+
+        // **`kh.y()`'s splash**, which `kg.e_()` reaches through `super.e_()`
+        // before it touches anything of its own. An arrow's `yOffset` is zero,
+        // so the sound's position is simply where it is. The volume weighs the
+        // vertical term five times the horizontal ones, which is why an arrow
+        // fired flat across a lake barely registers and one dropped from a
+        // tower cracks. See core/entity/water_entry.hpp.
+        {
+            const bool inWater = block::handleWaterMovement(world, a.box, kWaterMaterial,
+                                                            &a.motionX, &a.motionY, &a.motionZ);
+            const WaterEntryResult wet =
+                updateWaterEntry(a.water, inWater, a.motionX, a.motionY, a.motionZ);
+            if (wet.splash) {
+                world.playSoundAt(kSplashSound, a.x, a.y, a.z, wet.volume, splashPitch(rand_));
+            }
         }
 
         if (a.shake > 0) {
@@ -233,6 +348,9 @@ void ArrowSystem::tick(const tick::TickWorld& world, const ArrowTargets& targets
             a.ticksInAir = 0;
         } else {
             ++a.ticksInAir;
+            if (a.shooterGrace > 0) {
+                --a.shooterGrace;
+            }
         }
 
         // **The ray, from where it is to where it would be.** This is the whole
@@ -257,7 +375,46 @@ void ArrowSystem::tick(const tick::TickWorld& world, const ArrowTargets& targets
             const double dirX = a.motionX / step;
             const double dirY = a.motionY / step;
             const double dirZ = a.motionZ / step;
+            // `entity != shootingEntity || ticksInAir >= 5` -- see
+            // `Arrow::shooterGrace`. **Which candidate that excludes depends on
+            // who fired**, and only one of the two has to be found by place:
+            //
+            //   * A player's arrow skips **the player, by identity.** There is
+            //     one of them and `targets.playerPresent` is the handle, so the
+            //     original's `entity != shootingEntity` is available exactly
+            //     rather than as a proxy -- and the proxy was wrong here in a
+            //     way a player can reach in one press. The footprint test holds
+            //     only while the shooter stays inside its own box, and Creative
+            //     flight is 0.6 blocks a tick against a half-width of 0.3: one
+            //     tick of flying puts the player clear of the place the shot
+            //     was recorded at, the exclusion misses, and the arrow -- still
+            //     inside the box it was born in -- is spent on its own archer
+            //     at a distance of zero. That is "arrows do nothing in
+            //     Creative", and it took the paintings with it.
+            //   * A skeleton's arrow skips **the mob standing where it was
+            //     fired from**, which is the proxy and stays one: the mob pool
+            //     swap-removes and has no stable handle. A skeleton walks at
+            //     well under its own half-width a tick, so the two agree.
+            //
+            // Nothing else is ever the shooter, so nothing else is excluded: a
+            // painting, a boat or a cart the player is standing inside is a
+            // target from the first tick, as it is in the jar.
+            const bool byPlayer = a.shooter == ArrowShooter::Player;
+            auto isShooter = [&](EntityHit::Kind kind, const AABB& box) {
+                if (a.shooterGrace <= 0) {
+                    return false;
+                }
+                if (byPlayer) {
+                    return kind == EntityHit::Player;
+                }
+                return kind == EntityHit::Mob && a.shooterX >= box.minX
+                       && a.shooterX <= box.maxX && a.shooterZ >= box.minZ
+                       && a.shooterZ <= box.maxZ;
+            };
             auto consider = [&](EntityHit::Kind kind, int index, const AABB& box) {
+                if (isShooter(kind, box)) {
+                    return;
+                }
                 double distance = 0.0;
                 if (segmentBoxHit(box.expand(kArrowTargetGrow, kArrowTargetGrow,
                                              kArrowTargetGrow),
@@ -287,8 +444,20 @@ void ArrowSystem::tick(const tick::TickWorld& world, const ArrowTargets& targets
                     }
                 }
             }
-            if (nearest.kind != EntityHit::None && strike(world, targets, nearest)) {
-                ++struck_;
+            if (targets.mobs != nullptr) {
+                for (int n = 0; n < targets.mobs->count(); ++n) {
+                    const Mob& m = (*targets.mobs)[n];
+                    if (!m.alive) {
+                        continue;
+                    }
+                    consider(EntityHit::Mob, n, m.body.box);
+                }
+            }
+            if (targets.playerPresent) {
+                consider(EntityHit::Player, -1, targets.playerBox);
+            }
+            if (nearest.kind != EntityHit::None && strike(world, targets, nearest, a)) {
+                playStruck(world, a);
                 arrows_.swapRemove(i);
                 continue;
             }
@@ -314,9 +483,9 @@ void ArrowSystem::tick(const tick::TickWorld& world, const ArrowTargets& targets
                     a.y -= a.motionY / double(travelled) * kArrowEmbed;
                     a.z -= a.motionZ / double(travelled) * kArrowEmbed;
                 }
+                playStruck(world, a);
                 a.inGround = true;
                 a.shake = kArrowShake;
-                ++struck_;
             }
         }
 
@@ -335,14 +504,23 @@ void ArrowSystem::tick(const tick::TickWorld& world, const ArrowTargets& targets
         a.yaw = targetYaw;
 
         float drag = kArrowAirDrag;
-        // `g_()` -- handleWaterMovement. The original also spawns four bubble
-        // particles per tick here; that is left to the caller, which owns a
-        // particle pool, rather than given this file one.
+        // `g_()` -- handleWaterMovement.
         double pushX = a.motionX;
         double pushY = a.motionY;
         double pushZ = a.motionZ;
         if (block::handleWaterMovement(world, a.box, kWaterMaterial, &pushX, &pushY, &pushZ)) {
             drag = kArrowWaterDrag;
+            // **Four bubbles a tick, a quarter of a step *behind* the head.**
+            // The offset is the motion subtracted rather than added, which is
+            // what makes the trail come off the shaft and not the point; each
+            // carries the arrow's own motion, so the wake travels with it.
+            for (int n = 0; n < 4; ++n) {
+                world.spawnParticle(int(ParticleKind::Bubble),
+                                    a.x - a.motionX * double(0.25f),
+                                    a.y - a.motionY * double(0.25f),
+                                    a.z - a.motionZ * double(0.25f), a.motionX,
+                                    a.motionY, a.motionZ);
+            }
         }
 
         a.motionX *= double(drag);

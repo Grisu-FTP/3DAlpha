@@ -45,12 +45,13 @@
 // answer false. The sweep is the original's nearest-target sweep, clipped to
 // the first block hit, and a struck target takes `attackEntityFrom(shooter, 4)`
 // -- which kills a painting outright and puts 40 on a vehicle's counter, so a
-// second arrow inside two seconds breaks it. The player is a target in the
-// original too, once the arrow is five ticks old; with no health to take that
-// is left out rather than made to do nothing. Mobs do not exist yet.
+// second arrow inside two seconds breaks it. The player is a target too, once
+// the arrow is five ticks old -- see `Arrow::shooterGrace` for the five.
 //
 // Drawing is elsewhere, as ever: core/render/arrow_mesh.hpp is `gk`.
 
+#include "core/entity/damage_source.hpp"
+#include "core/entity/water_entry.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/segmented_pool.hpp"
@@ -63,6 +64,7 @@ class TickWorld;
 namespace mc::entity {
 class BoatSystem;
 class MinecartSystem;
+class MobSystem;
 class PaintingSystem;
 
 // `setSize(0.5F, 0.5F)`, and `yOffset = 0.0F` -- so unlike a dropped item the
@@ -113,6 +115,16 @@ inline constexpr double kArrowTargetGrow = 0.30000001192092896;
 // heading each tick, which is what stops an arrow snapping as it arcs over.
 inline constexpr float kArrowTurnRate = 0.2f;
 
+// `ticksInAir >= 5` -- how long an arrow ignores the entity that fired it.
+inline constexpr int kArrowSelfGrace = 5;
+
+// **Who fired it**, which a1.1.2 keeps as an `Entity shootingEntity` reference
+// and reads for exactly two things: `if (entityHit == shootingEntity) skip`
+// during the first five ticks, and `dd.b(Lkh;)V`'s `instanceof cw`. The second
+// is the only way to get a music disc in this version -- see
+// `MobSystem::dropOnDeath` -- so the arrow has to remember which it was.
+enum class ArrowShooter : u8 { Player, Skeleton };
+
 struct Arrow {
     double x = 0.0, y = 0.0, z = 0.0;
     double prevX = 0.0, prevY = 0.0, prevZ = 0.0;
@@ -132,11 +144,51 @@ struct Arrow {
 
     bool inGround = false;
     int shake = 0;
+
+    // `kh`'s `aV` and `c`. Not saved, as the jar does not save it: an arrow
+    // reloaded under water has no entry to make.
+    WaterEntry water{};
+
     int ticksInGround = 0;
     int ticksInAir = 0;
 
     u8 light = 0;
     bool alive = false;
+
+    // See `ArrowShooter`. One byte, and it is saved, because a creeper shot by
+    // a skeleton across a world reload should still drop a record.
+    ArrowShooter shooter = ArrowShooter::Player;
+
+    // **Not hitting whoever fired it**, which `kg.e_()` does by reference:
+    // `entity != shootingEntity || ticksInAir >= 5`. A skeleton's arrow starts
+    // 1.3 blocks up inside the skeleton's own 0.6 x 1.8 box, so without this it
+    // shoots itself on the tick it is loosed. **The player's shot is no
+    // different**: the muzzle offset backs the arrow up by 0.16 against a
+    // half-width of 0.3, so it too is born inside its shooter.
+    //
+    // **Which candidate that excludes depends on who fired, and only one of the
+    // two is found by place.** A player's arrow skips the player *by identity*
+    // -- there is one of them and `ArrowTargets::playerPresent` is the handle,
+    // so the jar's reference comparison is available exactly. A skeleton's
+    // skips the mob still standing over `(shooterX, shooterZ)`, which is a
+    // proxy and has to be: the mob pool swap-removes and has no stable handle.
+    // A skeleton walks well under its own half-width in a tick, so there the
+    // two agree.
+    //
+    // **The player could not be found by place**, and that is why this is
+    // split. The footprint test holds only while the shooter stays inside its
+    // own box, and Creative flight is `kFlightSpeed` -- 0.6 a tick against a
+    // half-width of 0.3. One tick of flying carried the player clear of the
+    // recorded place, the exclusion missed, and the arrow, still inside the box
+    // it was born in, was spent on its own archer at a distance of zero. Every
+    // shot fired while flying died on the tick it was loosed, which is what
+    // "an arrow does not knock a painting off the wall" turned out to be.
+    //
+    // Not saved -- the jar does not save `shootingEntity` either -- so an arrow
+    // reloaded mid-flight has no grace left, which is what a five-tick window
+    // means after a world close anyway.
+    double shooterX = 0.0, shooterZ = 0.0;
+    i8 shooterGrace = 0;
 
     void setPosition(double px, double py, double pz)
     {
@@ -155,6 +207,29 @@ struct ArrowTargets {
     PaintingSystem* paintings = nullptr;
     BoatSystem* boats = nullptr;
     MinecartSystem* minecarts = nullptr;
+
+    // **The mobs**, which is what the bow was for. An arrow does
+    // `attackEntityFrom(shootingEntity, 4)` with knockback, exactly as a punch
+    // does -- so an arrow shears a sheep, because the shooter is an
+    // `EntityLiving`.
+    MobSystem* mobs = nullptr;
+
+    // **The player**, as a box and a place to send the damage. The same shape
+    // `MobSurroundings::hurtPlayer` takes and for the same reason -- see
+    // core/entity/mob.hpp -- and the source is always `DamageSource::Arrow`,
+    // which difficulty scales whoever fired it.
+    //
+    // **A skeleton's arrow can hit the skeleton beside it**, and does: `kg.e_()`
+    // skips only the entity that fired it, and only while the arrow is under
+    // five ticks old. That is where a1.1.2's skeletons-shooting-each-other
+    // comes from, and it is reproduced rather than special-cased. A skeleton's
+    // arrow owes the player no grace at all, for the same reason: the player
+    // did not fire it.
+    bool playerPresent = false;
+    AABB playerBox{};
+    void (*hurtPlayer)(void* ctx, int amount, DamageSource source, double fromX,
+                       double fromZ) = nullptr;
+    void* hurtPlayerCtx = nullptr;
 };
 
 // **No cap**, as the original has none. The first 128 are held from
@@ -178,8 +253,22 @@ public:
     bool shoot(const tick::TickWorld& world, double eyeX, double eyeY, double eyeZ,
                float yawDegrees, float pitchDegrees);
 
+    // `cw.a(Lkh;F)V`'s spawn: the arrow is placed by the caller -- which has
+    // already applied the constructor's muzzle offset and the skeleton's own
+    // 1.4 lift -- and then given a heading outright, which **replaces**
+    // whatever the constructor's angles produced.
+    //
+    // `velocity` is 0.6 and `inaccuracy` 12.0 for a skeleton, against the
+    // player's 1.5 and 1.0: a skeleton's arrow is slower and far less accurate,
+    // which is why one at range misses and one at three blocks does not.
+    bool shootFrom(const tick::TickWorld& world, double x, double y, double z, double dx,
+                   double dy, double dz, float velocity, float inaccuracy,
+                   ArrowShooter shooter);
+
     // One 20 Hz tick of `kg.e_()` for every live arrow.
-    void tick(const tick::TickWorld& world, const ArrowTargets& targets = ArrowTargets{});
+    // **Mutable**, since an arrow can now kill a mob and a mob's death drops
+    // items and -- for a creeper -- is the one path that writes a music disc.
+    void tick(tick::TickWorld& world, const ArrowTargets& targets = ArrowTargets{});
 
     void clear() { arrows_.clear(); }
 
@@ -188,16 +277,14 @@ public:
 
     u32 refused() const { return refused_; }
 
-    // **How many arrows struck something this tick**, so the caller can play
-    // `random.drr` without this file owning a sound engine -- the same seam
-    // `ItemEntitySystem::collect` uses for `random.pop`.
-    int struckLastTick() const { return struck_; }
-
 private:
     friend struct PersistentEntities;
+
+    // `random.drr`, played at the arrow by both of `kg.e_()`'s strike sites.
+    void playStruck(const tick::TickWorld& world, const Arrow& a);
+
     SegmentedPool<Arrow, kInitialCapacity> arrows_;
     u32 refused_ = 0;
-    int struck_ = 0;
     JavaRandom rand_;
 };
 

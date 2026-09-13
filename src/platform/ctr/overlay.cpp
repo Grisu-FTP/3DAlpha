@@ -140,6 +140,22 @@ void Overlay::begin(const char* worldName, const char* model)
     lookYawStep_ = -1;
     uiTouchActive_ = false;
 
+    // **The death screen belongs to the world that put it up.** `au` is a
+    // `GuiScreen` and closing the world closes it, but this overlay is one
+    // process-long object -- so dying, choosing *Title menu* and opening
+    // another world used to arrive with `dead_` still set: the game-over screen
+    // over a living player, and no way out of it, because the frame loop only
+    // raises it when `!vitals.alive() && !dead()` and only the screen itself
+    // clears it. Cleared here rather than by the caller, because every way out
+    // of a world comes back through `begin()` and only some of them come back
+    // through the death screen. The fields directly and not `setDead(false)`:
+    // that one closes a container session and re-syncs the inventory, and both
+    // of those are about to be done below in the order this needs them.
+    dead_ = false;
+    deathScore_ = 0;
+    deathCursor_ = 0;
+    deathChoice_ = DeathChoice::None;
+
     // Emptied, not filled. **The world's own stacks arrive next**, through
     // `setInventory`, and only a world with none of them falls back to the
     // palette's opening nine -- see there. Filling here as well would put nine
@@ -147,7 +163,20 @@ void Overlay::begin(const char* worldName, const char* model)
     // frame between the two calls.
     inventory_.clear();
     inventoryChanged_ = false;
+    // A screen or a queued drop from the last world belongs to it and not to
+    // this one; closeContainerIntoInventory already put anything owed back.
+    {
+        item::ItemStack discard[10];
+        session_.close(discard, 10);
+    }
+    closedCount_ = 0;
+    throwCursor_ = false;
+    containerWorld_ = nullptr;
     heldSlot_ = -1;
+    // A throw the last world asked for and this one has not: the caller answers
+    // the request on the frame after the press, and a world change can fall
+    // between the two.
+    throwSlot_ = -1;
     palettePage_ = 0;
     paletteCursor_ = 0;
     itemsCursor_ = 0;
@@ -161,6 +190,18 @@ void Overlay::begin(const char* worldName, const char* model)
 
 void Overlay::setGamemode(settings::Gamemode mode)
 {
+    // **The bottom screen changes shape here and nowhere else.** Without a
+    // hotbar the band is not reserved, so the banner and every page move forty
+    // pixels up into it -- see hud.hpp.
+    //
+    // **Before the early return, and from `mode` rather than from the field**,
+    // which is the one ordering that is not an accident: `gamemode_` starts as
+    // Spectator, so a Spectator world sets the mode it already has and takes
+    // that return -- and would leave the screen laid out for a hotbar it does
+    // not have. It is also set before anything below asks a layout question,
+    // because `syncInventorySession` lays a container out.
+    hud::setHotbarPresent(mode != settings::Gamemode::Spectator);
+
     if (mode == gamemode_) {
         return;
     }
@@ -180,12 +221,23 @@ void Overlay::setGamemode(settings::Gamemode mode)
         playerPage_ = PlayerPage::Map;
     }
 
+    // Spectator has no hands to hold a chest's contents in. The Survival grid
+    // follows the mode: Creative's Inv. page is the swap-only one.
+    if (!hasHotbar() && containerOpen()) {
+        closeContainer();
+    }
+    syncInventorySession();
+
     // The focus has nothing to sit on without a hotbar.
     if (!hasHotbar() && focus_) {
         releaseFocus();
     }
 
-    // The strip has a different number of tabs on it now.
+    // The strip has a different number of tabs on it now, and so has every
+    // page -- the whole screen moved. `dirty_` is a clear and a full redraw,
+    // which is what re-lays the map's furniture at the new window size; the
+    // sampled chunks themselves are a picture of the ground at one pixel a
+    // block and do not care how big the window showing them is.
     dirty_ = true;
 }
 
@@ -217,6 +269,17 @@ void Overlay::setAnimatedItemsTile(int tile, const u8* texels)
     }
 
     if (page_ != Page::Player) {
+        return;
+    }
+    if (session_.isOpen()) {
+        bool visible = shows(item::ItemId(session_.cursor().id));
+        for (int i = 0; i < session_.slotCount() && !visible; ++i) {
+            visible = shows(item::ItemId(session_.slotAt(inventory_, i).id));
+        }
+        if (visible) {
+            bodyDirty_ = true;
+            hotbarDirty_ = true;
+        }
         return;
     }
     if (playerPage_ == PlayerPage::Items) {
@@ -301,6 +364,16 @@ int Overlay::playerPagesFor(PlayerPage* out) const
 
 hud::TabStrip Overlay::tabs() const
 {
+    // A world container is a screen of its own, not a page among the others,
+    // so the strip is its way out.
+    if (containerOpen()) {
+        hud::TabStrip strip;
+        strip.count = 1;
+        strip.labels[0] = "Close";
+        strip.selected = 0;
+        return strip;
+    }
+
     PlayerPage pages[hud::kMaxTabs];
     const int count = playerPagesFor(pages);
 
@@ -310,11 +383,18 @@ hud::TabStrip Overlay::tabs() const
         case PlayerPage::Map:
             strip.labels[strip.count++] = "Map";
             break;
+        // **"Inv." and "Items", not "Items" and "Blocks".** The palette
+        // stopped being blocks-only when it grew to the whole item table -- it
+        // offers swords, ingots, armour and now the two music discs -- so
+        // "Blocks" was naming a third of what is on the page. It takes "Items",
+        // and the inventory takes the word it always was: a1.1.2's own screen
+        // is `GuiInventory`, abbreviated here because the tab is narrow. The
+        // enum names are unchanged; these are labels.
         case PlayerPage::Items:
-            strip.labels[strip.count++] = "Items";
+            strip.labels[strip.count++] = "Inv.";
             break;
         case PlayerPage::Blocks:
-            strip.labels[strip.count++] = "Blocks";
+            strip.labels[strip.count++] = "Items";
             break;
         case PlayerPage::Look:
             strip.labels[strip.count++] = "Look";
@@ -360,6 +440,8 @@ void Overlay::selectTab(int index)
     // the cursor -- but a slot drawn hollow on a page the player has left is a
     // state with nothing on screen to explain it.
     heldSlot_ = -1;
+    // Leaving the Survival Inv. page is closing `lo`, which drops its grid.
+    syncInventorySession();
     dirty_ = true;
 }
 
@@ -379,7 +461,7 @@ int Overlay::touchLookTop() const
     if (playerPage_ != PlayerPage::Look) {
         return -1;
     }
-    return hud::kLookPadTop;
+    return hud::lookPadTop();
 }
 
 namespace {
@@ -424,13 +506,39 @@ void itemCaption(item::ItemId id, char* out, usize size)
 
 }  // namespace
 
-void Overlay::tickMap(const render::WorldStreamer& world, const Camera& camera)
+void Overlay::tickMap(render::WorldStreamer& world, const Camera& camera)
 {
     map_.update(world, camera);
 }
 
 bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* camera)
 {
+    // **The game-over screen takes every press on the player's half.** Its two
+    // buttons are the only things a dead player can do; the tabs, the hotbar,
+    // the focus and the map all wait until Respawn. The debug pages behind
+    // SELECT are not the player's and keep their chord.
+    if (dead_ && page_ == Page::Player && (held & KEY_SELECT) == 0) {
+        uiTouchActive_ = (held & KEY_TOUCH) != 0;
+        if ((down & KEY_TOUCH) != 0) {
+            touchPosition touch;
+            hidTouchRead(&touch);
+            const int button = hud::gameOverButtonAt(int(touch.px), int(touch.py));
+            if (button >= 0) {
+                deathCursor_ = button;
+                deathChoice_ = button == 0 ? DeathChoice::Respawn : DeathChoice::TitleMenu;
+                bodyDirty_ = true;
+            }
+        }
+        if ((down & (KEY_DUP | KEY_DDOWN)) != 0) {
+            deathCursor_ = 1 - deathCursor_;
+            bodyDirty_ = true;
+        }
+        if ((down & KEY_A) != 0) {
+            deathChoice_ = deathCursor_ == 0 ? DeathChoice::Respawn : DeathChoice::TitleMenu;
+        }
+        return false;
+    }
+
     // **The touch screen, before the buttons**, because a tap on a tab has to
     // be claimed in the same frame it lands: the caller asks `touchLookTop()`
     // straight afterwards to decide whether the camera gets the drag.
@@ -444,7 +552,42 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
         const int tab = hud::tabAt(tabs(), x, y);
         const int slot = hasHotbar() ? hud::hotbarSlotAt(x, y) : -1;
         if (tab >= 0) {
-            selectTab(tab);
+            if (containerOpen()) {
+                closeContainer();
+            } else {
+                selectTab(tab);
+            }
+            uiTouchActive_ = true;
+        } else if (session_.isOpen()) {
+            // **A container screen owns the band as well as the page**: the
+            // hand is nine of its slots. A touch is the left button, or the
+            // right one with Y held -- the stylus has one tip.
+            //
+            // The scroll arrows are asked first, and only a tall chest has
+            // any: they sit in the gutter beside the grid, where no slot is.
+            const int scroll = gui::containerScrollAt(layout_, x, y);
+            const int index = scroll != 0 ? -1 : gui::containerSlotAt(layout_, x, y);
+            if (scroll != 0) {
+                scrollContainer(scroll);
+            } else if (index >= 0) {
+                const bool moved = index != containerCursor_;
+                containerCursor_ = index;
+                const int handFirst = session_.slotCount() - item::kHotbarSlots;
+                const bool hadNothing = session_.cursor().empty();
+                clickContainer(index, (held & KEY_Y) != 0 ? 1 : 0);
+                // An empty hand tapping an empty hotbar cell has nothing to
+                // click, and still means what it means on every other page:
+                // hold this slot.
+                if (index >= handFirst && hadNothing && session_.cursor().empty()
+                    && session_.slotAt(inventory_, index).empty()
+                    && index - handFirst != inventory_.selected) {
+                    inventory_.selected = index - handFirst;
+                }
+                if (moved) {
+                    bodyDirty_ = true;
+                    hotbarDirty_ = true;
+                }
+            }
             uiTouchActive_ = true;
         } else if (slot >= 0) {
             // **The hotbar answers a touch on every page**, which is the whole
@@ -505,7 +648,20 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     // and a held SELECT should not take the hotbar away.
     if (hasHotbar() && (down & (KEY_ZL | KEY_ZR)) != 0) {
         inventory_.cycle((down & KEY_ZR) != 0 ? 1 : -1);
-        hotbarDirty_ = true;
+        selectionMoved();
+        // **And the cursor goes with it.** On the inventory and the palette the
+        // focused cursor is usually down in the grid, so a shoulder press used
+        // to move a white outline in the band while the amber one stayed where
+        // it was -- two marks disagreeing about which slot the next press acts
+        // on, which is the one thing this screen must never be ambiguous about.
+        // Changing the slot in your hand *is* pointing at it, so the cursor
+        // follows the hand to the band it just moved in.
+        //
+        // Only while the screen is focused: unfocused there is no cursor drawn
+        // and nothing to move.
+        if (focus_) {
+            cursorToHand();
+        }
     }
 
     // SELECT is the modifier rather than a page key of its own, so the page
@@ -538,15 +694,59 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
     // test excluded it; Y is sneak now, and leaving the old guard in would have
     // made the map's zoom die whenever the player crouched.
     if (page_ == Page::Player) {
-        // **X focuses the bottom screen and X lets it go.** The screen is
-        // resistive and a player walking has no stylus out; focused, the d-pad
-        // and A do what a tap would, and the world keeps moving underneath --
-        // the circle pad and the camera are untouched. Only in a mode that has
-        // something to focus on.
+        // **X focuses the bottom screen, and only B lets it go.** The screen
+        // is resistive and a player walking has no stylus out; focused, the
+        // d-pad and A do what a tap would, and the world keeps moving
+        // underneath -- the circle pad and the camera are untouched. Only in a
+        // mode that has something to focus on.
+        //
+        // X used to let the focus go as well, which put the one button that
+        // does something *inside* a focused screen one press away from
+        // throwing the player out of it. Now it only turns the focus on.
         if (hasHotbar() && (down & KEY_X) != 0) {
-            if (focus_) {
-                releaseFocus();
-            } else {
+            // **A stack in hand takes the press first**, and is thrown -- the
+            // same rule the hotbar's touch handler uses, and the reason one
+            // press still does one thing. B is still the way to put it back.
+            if (session_.isOpen() && !session_.cursor().empty()) {
+                throwCursor_ = true;
+                return false;
+            }
+            // **On a container screen X is a shift-click**: the stack under
+            // the cursor goes across to the other side. See
+            // item::ContainerSession::quickMove, which is where the routing is
+            // and where it is tested.
+            if (focus_ && session_.isOpen()) {
+                quickMoveContainer(containerCursor_);
+                return false;
+            }
+            // A world container keeps the focus until it is closed.
+            if (containerOpen()) {
+                return false;
+            }
+            if (heldSlot_ >= 0) {
+                throwSlot_ = heldSlot_;
+                return false;
+            }
+            // **The Creative pages have no session** and get the same move
+            // through the inventory: on the hotbar row or the Items grid the
+            // stack crosses between the hand and the backpack (armour goes on
+            // and comes off), and on the palette a full stack goes into the
+            // hand. See item::Inventory::quickMove and giveStack.
+            if (focus_ && pageHasGrid()) {
+                bool moved = false;
+                if (!focusGrid_) {
+                    moved = inventory_.quickMove(inventory_.selected);
+                } else if (playerPage_ == PlayerPage::Items) {
+                    moved = inventory_.quickMove(hud::itemsSlotForCell(itemsCursor_));
+                } else {
+                    moved = inventory_.giveStack(item::paletteItem(paletteIndex()));
+                }
+                if (moved) {
+                    inventoryWritten();
+                }
+                return false;
+            }
+            if (!focus_) {
                 focus_ = true;
                 focusGrid_ = pageHasGrid();
                 paletteCursor_ = 0;
@@ -929,7 +1129,7 @@ void Overlay::tickFocus(float dt)
     // like four different speeds.
     const double windowsPerSecond = 0.5;
     const double blocksWide = double(map::mapWindowBlocks(kMapWidth, map_.zoom()));
-    const double blocksHigh = double(map::mapWindowBlocks(kMapHeight, map_.zoom()));
+    const double blocksHigh = double(map::mapWindowBlocks(mapHeight(), map_.zoom()));
 
     // Pad +y is *up* on the stick, which is north, which is -Z.
     map_.pan(double(x) * blocksWide * windowsPerSecond * double(dt),
@@ -941,6 +1141,10 @@ void Overlay::tickFocus(float dt)
 // on the map means the zoom and the grids.
 bool Overlay::handleFocusedInput(u32 down)
 {
+    if (session_.isOpen()) {
+        return handleContainerInput(down);
+    }
+
     // B lets the screen go, which is the same thing B does everywhere else in
     // this shell.
     if ((down & KEY_B) != 0) {
@@ -958,15 +1162,7 @@ bool Overlay::handleFocusedInput(u32 down)
     // Unfocused, L and R are break and place; main.cpp reads the same focus
     // flag and suspends the edit path, so no press ever does both.
     if ((down & (KEY_L | KEY_R)) != 0) {
-        PlayerPage pages[hud::kMaxTabs];
-        const int count = playerPagesFor(pages);
-        const int tab = selectedTab() + ((down & KEY_R) != 0 ? 1 : count - 1);
-        selectTab(tab % count);
-        // selectTab drops the grid cursor when it leaves a page that has one and
-        // does not put it back on the way in, so say where the focus goes.
-        focusGrid_ = pageHasGrid();
-        hotbarDirty_ = true;
-        bodyDirty_ = true;
+        stepTab((down & KEY_R) != 0);
         return true;
     }
 
@@ -1104,7 +1300,7 @@ bool Overlay::handleFocusedInput(u32 down)
     // do and is the reason an old 3DS is not shut out of changing it.
     if ((down & (KEY_DLEFT | KEY_DRIGHT)) != 0) {
         inventory_.cycle((down & KEY_DRIGHT) != 0 ? 1 : -1);
-        hotbarDirty_ = true;
+        selectionMoved();
     }
     const bool onItems = playerPage_ == PlayerPage::Items;
     // **Down into the grid, because the grid is below the band now.** The cell
@@ -1139,6 +1335,292 @@ bool Overlay::handleFocusedInput(u32 down)
     return true;
 }
 
+void Overlay::stepTab(bool forward)
+{
+    PlayerPage pages[hud::kMaxTabs];
+    const int count = playerPagesFor(pages);
+    const int tab = selectedTab() + (forward ? 1 : count - 1);
+    selectTab(tab % count);
+    // selectTab drops the grid cursor when it leaves a page that has one and
+    // does not put it back on the way in, so say where the focus goes.
+    focusGrid_ = pageHasGrid();
+    hotbarDirty_ = true;
+    bodyDirty_ = true;
+}
+
+// Nine, because a chest row is nine slots wide wherever the screen puts it --
+// the same number `container_layout.cpp` lays the grid out in.
+constexpr int kChestColumns = 9;
+
+bool Overlay::handleContainerInput(u32 down)
+{
+    const bool worldScreen = containerOpen();
+    // B shuts a world container. On the inventory page it is the usual B --
+    // the focus goes and the grid stays, since the page is still up.
+    if ((down & KEY_B) != 0) {
+        if (worldScreen) {
+            closeContainer();
+        } else {
+            releaseFocus();
+        }
+        return true;
+    }
+    if ((down & (KEY_L | KEY_R)) != 0) {
+        // **L and R scroll a tall chest**, and step the tabs everywhere else.
+        // A world screen has no tabs to step -- the strip is the player's
+        // pages and a chest is not one of them -- so the pair was free, and a
+        // shoulder button is the one control a player can use without taking
+        // a hand off the screen.
+        if (worldScreen) {
+            scrollContainer((down & KEY_R) != 0 ? 1 : -1);
+        } else {
+            stepTab((down & KEY_R) != 0);
+        }
+        return true;
+    }
+
+    const int dx = ((down & KEY_DRIGHT) != 0 ? 1 : 0) - ((down & KEY_DLEFT) != 0 ? 1 : 0);
+    const int dy = ((down & KEY_DDOWN) != 0 ? 1 : 0) - ((down & KEY_DUP) != 0 ? 1 : 0);
+    if (dx != 0 || dy != 0) {
+        // **Stepping off the top or the bottom of a scrolled chest scrolls
+        // it**, and the cursor stays on the row it is on: the content moves
+        // under the cursor rather than the cursor running off the window. Only
+        // inside the chest's own slots, so the backpack is still one press
+        // below the last row once there is nothing left to scroll to.
+        if (dy != 0 && scrollAtChestEdge(dy)) {
+            const int moved = containerCursor_ + dy * kChestColumns;
+            if (moved >= 0 && moved < session_.containerSlots()) {
+                containerCursor_ = moved;
+            }
+            bodyDirty_ = true;
+            hotbarDirty_ = true;
+            return true;
+        }
+        // One axis a press; a diagonal on a d-pad is a slipped thumb.
+        const int next = gui::containerStep(layout_, containerCursor_, dx, dx != 0 ? 0 : dy);
+        if (next != containerCursor_) {
+            containerCursor_ = next;
+            bodyDirty_ = true;
+            hotbarDirty_ = true;
+        }
+    }
+    if ((down & KEY_A) != 0) {
+        clickContainer(containerCursor_, 0);
+    }
+    if ((down & KEY_Y) != 0) {
+        clickContainer(containerCursor_, 1);
+    }
+    return true;
+}
+
+bool Overlay::scrollContainer(int rows)
+{
+    if (layout_.chestWindowRows <= 0 || layout_.chestWindowRows >= layout_.chestRows) {
+        return false;
+    }
+    const int wanted = layout_.chestFirstRow + rows;
+    if (wanted < 0 || wanted > layout_.chestRows - layout_.chestWindowRows) {
+        return false;
+    }
+    containerScroll_ = wanted;
+    gui::buildContainerLayout(session_, hud::pageTop(), &layout_, containerScroll_);
+
+    // **The cursor never scrolls out of sight.** A slot outside the window has
+    // no rectangle, so a cursor left on one would be invisible, unmovable by
+    // the d-pad -- which steps between rectangles -- and still what A clicks.
+    // It comes back to the nearest row of the window, in its own column.
+    if (containerCursor_ >= 0 && containerCursor_ < session_.containerSlots()
+        && layout_.rect[containerCursor_].w <= 0) {
+        const int first = layout_.chestFirstRow;
+        const int last = first + layout_.chestWindowRows - 1;
+        int row = containerCursor_ / kChestColumns;
+        row = row < first ? first : (row > last ? last : row);
+        containerCursor_ = row * kChestColumns + containerCursor_ % kChestColumns;
+        hotbarDirty_ = true;
+    }
+    bodyDirty_ = true;
+    return true;
+}
+
+// Whether the cursor is on the chest row a press in `dy` would leave the window
+// from, **and** there is somewhere to scroll to -- in which case it scrolls and
+// this answers true.
+bool Overlay::scrollAtChestEdge(int dy)
+{
+    if (layout_.chestWindowRows <= 0 || layout_.chestWindowRows >= layout_.chestRows) {
+        return false;
+    }
+    if (containerCursor_ < 0 || containerCursor_ >= session_.containerSlots()) {
+        return false;
+    }
+    const int row = containerCursor_ / kChestColumns;
+    const int edge = dy < 0 ? layout_.chestFirstRow
+                            : layout_.chestFirstRow + layout_.chestWindowRows - 1;
+    if (row != edge) {
+        return false;
+    }
+    return scrollContainer(dy);
+}
+
+void Overlay::clickContainer(int index, int button)
+{
+    const item::SlotClick click = session_.click(containerWorld_, inventory_, index, button);
+    if (click.changed) {
+        // A click can land on the hand or the backpack, and those save.
+        inventoryWritten();
+    }
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
+}
+
+void Overlay::quickMoveContainer(int index)
+{
+    const item::SlotClick click = session_.quickMove(containerWorld_, inventory_, index);
+    if (click.changed) {
+        inventoryWritten();
+    }
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
+}
+
+void Overlay::openContainer(tick::TickWorld& world, tick::TickWorld::ContainerKind kind, i32 x,
+                            int y, i32 z)
+{
+    if (!hasHotbar() || dead_) {
+        return;
+    }
+    // One screen at a time: the inventory grid, or a chest the player somehow
+    // reached with another open, is shut first and drops what it held.
+    closeSession();
+    heldSlot_ = -1;
+    throwSlot_ = -1;
+    containerWorld_ = &world;
+
+    bool opened = false;
+    switch (kind) {
+    case tick::TickWorld::ContainerKind::Workbench:
+        session_.openWorkbench(x, y, z);
+        opened = true;
+        break;
+    case tick::TickWorld::ContainerKind::Furnace:
+        opened = session_.openFurnace(world, x, y, z);
+        break;
+    case tick::TickWorld::ContainerKind::Chest:
+        opened = session_.openChest(world, x, y, z);
+        break;
+    }
+    if (!opened) {
+        syncInventorySession();
+        return;
+    }
+    session_.takeChanged();
+    containerScroll_ = 0;
+    gui::buildContainerLayout(session_, hud::pageTop(), &layout_, containerScroll_);
+    // The first of the screen's own slots that takes a stack: a crafting
+    // grid's first cell rather than its take-only result.
+    containerCursor_ = kind == tick::TickWorld::ContainerKind::Workbench ? 1 : 0;
+    shownCook_ = -1;
+    shownBurn_ = -1;
+    focus_ = true;
+    focusGrid_ = true;
+    dirty_ = true;
+}
+
+void Overlay::closeSession()
+{
+    if (!session_.isOpen()) {
+        return;
+    }
+    item::ItemStack dropped[10];
+    const int count = session_.close(dropped, 10);
+    for (int i = 0; i < count; ++i) {
+        if (closedCount_ < kMaxClosedStacks) {
+            closed_[closedCount_++] = std::move(dropped[i]);
+        } else {
+            // No room left in the queue, which takes more closes in one frame
+            // than there are screens: into the inventory instead.
+            inventory_.addStack(item::ItemId(dropped[i].id), int(dropped[i].count),
+                                dropped[i].damage);
+            inventoryWritten();
+        }
+    }
+    throwCursor_ = false;
+    dirty_ = true;
+}
+
+void Overlay::closeContainer()
+{
+    const bool worldScreen = containerOpen();
+    closeSession();
+    if (worldScreen && focus_) {
+        releaseFocus();
+    }
+    syncInventorySession();
+}
+
+void Overlay::syncInventorySession()
+{
+    const bool wanted = gamemode_ == settings::Gamemode::Survival
+                        && playerPage_ == PlayerPage::Items && !dead_;
+    if (session_.kind() == item::ScreenKind::Inventory && !wanted) {
+        closeSession();
+    } else if (!session_.isOpen() && wanted) {
+        session_.openInventory();
+        containerScroll_ = 0;
+        gui::buildContainerLayout(session_, hud::pageTop(), &layout_, containerScroll_);
+        // The first backpack cell, which is where the Creative page's cursor
+        // starts too.
+        containerCursor_ = session_.containerSlots();
+        dirty_ = true;
+    }
+}
+
+void Overlay::tickContainer(tick::TickWorld* world)
+{
+    if (!containerOpen()) {
+        return;
+    }
+    containerWorld_ = world;
+    if (world == nullptr || !session_.pull(world)) {
+        closeContainer();
+        return;
+    }
+    if (session_.takeChanged()) {
+        bodyDirty_ = true;
+    }
+    if (layout_.arrowIsProgress) {
+        const int cook = session_.furnaceCookScaled(layout_.arrow.w);
+        const int burn = session_.furnaceBurnScaled(layout_.flame.h - 2);
+        if (cook != shownCook_ || burn != shownBurn_) {
+            shownCook_ = cook;
+            shownBurn_ = burn;
+            progressDirty_ = true;
+        }
+    }
+}
+
+void Overlay::finishClosedStack(bool spawned)
+{
+    if (closedCount_ <= 0) {
+        return;
+    }
+    item::ItemStack& stack = closed_[closedCount_ - 1];
+    if (!spawned && !stack.empty()) {
+        inventory_.addStack(item::ItemId(stack.id), int(stack.count), stack.damage);
+        inventoryWritten();
+    }
+    stack = item::ItemStack{};
+    --closedCount_;
+}
+
+void Overlay::closeContainerIntoInventory()
+{
+    closeSession();
+    while (closedCount_ > 0) {
+        finishClosedStack(false);
+    }
+}
+
 void Overlay::touchSlot(int slot)
 {
     if (heldSlot_ < 0) {
@@ -1169,7 +1651,7 @@ void Overlay::touchSlot(int slot)
         }
         inventory_.swap(heldSlot_, slot);
         heldSlot_ = -1;
-        inventoryChanged_ = true;
+        inventoryWritten();
     }
     bodyDirty_ = true;
     hotbarDirty_ = true;
@@ -1186,12 +1668,20 @@ void Overlay::setInventory(const std::vector<item::ItemStack>& stacks)
 {
     inventory_.load(stacks);
     heldSlot_ = -1;
-    if (inventory_.empty()) {
+    throwSlot_ = -1;
+    if (inventory_.empty() && gamemode_ == settings::Gamemode::Creative) {
         // **A player who has never carried anything gets the opening hand**,
         // which is what makes a brand new Creative world usable. It counts as a
         // change, so the next save writes it: an empty inventory and one that
         // happens to hold the first nine palette entries are different states
         // and the file should say which this is.
+        //
+        // **Creative only.** a1.1.2 starts every player with nothing, and
+        // Survival means it: nine free blocks are the difference between
+        // mining the first tree and not having to. Spectator is left out for
+        // the same reason from the other side -- it carries nothing, has no
+        // hotbar to show it in, and a hand filled here would follow the player
+        // into Survival the moment the pause menu changed the mode.
         inventory_.fillHandFromPalette();
         inventoryChanged_ = true;
     }
@@ -1206,6 +1696,56 @@ bool Overlay::takeInventoryChange()
     return changed;
 }
 
+void Overlay::selectionMoved()
+{
+    hotbarDirty_ = true;
+    // **The hand moved and none of the forty slots did**, so there is nothing
+    // new to save -- but the palette page names what is in the hand under its
+    // grid and outlines that item's cell in it, and both of those were as stale
+    // after a shoulder press as the backpack was after a pickup.
+    if (playerPage_ == PlayerPage::Blocks) {
+        bodyDirty_ = true;
+    }
+}
+
+void Overlay::cursorToHand()
+{
+    if (session_.isOpen()) {
+        // `lo`, `hx`, `id` and `ea` all end with the nine slots of the hand,
+        // which is the numbering `container_layout` lays out and `ee` clicks.
+        const int first = session_.slotCount() - item::kHotbarSlots;
+        const int wanted = first + inventory_.selected;
+        if (wanted != containerCursor_ && wanted >= 0 && wanted < session_.slotCount()) {
+            containerCursor_ = wanted;
+            bodyDirty_ = true;
+            hotbarDirty_ = true;
+        }
+        return;
+    }
+    if (!focusGrid_ || playerPage_ == PlayerPage::Map) {
+        return;
+    }
+    // The band's cursor is `inventory_.selected` itself -- see `drawPlayerPage`
+    // -- so leaving the grid is the whole of the move.
+    focusGrid_ = false;
+    bodyDirty_ = true;
+    hotbarDirty_ = true;
+}
+
+void Overlay::inventoryWritten()
+{
+    inventoryChanged_ = true;
+    hotbarDirty_ = true;
+    // The two pages that are a view of the inventory rather than of the world:
+    // the backpack grid draws all forty slots, and the palette's caption names
+    // whatever is in the hand. The map and the look pad draw neither, so a
+    // pickup while one of those is up costs the band and nothing else.
+    if (playerPage_ == PlayerPage::Items || playerPage_ == PlayerPage::Blocks
+        || session_.isOpen()) {
+        bodyDirty_ = true;
+    }
+}
+
 void Overlay::takeFromPalette()
 {
     // **A copy, not a move.** The palette is a catalogue and holds nothing, so
@@ -1215,8 +1755,7 @@ void Overlay::takeFromPalette()
     // concept the save format has nowhere to put.
     const item::ItemId id = item::paletteItem(paletteIndex());
     inventory_.set(inventory_.selected, id, i8(item::def(id).stack));
-    inventoryChanged_ = true;
-    hotbarDirty_ = true;
+    inventoryWritten();
 }
 
 item::ItemId Overlay::dropHeldItem()
@@ -1225,9 +1764,57 @@ item::ItemId Overlay::dropHeldItem()
     if (dropped == 0) {
         return 0;
     }
-    inventoryChanged_ = true;
-    hotbarDirty_ = true;
+    inventoryWritten();
     return dropped;
+}
+
+const item::ItemStack* Overlay::throwRequest() const
+{
+    if (throwCursor_) {
+        return session_.cursor().empty() ? nullptr : &session_.cursor();
+    }
+    if (throwSlot_ < 0) {
+        return nullptr;
+    }
+    const item::ItemStack& stack = inventory_.at(throwSlot_);
+    // Emptied between the press and the answer -- there is no path that does
+    // that today, and a throw of nothing is still not something to hand back.
+    return stack.empty() ? nullptr : &stack;
+}
+
+void Overlay::finishThrow()
+{
+    if (throwCursor_) {
+        // `ee`'s click outside the window with the left button: the whole
+        // cursor goes.
+        item::ItemStack thrown;
+        session_.throwCursor(0, &thrown);
+        throwCursor_ = false;
+        bodyDirty_ = true;
+        hotbarDirty_ = true;
+        return;
+    }
+    if (throwSlot_ < 0) {
+        return;
+    }
+    // The whole stack, so the slot empties rather than counting down: this is
+    // `windowClick`'s spill of the cursor and not `dropOneItem`.
+    inventory_.set(throwSlot_, item::ItemId(0), 0);
+    if (heldSlot_ == throwSlot_) {
+        heldSlot_ = -1;
+    }
+    throwSlot_ = -1;
+    inventoryWritten();
+    bodyDirty_ = true;
+}
+
+void Overlay::cancelThrow()
+{
+    // The stack stays exactly where it is, and so does the hand holding it:
+    // a throw the world had no room for has to read as a throw that did not
+    // happen, not as one that lost the stack.
+    throwSlot_ = -1;
+    throwCursor_ = false;
 }
 
 void Overlay::replaceHeldItem(item::ItemId id)
@@ -1238,16 +1825,49 @@ void Overlay::replaceHeldItem(item::ItemId id)
         return;
     }
     inventory_.set(slot, id, stack.count);
-    inventoryChanged_ = true;
-    hotbarDirty_ = true;
+    inventoryWritten();
+}
+
+void Overlay::setDead(bool dead, int score)
+{
+    if (dead == dead_) {
+        return;
+    }
+    dead_ = dead;
+    deathScore_ = score;
+    deathCursor_ = 0;
+    deathChoice_ = DeathChoice::None;
+    // Whatever the screen was doing is over: a stack in hand has already been
+    // dropped with the rest, and a focus left on would come back pointing at
+    // a page that was never redrawn under it.
+    // An open screen shuts with the death, as `au` replacing it does, and its
+    // cursor and grid go on the ground with everything else.
+    closeSession();
+    heldSlot_ = -1;
+    throwSlot_ = -1;
+    if (focus_) {
+        releaseFocus();
+    }
+    syncInventorySession();
+    dirty_ = true;
+}
+
+Overlay::DeathChoice Overlay::takeDeathChoice()
+{
+    const DeathChoice choice = deathChoice_;
+    deathChoice_ = DeathChoice::None;
+    return choice;
 }
 
 int Overlay::collectItems(mc::entity::ItemEntitySystem& items, const AABB& playerBox)
 {
     const int taken = items.collect(playerBox, inventory_);
     if (taken > 0) {
-        inventoryChanged_ = true;
-        hotbarDirty_ = true;
+        // **This is the one that made the open backpack look frozen.** Walking
+        // over a dropped item writes whichever of the thirty-six slots it
+        // merges into, and marking only the band left the grid above showing
+        // the inventory as it was when the page was opened.
+        inventoryWritten();
     }
     return taken;
 }
@@ -1263,6 +1883,29 @@ void Overlay::showItemInPalette(item::ItemId id)
     focusGrid_ = true;
     bodyDirty_ = true;
     hotbarDirty_ = true;
+}
+
+void Overlay::carriedPosition(int* itemsCell, int* hotbarSlot) const
+{
+    *itemsCell = -1;
+    *hotbarSlot = -1;
+    if (heldSlot_ < 0) {
+        return;
+    }
+    // The cursor, wherever it is -- which is the grid on the Items page, or the
+    // band, or nowhere at all on the map page and with the focus off. The two
+    // tests below are the same ones `drawPlayerPage` passes as cursors, because
+    // a stack hovering over a cell no cursor is on would be marking a slot no
+    // button acts on.
+    if (focus_ && focusGrid_ && playerPage_ == PlayerPage::Items) {
+        *itemsCell = itemsCursor_;
+    } else if (focus_ && !focusGrid_ && playerPage_ != PlayerPage::Map) {
+        *hotbarSlot = inventory_.selected;
+    } else if (heldSlot_ < item::kHotbarSlots) {
+        *hotbarSlot = heldSlot_;
+    } else {
+        *itemsCell = hud::itemsCellForSlot(heldSlot_);
+    }
 }
 
 void Overlay::drawBlocks(const gui::Surface& surface)
@@ -1306,6 +1949,51 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         hotbarDirty_ = true;
     }
 
+    // **Dead, the page is the game-over panel and nothing else.** The hotbar is
+    // left as the clear drew it -- empty, since the death dropped everything --
+    // and the page underneath is not drawn at all, so nothing can show through.
+    if (dead_) {
+        if (bodyDirty_) {
+            hud::drawGameOverPage(screen, deathScore_, deathCursor_);
+            bodyDirty_ = false;
+            hotbarDirty_ = false;
+            return true;
+        }
+        return cleared;
+    }
+
+    // **A container screen is the page and the band both**, since the hand is
+    // nine of its slots. The furnace's arrow has a cheaper redraw of its own.
+    if (session_.isOpen()) {
+        bool drewContainer = cleared;
+        if (bodyDirty_) {
+            hud::drawContainerPage(screen, layout_, session_, inventory_, sheets_,
+                                   containerCursor_, focus_);
+            drewContainer = true;
+        } else if (progressDirty_) {
+            hud::drawContainerProgress(screen, layout_, session_);
+            drewContainer = true;
+        }
+        if (hotbarDirty_ || bodyDirty_) {
+            hud::drawContainerBand(screen, layout_, session_, inventory_, sheets_,
+                                   containerCursor_, focus_);
+            drewContainer = true;
+        }
+        bodyDirty_ = false;
+        hotbarDirty_ = false;
+        progressDirty_ = false;
+        if (cleared && focus_) {
+            drawFocusBanner(screen);
+        }
+        return drewContainer;
+    }
+
+    // Asked once and used by both halves of the screen: the stack in hand is
+    // drawn over the grid or over the band, and never over both.
+    int carriedCell = -1;
+    int carriedSlot = -1;
+    carriedPosition(&carriedCell, &carriedSlot);
+
     bool drew = cleared;
     switch (playerPage_) {
     case PlayerPage::Map:
@@ -1319,7 +2007,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         // Nothing on it changes, so once drawn it stays drawn.
         if (bodyDirty_) {
             hud::drawItemsPage(screen, inventory_, sheets_,
-                               focusGrid_ ? itemsCursor_ : -1, heldSlot_);
+                               focusGrid_ ? itemsCursor_ : -1, heldSlot_, carriedCell);
             drew = true;
         }
         break;
@@ -1337,7 +2025,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
 
     // **The band last, and only when it moved.** It is over the page rather
     // than beside it in drawing order for one reason: nothing above may write
-    // into the bottom 32 pixels, and if something ever does, the hotbar is what
+    // into the top 40 pixels, and if something ever does, the hotbar is what
     // covers it up rather than what gets covered.
     if (hasHotbar() && hotbarDirty_) {
         // **No cursor on the map page.** The focused d-pad is the map's there,
@@ -1346,17 +2034,17 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         const bool cursorOnHotbar =
             focus_ && !focusGrid_ && playerPage_ != PlayerPage::Map;
         hud::drawHotbar(screen, inventory_, sheets_,
-                        cursorOnHotbar ? inventory_.selected : -1, heldSlot_);
+                        cursorOnHotbar ? inventory_.selected : -1, heldSlot_, carriedSlot);
         hotbarDirty_ = false;
         drew = true;
     }
 
-    // **On a clear and never otherwise**, which is the whole of what keeps the
-    // fade one layer deep: it darkens the pixels it finds, and the band it sits
-    // in is painted exactly once per clear by the backdrop and by nothing else
-    // afterwards. See hud::kBannerTop. Everything that changes what the banner
-    // says -- the focus going on or off, and a change of tab -- sets `dirty_`,
-    // so there is no state where the strip and the page disagree.
+    // **On a clear and never otherwise.** The row it sits in is reserved --
+    // the backdrop paints it on a clear and no page paints it afterwards, see
+    // `hud::bannerTop` -- so the banner drawn there survives every page redraw
+    // that follows. Everything that changes what it says -- the focus going on
+    // or off, and a change of tab -- sets `dirty_`, so there is no state where
+    // the strip and the page disagree.
     if (cleared && focus_) {
         drawFocusBanner(screen);
     }
@@ -1368,6 +2056,12 @@ void Overlay::drawFocusBanner(const gui::Surface& surface) const
     // Forty columns exactly, which is the screen. What the buttons mean differs
     // by page, and saying so is most of the value: the map's stick scrolls and
     // the other pages' d-pad picks, and neither is guessable.
+    if (session_.isOpen()) {
+        hud::drawFocusBanner(surface, containerOpen()
+                                          ? " A take, Y half, X move, B close"
+                                          : " A take, Y half, X move, B back");
+        return;
+    }
     const char* label = playerPage_ == PlayerPage::Map
                             ? " Bottom screen focused: pad pans, B back"
                             : " Bottom screen focused: d-pad, A, B back";
@@ -1454,6 +2148,37 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
             row(r++, "  light pend %4u  lit %8u  drop %u", unsigned(light->pending()),
                 unsigned(light->stats().cellsSettled), unsigned(light->stats().dropped));
         }
+    }
+
+    // **The mobs**, which nothing else on this console reports. `path` is the
+    // pathfinder's lifetime search count and `ex` the ones that hit the
+    // 1,024-node budget -- `ex` climbing means the budget is shaping mob
+    // movement rather than the world is. `hurt` is what a monster has cost the
+    // player so far, and it is a count rather than a subtraction because there
+    // is no player health in this build yet.
+    if (mobStats_.animals != 0 || mobStats_.monsters != 0 || mobStats_.hits != 0) {
+        row(r++, "  mobs %3d + %3d  path %5u/%u", mobStats_.animals, mobStats_.monsters,
+            mobStats_.searches, mobStats_.exhausted);
+        if (mobStats_.hits != 0) {
+            row(r++, "  hurt %4d over %d hit(s)", mobStats_.taken, mobStats_.hits);
+        }
+    }
+
+    // **The spawner's own tally**, and it is here because "nothing spawns" was
+    // reported twice and could not be told apart from "you have not found
+    // one". `chunks` climbing at all means passes are running and columns are
+    // resident; `floors` is how many of the drawn positions had somewhere to
+    // stand, which is under two per hundred in any real world and is where
+    // `az`'s whole yield goes; `spawn` is what survived the light and the box.
+    if (mobStats_.chunksTried != 0) {
+        row(r++, "  spawn %4d  floor %5u  chunk %6u", mobStats_.spawned, mobStats_.floors,
+            mobStats_.chunksTried);
+    }
+    // The dungeon cages, which are the other spawner and have their own version
+    // of the same report -- see MobStats.
+    if (mobStats_.cages != 0) {
+        row(r++, "  cage %4d  fire %5d  made %5d", mobStats_.cages, mobStats_.cagesFired,
+            mobStats_.cagesSpawned);
     }
 
     blank(r++);

@@ -381,8 +381,13 @@ Five things in twelve lines, and each is audible:
 
 Where it lives here: `PlayerBody::move` decides *which block* earned a step and leaves it in
 `stepSoundDue`; the platform layer, which is the half with a listener, turns that into a cue
-and plays it. `Block.onEntityWalking` is the one line not ported — its only a1.1.2 override is
-redstone ore lighting up when trodden on, and `move()` takes a const world.
+and plays it. `Block.onEntityWalking` — the last line of that block — is `tick::entityWalkedOnBlock`,
+called by whoever owns the tick right after the move, because `move()` takes a const world and
+must not be able to write blocks. **Two classes override it in a1.1.2**, not one: `mi`
+(farmland), which reverts to dirt on `rand.nextInt(4) == 0`, and `ai` (redstone ore), which
+lights up. `km`, the staircase, forwards to the block it is modelled on and so does nothing.
+The cell is the one underfoot, unaffected by the snow and liquid substitutions above it:
+`move()` leaves it in `steppedOn` / `stepBlock{X,Y,Z}`.
 
 ## Where the resources came from, and why they are not downloaded
 
@@ -427,17 +432,110 @@ an oversight:
 
 | Sound | Blocked on |
 |---|---|
-| Everything not preloaded | A decode queue on the audio worker — see *Effects are loaded before they are asked for*. Less pressing than it was: the whole a1.1.2 effect set is 35 files and the backend now holds 48 |
-| `random.fizz` | Reachable now; `core/tick/fluid.cpp:230` names the site |
-| `fire.fire` | Reachable now; `core/tick/fire.hpp` ticks |
+| Everything not preloaded | A decode queue on the audio worker — see *Effects are loaded before they are asked for*. The list is `audio::preloadEffects` and it is **measured**, not estimated: `--audio-list` against a real resources folder decodes **110 samples / 6.9 MB** since the display tick landed (108 / 6.6 MB after the monsters, 72 / 3.4 MB before them), and `ctr::kMaxSamples` is 128 |
 | Ambient cave | Reachable now; the `soundCounter` is transcribed in [tick-a1.1.2.md](tick-a1.1.2.md) but not implemented |
-| Ambient water and lava loops | `randomDisplayTick`, a client display path that does not exist here at all |
-| `random.bow`, `random.explode`, `random.fuse` | No items, no entities, nothing lights TNT |
-| `mob.*` | No mobs — M6 |
-| Records | No jukebox, no items, and `.mus` is undecoded |
+| Records | No jukebox; `.mus` is undecoded. A **skeleton killing a creeper drops one**, which is a1.1.2's only source of a record, so the item exists and nothing can play it |
+
+**Three more rows left this table when the particles landed** (status.md 29), all through the
+same door: `randomDisplayTick` is a real path now (`core/tick/display.cpp`), so the water
+trickle (`jp.b`'s `liquid.water`, one dart in 64 over *flowing* water only) and the fire
+crackle (`og.b`'s `fire.fire`, one in 24) are played where the jar plays them. `jp.i`'s
+`random.fizz` -- the hiss when lava turns to stone -- went with the steam it belongs to, which
+closes the site `core/tick/fluid.cpp` had been naming.
+
+**Two more rows left it when TNT landed:** `random.fuse` now has a second caller that is not
+a creeper — `q.b(Lcn;IIII)V`, a block of TNT being broken, burnt or powered — and
+`random.explode` has its second: `jd.i()`, at strength 4 rather than a creeper's 3. Both keys
+were already preloaded for the monsters, so TNT's sounds arrived as call sites and not as
+samples. See `docs/status.md` and `core/entity/primed_tnt.hpp`.
+
+**Four rows left this table when the monsters landed:** `random.explode` and `random.fuse` (a
+creeper lights and goes off), the monsters' own `mob.*` (eleven keys across five kinds), and
+`random.hurt` — which is the *player's* `ge.d()` and is still not attached to any health, but is
+played now, because something can finally hit them. See `docs/status.md` §25.
 
 The seam they hang off is `audio::Backend` plus the pools above, so each arrives as a call
 site rather than as a subsystem — as the menu click already did.
+
+## What an entity plays
+
+The other half of the table below, and it needed one thing the block behaviours did not: a
+place to say what an entity *is* doing, because the entity classes share their sounds by
+inheritance rather than by table.
+
+**Which entity makes a noise is derived, not chosen.** `kh.e_()` — Entity.onUpdate on the base
+class — is one line, `y()`, so an entity reaches `onEntityUpdate` exactly when its own
+`onUpdate` calls `super.onUpdate()`. Disassembling the eight entity classes this port has:
+
+| Class | Is | Calls `super.onUpdate()` | So it splashes |
+|---|---|---|---|
+| `ge` | EntityLiving | yes | the player and all four animals |
+| `dx` | EntityItem | yes | ✔ |
+| `kg` | EntityArrow | yes | ✔ |
+| `dc` | EntityBoat | yes | ✔ |
+| `ff` | EntityFallingSand | **no** | ✘ |
+| `jd` | EntityTNTPrimed | **no** | ✘ |
+| `jc` | EntityPainting | **no** | ✘ |
+| `oc` | EntityMinecart | **no** | ✘ |
+
+So a falling sand block landing in a river is silent in a1.1.2, and so is a minecart — and so
+is a block of primed TNT, whose `e_()` opens on the `prevPosX` store with no `super` call
+anywhere in it. That is the version's, not a gap here.
+
+| Event | Sound | Volume | Pitch | Position |
+|---|---|--:|---|---|
+| Entering water — `kh.y()` | `random.splash` | `min(1, sqrt(mx²·0.2 + my² + mz²·0.2) · 0.2)` | `1.0 + (r − r) · 0.4` | `posY − yOffset` |
+| A burning entity getting wet — `kh.c()`'s tail | `random.fizz` | 0.7 | `1.6 + (r − r) · 0.4` | the same |
+| A stack landing in lava — `dx.e_()` | `random.fizz` | **0.4** | **`2.0 + r · 0.4`** | the same |
+| A stack picked up — `dx.b(dm)` | `random.pop` | 0.2 | `((r − r) · 0.7 + 1) · 2` | the same |
+| An arrow striking anything — `kg.e_()`, both sites | `random.drr` | 1.0 | `1.2 / (r · 0.2 + 0.9)` | the same |
+| A mob's idle, hurt and death — `ge.y()`, `ge.a(kh,I)` | `mob.*` per `MobDef` | `getSoundVolume` | `(r − r) · 0.2 + 1.0` | mid-height |
+| A chicken laying — `mz.j()` | `mob.chickenplop` | 1.0 | `(r − r) · 0.2 + 1.0` | the same |
+| A skeleton loosing — `cw.a(kh,F)` | `random.bow` | 1.0 | `1.0 / (r · 0.4 + 0.8)` | at the skeleton |
+| A creeper lighting — `dd.a(kh,F)` | `random.fuse` | 1.0 | **0.5**, flat | the same |
+| TNT lighting — `q.b(cn,IIII)` | `random.fuse` | 1.0 | **1.0**, flat | `posY − yOffset`, so `y + 0.01` |
+| A blast — `je.a(...)` | `random.explode` | **4.0** | `(1 + (r − r) · 0.2) · 0.7` | the blast's centre |
+| A slime taking off — `ma.b_()` | `mob.slime` | 0.6 | `((r − r) · 0.2 + 1.0) · 0.8` | at the slime |
+| …and landing — `ma.e_()` | `mob.slime` | 0.6 | `((r − r) · 0.2 + 1.0) / 0.8` | the same |
+| A slime doing damage — `ma.b(dm)` | `mob.slimeattack` | 1.0 | `(r − r) · 0.2 + 1.0` | the same |
+| The player being hurt — `ge.a(kh,I)` | `random.hurt` | 1.0 | `(r − r) · 0.2 + 1.0` | at the player |
+
+**A block of TNT and a creeper light at different pitches** — 1.0 against the creeper's flat
+0.5 — which is the one way to tell by ear which of the two is about to go off. **TNT lit by a
+blast makes no sound at all**: `q.c(Lcn;III)V` spawns the entity and stops, which is what makes
+a chain reaction sound like a chain rather than a hundred fuses at once.
+
+**A creeper and a slime have no idle sound at all**, and that is `ge.c()` returning null with no
+override rather than a gap in the table. It is the whole of why one gets behind you. **Volume 4 is
+the loudest thing in the game** and nothing else asks for more than 1. **A slime's two `mob.slime`
+calls differ only in whether the pitch is multiplied or divided by 0.8**, so a hop is low and a
+landing is high; and each has its own size gate — taking off needs size above 1, landing needs
+size above 2, so the smallest slimes are silent either way.
+
+Four things worth keeping:
+
+- **The splash volume is a motion, and it is read before the tick moves anything.** `y()` is
+  the first thing `onUpdate` does, so what it squares is the motion the *previous* tick left.
+  A dive is loud, wading in is nearly silent, and the two come out of one expression. The 0.2
+  weighting on the horizontal terms is why.
+- **It is an edge, not a level.** `inWater` and `firstUpdate` are both needed: without the
+  first a swimmer would splash twenty times a second, and without the second every boat afloat
+  would announce itself on the tick a world was loaded.
+- **A floating boat does flicker, and faithfully.** `dc` does not override `g_()`, which insets
+  the box by 0.4 top and bottom — and a hull is 0.6 tall, so the probe is inverted and its
+  answer changes as buoyancy rocks it across a cell boundary. It costs nothing audible because
+  bobbing is ~0.04 of motion, which puts the splash near 0.03. Measured in
+  `tests/entity_sound_test.cpp` rather than asserted.
+- **The two fizzes are different sounds out of one file.** 0.7/1.6 for an entity going out,
+  0.4/2.0 for a stack hitting lava — and the second draws once where the first draws twice, so
+  every lava fizz is at or above pitch 2.
+
+The three `random.drr`/`random.bow` numbers above are not new; what was new is that they were
+*audible*. See *Effects are loaded before they are asked for*: a key that was never decoded
+plays nothing, and neither of those keys — nor any `mob.*` — had ever been on the boot list.
+`audio::preloadEffects` (`core/audio/effect_preload.hpp`) is now the one list, shared with the
+host harness that measures what it costs, and half of it is derived from the block and mob
+tables rather than typed out.
 
 ## What a block behaviour plays, and the seam it plays through
 

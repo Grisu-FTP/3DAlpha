@@ -3,11 +3,14 @@
 // Drawing into a software framebuffer: the bottom screen's UI, and the arrow
 // that marks a player on the map.
 //
-// **The bottom screen is not a GPU target and is not going to become one.** It
-// is libctru's text console -- every message this shell says to the player goes
+// **The bottom screen is not a GPU target, with one exception.** It is
+// libctru's text console -- every message this shell says to the player goes
 // through it, from "Saving level.." to a failed texture pack, and the three
 // debug pages are built on it -- so anything drawn beside that text is written
-// straight into the RGB565 framebuffer by the CPU. See map_screen.hpp for the
+// straight into the RGB565 framebuffer by the CPU. The exception is the main
+// menu's Skins, Texture Pack and World screens, which link a render target to
+// the bottom screen while they are up and hand it back to the console when
+// they are left; nothing in game does. See platform/ctr/menu_preview.hpp. See map_screen.hpp for the
 // whole of that argument. What was missing was somewhere for the drawing itself
 // to live: the map had a marker routine of its own, the HUD wanted panels and
 // slots, and neither had any business knowing what a framebuffer looks like.

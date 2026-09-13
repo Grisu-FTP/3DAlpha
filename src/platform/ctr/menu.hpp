@@ -30,7 +30,10 @@
 //     buttons are still rectangles: there is no widget sheet consumer yet.
 //
 // The bottom screen stays the text console throughout, printing the controls
-// for whichever screen is up.
+// for whichever screen is up -- except under the two settings lists, where it
+// is **painted instead: the pack's dirt, the row's name and a short tooltip**
+// in the pack's own font. The tooltip turns into pages, with arrows either side
+// of the row's name on both screens, when it does not fit in one box.
 //
 // **The same class is also the in-game pause menu**, through `runPause`, and
 // that is a reuse rather than a coincidence. A pause menu wants the Options
@@ -45,13 +48,16 @@
 #include "core/audio/sound_engine.hpp"
 #include "core/settings/settings_file.hpp"
 #include "platform/ctr/audio.hpp"
+#include "platform/ctr/menu_preview.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/font.hpp"
 #include "core/texture/pack_list.hpp"
+#include "core/texture/particle_sheet.hpp"
 #include "core/texture/skin_list.hpp"
 #include "core/util/types.hpp"
 #include "core/world/format/converter.hpp"
+#include "core/world/size_scan.hpp"
 #include "core/world/world_format.hpp"
 #include "core/world/world_list.hpp"
 
@@ -101,6 +107,12 @@ struct MenuChoice {
     // chosen. Handed over with the world rather than looked up by the caller,
     // because the menu has already opened that file to draw the row.
     settings::Gamemode gamemode = settings::Gamemode::Spectator;
+
+    // The world's difficulty, out of the same file and for the same reason.
+    // **It is the game's own setting, not this port's** -- `cn.l` -- and three
+    // things read it: the monster spawner, the peaceful removal and incoming
+    // damage. See core/settings/world_settings.hpp.
+    settings::Difficulty difficulty = settings::Difficulty::Normal;
 
     // What the player picked on the options screen, already clamped to what
     // this model will be offered. The shell hands it to the renderer.
@@ -156,6 +168,9 @@ struct PauseChoice {
     // world's 3dalpha.ini by the time this comes back -- this field is for the
     // caller to *apply*, the way renderDistance above is, not to persist.
     settings::Gamemode gamemode = settings::Gamemode::Spectator;
+    settings::Difficulty difficulty = settings::Difficulty::Normal;
+    // The one Extra Setting that changes play rather than generation.
+    bool improvedFencePlacement = false;
 };
 
 // How the pause menu gets the world behind it.
@@ -251,6 +266,12 @@ public:
     // no `default.png`, which is the case a sign shows a blank board in.
     const texture::FontImage& fontImage() const { return fontImage_; }
 
+    // **The pack's `particles.png`**, built beside the font and on the same
+    // terms: a pack without one gets the generated stand-in rather than a
+    // failure, so this is always `kParticleSheetBytes` long. See
+    // core/texture/particle_sheet.hpp.
+    const std::vector<u8>& particleSheet() const { return particleSheet_; }
+
     // Handed the process's audio before the first menu is drawn. Both pointers
     // are borrowed and must outlive the menu; the shell owns them. Optional --
     // a menu with neither still works and simply says there is no audio.
@@ -278,22 +299,37 @@ private:
         // **both** loops, and `inGame_` says which -- but unlike Options, that
         // flag changes more than where B goes: a world that is open and
         // streaming cannot be copied, deleted or converted, so in game this
-        // screen is Gamemode and Back and nothing else.
+        // screen is World Info, Gamemode, Difficulty and Back.
         WorldSettings,
         // The estimate a conversion is worth showing before it starts. Home
         // screen only, and its numbers are taken from the card rather than
         // guessed, which is why it is a screen and not a line of text.
         ConfirmConvert,
-        // Volumes and the audio toggle, plus the one line that explains a
-        // console that is silent. It is a sub-screen rather than three more
-        // rows on Options because 240 pixels does not stretch -- the same
-        // reason Texture Pack is one -- and because the explanation needs room
-        // that a value row does not have.
-        Sound,
         // Which skin the arm of an empty hand is drawn with. A list rather
         // than a value row for the reason Texture Pack is one: the rows come
         // off a card and there can be any number of them.
         Skins,
+        // **The one screen on this menu that is not trying to be a1.1.2.**
+        // Every row on it either fixes a bug the original has or offers a
+        // choice it never did, and all of them belong to one world. Reached
+        // from the bottom of World Settings and, like Format, Copy and Delete,
+        // **only outside a game**: two of its rows rewrite level.dat, which a
+        // running world holds, and two more want the world diorama, which only
+        // the main menu has.
+        ExtraSettings,
+        // Extra Settings' own pack list: the same rows the Options screen
+        // offers plus "Default" pinned above them, which means "whatever the
+        // console is set to".
+        WorldPack,
+        // Where the world's diorama stands, moved a map tile at a time with
+        // the picture itself on the bottom screen.
+        MovePanorama,
+        // **Everything about a world that has to be decided before it exists**,
+        // laid out like World Settings because it is the same question asked
+        // one moment earlier. It replaced a pair of keyboards that opened back
+        // to back: a name, then a seed, and no way to see either again or to
+        // reach anything else. See kCreateRows.
+        CreateWorld,
     };
 
     // The shared half of init() and initOverlay(): citro2d, the text buffer,
@@ -327,9 +363,37 @@ private:
     void setScreen(Screen screen);
     void printConsoleHelp();
 
-    // The four facts that separate the four unrelated causes of silence. See
-    // the comment on the definition.
-    void printSoundDiagnostics();
+    // What a settings row is to the controls line under its explanation: a
+    // value Left and Right change, a button A presses, or a row that is only
+    // there to be read.
+    enum class RowKind {
+        Value,
+        Action,
+        Info,
+    };
+
+    // Paints the bottom screen for a settings row straight into its
+    // framebuffer: the dirt backdrop, `title` (between arrows when there is
+    // more than one page), `infoBody_` wrapped into a tooltip box and cut to
+    // the current page, `message_`, and the controls for `kind`. Sets
+    // `infoPages_`, which the top screen reads to give the selected button the
+    // same arrows.
+    void paintSettingInfo(const char* title, RowKind kind);
+
+    // The tooltip for each row, into `infoBody_`. Colour codes, not escapes:
+    // it is drawn in the pack's font.
+    void buildOptionsInfo(int row);
+    void buildWorldSettingsInfo(int row);
+    void buildExtraSettingsInfo(int row);
+
+    // Why this console is silent, as one short line, or null when nothing is
+    // wrong.
+    const char* soundProblem() const;
+
+    // L and R turn the explanation's page on every row; Left and Right as well
+    // when `arrowsTurn`, which is a row with no value for them to change.
+    // Wraps at both ends, because both arrows are always drawn.
+    void turnInfoPage(u32 down, bool arrowsTurn);
 
     // `GuiScreen.mouseClicked` in a1.1.2 plays `random.click` at volume 1 and
     // pitch 1 for every press that lands on an enabled button -- sliders
@@ -365,8 +429,10 @@ private:
     bool handlePause(u32 down, PauseChoice* choice);
     bool handleWorlds(u32 down, MenuChoice* choice);
     void handleOptions(u32 down);
-    void handleSound(u32 down);
     void handleWorldSettings(u32 down);
+    void handleExtraSettings(u32 down);
+    void handleWorldPack(u32 down);
+    void handleMovePanorama(u32 down);
     void handleConfirmConvert(u32 down);
     void handleConfirmDelete(u32 down);
     void handleTexturePacks(u32 down);
@@ -408,19 +474,76 @@ private:
 
     // Points the World Settings screen at a world and reads what it needs off
     // the card: the per-world settings file, the format, and -- when the world
-    // is closed -- its size. Called on the way in, so the screen never walks a
-    // tree from inside a draw.
+    // is closed -- the start of its size measurement. Called on the way in, so
+    // the screen never walks a tree from inside a draw.
     void openWorldSettings(const std::string& name, const std::string& path);
 
-    // Adds up the selected world's size, drawing a frame first because on a
-    // folder world this is a stat per chunk file and the screen would
-    // otherwise simply stop.
+    // Sets the selected world's size being added up on the I/O thread. On a
+    // folder world that is a stat per chunk file, which is long enough to be
+    // seen, so the screen says "loading..." and carries on drawing until
+    // pollWorldSize picks the answer up. See core/world/size_scan.hpp.
     void measureSelectedWorld();
+
+    // Once a frame: takes the finished measurement, if there is one, and marks
+    // the bottom screen for repainting so the row stops saying "loading...".
+    void pollWorldSize();
 
     // Writes the selected world's 3dalpha.ini. Called when a row changes
     // rather than on the way out, for the same reason saveSettings is: the way
     // out of this screen is often the player launching a world.
     void saveWorldSettings();
+
+    // ---- Extra Settings -------------------------------------------------
+
+    // Reads the selected world's level.dat without claiming it, for the two
+    // rows that are level.dat values rather than 3dalpha.ini ones: the seed
+    // and SnowCovered. `extraLevelKnown_` is false when it would not decode,
+    // and both rows then draw as unavailable rather than as a value that is
+    // really a default.
+    void openExtraSettings();
+
+    // Opens the world, applies whatever `openExtraSettings` last read plus the
+    // caller's change, saves the level and closes again. **The one place this
+    // menu writes a world's level.dat**, and the reason the screen is not
+    // offered in game: the running world holds the same file.
+    //
+    // False leaves `message_` saying why, and leaves the row showing what is
+    // actually on the card.
+    bool saveExtraLevel();
+
+    // swkbd for a new seed, then `saveExtraLevel`. The world keeps every chunk
+    // it already has -- this is the seed the *next* chunk is generated from,
+    // which is said on the bottom screen because it is the whole of what the
+    // row does and is not what a player expects from "set seed".
+    void askNewSeed();
+
+    // The pack list for the world, with Default pinned on top. Listing the
+    // packs folder is a full read of every zip on the card, so it happens on
+    // the way into the screen and nowhere else -- the same price the Options
+    // screen's list pays.
+    void openWorldPack();
+
+    // Which row of `worldPackRows()` the world's saved choice is, so the list
+    // opens on it. 0 is Default.
+    int worldPackRow() const;
+
+    // Default, then Dev Art, then every pack on the card.
+    int worldPackRows() const;
+
+    // The label for the world's pack choice, for the value row and the list's
+    // "in use" mark: "Default", "Dev Art", or the pack's name.
+    const char* worldPackLabel() const;
+
+    // The atlas the *world* is drawn with, which is the console's unless the
+    // world names a pack of its own. Called on the way into a world; the menu
+    // puts its own pack back the next time it is entered.
+    void applyWorldPack();
+
+    // Writes the panorama position being edited and makes the preview read it
+    // back. Every d-pad step on the Move Panorama screen goes through here:
+    // the file is the only channel between this screen and the worker that
+    // builds the table.
+    void commitPanorama();
 
     // Reads what the pending conversion would cost, and puts up the screen
     // that says so. False leaves a message and stays where it is.
@@ -446,25 +569,84 @@ private:
     void loadSettings();
     void saveSettings();
 
-    // The two keyboards behind "+ Create New World". Both re-init the bottom
-    // console on the way out, because an applet takes both screens and libctru's
-    // console caches a framebuffer pointer that is no longer current -- the
-    // same reason Overlay::teleportViaKeyboard does it.
-    bool askWorldName(std::string* out);
-    bool askSeed(i64* out);
+    // The two keyboards the Create World screen's Name and Seed rows open.
+    // Both re-init the bottom console on the way out, because an applet takes
+    // both screens and libctru's console caches a framebuffer pointer that is
+    // no longer current -- the same reason Overlay::teleportViaKeyboard does
+    // it.
+    //
+    // `askSeed` still treats **blank as a valid answer meaning "roll one"**,
+    // which is what a1.1.2 does every time because it never asks at all. The
+    // screen shows that state as `Random` rather than as a number it has
+    // already picked, so the row says what will happen instead of pretending
+    // the choice is made.
+    bool askWorldName(std::string_view current, std::string* out);
+    bool askSeed(bool* chosen, i64* out);
 
     // The same keyboard and the same validation as askWorldName, with the
     // source world's name offered as the starting point. Separate only because
     // the hint text and the suggestion differ.
     bool askCopyName(std::string_view sourceName, std::string* out);
 
-    // Makes the world on the card and fills in the choice. False leaves a
-    // message on the console and stays in the menu.
-    bool createWorld(const std::string& name, i64 seed, MenuChoice* choice);
+    // **What the Create World screen has collected so far.** A world is not
+    // touched on the card until Create is pressed, so every row writes here
+    // and nowhere else -- which is also what lets B leave without having made
+    // anything.
+    struct NewWorld {
+        std::string name;
+
+        // False means Random: no seed has been typed, and one is drawn from
+        // the clock when Create is pressed. Kept apart from `seed` rather than
+        // folded into a sentinel because **0 is a perfectly good seed** and a
+        // player who types it must get it.
+        bool seedChosen = false;
+        i64 seed = 0;
+
+        // Gamemode, difficulty and the two generation fixes, written straight
+        // into the new world's 3dalpha.ini. The fixes matter more here than
+        // anywhere else: they only affect chunks that have not been generated
+        // yet, and at this moment none of them have.
+        settings::WorldSettings settings;
+
+        // a1.1.2 rolls SnowCovered once, `rand.nextInt(4) == 0`, with the
+        // World's unseeded Random -- so Roll is the faithful answer and the
+        // default. Yes and No are the deviation, and are the same switch the
+        // Extra Settings screen offers afterwards.
+        enum class Secret { Roll, Yes, No };
+        Secret secret = Secret::Roll;
+
+        // Packed unless the player says otherwise; see createWorld for why
+        // that is the default on this hardware.
+        world::WorldFormat format = world::WorldFormat::Packed;
+    };
+
+    // Fills `newWorld_` with the defaults a fresh screen offers: the first
+    // free "World<n>", a random seed, and a1.1.2 everywhere else.
+    void openCreateWorld();
+
+    // Returns true when a world was made and `run` should return -- the same
+    // contract handleWorlds has, and for the same reason: Create ends in a
+    // MenuChoice.
+    bool handleCreateWorld(u32 down, MenuChoice* choice);
+    void drawCreateWorld();
+    void buildCreateWorldInfo(int row);
+
+    // Makes the world on the card from `newWorld_` and fills in the choice.
+    // False leaves a message on the console and stays on the screen, with
+    // everything the player typed still in it.
+    bool createWorld(MenuChoice* choice);
 
     // One turn of either frame loop: the console help for whichever screen is
     // up, then the top screen. Shared so `run` and `runPause` cannot drift.
     void present();
+    // The main menu's bottom-screen previews: which of them the current screen
+    // wants, the cursors and the pack they follow, and what they say under
+    // the picture. All three do nothing in game, where there is no preview.
+    PreviewScreen previewScreenFor(Screen screen) const;
+    void syncPreview();
+    void updatePreview();
+    void drawPreviewScreen();
+    void drawPreviewLabels();
 
     void drawFrame();
     void drawBackground();
@@ -490,12 +672,10 @@ private:
     void drawPause();
     void drawWorlds();
     void drawOptions();
-    void drawSound();
-
-    // What the Sound screen says about a console that is not making any. Never
-    // null: "audio works" is a case too.
-    const char* soundStatus() const;
     void drawWorldSettings();
+    void drawExtraSettings();
+    void drawWorldPack();
+    void drawMovePanorama();
     void drawConfirmConvert();
     void drawConfirmDelete();
     void drawTexturePacks();
@@ -521,6 +701,20 @@ private:
     };
 
     void drawButton(const Rect& rect, const char* label, bool selected, bool enabled);
+
+    // One row of a settings list: a centred label when `value` is null, and a
+    // name on the left with its value beside it otherwise.
+    struct SettingRowView {
+        const char* name = "";
+        const char* value = nullptr;
+        bool dimValue = false;
+    };
+
+    // Draws the rows of a settings list that fit under `top`, starting at
+    // `scroll`, with a caret beside the list where there is more of it. The
+    // selected row gets arrows either side while its explanation has pages.
+    void drawSettingsRows(const SettingRowView* rows, const u8* groups, int count, int cursor,
+                          int scroll, float top);
 
     // `flags` is citro2d's alignment set; x is the left edge, the centre or the
     // right edge to match it. The shadow is one pixel down and right, which is
@@ -561,9 +755,62 @@ private:
     int pauseCursor_ = 0;
     int worldCursor_ = 0;  // 0 is "+ Create New World"
     int worldScroll_ = 0;
+    // **Which world the cursor is on, by name rather than by row.** The list is
+    // sorted by last played, so playing a world moves it to the top and every
+    // row below it down one: a remembered *index* points at a different world
+    // the moment you come back from the one you chose. Empty means the Create
+    // row, which is row 0 whatever the list does. `refreshWorlds` puts the
+    // cursor back on this world if it is still there.
+    std::string worldCursorName_;
     int optionsCursor_ = 0;
-    int soundCursor_ = 0;
+    int optionsScroll_ = 0;
     int worldSettingsCursor_ = 0;
+    int worldSettingsScroll_ = 0;
+    int extraCursor_ = 0;
+    int extraScroll_ = 0;
+    int worldPackCursor_ = 0;
+    int worldPackScroll_ = 0;
+    int createCursor_ = 0;
+    int createScroll_ = 0;
+    NewWorld newWorld_;
+
+    // **What level.dat says about the selected world**, read by
+    // openExtraSettings and written back by saveExtraLevel. Held rather than
+    // re-read per frame because reading it means decoding a compressed NBT
+    // file, which is not something a draw may do.
+    bool extraLevelKnown_ = false;
+    i64 extraSeed_ = 0;
+    bool extraSnowCovered_ = false;
+
+    // The panorama position the Move Panorama screen is editing, and the one
+    // it was opened with, so B can put it back. In 128-block map tiles; see
+    // core/preview/diorama.hpp.
+    i32 panoramaTileX_ = 0;
+    i32 panoramaTileZ_ = 0;
+    i32 panoramaUndoX_ = 0;
+    i32 panoramaUndoZ_ = 0;
+
+    // True while the live atlas is a world's pack rather than the console's,
+    // so the next visit to the menu knows to build the console's again. See
+    // applyWorldPack.
+    bool packOverridden_ = false;
+
+    // The selected settings row's tooltip, wrapped for the bottom screen, and
+    // which page of it is up. Kept rather than rebuilt on the stack because the
+    // top screen reads `infoPages_` every frame and the text is only rebuilt
+    // when the bottom screen is.
+    std::string infoBody_;
+    std::vector<std::string> infoLines_;
+    int infoPage_ = 0;
+    int infoPages_ = 1;
+
+    // **The console's own 8x8 font, as a FontImage**, for a pack with no
+    // `default.png` -- Dev Art among them. Built the first time it is needed.
+    texture::FontImage consoleFont_;
+    // The dirt tile in the bottom screen's RGB565, converted on each paint. A
+    // vector rather than an array so the Menu does not grow by 2 KB wherever it
+    // is kept.
+    std::vector<u16> bottomTile_;
 
     // The world the World Settings screen is about, and everything it reads
     // off the card on the way in.
@@ -578,6 +825,15 @@ private:
     world::WorldFormat selectedFormat_ = world::WorldFormat::Unknown;
     world::WorldSize selectedSize_;
     bool selectedSizeKnown_ = false;
+    // The walk behind that number, on its own thread. Cancelled on the way out
+    // of the screen and before anything rewrites the world it is walking.
+    world::SizeScan sizeScan_;
+    // Out of the world list's own entry, which already read level.dat -- so
+    // World Info costs no second read, and a world open behind the pause menu
+    // is not read while it is being written. Unknown when there is no entry.
+    i64 selectedSeed_ = 0;
+    i64 selectedLastPlayed_ = 0;
+    bool selectedLevelKnown_ = false;
 
     // The world's own settings, as they are on the card. Read in
     // openWorldSettings and written back the moment a row changes, so the file
@@ -595,6 +851,7 @@ private:
     // implemented mode is written to the file. Reset from the file whenever the
     // screen is pointed at a world, so browsing never leaks into the next one.
     int gamemodeCursor_ = 0;
+    int difficultyCursor_ = int(settings::Difficulty::Normal);
 
     // What ConfirmConvert is about: the format being converted *to*, and what
     // the card said it would cost.
@@ -622,6 +879,7 @@ private:
     // already open. Empty is a real state for both: it means "this pack has
     // none", and the drawing falls back rather than refusing.
     texture::FontImage fontImage_;
+    std::vector<u8> particleSheet_;
     std::vector<u8> backgroundTile_;
     // Which pack the two above came from, so a second visit to the menu costs
     // an upload and not three card reads.
@@ -691,6 +949,12 @@ private:
     const char* pauseWorldName_ = "";
     // init() runs around every visit to the menu; the card is read once.
     bool settingsLoaded_ = false;
+
+    // The bottom-screen previews on the Skins, Texture Pack and World screens.
+    // Made by init() and never by initOverlay(): the pause menu keeps its
+    // console. On the heap because the Menu lives on a 32 KB stack.
+    std::unique_ptr<MenuPreview> preview_;
+    u64 previewClockMs_ = 0;
 
     // Held so a message can survive a frame or two on the console: a failed
     // create is the one thing here that can go wrong silently.

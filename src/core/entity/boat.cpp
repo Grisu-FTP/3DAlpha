@@ -2,8 +2,12 @@
 
 #include "core/entity/boat.hpp"
 
+#include "core/entity/block_contact.hpp"
+#include "core/entity/fire_entry.hpp"
+
 #include "core/block/fluid_flow.hpp"
 #include "core/block/registry.hpp"
+#include "core/entity/particle.hpp"
 #include "core/entity/sweep.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/math_helper.hpp"
@@ -82,12 +86,22 @@ bool BoatSystem::mount(int index)
     return true;
 }
 
-void BoatSystem::dismount()
+RiderSeat BoatSystem::dismount()
 {
+    RiderSeat off;
     if (ridden_ >= 0 && ridden_ < boats_.size()) {
-        boats_[ridden_].ridden = false;
+        Boat& b = boats_[ridden_];
+        b.ridden = false;
+        // `mountEntity`'s tail -- the rider is put on the boat's roof. See
+        // core/entity/rider.hpp.
+        off.valid = true;
+        off.x = b.x;
+        off.y = b.box.minY + kBoatHeight;
+        off.z = b.z;
+        off.yaw = b.yaw;
     }
     ridden_ = -1;
+    return off;
 }
 
 RiderSeat BoatSystem::seat() const
@@ -162,6 +176,29 @@ void BoatSystem::tick(const tick::TickWorld& world, const VehicleRider& rider)
             continue;
         }
 
+        // **`kh.y()`'s splash**, and a boat is one of the four entities that
+        // reaches it: `dc.e_()` opens with `super.e_()`. Two things follow
+        // from that and both are audible.
+        //
+        // A boat is *placed* into water, so without `firstUpdate` every boat
+        // would announce itself on the tick it was put down; with it, none
+        // does. And a floating boat never leaves the water, so `inWater` stays
+        // set and the splash is a genuine edge -- the sound comes back only
+        // after one is dragged onto land and pushed off again.
+        //
+        // The position is `posY - yOffset`, which for a hull whose box
+        // straddles its position is the bottom of that box.
+        {
+            const bool inWater = block::handleWaterMovement(world, b.box, kWaterMaterial,
+                                                            &b.motionX, &b.motionY, &b.motionZ);
+            const WaterEntryResult wet =
+                updateWaterEntry(b.water, inWater, b.motionX, b.motionY, b.motionZ);
+            if (wet.splash) {
+                world.playSoundAt(kSplashSound, b.x, b.y - kBoatYOffset, b.z, wet.volume,
+                                  splashPitch(rand_));
+            }
+        }
+
         if (b.timeSinceHit > 0) {
             --b.timeSinceHit;
         }
@@ -221,12 +258,22 @@ void BoatSystem::tick(const tick::TickWorld& world, const VehicleRider& rider)
         const double wantY = dy;
         const double wantZ = dz;
 
+        // **Who is moving**, which `getCollidingBoundingBoxes` takes as its
+        // first argument and asks two things of. `&b` leaves the boat out of
+        // its own list -- a boat is itself one of the two solid entities in
+        // a1.1.2, and finding its own box in the way of every move it tries is
+        // the difference between a boat that moves and one that does not. The
+        // `true` is `dc.b_(kh)`, which answers with the *other* entity's box
+        // for any other entity at all: a boat is stopped by the cow, the item
+        // and the player in front of it, and not only by another boat. See
+        // core/entity/entity_boxes.hpp.
+        const Mover who{&b, true};
         const BlockRange range = sweepRange(box.extend(dx, dy, dz));
-        dy = clipAxis(world, range, box, kAxisY, dy);
+        dy = clipAxis(world, range, box, kAxisY, dy, who);
         box = box.offset(0.0, dy, 0.0);
-        dx = clipAxis(world, range, box, kAxisX, dx);
+        dx = clipAxis(world, range, box, kAxisX, dx, who);
         box = box.offset(dx, 0.0, 0.0);
-        dz = clipAxis(world, range, box, kAxisZ, dz);
+        dz = clipAxis(world, range, box, kAxisZ, dz, who);
         box = box.offset(0.0, 0.0, dz);
 
         b.box = box;
@@ -240,8 +287,81 @@ void BoatSystem::tick(const tick::TickWorld& world, const VehicleRider& rider)
         if (b.motionY != dy) b.motionY = 0.0;
         if (b.motionZ != dz) b.motionZ = 0.0;
 
+        // **The blocks it is standing in come first in that tail**, and a
+        // cactus is the only one in a1.1.2 that answers. One point per cell
+        // per tick reaches `attackEntityFrom`, which for a boat is ten of the
+        // forty it takes to break one -- so a boat pushed against a cactus is
+        // kindling in four seconds. See core/entity/block_contact.hpp.
+        {
+            const int hits = blockContactHits(world, b.box);
+            bool broken = false;
+            for (int hit = 0; hit < hits && !broken; ++hit) {
+                const int before = boats_.size();
+                attack(world, i, kContactDamage);
+                broken = boats_.size() != before;
+            }
+            if (broken) {
+                continue;
+            }
+        }
+
+        // **`moveEntity`'s tail.** A boat pushed into a fire chars: `dealFire-
+        // Damage(1)` reaches `dc.a(Lkh;I)Z`, which is ten points of the forty
+        // it takes to break one, so four seconds in a flame is a pile of
+        // planks. The hull catches light on the same tick and hisses if it is
+        // then floated -- which, for a boat, is most ticks. See
+        // core/entity/fire_entry.hpp.
+        {
+            const FireEntryResult burn = updateFireEntry(
+                &b.fire, boundingBoxBurning(world, b.box), fireWetProbe(world, b.box));
+            if (burn.fizz) {
+                world.playSoundAt(kFizzSound, b.x, b.y - kBoatYOffset, b.z, 0.7f,
+                                  fizzPitch(rand_));
+            }
+            if (burn.damage) {
+                // `attack` can break the boat, and then this index is another
+                // boat or none.
+                const int before = boats_.size();
+                attack(world, i, 1);
+                if (boats_.size() != before) {
+                    continue;
+                }
+            }
+        }
+
         const double speed =
             std::sqrt(b.motionX * b.motionX + b.motionZ * b.motionZ);
+
+        // **The bow wave**, and it comes off the same speed that breaks the
+        // boat -- `1 + speed * 60` splashes a tick past 0.15, so a boat at a
+        // crawl leaves a couple and one at full tilt leaves a dozen.
+        //
+        // Each one is thrown by a coin flip at one of **two different places**:
+        // heads puts it out to one side of the hull, a random distance along
+        // and 0.7 of a block across; tails puts it a whole block *ahead* of the
+        // bow. The two together are what read as a wake rather than as spray.
+        // An eighth of a block below the waterline on both.
+        if (speed > kBoatBreakSpeed) {
+            const double forwardX = std::cos(double(b.yaw) * kPi / 180.0);
+            const double forwardZ = std::sin(double(b.yaw) * kPi / 180.0);
+            for (double n = 0.0; n < 1.0 + speed * 60.0; n += 1.0) {
+                const double along = double(rand_.nextFloat() * 2.0f - 1.0f);
+                const double across = double(rand_.nextInt(2) * 2 - 1) * 0.7;
+                if (rand_.nextBoolean()) {
+                    world.spawnParticle(int(ParticleKind::Splash),
+                                        b.x - forwardX * along * 0.8 + forwardZ * across,
+                                        b.y - 0.125,
+                                        b.z - forwardZ * along * 0.8 - forwardX * across,
+                                        b.motionX, b.motionY, b.motionZ);
+                } else {
+                    world.spawnParticle(int(ParticleKind::Splash),
+                                        b.x + forwardX + forwardZ * along * 0.7,
+                                        b.y - 0.125,
+                                        b.z + forwardZ - forwardX * along * 0.7,
+                                        b.motionX, b.motionY, b.motionZ);
+                }
+            }
+        }
 
         // **Into a wall faster than 0.15 and the boat is gone**, leaving what
         // a broken boat leaves.

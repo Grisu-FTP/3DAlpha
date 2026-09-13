@@ -58,12 +58,84 @@ int fenceBoxes(int connections, AABB* out, int max)
     return count;
 }
 
+// `bc.a(Lly;)V`'s render-type-13 branch -- renderBlockAsItem, which is what
+// draws a cactus in a slot, in the hand and lying on the ground, and it is
+// **not** the inset box this used to hand back.
+//
+// The method resets the bounds to the whole cell (`ly.e()`, setBlockBounds-
+// ForItemRender), draws the top and the bottom there, and then draws each of
+// the four sides as a full-cell face under `Tessellator.addTranslation(±f)`
+// with `f = 0.0625F`:
+//
+//     float f = 0.0625F;
+//     renderBottomFace(block, 0, 0, 0, tile(0));   // no translation
+//     renderTopFace   (block, 0, 0, 0, tile(1));   // no translation
+//     addTranslation(0, 0,  f); renderEastFace (...); addTranslation(0, 0, -f);
+//     ...
+//
+// So a cactus item is a **full-size cube whose four sides are pushed in a
+// sixteenth**, exactly the shape `mesh::addCactus` draws in the world -- and
+// the spikes are the same thing in both places: the side tile's outer texel
+// columns, which hang past the cell and survive because the alpha test cuts
+// the transparent rest of them away.
+//
+// **Narrowing the box instead crops those columns off**, because a face is
+// textured over its own extent everywhere in this project. That is what put a
+// visible gap round a dropped cactus: the sides were drawn at 1/16..15/16 with
+// the tile's transparent edges mapped onto them, so the block showed daylight
+// between its own faces. The world mesher had this corrected already; the
+// three item paths were still reading the collision box.
+//
+// The sixteenth comes from the collision box rather than from a literal of its
+// own, which is where the world's copy of this shape gets it too: it is the
+// one number the two share, and it is generated per version.
+int cactusBoxes(BlockId id, u8 metadata, AABB* out, int* faceMask, int max)
+{
+    AABB collision[kMaxCollisionBoxes];
+    if (collisionBoxes(id, metadata, collision, kMaxCollisionBoxes) == 0) {
+        return 0;
+    }
+    const AABB& inset = collision[0];
+
+    int count = 0;
+    const auto push = [&](const AABB& box, int faces) {
+        if (count >= max) {
+            return;
+        }
+        out[count] = box;
+        if (faceMask != nullptr) {
+            faceMask[count] = faces;
+        }
+        ++count;
+    };
+
+    // The cell itself, for the two faces the original does not translate.
+    push(AABB{0.0, 0.0, 0.0, 1.0, 1.0, 1.0}, kRenderFaceNegY | kRenderFacePosY);
+    // Each pair of sides inset along its own axis only, so the face sits a
+    // sixteenth in and still spans the cell the other way -- which is what the
+    // translation does to a full-cell face.
+    push(AABB{inset.minX, 0.0, 0.0, inset.maxX, 1.0, 1.0},
+         kRenderFaceNegX | kRenderFacePosX);
+    push(AABB{0.0, 0.0, inset.minZ, 1.0, 1.0, inset.maxZ},
+         kRenderFaceNegZ | kRenderFacePosZ);
+    return count;
+}
+
 }  // namespace
 
-int renderBoxes(BlockId id, u8 metadata, int connections, AABB* out, int max)
+int renderBoxes(BlockId id, u8 metadata, int connections, AABB* out, int max,
+                int* faceMask)
 {
     if (out == nullptr || max <= 0) {
         return 0;
+    }
+
+    // Every shape but the cactus draws whole boxes, so the mask is filled in
+    // once here and the branches below only have to disagree with it.
+    if (faceMask != nullptr) {
+        for (int i = 0; i < max; ++i) {
+            faceMask[i] = kAllRenderFaces;
+        }
     }
 
     switch (def(id).render) {
@@ -80,12 +152,11 @@ int renderBoxes(BlockId id, u8 metadata, int connections, AABB* out, int max)
             return collisionBoxes(id, metadata, out, max);
 
         case RenderType::Cactus:
-            // The sides only. `bc.l` draws the top and bottom at the cell's full
-            // extent and the four sides pulled in by a sixteenth, and it is
-            // that gap that makes a column of cactus read as segments -- but as
-            // a *shape* the cactus is its inset box, which is also what it
-            // collides as.
-            return collisionBoxes(id, metadata, out, max);
+            // Three boxes and two faces each: the cell for the top and the
+            // bottom, and a pair of inset sides per horizontal axis. See
+            // `cactusBoxes` -- this is the one shape whose boxes are not solid
+            // and whose caller has to honour the mask.
+            return cactusBoxes(id, metadata, out, faceMask, max);
 
         case RenderType::Fence:
             return fenceBoxes(connections, out, max);
@@ -95,6 +166,25 @@ int renderBoxes(BlockId id, u8 metadata, int connections, AABB* out, int max)
             // original does not draw them in three dimensions in a slot either.
             return 0;
     }
+}
+
+int itemRenderBoxes(BlockId id, AABB* out, int max, int* faceMask)
+{
+    if (out == nullptr || max <= 0) {
+        return 0;
+    }
+
+    // Only the standard renderer reads the bounds the item-render call leaves;
+    // the stairs, the fence and the cactus each draw from their own constants
+    // and ignore it, which is why they go on sharing the world's shapes.
+    if (def(id).render == RenderType::Cube) {
+        if (faceMask != nullptr) {
+            faceMask[0] = kAllRenderFaces;
+        }
+        out[0] = itemRenderBox(id);
+        return 1;
+    }
+    return renderBoxes(id, 0, 0, out, max, faceMask);
 }
 
 }  // namespace mc::block

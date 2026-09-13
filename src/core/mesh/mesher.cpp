@@ -2,6 +2,7 @@
 
 #include "core/block/collision.hpp"
 #include "core/block/registry.hpp"
+#include "core/block/world_texture.hpp"
 #include "core/mesh/box.hpp"
 #include "core/mesh/cube_atlas.hpp"
 #include "core/mesh/shapes.hpp"
@@ -483,7 +484,19 @@ void emitNonCube(const MeshScratch& scratch, int x, int y, int z, BlockId id,
 {
     if (def.render == RenderType::Cube) {
         const u8 metadata = scratch.metadata(x, y, z);
-        const u16* tiles = block::worldFaces(id, metadata);
+        // **The tiles, and for one block in a1.1.2 that is a question about
+        // the neighbours**: a chest turns its front away from the blocks round
+        // it and joins the chest beside it into one two-cell picture. The
+        // scratch is padded by one cell, which is exactly the reach of the
+        // rule -- including the two diagonals a pair reads. See
+        // core/block/world_texture.hpp.
+        u16 worldTiles[6];
+        block::worldTextureFaces(id, metadata,
+                                 [&scratch, x, y, z](int dx, int dz) {
+                                     return scratch.block(x + dx, y, z + dz);
+                                 },
+                                 worldTiles);
+        const u16* tiles = worldTiles;
         const AABB bounds = block::selectionBox(id, metadata);
         if (!isUnitCube(bounds)) {
             addBoundedCube(scratch, x, y, z, tiles, bounds, out);

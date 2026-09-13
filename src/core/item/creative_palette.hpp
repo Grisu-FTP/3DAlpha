@@ -29,7 +29,7 @@
 // the argument that a sword does nothing this build can perform. That was the
 // wrong test and it was reported as one: a Creative hand is also how a sword,
 // an ingot, a smelted ore or a piece of armour gets into a chest, into a save,
-// or on to the ground -- and a catalogue that silently omits 84 of its 147 rows
+// or on to the ground -- and a catalogue that silently omits 84 of its 149 rows
 // reads as a table with holes in it. Using one still does nothing, which is
 // honest; not being able to hold one was not.
 //
@@ -47,7 +47,16 @@
 
 namespace mc::item {
 
-// How many items the palette offers. For a1.1.2 it is 147.
+// **The two music discs are in it**, and that is the one thing in the palette
+// that is not a row of the contiguous item table: they are ids 2256 and 2257,
+// which is 1,910 past the end of a1.1.2's item run, and they reach `item::def`
+// through a two-entry side array (core/item/registry.hpp). They belong here
+// because a skeleton killing a creeper drops one -- the version's only source
+// of a record -- so they are obtainable, and a catalogue that omitted the two
+// items a player is least likely to find by accident would have the wrong
+// hole in it.
+//
+// How many items the palette offers. For a1.1.2 it is 149.
 int paletteSize();
 
 // The item at `index`, or 0 for an index outside the palette. Zero is the

@@ -91,6 +91,11 @@ std::vector<u8> buildChunkNbt(const RawColumn& raw, i32 x, i32 z, const BuildOpt
         w.writeByteArray("SkyLight", raw.skyLight);
     }
     w.writeByteArray("HeightMap", raw.heightMap);
+    // **`TileEntities` is modelled now**, so encodeChunk writes it here even
+    // when it is empty -- which is what a real client writes too. The byte-for
+    // -byte tests below need it in the same place.
+    w.beginList("TileEntities", nbt::TagType::Compound);
+    w.endList();
     if (opt.entitiesList) {
         w.beginList("Entities", nbt::TagType::Compound);
         w.beginListElementCompound();

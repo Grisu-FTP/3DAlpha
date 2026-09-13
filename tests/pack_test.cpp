@@ -7,6 +7,7 @@
 #include "core/mesh/vertex.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/dev_art.hpp"
+#include "core/texture/fluid_fx.hpp"
 #include "core/texture/pack_list.hpp"
 
 #include "version_slots.hpp"
@@ -186,11 +187,12 @@ TEST(dev_art_carves_the_torch_tiles)
 
 namespace {
 
-// **Two tiles of a loaded pack are not the pack's**, and the scaling tests
-// below have to skip them: the client generates fire rather than reading it,
-// and `buildAtlas` does the same -- see core/texture/texture_fx.hpp. That they
-// really are overwritten is asserted in texture_fx_test.cpp; here they are
-// simply not the pack's colours any more.
+// **Twelve tiles of a loaded pack are not the pack's**, and the scaling tests
+// below have to skip them: the client generates fire, water and lava rather
+// than reading them, and `buildAtlas` does the same -- see
+// core/texture/texture_fx.hpp and core/texture/fluid_fx.hpp. That they really
+// are overwritten is asserted there; here they are simply not the pack's
+// colours any more.
 //
 // Found through the render type rather than named, which is how
 // applyAnimatedTiles finds them too.
@@ -201,6 +203,17 @@ bool tileIsGenerated(int tx, int ty)
         const block::BlockDef& def = mcver::kBlocks[id];
         if (def.known && def.render == block::RenderType::Fire
             && (tile == int(def.texture) || tile == int(def.texture) + 16)) {
+            return true;
+        }
+    }
+    for (const bool hot : {false, true}) {
+        const texture::FluidTiles fluid = texture::fluidTiles(hot);
+        if (tile == fluid.still) {
+            return true;
+        }
+        if (fluid.flowing >= 0
+            && (tile == fluid.flowing || tile == fluid.flowing + 1 || tile == fluid.flowing + 16
+                || tile == fluid.flowing + 17)) {
             return true;
         }
     }

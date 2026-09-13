@@ -14,6 +14,7 @@
 #include "core/entity/boat.hpp"
 #include "core/entity/minecart.hpp"
 #include "core/entity/painting.hpp"
+#include "core/entity/player_body.hpp"
 #include "core/item/registry.hpp"
 #include "core/item/use.hpp"
 #include "core/render/arrow_mesh.hpp"
@@ -526,4 +527,196 @@ TEST(every_arrow_uv_lands_inside_the_arrow_page)
         CHECK(v >= double(oy) - 0.01);
         CHECK(v <= double(oy) + 32.0 + 0.01);
     }
+}
+
+// A place to count `attackEntityFrom` against the player, which is all the
+// arrow can do with it: this build routes the damage out through a function
+// pointer because there is no player health in core.
+namespace {
+struct Shot {
+    int hits = 0;
+    static void sink(void* ctx, int amount, mc::entity::DamageSource, double, double)
+    {
+        Shot& self = *static_cast<Shot*>(ctx);
+        self.hits += amount;
+    }
+};
+
+// The player's own box, 0.6 x 1.8 with the feet on the floor, and the eye at
+// `posY + 1.62` the way the game holds it.
+AABB standing(double x, double z)
+{
+    return AABB{x - 0.3, 64.0, z - 0.3, x + 0.3, 65.8, z + 0.3};
+}
+}  // namespace
+
+TEST(an_arrow_does_not_shoot_the_player_who_fired_it)
+{
+    // Reported as "a shot arrow hits the player who shot it", and it is the
+    // same `entity != shootingEntity || ticksInAir >= 5` a skeleton needs:
+    // the muzzle offset backs the arrow up 0.16 against a half-width of 0.3,
+    // so it leaves from *inside* the shooter's box -- and the sweep grows a
+    // target by another 0.3 before it asks. Without the grace the first tick's
+    // segment starts inside the player and the shot lands on the shooter.
+    Range range;
+    Shot shot;
+    entity::ArrowTargets hits;
+    hits.playerPresent = true;
+    hits.playerBox = standing(0.5, 0.5);
+    hits.hurtPlayer = &Shot::sink;
+    hits.hurtPlayerCtx = &shot;
+
+    CHECK(range.arrows.shoot(range.w(), 0.5, 64.0 + 1.62, 0.5, 0.0f, 0.0f));
+    for (int t = 0; t < 30 && range.arrows.count() > 0; ++t) {
+        range.arrows.tick(range.w(), hits);
+    }
+    CHECK_EQ(shot.hits, 0);
+}
+
+TEST(an_arrow_that_comes_back_down_hits_the_player_who_fired_it)
+{
+    // The grace is five ticks, not an exemption: `ticksInAir >= 5` and the
+    // player is a target like any other. Fired straight up, the arrow spends
+    // its grace on the way out and is an ordinary hazard on the way back --
+    // which is how an arrow fired at the sky lands on the archer.
+    Range range;
+    Shot shot;
+    entity::ArrowTargets hits;
+    hits.playerPresent = true;
+    hits.playerBox = standing(0.5, 0.5);
+    hits.hurtPlayer = &Shot::sink;
+    hits.hurtPlayerCtx = &shot;
+
+    // Pitch is negative for up: `motionY = -sin(pitch)`.
+    CHECK(range.arrows.shoot(range.w(), 0.5, 64.0 + 1.62, 0.5, 0.0f, -90.0f));
+    for (int t = 0; t < 400 && range.arrows.count() > 0; ++t) {
+        range.arrows.tick(range.w(), hits);
+    }
+    CHECK_EQ(shot.hits, entity::kArrowDamage);
+    CHECK_EQ(range.arrows.count(), 0);
+}
+
+TEST(a_skeletons_arrow_hits_the_player_at_once_and_owes_no_grace)
+{
+    // The grace belongs to whoever fired, and only to them: `entity !=
+    // shootingEntity` is a reference comparison in the jar, so a skeleton's
+    // arrow is an immediate hazard to the player it was aimed at. This is the
+    // half that stops "the shooter is skipped" from becoming "the player is
+    // skipped", which is what an exclusion written without the shooter's
+    // identity would have been.
+    Range range;
+    Shot shot;
+    entity::ArrowTargets hits;
+    hits.playerPresent = true;
+    hits.playerBox = standing(0.5, 0.5);
+    hits.hurtPlayer = &Shot::sink;
+    hits.hurtPlayerCtx = &shot;
+
+    // Loosed from three blocks away, at the skeleton's own velocity, along +Z.
+    CHECK(range.arrows.shootFrom(range.w(), 0.5, 64.0 + 1.0, -3.0, 0.0, 0.0, 1.0, 0.6f, 0.0f,
+                                 entity::ArrowShooter::Skeleton));
+    for (int t = 0; t < 10 && range.arrows.count() > 0; ++t) {
+        range.arrows.tick(range.w(), hits);
+    }
+    CHECK_EQ(shot.hits, entity::kArrowDamage);
+    CHECK_EQ(range.arrows.count(), 0);
+}
+
+TEST(an_arrow_fired_while_flying_does_not_die_on_the_player_who_fired_it)
+{
+    // Reported as "an arrow should hit paintings and cause them to pop off",
+    // and the painting was never the problem: in Creative the arrow never got
+    // there.
+    //
+    // The self-grace excluded the shooter **by place** -- any candidate still
+    // standing over `(shooterX, shooterZ)` -- which holds for as long as the
+    // shooter has not left its own footprint. A walking player has not. A
+    // flying one has: `entity::kFlightSpeed` is 0.6 blocks a tick against a
+    // half-width of 0.3, so one tick of flight carries the box clear of the
+    // place the shot was recorded at. The exclusion then missed the player,
+    // whose box the arrow is still inside on its first tick -- the muzzle is
+    // 0.16 back and the sweep grows a target by 0.3 -- so the shot was spent on
+    // its own archer at a distance of zero, every time, before it had gone
+    // anywhere.
+    //
+    // Flying *forward*, which is what shooting something across a room while
+    // flying towards it looks like.
+    Range range;
+    Shot shot;
+    entity::ArrowTargets hits;
+    hits.playerPresent = true;
+    hits.hurtPlayer = &Shot::sink;
+    hits.hurtPlayerCtx = &shot;
+
+    const double fired = 0.5;
+    hits.playerBox = standing(0.5, fired);
+    CHECK(range.arrows.shoot(range.w(), 0.5, 64.0 + 1.62, fired, 0.0f, 0.0f));
+    for (int t = 0; t < 30 && range.arrows.count() > 0; ++t) {
+        // A tick of Creative flight along the shot, applied before the arrow
+        // moves, as `runGame` does: the body is ticked above the arrows.
+        hits.playerBox = standing(0.5, fired + entity::kFlightSpeed * double(t + 1));
+        range.arrows.tick(range.w(), hits);
+    }
+    CHECK_EQ(shot.hits, 0);
+}
+
+TEST(an_arrow_shot_by_a_flying_player_still_knocks_the_painting_off_the_wall)
+{
+    // The report, end to end and in `runGame`'s own order: a painting on a
+    // wall, a player flying towards it, the bow fired through `item::useItem`
+    // -- and the painting on the floor as an item afterwards.
+    //
+    // Every piece of this worked on its own. What did not was the combination:
+    // the arrow was spent on its own archer on the tick it was fired, so the
+    // pool it would have swept was never reached.
+    SceneWorld scene{0, 0};
+    mc::test::DropCatcher caught;
+    caught.watch(scene.w());
+    for (i32 x = -4; x <= 4; ++x) {
+        for (i32 z = -12; z <= 1; ++z) {
+            scene.place(x, 63, z, bid(mcver::Block::Stone), 0);
+        }
+    }
+    for (i32 x = -4; x <= 4; ++x) {
+        for (int y = 64; y <= 68; ++y) {
+            scene.place(x, y, 0, bid(mcver::Block::Stone), 0);
+        }
+    }
+    entity::PaintingSystem paintings{5};
+    CHECK(paintings.place(scene.w(), 0, 66, 0, 2));
+    ArrowSystem arrows{4242};
+
+    entity::ArrowTargets hits;
+    hits.paintings = &paintings;
+    hits.playerPresent = true;
+    hits.hurtPlayer = &Shot::sink;
+    Shot shot;
+    hits.hurtPlayerCtx = &shot;
+
+    // Flying level with the painting, six blocks out, closing at 0.6 a tick.
+    double z = -6.0;
+    const double eyeY = 66.0 + 1.62;
+    hits.playerBox = AABB{0.5 - 0.3, eyeY - 1.62, z - 0.3, 0.5 + 0.3, eyeY - 1.62 + 1.8, z + 0.3};
+
+    item::Effects effects;
+    effects.entities.arrows = &arrows;
+    const double dy = paintings[0].y - eyeY;
+    const double flat = paintings[0].z - z;
+    const double length = std::sqrt(dy * dy + flat * flat);
+    const item::ItemUse used = item::useItem(scene.w(), bowItem(), 0.5, eyeY, z, 0.0,
+                                             dy / length, flat / length, effects);
+    CHECK(used.changed);
+    CHECK_EQ(arrows.count(), 1);
+
+    for (int t = 0; t < 20 && paintings.count() > 0; ++t) {
+        z += entity::kFlightSpeed;
+        hits.playerBox =
+            AABB{0.5 - 0.3, eyeY - 1.62, z - 0.3, 0.5 + 0.3, eyeY - 1.62 + 1.8, z + 0.3};
+        paintings.tick(scene.w());
+        arrows.tick(scene.w(), hits);
+    }
+    CHECK_EQ(shot.hits, 0);
+    CHECK_EQ(paintings.count(), 0);
+    CHECK_EQ(arrows.count(), 0);
+    CHECK_EQ(caught.countOf(u16(mcver::Item::Painting)), 1);
 }

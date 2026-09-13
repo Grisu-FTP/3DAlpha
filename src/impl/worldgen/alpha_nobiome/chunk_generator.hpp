@@ -69,7 +69,9 @@
 
 #include "core/util/types.hpp"
 #include "core/world/lighting.hpp"
+#include "core/world/tile_entity.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_provider.hpp"
+#include "impl/worldgen/alpha_nobiome/populate.hpp"
 #include "impl/worldgen/alpha_nobiome/population_view.hpp"
 
 #include <memory>
@@ -319,6 +321,20 @@ private:
 
         u64 lastUse = 0;
         int slot = 0;  // index into blocks_
+
+        // **What population produced that is not a block.** A dungeon writes a
+        // spawner and up to two chests, and the mob and the loot are exactly
+        // the two things 32,768 bytes of block ids cannot hold -- see
+        // impl/worldgen/alpha_nobiome/dungeon.hpp.
+        //
+        // It lives on the entry rather than on the column because a pass at
+        // (px, pz) writes into a 2x2 quadrant, so a dungeon rolled for one
+        // chunk routinely lands in the next one, and the record has to follow
+        // the blocks. `finish` hands the list to the column it builds.
+        //
+        // Empty for the overwhelming majority of entries: eight tries a chunk
+        // and nearly all of them refused.
+        std::vector<world::TileEntity> tileEntities;
     };
 
     static constexpr u8 kFinalMask = 0x0F;
@@ -373,6 +389,10 @@ private:
     // Lights the column, writes it into `out` and marks the entry delivered.
     bool finish(i32 chunkX, i32 chunkZ, world::ChunkColumn* out);
 
+    // Routes the last pass's dungeon records onto the entries whose columns
+    // they landed in. See the note on Entry::tileEntities.
+    void recordDungeons();
+
     ChunkProvider provider_;
     world::LightEngine light_;
     PopulationView view_;
@@ -421,6 +441,10 @@ private:
     // heap-allocated palettes, so making one per chunk would churn the heap on
     // the busiest path the generator has.
     std::unique_ptr<world::ChunkColumn> handover_;
+
+    // Reused across populations so a chunk with no dungeon in it -- nearly
+    // every one -- allocates nothing on the generation worker.
+    PopulationSideEffects sideEffects_;
     std::unique_ptr<world::ChunkColumn> loaded_;
 
     Stats stats_;

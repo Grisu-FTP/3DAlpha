@@ -27,13 +27,26 @@
 // **right arm of the empty hand** -- `bu.b()`, `drawFirstPersonHand`. Nothing
 // else in this build draws a biped.
 //
-// **256 x 64, and it used to be 128 x 64.** Four 64 x 32 pages fit a 128 x 64
-// exactly; a fifth does not, and 96 is not a power of two, which a PICA texture
-// dimension has to be. 256 x 64 is the next size that is one in both axes: 64 KB
-// rather than 32, eight page slots of which five are used, and **every existing
-// page keeps the origin it had**, so no model's UVs moved. The block atlas is
-// square and 256 because the mesher's tile arithmetic says so; nothing here is
-// tiled, so the sheet is only as big as what it holds.
+// **256 x 128, and it has grown twice.** It was 128 x 64 for the four small
+// item textures, then 256 x 64 when `char.png` became a fifth page (96 is not a
+// power of two and a PICA texture dimension has to be), and it is 256 x 128 now
+// that the four animals arrived with six pages between them:
+//
+//   | a1.1.2 file           | drawn by                                  |
+//   |-----------------------|-------------------------------------------|
+//   | `mob/pig.png`         | `gm` RenderPig                            |
+//   | `mob/saddle.png`      | `gm`'s second pass, on a saddled pig only |
+//   | `mob/cow.png`         | `mc` RenderCow                            |
+//   | `mob/sheep.png`       | `ns` RenderSheep -- the shorn body        |
+//   | `mob/sheep_fur.png`   | `ns`'s second pass, on an unshorn one     |
+//   | `mob/chicken.png`     | `eq` RenderChicken                        |
+//
+// Sixteen 64 x 32 slots, eleven used, 128 KB in linear memory rather than VRAM
+// for the reason the header gives below. **Every existing page keeps the origin
+// it had** -- the sheet grew downwards -- so no model's UVs moved, which is the
+// same promise the last growth made. The block atlas is square and 256 because
+// the mesher's tile arithmetic says so; nothing here is tiled, so the sheet is
+// only as big as what it holds.
 //
 // **The slots are fixed, not packed.** A rectangle packer whose output can move
 // is a table that has to be regenerated to stay true, and these offsets are
@@ -74,8 +87,18 @@
 namespace mc::texture {
 
 // The sheet, and the page every model's UVs are relative to.
+//
+// **256 x 256 since the monsters landed**, up from 256 x 128. Four rows of four
+// 64 x 32 pages held sixteen and the five monsters plus the spider's eye
+// overlay needed seventeen; the GPU wants both dimensions a power of two, so
+// the next size up is the only size up. It costs 128 KB of the sheet and the
+// same again of texture memory, and it leaves fifteen pages free -- which is
+// the whole of what is left in `ew`'s table plus room to spare.
+//
+// **Every page above the monsters kept its origin**, so nothing that was
+// already drawing had to move.
 inline constexpr int kEntitySheetWidth = 256;
-inline constexpr int kEntitySheetHeight = 64;
+inline constexpr int kEntitySheetHeight = 256;
 inline constexpr usize kEntitySheetBytes =
     usize(kEntitySheetWidth) * kEntitySheetHeight * 4;
 
@@ -101,8 +124,41 @@ enum class EntitySkin : u8 {
     Sign,
     Arrow,
     Player,
+    // The four animals and the two overlays. `Saddle` and `SheepFur` are second
+    // passes over the same model rather than models of their own -- see
+    // core/render/mob_mesh.hpp.
+    Pig,
+    Saddle,
+    Cow,
+    Sheep,
+    SheepFur,
+    Chicken,
+    // The five monsters, and the spider's eyes. `mob/spider_eyes.png` is a
+    // second pass over the spider's own model in the original (`ok`, which
+    // blends it at `(1 - brightness) * 0.5`); it is a page here because it is a
+    // file in the pack and because one part of the model is redrawn from it --
+    // see core/render/mob_mesh.hpp.
+    Zombie,
+    Skeleton,
+    Creeper,
+    Spider,
+    SpiderEyes,
+    Slime,
+    // **The sky's two, and they are 32 x 32 rather than 64 x 32.** `terrain/
+    // sun.png` and `terrain/moon.png` are the only two files RenderGlobal binds
+    // that are not a block atlas, they are a handful of texels each, and a
+    // texture of their own would be a third bind for two quads a frame -- so
+    // they come off this sheet like everything else small. Each still takes a
+    // whole 64 x 32 slot: the pages are addressed by origin and half of one is
+    // cheaper than a second page size for the sheet's arithmetic to carry.
+    Sun,
+    Moon,
 };
-inline constexpr int kEntitySkinCount = 5;
+inline constexpr int kEntitySkinCount = 19;
+
+// The sun and the moon are square and 32 texels, where every other page is
+// 64 x 32. core/render/sky.cpp reads this to build their UVs.
+inline constexpr int kCelestialPagePixels = 32;
 
 // Where this page starts in the sheet, in texels from the top left.
 void skinOrigin(EntitySkin skin, int* x, int* y);
@@ -138,6 +194,13 @@ void buildEntitySkins(io::FileSystem& fs, std::string_view packPath, std::vector
 // not a hole.
 bool applyPlayerSkin(io::FileSystem& fs, std::string_view path, bool fromPack,
                      std::vector<u8>* sheet);
+
+// **The same skin as a page of its own**, 64 x 32 RGBA: exactly what
+// `applyPlayerSkin` would put in the sheet, without a sheet. For the main
+// menu's row of characters on the Skins screen, which shows every skin in the
+// list at once and must not disturb the one the game is using.
+bool decodePlayerSkinPage(io::FileSystem& fs, std::string_view path, bool fromPack,
+                          std::vector<u8>* page);
 
 // `art/kz.png` into its own 256 x 256 plane, or the generated stand-in.
 //

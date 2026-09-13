@@ -65,7 +65,8 @@ bool canPlaceSnowAt(const TickWorld& world, i32 x, int y, i32 z);
 //
 // The base answer is "the cell is air or a liquid", and about a dozen classes
 // add a condition on top -- a sapling wants dirt under it, a cactus wants sand
-// and clear sides, a torch wants a face to hang on, a rail wants a solid floor.
+// and clear sides, a torch wants a face to hang on, a rail wants a solid floor,
+// a chest wants at most one chest beside it and that one unpaired.
 // Every one of those conditions was already transcribed in this file, because
 // the *tick* has to ask the same question when a neighbour changes: that is
 // what makes a flower pop when you mine the dirt under it.
@@ -81,6 +82,28 @@ bool canPlaceSnowAt(const TickWorld& world, i32 x, int y, i32 z);
 // air-only" deviation: water and lava can be built into, as they can in the
 // game.
 bool canPlaceAt(const TickWorld& world, block::BlockId id, i32 x, int y, i32 z);
+
+// **The metadata a torch, a lever, a button or a ladder is actually put down
+// with**, given the struck face's answer from `block::placementMetadata`.
+//
+// a1.1.2 writes the block with metadata 0, runs `onBlockAdded` -- which hangs a
+// torch, a lever or a button on the first opaque neighbour in the order -x, +x,
+// -z, +z, floor -- and only then `onBlockPlaced(face)`, which **overwrites that
+// choice only when the struck face's own neighbour is an opaque cube**
+// (`mj.d`, `no.d`, `hu.d`, `br.d`). The generated table is `onBlockPlaced`
+// measured against a stone cube, so it is right exactly when the block that was
+// clicked holds the new one up. Clicking the top of a torch standing beside a
+// wall is the case it gets wrong: the table says "on the floor", the jar says
+// "on the wall", and a port that trusted the table drew a torch standing on a
+// torch -- which then fell when the wall went, and not before.
+//
+// A ladder has no `onBlockAdded`; its `onBlockPlaced` takes the first wall in
+// the order +z, -z, +x, -x when the struck one will not do. A lever's fallback
+// is handed back as orientation 0, because `blockAdded`'s lever branch already
+// walks that chain and rolls the floor lever's `nextInt(2)` off the world's
+// random, exactly once. Every other block gets `metadata` back unchanged.
+u8 attachedPlacementMetadata(const TickWorld& world, block::BlockId placed, i32 x, int y,
+                             i32 z, u8 metadata);
 
 // `Block.blockActivated` -- **what the block does when it is right-clicked**,
 // and whether that click is finished with.
@@ -104,14 +127,31 @@ bool canPlaceAt(const TickWorld& world, block::BlockId id, i32 x, int y, i32 z);
 // lights the ore and then returns the base class's false, so you can light a
 // block of it and place against it in the same press.
 //
-// **Four blocks that consume a click in a1.1.2 do not here**, and it is one
-// reason rather than four: a chest, a workbench, a furnace and a jukebox all
-// answer a right-click by opening a screen, and there are no screens. Eating
-// the click to show nothing would be indistinguishable from the placement being
-// broken, so until those screens exist they are ordinary blocks to build
-// against. That is a deviation and it is named; it reverses the day a container
-// screen lands.
+// **The chest, the workbench and the furnace take the click and open a
+// screen** through `TickWorld::openContainer`, which is the frame loop's to
+// draw. A chest with an opaque block on it, or beside a chest with one, takes
+// the click and stays shut. The jukebox still does not take it: records are not
+// ported, and a click eaten to do nothing would read as a broken placement.
 bool blockActivated(TickWorld& world, i32 x, int y, i32 z);
+
+// **Which chests a chest's screen joins**, in the order `hs` nests them: the
+// clicked chest, with a -x or -z neighbour put in front of it and a +x or +z one
+// after. A real double chest is two of these; the original builds the same
+// nesting for a cluster of up to five, and so does this.
+//
+// **A cluster is not placeable and is still reachable**, which is a1.1.2 and
+// not an oversight here: `canPlaceAt` refuses a third chest, and
+// `World.canBlockBePlacedAt` never asks it when the cell holds water, lava,
+// fire or a snow layer. So a chest put into a puddle joins whatever is already
+// there, and the screen that opens is three, four or five chests deep.
+struct ChestPart {
+    i32 x = 0;
+    int y = 0;
+    i32 z = 0;
+};
+inline constexpr int kMaxChestParts = 5;
+int chestInventoryParts(const TickWorld& world, i32 x, int y, i32 z,
+                        ChestPart out[kMaxChestParts]);
 
 // `kh.c(DDD)V`'s tail -- **the block-collision scan**, and the only way
 // anything in the world learns that an entity is touching it.
@@ -132,6 +172,23 @@ bool blockActivated(TickWorld& world, i32 x, int y, i32 z);
 // body must not be able to write blocks. So the caller that owns the tick runs
 // this immediately after the move, once per entity, which is the same order.
 void entityCollidedWithBlocks(TickWorld& world, const AABB& box);
+
+// `ly.a(Lcn;IIILkh;)V` -- **onEntityWalking**, the other half of the same
+// `if` in `moveEntity`: the footstep that earns a step sound also hands the
+// cell underfoot to the block standing in it. One call per footstep, which is
+// one per whole block of ground covered, so a sprint trades no faster than a
+// walk.
+//
+// **Two blocks answer it in a1.1.2.** Farmland is trampled back to dirt on one
+// roll in four -- there is no fall-distance test in this version, so walking
+// over a field ruins it exactly as running or jumping across it does -- and
+// redstone ore lights up. The cell is the one `PlayerBody::steppedOn` names.
+//
+// **Not called from inside the body**, for the reason above:
+// `PlayerBody::move` takes a `const TickWorld&` so that moving cannot write
+// blocks, so the caller that owns the tick runs this immediately after the
+// move and before `entityCollidedWithBlocks`, which is the jar's order.
+void entityWalkedOnBlock(TickWorld& world, i32 x, int y, i32 z);
 
 // `gb.b()`, the material predicate grass reads through the block above it and
 // `World.getPrecipitationHeight` reads on the way down. Verified against a

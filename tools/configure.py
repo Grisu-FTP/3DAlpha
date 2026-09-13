@@ -178,6 +178,11 @@ def write_blocks(out: Path, m: dict) -> bool:
         # read metadata, so it goes round by the slower one that can.
         if "metadataFaces" in entry:
             return False
+        # And a chest fills its cell, but the fast path cannot read a
+        # *neighbour* either -- which is the whole of what its front and its
+        # double-chest halves are. Same detour, same reason.
+        if entry.get("worldTexture", "none") != "none":
+            return False
         return always_unit.get(entry["id"], True)
 
     # Pre-Anvil ids are one byte on disk and on the wire. The table covers the
@@ -197,7 +202,10 @@ def write_blocks(out: Path, m: dict) -> bool:
         this face horizontally", which the table cannot carry. Doors do not
         render as cubes, so the magnitude is stored and the sign dropped -- but
         only for a block the mesher will not draw. A mirrored face on a cube
-        would be silently wrong, so it stops the build instead.
+        would be silently wrong, so it stops the build instead. The door's
+        mirror depends on metadata anyway, so `addDoor` (core/mesh/shapes.cpp)
+        re-derives it per face from `BlockDoor.getBlockTexture` and this
+        no-metadata row could not have carried it.
         """
         tiles = entry.get("faces") or [entry.get("texture", 0)] * 6
         mirrored = [t for t in tiles if t < 0]
@@ -248,7 +256,8 @@ def write_blocks(out: Path, m: dict) -> bool:
             return ('{"unknown", 0.0f, 0.0f, 0, {0, 0, 0, 0, 0, 0}, '
                     "RenderType::Cube, Shape::FullCube, true, 0.6f, true, "
                     "0xFFFF, 0, 0, 255, true, true, true, false, true, "
-                    "TickBehaviour::None, 10, false, 0, 0, false, false, 0}")
+                    "TickBehaviour::None, 10, false, 0, 0, false, false, 0, "
+                    "Contact::None, WorldTexture::None}")
         # repr keeps the decimal point: "100f" is not a float literal, "100.0f"
         # is, and %g drops the point for integral values.
         hardness = repr(float(entry["hardness"]))
@@ -273,7 +282,9 @@ def write_blocks(out: Path, m: dict) -> bool:
             f'{c_bool(entry.get("tickRandomly", False))}, '
             f'{entry.get("burnEncourage", 0)}, {entry.get("burnCatch", 0)}, '
             f'{c_bool(entry.get("canBurn", False))}, true, '
-            f'{step_index.get(entry.get("stepSound"), 0)}}}'
+            f'{step_index.get(entry.get("stepSound"), 0)}, '
+            f'Contact::{pascal(entry.get("contact", "none"))}, '
+            f'WorldTexture::{pascal(entry.get("worldTexture", "none"))}}}'
         )
 
     # Air's material is the jar's too -- every block that uses it is the same
@@ -293,6 +304,8 @@ def write_blocks(out: Path, m: dict) -> bool:
         "using mc::block::RenderType;\n",
         "using mc::block::Shape;\n",
         "using mc::block::TickBehaviour;\n",
+        "using mc::block::Contact;\n",
+        "using mc::block::WorldTexture;\n",
         "\n// Named ids, so no literal block number appears anywhere else.\n",
         "enum class Block : mc::block::BlockId {\n",
         "    Air = 0,\n",
@@ -423,20 +436,31 @@ def write_items(out: Path, m: dict) -> bool:
 
     def definition(entry) -> str:
         if entry is None:
-            return ('{"unknown", 0, 0, 0, 1, IconSheet::Items, '
+            # **The unknown row hits for 1**, which is not a filler value: it is
+            # what `InventoryPlayer.getDamageVsEntity` answers for an empty
+            # slot, so a caller can read the column for the bare hand as well.
+            # See core/item/item_def.hpp.
+            return ('{"unknown", 0, 0, 0, 1, 1, IconSheet::Items, '
                     'ItemDef::kNotArmour, ItemDef::kNotABucket, '
-                    'SpawnsEntity::None, 0, false, false, false}')
+                    'SpawnsEntity::None, 0, false, false, false, false}')
         return (
             f'{{"{entry["name"]}", {entry["icon"]}, {entry["places"]}, '
-            f'{entry["durability"]}, {entry["stack"]}, '
+            f'{entry["durability"]}, {entry["damageVsEntity"]}, {entry["stack"]}, '
             f'IconSheet::{"Terrain" if entry["sheet"] == "terrain" else "Items"}, '
             f'{entry["armour"]}, {entry["bucket"]}, '
             f'SpawnsEntity::{pascal(entry["spawns"])}, {entry["spawnVariant"]}, '
-            f'{c_bool(bool(entry["fx"]))}, {c_bool(entry["palette"])}, true}}'
+            f'{c_bool(bool(entry["fx"]))}, {c_bool(entry["tills"])}, '
+            f'{c_bool(entry["palette"])}, true}}'
         )
 
     in_table = sorted(i for i in items if i < table_size)
-    palette = [i for i in in_table if items[i]["palette"]]
+    # **The palette is over every row, not only the ones the array reaches.**
+    # a1.1.2's ids run 0..346 and then jump to 2256 for the two music discs, so
+    # a contiguous table that covered them would be 2,258 entries to carry two.
+    # They get a side table instead (`kOutsideItems` below) and they are in the
+    # palette like anything else -- a skeleton killing a creeper drops one, so
+    # they are obtainable and a catalogue that omitted them would have a hole.
+    palette = [i for i in sorted(items) if items[i]["palette"]]
 
     lines = [
         BANNER.format(id=m["id"]),
@@ -455,8 +479,12 @@ def write_items(out: Path, m: dict) -> bool:
 
     lines.append(f"\ninline constexpr int kItemTableSize = {table_size};\n")
     lines.append(f"inline constexpr int kItemCount = {len(items)};\n")
-    lines.append("\n// Ids this version defines that the table does not reach. "
-                 "Carried through a\n// save, drawn as nothing. "
+    lines.append("\n// Ids this version defines that the contiguous table does "
+                 "not reach --\n// a1.1.2's two music discs at 2256 and 2257, "
+                 "which are 1,910 ids past the\n// end of the item run. They "
+                 "are held as a pair of parallel arrays rather\n// than as "
+                 "1,910 blank rows; `item::def` falls back to a scan over them, "
+                 "which\n// costs nothing for an id the table does reach. "
                  "See core/item/registry.hpp.\n")
     lines.append(f"inline constexpr int kItemsOutsideTable = {len(outside)};\n")
     lines.append("\ninline constexpr ItemDef kUnknownItem =\n    "
@@ -467,6 +495,22 @@ def write_items(out: Path, m: dict) -> bool:
         label = entry["name"] if entry else "unknown"
         lines.append(f"    /* {iid:3} {label:<22} */ {definition(entry)},\n")
     lines.append("};\n")
+
+    if outside:
+        lines.append("\ninline constexpr mc::item::ItemId "
+                     "kOutsideItemIds[kItemsOutsideTable] = {\n    "
+                     + ", ".join(str(i) for i in outside) + ",\n};\n")
+        lines.append("\ninline constexpr ItemDef "
+                     "kOutsideItems[kItemsOutsideTable] = {\n")
+        for iid in outside:
+            lines.append(f"    /* {iid} {items[iid]['name']:<12} */ "
+                         f"{definition(items[iid])},\n")
+        lines.append("};\n")
+    else:
+        # An empty array is not valid C++, and a version with no such ids is
+        # the ordinary case rather than an error.
+        lines.append("\ninline constexpr mc::item::ItemId* kOutsideItemIds = nullptr;\n")
+        lines.append("inline constexpr ItemDef* kOutsideItems = nullptr;\n")
 
     lines.append("\n// The Creative hand's offering, in id order, as a table "
                  "rather than a scan.\n// Which items are in it is decided by "
@@ -656,6 +700,26 @@ def write_selection(out: Path, m: dict) -> bool:
         row = index.get(bid, [0] * 16)
         lines.append("    {" + ", ".join(str(v) for v in row) + "},\n")
     lines.append("};\n")
+
+    # **One box per block and not per metadata**, because the thing that draws
+    # it has no metadata to read: `RenderBlocks.renderBlockAsItem` calls
+    # `Block.setBlockBoundsForItemRender` on the singleton and draws what that
+    # leaves. It is the same shape list, so the two columns share their storage.
+    item_render = {int(k): v for k, v in doc.get("itemRender", {}).items()}
+    lines.append(
+        "\n// [block id] -> the shape an item render draws, an index into kSelectionShapes.\n"
+        "// `Block.setBlockBoundsForItemRender`, which the hand, the inventory slot and a\n"
+        "// dropped stack all go through and which no metadata reaches. Empty on Block, so\n"
+        "// this is the constructor's bounds for all but the button and the two pressure\n"
+        "// plates -- the blocks whose world shape lives in setBlockBoundsBasedOnState and\n"
+        "// is therefore a leftover at metadata 0.\n"
+    )
+    lines.append("\ninline constexpr u8 kItemRenderIndex[kSelectionIndexSize] = {\n")
+    for row in range(0, size, 8):
+        values = ", ".join(str(item_render.get(bid, 0)) for bid in range(row, min(row + 8, size)))
+        lines.append(f"    {values},\n")
+    lines.append("};\n")
+
     lines.append("\n}  // namespace mcver\n")
 
     (out / "selection.hpp").write_text("".join(lines))
@@ -703,6 +767,201 @@ def write_placement(out: Path, m: dict) -> bool:
     return True
 
 
+def write_harvest(out: Path, m: dict) -> bool:
+    """Emit what Survival asks of a block and a held item.
+
+    Which blocks a bare hand cannot harvest, how fast each tool digs what it
+    digs, which blocks each tool may harvest, what a hit and a break wear off
+    it, how much an armour piece absorbs and how much a food heals. All of it
+    asked of a running jar by tools/genref.java --harvest, so nothing here is a
+    number anybody typed.
+
+    The tool rows are sparse -- a tool's own efficiency list and harvest list
+    sit in two flat side arrays and the row holds where its run starts -- because
+    the alternative is a [item][block] matrix of 1.0 with twenty-one rows that
+    say anything.
+    """
+    source = REPO / m["data"] / "harvest.json"
+    if not source.is_file():
+        return False
+
+    doc = json.loads(source.read_text())
+    size = m["constants"].get("blockTableSize", 256)
+    gated = {entry["id"] for entry in doc["needsTool"]}
+
+    efficiency = []
+    harvests = []
+    tool_rows = []
+    for tool in doc["tools"]:
+        tool_rows.append(
+            f'    {{{tool["id"]}, {tool["wearOnHit"]}, {tool["wearOnBreak"]}, '
+            f'{len(efficiency)}, {len(tool["efficiency"])}, '
+            f'{len(harvests)}, {len(tool["harvests"])}}},   // {tool["name"]}\n')
+        efficiency.extend(tool["efficiency"])
+        harvests.extend(tool["harvests"])
+
+    def c_float(value: float) -> str:
+        text = repr(float(value))
+        return text + "f"
+
+    lines = [
+        BANNER.format(id=m["id"]),
+        "#pragma once\n",
+        '\n#include "core/util/types.hpp"\n',
+        "\nnamespace mcver {\n",
+        "\nusing mc::i16;\n",
+        "using mc::u8;\n",
+        "using mc::u16;\n",
+        "\n// [block id] -> true when an empty hand cannot harvest it. `dm.b(Lly;)Z` is\n"
+        "// true outright unless the block's material is one of four, and this is\n"
+        "// that set as the jar answered it. See data/<version>/harvest.json.\n",
+        f"\ninline constexpr int kHarvestBlockTableSize = {size};\n",
+        "\ninline constexpr bool kBlockNeedsTool[kHarvestBlockTableSize] = {\n",
+    ]
+    for bid in range(size):
+        lines.append(f"    {c_bool(bid in gated)},\n")
+    lines.append("};\n")
+
+    lines.append(
+        "\n// One block a tool digs at other than 1.0, from `di.a(Lev;Lly;)F`.\n"
+        "struct ToolEfficiency {\n"
+        "    u16 block;\n"
+        "    float value;\n"
+        "};\n"
+        "\n// One item that answers something other than Item's defaults. The runs\n"
+        "// index kToolEfficiencies and kToolHarvests.\n"
+        "struct ToolRule {\n"
+        "    i16 item;\n"
+        "    u8 wearOnHit;       // what hitEntity adds to the stack's damage\n"
+        "    u8 wearOnBreak;     // what hitBlock adds\n"
+        "    u16 efficiencyFirst;\n"
+        "    u8 efficiencyCount;\n"
+        "    u16 harvestFirst;\n"
+        "    u8 harvestCount;\n"
+        "};\n"
+    )
+    lines.append(f"\ninline constexpr int kToolEfficiencyCount = {max(len(efficiency), 1)};\n")
+    lines.append("inline constexpr ToolEfficiency kToolEfficiencies[kToolEfficiencyCount] = {\n")
+    for block, value in efficiency or [[0, 1.0]]:
+        lines.append(f"    {{{block}, {c_float(value)}}},\n")
+    lines.append("};\n")
+    lines.append(f"\ninline constexpr int kToolHarvestCount = {max(len(harvests), 1)};\n")
+    lines.append("inline constexpr u16 kToolHarvests[kToolHarvestCount] = {\n")
+    for block in harvests or [0]:
+        lines.append(f"    {block},\n")
+    lines.append("};\n")
+    lines.append(f"\ninline constexpr int kToolRuleCount = {max(len(tool_rows), 1)};\n")
+    lines.append("inline constexpr ToolRule kToolRules[kToolRuleCount] = {\n")
+    lines.extend(tool_rows or ["    {-1, 0, 0, 0, 0, 0, 0},\n"])
+    lines.append("};\n")
+
+    lines.append(
+        "\n// `mr.aY` -- what one armour piece contributes to `eu.f()`.\n"
+        "struct ArmourRule {\n"
+        "    i16 item;\n"
+        "    u8 points;\n"
+        "};\n"
+    )
+    lines.append(f"\ninline constexpr int kArmourRuleCount = {max(len(doc['armour']), 1)};\n")
+    lines.append("inline constexpr ArmourRule kArmourRules[kArmourRuleCount] = {\n")
+    for entry in doc["armour"] or [{"id": -1, "points": 0, "name": "none"}]:
+        lines.append(f'    {{{entry["id"]}, {entry["points"]}}},   // {entry["name"]}\n')
+    lines.append("};\n")
+
+    lines.append(
+        "\n// `oj.a` -- the health ItemFood hands to `ge.b(I)V`.\n"
+        "struct FoodRule {\n"
+        "    i16 item;\n"
+        "    u8 heals;\n"
+        "};\n"
+    )
+    lines.append(f"\ninline constexpr int kFoodRuleCount = {max(len(doc['food']), 1)};\n")
+    lines.append("inline constexpr FoodRule kFoodRules[kFoodRuleCount] = {\n")
+    for entry in doc["food"] or [{"id": -1, "heals": 0, "name": "none"}]:
+        lines.append(f'    {{{entry["id"]}, {entry["heals"]}}},   // {entry["name"]}\n')
+    lines.append("};\n")
+    lines.append("\n}  // namespace mcver\n")
+
+    (out / "harvest.hpp").write_text("".join(lines))
+    return True
+
+
+def write_recipes(out: Path, m: dict) -> bool:
+    """Emit crafting, smelting and fuel, as the jar holds them.
+
+    `crafting` keeps CraftingManager's own order, because the first recipe that
+    matches wins and the order is part of the rule. Cells are padded to nine with
+    -1 so every row is the same size; only `width * height` of them are read.
+    """
+    source = REPO / m["data"] / "recipes.json"
+    if not source.is_file():
+        return False
+
+    doc = json.loads(source.read_text())
+
+    lines = [
+        BANNER.format(id=m["id"]),
+        "#pragma once\n",
+        '\n#include "core/util/types.hpp"\n',
+        "\nnamespace mcver {\n",
+        "\nusing mc::i16;\n",
+        "using mc::u8;\n",
+        "using mc::u16;\n",
+        "\n// `bv` -- one shaped recipe. `cells` are item ids row by row, -1 for a blank;\n"
+        "// only the first width * height are meaningful.\n",
+        "struct CraftingRecipe {\n",
+        "    u8 width;\n",
+        "    u8 height;\n",
+        "    i16 cells[9];\n",
+        "    i16 result;\n",
+        "    u8 count;\n",
+        "    i16 damage;\n",
+        "};\n",
+    ]
+    recipes = doc["crafting"]
+    lines.append(f"\ninline constexpr int kCraftingRecipeCount = {max(len(recipes), 1)};\n")
+    lines.append("inline constexpr CraftingRecipe kCraftingRecipes[kCraftingRecipeCount] = {\n")
+    for r in recipes or [{"width": 0, "height": 0, "cells": [], "result": -1, "count": 0,
+                          "damage": 0, "name": "none"}]:
+        cells = list(r["cells"]) + [-1] * (9 - len(r["cells"]))
+        lines.append(
+            f'    {{{r["width"]}, {r["height"]}, {{{", ".join(str(c) for c in cells)}}}, '
+            f'{r["result"]}, {r["count"]}, {r["damage"]}}},   // {r["name"]}\n')
+    lines.append("};\n")
+
+    lines.append(
+        "\n// TileEntityFurnace's result for one input id.\n"
+        "struct SmeltingRule {\n"
+        "    i16 input;\n"
+        "    i16 result;\n"
+        "};\n"
+    )
+    smelting = doc["smelting"]
+    lines.append(f"\ninline constexpr int kSmeltingRuleCount = {max(len(smelting), 1)};\n")
+    lines.append("inline constexpr SmeltingRule kSmeltingRules[kSmeltingRuleCount] = {\n")
+    for s in smelting or [{"input": -1, "result": -1, "name": "none"}]:
+        lines.append(f'    {{{s["input"]}, {s["result"]}}},   // {s["name"]}\n')
+    lines.append("};\n")
+
+    lines.append(
+        "\n// TileEntityFurnace's burn time, in ticks, for one item.\n"
+        "struct FuelRule {\n"
+        "    i16 item;\n"
+        "    u16 ticks;\n"
+        "};\n"
+    )
+    fuel = doc["fuel"]
+    lines.append(f"\ninline constexpr int kFuelRuleCount = {max(len(fuel), 1)};\n")
+    lines.append("inline constexpr FuelRule kFuelRules[kFuelRuleCount] = {\n")
+    for f in fuel or [{"id": -1, "ticks": 0, "name": "none"}]:
+        lines.append(f'    {{{f["id"]}, {f["ticks"]}}},   // {f["name"]}\n')
+    lines.append("};\n")
+    lines.append("\n}  // namespace mcver\n")
+
+    (out / "recipes.hpp").write_text("".join(lines))
+    return True
+
+
 def write_rsf(out: Path, m: dict) -> None:
     template = REPO / "packaging" / "3dalpha.rsf.in"
     if not template.is_file():
@@ -735,6 +994,8 @@ def main() -> None:
     has_paintings = write_paintings(out_dir, m)
     has_selection = write_selection(out_dir, m)
     has_placement = write_placement(out_dir, m)
+    has_harvest = write_harvest(out_dir, m)
+    has_recipes = write_recipes(out_dir, m)
 
     print(f"configure: {m['display']} (protocol {m['constants']['protocol']}) -> {out_dir}")
     if not has_blocks:
@@ -752,6 +1013,12 @@ def main() -> None:
         print(f"configure: no {m['data']}/selection.json yet -- run tools/gen_selection.py")
     if not has_placement:
         print(f"configure: no {m['data']}/placement.json yet -- run tools/gen_selection.py")
+    if not has_harvest:
+        print(f"configure: no {m['data']}/harvest.json yet -- "
+              "run tools/genref.java --harvest")
+    if not has_recipes:
+        print(f"configure: no {m['data']}/recipes.json yet -- "
+              "run tools/genref.java --recipes")
     if unfilled:
         print(f"configure: slots not implemented yet: {', '.join(unfilled)}")
 

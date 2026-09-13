@@ -2,6 +2,7 @@
 
 #include "core/block/registry.hpp"
 #include "core/world/chunk.hpp"
+#include "core/world/tile_entity.hpp"
 #include "generate_vectors.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_generator.hpp"
 
@@ -469,4 +470,68 @@ TEST(retire_frees_exactly_what_is_out_of_range)
     // reads them back or makes them again, and either way succeeds.
     CHECK(generator->provide(0, 0, column.get()));
     CHECK_EQ(int(generator->stats().evictedLive), 0);
+}
+
+// **A dungeon's mob and loot reach the column the generator hands over.**
+//
+// `PopulationSideEffects` used to be passed as null on the generation worker
+// with a comment saying its records had no consumer, so a dungeon this build
+// made came back as a mossy room around an empty cage. The records go onto the
+// generator's `Entry` now -- not onto a column, because a pass writes into a
+// 2x2 quadrant and a dungeon rolled for one chunk routinely lands in the next.
+//
+// It sweeps rather than naming a coordinate: eight tries a chunk and nearly
+// all of them refused, so which chunk holds the first dungeon is a fact about
+// the seed and not worth pinning. What is pinned is that every spawner carries
+// one of `cg.b`'s three names and that no cage in the world is empty.
+TEST(a_generated_dungeon_carries_its_mob_and_its_loot)
+{
+    MemoryWorld world;
+    worldgen::GeneratorOptions options;
+    ChunkGenerator::Store store = world.store();
+    auto generator = std::make_unique<ChunkGenerator>(1234567890LL, options, store, 512);
+    auto column = std::make_unique<world::ChunkColumn>();
+
+    int spawners = 0;
+    int chests = 0;
+    int stacks = 0;
+
+    for (i32 x = 0; x < 12; ++x) {
+        for (i32 z = 0; z < 12; ++z) {
+            if (!generator->provide(x, z, column.get())) {
+                continue;
+            }
+            for (const world::TileEntity& tile : column->tileEntities) {
+                // Every entry belongs to the column carrying it.
+                CHECK_EQ(tile.x >> 4, column->x);
+                CHECK_EQ(tile.z >> 4, column->z);
+                // ...and stands on the block it is the tile entity of.
+                const world::BlockId id =
+                    column->block(int(tile.x & 15), tile.y, int(tile.z & 15));
+                world::TileEntityKind kind = world::TileEntityKind::Unknown;
+                CHECK(world::tileEntityKindForBlock(block::def(id).tick, &kind));
+                CHECK_EQ(int(kind), int(tile.kind));
+
+                if (tile.kind == world::TileEntityKind::MobSpawner) {
+                    ++spawners;
+                    // `cg.b(Random)`: Skeleton, Zombie (twice) or Spider, and
+                    // never `bd`'s own default.
+                    CHECK(tile.entityId == "Skeleton" || tile.entityId == "Zombie" ||
+                          tile.entityId == "Spider");
+                } else if (tile.kind == world::TileEntityKind::Chest) {
+                    ++chests;
+                    stacks += int(tile.items.size());
+                    for (const item::ItemStack& item : tile.items) {
+                        CHECK(item.slot >= 0 && item.slot < world::kChestSlots);
+                        CHECK(item.count > 0);
+                    }
+                }
+            }
+        }
+    }
+
+    // 144 chunks is far more than enough for a1.1.2's dungeon rate.
+    CHECK(spawners > 0);
+    CHECK(chests > 0);
+    CHECK(stacks > 0);
 }

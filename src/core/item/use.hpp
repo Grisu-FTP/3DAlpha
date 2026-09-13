@@ -39,6 +39,7 @@ class PaintingSystem;
 class ArrowSystem;
 class BoatSystem;
 class MinecartSystem;
+class MobSystem;
 }
 namespace mc::world {
 class SignStore;
@@ -73,6 +74,11 @@ struct EntityPools {
     entity::ArrowSystem* arrows = nullptr;
     entity::BoatSystem* boats = nullptr;
     entity::MinecartSystem* minecarts = nullptr;
+
+    // **The animals.** The one pool here whose entities are alive: a click on
+    // one is a hit, a milking or a saddling, and which of those it is depends
+    // on what is in the hand -- see `interactWithEntity`.
+    entity::MobSystem* mobs = nullptr;
 
     // **Not an entity**, but it lives here for the same reason: a sign's text
     // is a side effect of a click that most callers have nowhere to put. See
@@ -125,8 +131,21 @@ struct Effects {
 //
 // Returns whether the world changed, which is also whether the click was
 // spent: a lever flicked, a door opened, a block placed.
+//
+// `itemTook`, when given, says **which of the two took it** -- true when the
+// held item did (a block placed, a painting hung, a field tilled, a seed
+// planted) and false when the block answered first (a lever, a door, a
+// button). Survival spends the stack on the first and never on the second; see
+// item::spendOnUse.
+//
+// **Five items are not `ItemBlock`** and are routed here by the behaviour of
+// the block they would place rather than by their id: the sign, the two doors,
+// flint and steel, and the seed -- which is the only one that can overwrite a
+// block that is already there. See the branches in `rightClick` and, for what
+// the seed does to bedrock, `useSeeds`.
 bool rightClick(tick::TickWorld& world, ItemId held, const entity::RayHit& hit,
-                const AABB& playerBox, float yawDegrees, const Effects& effects = {});
+                const AABB& playerBox, float yawDegrees, const Effects& effects = {},
+                bool* itemTook = nullptr);
 
 // **The other half of a right-click**, and the reason it is a second function:
 // `Minecraft.clickMouse` runs `onPlayerRightClick` on the block the crosshair
@@ -186,7 +205,7 @@ bool destroyBlock(tick::TickWorld& world, i32 x, int y, i32 z, const Effects& ef
 // original's `d < best || best == 0` rule. The ridden vehicle is not
 // excluded, as it is not in the original.
 struct EntityTarget {
-    enum class Kind : u8 { None, Painting, Boat, Minecart };
+    enum class Kind : u8 { None, Painting, Boat, Minecart, Mob };
     Kind kind = Kind::None;
     int index = -1;
     // From the eye to where the ray meets the grown box.
@@ -213,20 +232,68 @@ EntityTarget pickEntity(const EntityPools& pools, double eyeX, double eyeY, doub
 // so none of the three could leave anything on the ground however hard it was
 // hit. Returns true when something was hit.
 //
-// Two things about it are stated rather than derived:
+// `held` is what is in the hand, and it is the whole of how hard the hit lands:
+// `InventoryPlayer.getDamageVsEntity` forwards to the stack's own item, which
+// is 1 for an empty hand and for everything that is neither a tool nor a sword,
+// and the constructed number for the two classes that are -- a wooden sword 4,
+// a diamond one 10, a diamond axe 6. It is a generated column
+// (`ItemDef::damageVsEntity`) rather than a constant here, and the unknown
+// row's 1 is the empty hand's answer, so `held == 0` needs no special case.
 //
-//   * **The damage is 1.** `InventoryPlayer.getDamageVsEntity` answers 1 for an
-//     empty hand and `Item.getDamageVsEntity` answers 1 for everything that is
-//     not a tool or a sword. There is no `damageVsEntity` column in the
-//     generated item table yet, so a sword hits like a fist here; that column
-//     belongs with Survival's combat and is the one place this differs.
-//   * A hit that does not break the thing still counts as a hit, exactly as
-//     `attackEntityFrom` returning true does.
-bool attackEntity(tick::TickWorld& world, const EntityTarget& target, const Effects& effects);
+// One thing about it is stated rather than derived: a hit that does not break
+// the thing still counts as a hit, exactly as `attackEntityFrom` returning true
+// does.
+//
+// **Durability is spent by the caller, not here.** The jar follows the hit
+// with `stack.hitEntity(living)`, which is `damageItem(1)` on a sword and
+// `(2)` on a tool -- `item::wearOnHit` in core/item/tool_rules.hpp, applied by
+// the Survival branch of the edit path. Creative wears nothing.
+// **Where the hit came from**, which only a living target reads: `ge`'s
+// knockback pushes the mob away from its attacker and needs a position to push
+// away from. A caller that leaves it out lands the damage and no shove, which
+// is what `attackEntityFrom(null, n)` does in the jar -- suffocation, drowning
+// and the void all come in that way.
+struct Attacker {
+    bool present = false;
+    double x = 0.0;
+    double z = 0.0;
 
-// `bi.a_(Lkh;)V` -- the right click's entity branch, `entity.interact(player)`.
+    // **False is a Creative fist**: the hit lands in full -- the sheep is still
+    // shorn, the cow still dies, the knockback is still applied -- and the
+    // monster is left with nobody to chase. It is the swinging half of
+    // `entity::MobPlayer::targetable`, which is where the whole argument for a
+    // player a mob cannot hunt is written down.
+    bool provokes = true;
+};
+
+bool attackEntity(tick::TickWorld& world, const EntityTarget& target, ItemId held,
+                  const Effects& effects, const Attacker& attacker = {});
+
+// `bi.a_(Lkh;)V` -- **useCurrentItemOnEntity**, the right click's entity branch,
+// and it is two steps rather than one:
+//
+// ```
+// if (entity.interact(player)) return;              // the entity's own answer
+// ItemStack stack = getCurrentEquippedItem();
+// if (stack != null && entity instanceof EntityLiving) stack.useItemOnEntity(living);
+// ```
+//
 // A boat or a plain cart takes the player aboard; a chest or furnace cart, a
-// vehicle already ridden and a painting refuse. Returns whether it was taken.
-bool interactWithEntity(const EntityTarget& target, const EntityPools& pools);
+// vehicle already ridden and a painting refuse. An animal answers the first step
+// with a bucket (a cow gives milk) or a saddle already on (a pig carries you),
+// and the second step is where `ItemSaddle` puts a saddle on a pig -- which is
+// why a saddle held out to a *saddled* pig mounts it instead of being eaten.
+//
+// `held` is what is in the hand and `becomes` is what it turns into, the same
+// shape `useItem` takes: a bucket becomes a milk bucket and a spent saddle
+// becomes nothing (item 0). `becomes` is `held` when nothing about the stack
+// changed, so a caller that ignores it is right rather than lucky.
+struct EntityInteraction {
+    bool taken = false;
+    ItemId becomes = 0;
+};
+
+EntityInteraction interactWithEntity(tick::TickWorld& world, const EntityTarget& target,
+                                     const EntityPools& pools, ItemId held);
 
 }  // namespace mc::item

@@ -2,6 +2,8 @@
 
 #include "core/nbt/nbt.hpp"
 #include "core/nbt/writer.hpp"
+#include "core/world/tile_entity.hpp"
+#include "impl/storage/alpha_chunkfiles/item_nbt.hpp"
 
 #include <cstring>
 
@@ -10,6 +12,8 @@ namespace {
 
 using world::ChunkColumn;
 using world::Section;
+using world::TileEntity;
+using world::TileEntityKind;
 
 constexpr int kRuns = ChunkColumn::kArea;          // one per (x, z) column
 constexpr int kRunBlocks = Section::kSize;         // 16 blocks tall
@@ -71,6 +75,245 @@ struct Seen {
         return xPos && zPos && blocks && data && blockLight && skyLight;
     }
 };
+
+// **`Items`** -- `fe.a(hm)` and `ke.a(hm)`, which are the same loop.
+//
+// The slot byte is bounds-checked against the array and an out-of-range one is
+// dropped, exactly as the original does; the two differ only in that `fe` masks
+// it with 255 and `ke` does not, and with arrays of 27 and 3 neither can accept
+// a byte either reading admits and the other refuses. `limit` is the class's
+// own `c()`.
+bool decodeItems(nbt::Reader& r, TileEntity* tile, int limit)
+{
+    nbt::TagType elemType;
+    i32 count = 0;
+    if (!r.enterList(&elemType, &count)) {
+        return false;
+    }
+    if (count != 0 && elemType != nbt::TagType::Compound) {
+        r.fail();
+        return false;
+    }
+    for (i32 i = 0; i < count; ++i) {
+        item::ItemStack stack;
+        if (!decodeItemStack(r, &stack)) {
+            return false;
+        }
+        if (stack.slot < 0 || stack.slot >= limit) {
+            continue;  // `if (slot >= 0 && slot < a.length)`
+        }
+        // One stack per slot: a file with two entries for the same slot loses
+        // the earlier one, which is what `a[slot] = new ev(...)` does.
+        bool replaced = false;
+        for (item::ItemStack& held : tile->items) {
+            if (held.slot == stack.slot) {
+                held = std::move(stack);
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            tile->items.push_back(std::move(stack));
+        }
+    }
+    return r.ok();
+}
+
+// How many slots a kind's array has, which is what bounds the read.
+int slotLimit(TileEntityKind kind)
+{
+    switch (kind) {
+    case TileEntityKind::Chest:   return world::kChestSlots;
+    case TileEntityKind::Furnace: return world::kFurnaceSlots;
+    default:                      return 0;
+    }
+}
+
+// Which of `ic`'s own four tags this element carried. All four are required:
+// an element without them is what `ic.c(hm)` calls "Skipping TileEntity with
+// id", and the original neither keeps it nor writes it back.
+struct TileSeen {
+    bool id = false;
+    bool x = false;
+    bool y = false;
+    bool z = false;
+
+    bool complete() const { return id && x && y && z; }
+};
+
+// **`id` has to be known before any other tag can be claimed**, and NBT
+// promises no order. `hm` is an `NBTTagCompound` backed by a `HashMap` and
+// writes its members in bucket order, so `Delay` really can arrive before the
+// `id` that says a `Delay` is what it is -- and claiming a tag off the wrong
+// class would both misread it and emit it twice on the way out, once from the
+// field and once from `preserved`.
+//
+// So the element is read twice over the same bytes: once for the id, once
+// against it. The cursor is skipped over the compound first and both passes run
+// on the range it covered, which is memory already resident. A column holds a
+// handful of these.
+//
+// Anything other than a `TAG_String` id is no id at all -- `hm.i` answers ""
+// for a wrong type, `ic.c(hm)` then finds no class and skips the element -- so
+// it is left for `usable` to reject.
+bool readTileEntityId(ConstByteSpan payload, TileEntity* tile)
+{
+    nbt::Reader r(payload);
+    nbt::TagType type;
+    std::string_view name;
+
+    while (r.nextField(&type, &name)) {
+        if (name == "id" && type == nbt::TagType::String) {
+            const std::string_view id = r.string();
+            tile->id.assign(id.data(), id.size());
+            if (!world::tileEntityKindFromId(id, &tile->kind)) {
+                tile->kind = TileEntityKind::Unknown;
+            }
+            return r.skipToEnd() && r.ok();
+        }
+        if (!r.skipValue(type)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool decodeTileEntity(nbt::Reader& outer, TileEntity* tile, bool* usable)
+{
+    const usize start = outer.offset();
+    if (!outer.skipValue(nbt::TagType::Compound)) {
+        return false;
+    }
+    const ConstByteSpan payload = outer.rangeSince(start);
+
+    TileSeen seen;
+    seen.id = readTileEntityId(payload, tile);
+
+    nbt::Reader r(payload);
+    nbt::TagType type;
+    std::string_view name;
+
+    while (r.nextField(&type, &name)) {
+        if (name == "id") {
+            // Already taken, and captured rather than dropped when it was not
+            // a string -- the one shape where an `id` survives into preserved.
+            if (seen.id) {
+                if (!r.skipValue(type)) return false;
+            } else if (!tile->preserved.capture(r, name, type)) {
+                return false;
+            }
+        } else if (name == "x" || name == "y" || name == "z") {
+            if (!nbt::expectType(r, type, nbt::TagType::Int)) return false;
+            const i32 v = r.intValue();
+            if (name == "x") {
+                tile->x = v;
+                seen.x = true;
+            } else if (name == "y") {
+                tile->y = int(v);
+                seen.y = true;
+            } else {
+                tile->z = v;
+                seen.z = true;
+            }
+        } else if (tile->kind == TileEntityKind::MobSpawner && name == "EntityId") {
+            if (!nbt::expectType(r, type, nbt::TagType::String)) return false;
+            const std::string_view mob = r.string();
+            tile->entityId.assign(mob.data(), mob.size());
+        } else if (tile->kind == TileEntityKind::MobSpawner && name == "Delay") {
+            if (!nbt::expectType(r, type, nbt::TagType::Short)) return false;
+            tile->delay = r.shortValue();
+        } else if (tile->kind == TileEntityKind::Furnace && name == "BurnTime") {
+            if (!nbt::expectType(r, type, nbt::TagType::Short)) return false;
+            tile->burnTime = r.shortValue();
+        } else if (tile->kind == TileEntityKind::Furnace && name == "CookTime") {
+            if (!nbt::expectType(r, type, nbt::TagType::Short)) return false;
+            tile->cookTime = r.shortValue();
+        } else if (tile->kind == TileEntityKind::Sign && name.size() == 5 &&
+                   name.compare(0, 4, "Text") == 0 && name[4] >= '1' &&
+                   name[4] <= '0' + world::kTileSignLines) {
+            if (!nbt::expectType(r, type, nbt::TagType::String)) return false;
+            world::setTileSignLine(*tile, name[4] - '1', r.string());
+        } else if ((tile->kind == TileEntityKind::Chest ||
+                    tile->kind == TileEntityKind::Furnace) &&
+                   name == "Items") {
+            if (!nbt::expectType(r, type, nbt::TagType::List)) return false;
+            if (!decodeItems(r, tile, slotLimit(tile->kind))) return false;
+        } else if (!tile->preserved.capture(r, name, type)) {
+            return false;
+        }
+    }
+
+    *usable = seen.complete();
+    return r.ok();
+}
+
+bool decodeTileEntities(nbt::Reader& r, ChunkColumn* chunk)
+{
+    nbt::TagType elemType;
+    i32 count = 0;
+    if (!r.enterList(&elemType, &count)) {
+        return false;
+    }
+    // An empty list is written as a list of TAG_End; see nbt::Writer::endList.
+    if (count != 0 && elemType != nbt::TagType::Compound) {
+        r.fail();
+        return false;
+    }
+    chunk->tileEntities.reserve(chunk->tileEntities.size() + usize(count));
+    for (i32 i = 0; i < count; ++i) {
+        TileEntity tile;
+        bool usable = false;
+        if (!decodeTileEntity(r, &tile, &usable)) {
+            return false;
+        }
+        if (usable) {
+            chunk->tileEntities.push_back(std::move(tile));
+        }
+    }
+    return r.ok();
+}
+
+void encodeTileEntity(nbt::Writer& w, const TileEntity& tile)
+{
+    // `ic.b(hm)` first, then the subclass, which is the order the original
+    // builds the compound in. (The order the bytes come out in is Java's
+    // HashMap iteration order and is reproducible by nothing; this file has
+    // never matched it for `Level` either.)
+    w.writeString("id", tile.id);
+    w.writeInt("x", tile.x);
+    w.writeInt("y", i32(tile.y));
+    w.writeInt("z", tile.z);
+
+    switch (tile.kind) {
+    case TileEntityKind::MobSpawner:
+        w.writeString("EntityId", tile.entityId);
+        w.writeShort("Delay", tile.delay);
+        break;
+    case TileEntityKind::Sign:
+        for (int line = 0; line < world::kTileSignLines; ++line) {
+            const char name[] = {'T', 'e', 'x', 't', char('1' + line), '\0'};
+            w.writeString(name, tile.lines[line]);
+        }
+        break;
+    case TileEntityKind::Furnace:
+        w.writeShort("BurnTime", tile.burnTime);
+        w.writeShort("CookTime", tile.cookTime);
+        [[fallthrough]];
+    case TileEntityKind::Chest:
+        w.beginList("Items", nbt::TagType::Compound);
+        for (const item::ItemStack& stack : tile.items) {
+            w.beginListElementCompound();
+            encodeItemStack(w, stack);
+            w.endCompound();
+        }
+        w.endList();
+        break;
+    case TileEntityKind::Unknown:
+        break;
+    }
+
+    tile.preserved.writeTo(w);
+}
 
 bool decodeLevel(nbt::Reader& r, ChunkColumn* chunk, u8* scratch)
 {
@@ -139,6 +382,9 @@ bool decodeLevel(nbt::Reader& r, ChunkColumn* chunk, u8* scratch)
                 break;
             }
             std::memcpy(chunk->heightMap, heights.data(), kHeightMapBytes);
+        } else if (name == "TileEntities") {
+            if (!nbt::expectType(r, type, nbt::TagType::List)) return false;
+            if (!decodeTileEntities(r, chunk)) return false;
         } else if (!chunk->preserved.capture(r, name, type)) {
             return false;
         }
@@ -232,6 +478,13 @@ bool encodeChunk(const ChunkColumn& chunk, std::vector<u8>* out)
     w.writeByteArray("BlockLight", blockLight);
     w.writeByteArray("SkyLight", skyLight);
     w.writeByteArray("HeightMap", ConstByteSpan(chunk.heightMap, kHeightMapBytes));
+    w.beginList("TileEntities", nbt::TagType::Compound);
+    for (const TileEntity& tile : chunk.tileEntities) {
+        w.beginListElementCompound();
+        encodeTileEntity(w, tile);
+        w.endCompound();
+    }
+    w.endList();
     chunk.preserved.writeTo(w);
     w.endCompound();
     chunk.preservedRoot.writeTo(w);

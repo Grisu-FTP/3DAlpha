@@ -225,6 +225,66 @@ TEST(peeking_a_packed_world_reads_only_the_manifest_header)
     CHECK(!storage.isOpen());
 }
 
+// **The trap behind the peek, and the call that avoids it.**
+//
+// A packed peek answers from the manifest's metadata block, which carries the
+// seed and the last-played time and nothing else. Every other field comes back
+// at its default -- and a default is not an answer. World Settings' Secret
+// World row read `snowCovered` through a peek and so showed No on every world
+// on the card, winter worlds included, because every world this port makes is
+// packed. `readLevel` inflates the blob and decodes it, still without claiming
+// the world.
+TEST(a_packed_peek_is_the_header_only_and_read_level_is_the_whole_thing)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string world = temp.at("Winter");
+
+    {
+        AnyStorage storage(fs);
+        CHECK(storage.create(world, 4242, 111000, WorldFormat::Packed) == OpenResult::Ok);
+        storage.level().snowCovered = true;
+        storage.level().spawnX = 1234;
+        CHECK(storage.saveLevel());
+        CHECK(storage.close(222000));
+    }
+
+    AnyStorage storage(fs);
+
+    // The peek says nothing about either, and says it as a default.
+    LevelData peeked;
+    CHECK(storage.peekLevel(world, &peeked));
+    CHECK_EQ(peeked.randomSeed, i64(4242));
+    CHECK(!peeked.snowCovered);
+    CHECK_EQ(peeked.spawnX, 0);
+
+    // The read says what is actually in the world.
+    LevelData read;
+    CHECK(storage.readLevel(world, &read));
+    CHECK_EQ(read.randomSeed, i64(4242));
+    CHECK(read.snowCovered);
+    CHECK_EQ(read.spawnX, 1234);
+
+    // And it claims the world no more than the peek does.
+    CHECK(!storage.isOpen());
+
+    // A folder world answers both the same way, because its peek already reads
+    // and gunzips the whole file -- which is exactly why the bug was invisible
+    // until a packed world was looked at.
+    const std::string folder = temp.at("WinterFolder");
+    {
+        AnyStorage make(fs);
+        CHECK(make.create(folder, 99, 111000, WorldFormat::Folder) == OpenResult::Ok);
+        make.level().snowCovered = true;
+        CHECK(make.saveLevel());
+        CHECK(make.close(222000));
+    }
+    LevelData folderRead;
+    CHECK(storage.readLevel(folder, &folderRead));
+    CHECK(folderRead.snowCovered);
+    CHECK(!storage.isOpen());
+}
+
 TEST(a_packed_world_survives_being_closed_without_an_explicit_commit)
 {
     TempDir temp;

@@ -216,6 +216,33 @@ Numbers worth stating plainly:
 int and the sanitised host build stops on the first one, so it is held in a `u32` and the `>> 2` is
 taken on the signed reinterpretation, which is what Java's arithmetic shift does.
 
+### Ice and snow read **block** light, and reading sky light instead breaks the whole mechanic
+
+The three melts -- `he.a` (ice), `p.a` (snow layer) and `fd.a` (snow block) -- all open the same
+way in the bytecode:
+
+```
+getstatic     by.b            // EnumSkyBlock
+invokevirtual cn.a:(Lby;III)I // getSavedLightValue
+```
+
+`by`'s static initialiser names its two constants in order: `by.a` is `"Sky"` with a default of 15,
+`by.b` is `"Block"` with a default of 0. So all three read the stored **block** light. Ice melts
+above `11 - lightOpacity[ice]`, which is 8; both snows melt above 11.
+
+Block light is 0 under an open sky whatever the hour, so **nothing melts in a1.1.2 until a player
+brings a light source near it** -- that is the entire mechanic, and it is what makes a winter world
+stay a winter world. Note that `World.h()` above, which *places* the snow and ice, reads block light
+too (`chunk.getSavedLightValue(BLOCK, ...) < 10`), so the placement and the melt are symmetrical.
+
+This is recorded because getting it wrong is invisible in a unit test that sets the light it wants
+and catastrophic in a world. Reading sky light instead puts 15 into all three comparisons on
+anything the sky can see: every exposed block of ice and snow melts on its first random tick, and
+`World.h()` -- which is still checking block light, and still finds it dark -- puts it straight
+back. The result is a winter world that thaws and refreezes forever, roughly once per chunk per
+four ticks. `tests/tick_test.cpp` pins it from both sides:
+`ice_and_snow_under_an_open_sky_never_melt` and `both_snows_melt_above_block_light_eleven`.
+
 ## Which blocks tick, and how fast
 
 Read from a running jar by `tools/extract_ticks.java`, which prints `Block.tickOnLoad[id]` and
@@ -306,7 +333,18 @@ Three consequences worth naming, because each is a thing players notice:
 
 - **Down before sideways, and exclusively.** A fluid that can fall does not spread at all that tick.
 - **Two sources make a third**, over an opaque cube or over more of the same source. That is
-  infinite water, and it is water only -- the `Material.water` test in the middle of it.
+  infinite water, and it is water only -- the `Material.water` test in the middle of it. **Note
+  which block's metadata the second arm reads**: `getBlockMetadata(x, y, z)`, the cell being ticked,
+  not the `x, y-1, z` whose *material* the line before it just tested. That asymmetry is in the
+  bytecode (`hv.a`, offsets 197-226) and is kept.
+- **A falling cell is not a source, and the order inside `getSmallestFlowDecay` is what says so.**
+  `hv.f` reads the neighbour's decay, counts it toward `numAdjacentSources` **only if it is exactly
+  zero**, and *then* folds anything `>= 8` down to zero for the minimum it returns. Swapping those
+  two lines would make every cell of a waterfall count as a source to its neighbours, and two of
+  them either side of a pool would start manufacturing sources -- which is a cave that fills itself
+  from the floor up rather than a puddle. `tests/tick_test.cpp`'s
+  `a_spring_falling_into_a_chamber_matches_the_jars_own_waterfall` pins the whole profile of one
+  waterfall against a real a1.1.2 World, source-or-not per cell, for exactly this reason.
 - **Lava only thins on one roll in four.** Its slowness is *not* only its tick rate of 30; this
   extra roll is on top of it.
 
@@ -375,7 +413,9 @@ if (age % 2 == 0 && age > 2) {
 which reads backwards and is why below (200) is the eagerest direction and above (250) the second.
 When it fires, the block becomes fire on one roll in two and simply vanishes on the other, which is
 what makes a burning structure develop holes rather than turn into a solid block of flame. A TNT
-block caught this way is primed; there are no entities, so ours is destroyed and nothing explodes.
+block caught this way is primed -- `og.a` calls `Block.tnt.onBlockDestroyedByPlayer` *after* the
+branch above has already written fire or air over the cell, so the block goes either way and a full
+80-tick fuse is lit on top of it. Ported; see `core/entity/primed_tnt.hpp`.
 
 **Three different questions about burning, from three different tables**, and a1.1.2 asks all three:
 
@@ -512,6 +552,7 @@ written and the rest of the block is testable. **All four inputs now exist.**
 | Button (`hu`) | pressing it | **done** -- `buttonActivated`, which also schedules the release 20 ticks later |
 | Pressure plate (`al`) | an entity standing on it | **done** -- `pressurePlateSense`, off `TickWorld::anyEntityIn` |
 | Door (`fw`) | opening by hand | **done** -- `doorActivated`, from either half; an iron door refuses |
+| TNT (`q`) | a neighbour going live | **done** -- `tntNeighbourChanged`, gated on `canProvidePower` exactly as the door is |
 
 **The plate is the only behaviour that asks the world about entities**, so it is the only one with a
 seam of its own. `al.h(Lcn;III)V` looks in a box an eighth in on the four sides and a quarter of a
@@ -708,7 +749,9 @@ Named here rather than left to be discovered. Each is a subsystem, not a rule:
 - **A sapling becoming a tree**: the counter and its conditions are ported; the last step runs
   `WorldGenTrees` or `WorldGenBigTree`, and both write through `PopulationView` rather than through
   a live world. It needs an adapter, not a call.
-- **TNT** and the tile-entity ticks (furnace, mob spawner). **Not sponge**: `ng.e` walks a 5x5x5 box
+- The tile-entity ticks (furnace, mob spawner). **Not TNT any more**: `q` has no `updateTick` at
+  all, and all four of the things that light it -- a break, a fire, a blast and a neighbour going
+  live -- are ported, into `jd` (`core/entity/primed_tnt.hpp`). **Not sponge**: `ng.e` walks a 5x5x5 box
   comparing each cell's material against water and the body of that comparison is *empty* in this
   version -- the absorption is Classic's and then 1.8's. Its `onBlockRemoval`, which notifies the
   same box, is ported.

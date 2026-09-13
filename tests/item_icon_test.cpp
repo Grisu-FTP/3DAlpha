@@ -376,3 +376,158 @@ TEST(every_three_dimensional_render_type_has_boxes_to_draw)
         CHECK(count > 0);
     }
 }
+
+TEST(the_cactus_item_shape_is_a_full_cell_with_its_sides_pushed_in)
+{
+    // `bc.a(Lly;)V`'s render-type-13 branch: the bounds are reset to the whole
+    // cell, the top and bottom are drawn there, and each of the four sides is a
+    // full-cell face under `addTranslation` of 0.0625. So the item shape is
+    // three boxes contributing two faces each, and **not** the inset collision
+    // box -- which is what this used to hand back, and what put a gap of
+    // daylight round a dropped cactus: the tile's transparent outer columns,
+    // where the spikes are, were being mapped onto the narrowed face instead of
+    // hanging past it.
+    const block::BlockId cactus = block::BlockId(mcver::Block::Cactus);
+    AABB boxes[block::kMaxRenderBoxes];
+    int faceMask[block::kMaxRenderBoxes];
+    const int count =
+        block::renderBoxes(cactus, 0, 0, boxes, block::kMaxRenderBoxes, faceMask);
+    CHECK_EQ(count, 3);
+
+    // Every face drawn exactly once between the three boxes.
+    int seen = 0;
+    for (int b = 0; b < count; ++b) {
+        CHECK_EQ(seen & faceMask[b], 0);
+        seen |= faceMask[b];
+    }
+    CHECK_EQ(seen, block::kAllRenderFaces);
+
+    constexpr double kInset = 1.0 / 16.0;
+    for (int b = 0; b < count; ++b) {
+        const AABB& box = boxes[b];
+        // Full height in all three, which the collision box is not: it stops a
+        // sixteenth short so that standing on a cactus sinks into it.
+        CHECK_EQ(box.minY, 0.0);
+        CHECK_EQ(box.maxY, 1.0);
+
+        if (faceMask[b] == (block::kRenderFaceNegY | block::kRenderFacePosY)) {
+            // The caps, at the cell's own extent.
+            CHECK_EQ(box.minX, 0.0);
+            CHECK_EQ(box.maxX, 1.0);
+            CHECK_EQ(box.minZ, 0.0);
+            CHECK_EQ(box.maxZ, 1.0);
+        } else if (faceMask[b] == (block::kRenderFaceNegX | block::kRenderFacePosX)) {
+            // Inset along its own axis only: the face sits a sixteenth in and
+            // still spans the cell the other way, which is what the
+            // translation does to a full-cell face.
+            CHECK_EQ(box.minX, kInset);
+            CHECK_EQ(box.maxX, 1.0 - kInset);
+            CHECK_EQ(box.minZ, 0.0);
+            CHECK_EQ(box.maxZ, 1.0);
+        } else {
+            CHECK_EQ(faceMask[b], block::kRenderFaceNegZ | block::kRenderFacePosZ);
+            CHECK_EQ(box.minZ, kInset);
+            CHECK_EQ(box.maxZ, 1.0 - kInset);
+            CHECK_EQ(box.minX, 0.0);
+            CHECK_EQ(box.maxX, 1.0);
+        }
+    }
+}
+
+TEST(a_cactus_icon_keeps_the_cells_top_face_whole)
+{
+    // Two things at once, both from the item shape being three boxes of one
+    // cell rather than a single inset one.
+    //
+    // The **top** is the cell's, drawn at full extent, so it covers exactly the
+    // pixels a stone block's top does. It also has to be drawn *over* the side
+    // faces and not under them: the cap box and the side boxes share a cell, so
+    // ordering whole boxes by position -- which is what this did while a shape
+    // was a list of solid boxes -- put a sixteenth-wide strip of the side tile
+    // across the front of the top. The faces are sorted by depth now.
+    //
+    // The **silhouette** is a little smaller than a full cube all the same,
+    // because the four sides are pushed in: what fills that back in on a real
+    // texture pack is the spikes, which are alpha-tested texels this synthetic
+    // sheet does not have.
+    std::vector<u8> terrain;
+    fillSheet(&terrain, 200, 100);
+    IconSheets sheets{terrain.data(), nullptr};
+
+    const ItemId cactus = itemNamed("cactus", item::IconSheet::Terrain);
+    CHECK(cactus != 0);
+    CHECK(gui::itemDrawsAsCube(cactus));
+
+    Canvas cactusCanvas;
+    gui::drawItemIcon(cactusCanvas.surface(), 0, 0, Canvas::kSize, sheets, cactus);
+    Canvas stoneCanvas;
+    gui::drawItemIcon(stoneCanvas.surface(), 0, 0, Canvas::kSize, sheets,
+                      itemNamed("stone", item::IconSheet::Terrain));
+
+    const block::BlockDef& def = block::def(block::BlockId(mcver::Block::Cactus));
+    const gui::Pixel cactusTop = terrainColour(int(def.faces[mesh::kFacePosY]),
+                                               mesh::kFaceShadeFloat[mesh::kFacePosY]);
+    const gui::Pixel stoneTop =
+        terrainColour(int(block::def(block::BlockId(mcver::Block::Stone)).faces[mesh::kFacePosY]),
+                      mesh::kFaceShadeFloat[mesh::kFacePosY]);
+
+    int cactusTopPixels = 0;
+    int stoneTopPixels = 0;
+    int cactusPixels = 0;
+    int stonePixels = 0;
+    for (int i = 0; i < Canvas::kSize * Canvas::kSize; ++i) {
+        cactusTopPixels += cactusCanvas.pixels[i] == cactusTop ? 1 : 0;
+        stoneTopPixels += stoneCanvas.pixels[i] == stoneTop ? 1 : 0;
+        cactusPixels += cactusCanvas.pixels[i] != 0 ? 1 : 0;
+        stonePixels += stoneCanvas.pixels[i] != 0 ? 1 : 0;
+    }
+    CHECK(stoneTopPixels > 0);
+    CHECK_EQ(cactusTopPixels, stoneTopPixels);
+
+    CHECK_EQ(cactusCanvas.distinctColours(), 3);
+    CHECK(cactusPixels < stonePixels);
+    CHECK(cactusPixels * 4 > stonePixels * 3);
+}
+
+TEST(a_button_icon_is_a_button_and_not_the_stone_block_it_is_made_of)
+{
+    // Reported from play as "the stone button has the wrong texture in the
+    // inventory and hand -- it is a normal stone block".
+    //
+    // It was, pixel for pixel. The icon drew the block's *world* bounds at
+    // metadata 0, and a button writes its bounds in setBlockBoundsBasedOnState
+    // for metadata 1..4 only -- so metadata 0 is the constructor's full cube.
+    // a1.1.2 does not draw that: `renderBlockAsItem` calls
+    // `setBlockBoundsForItemRender` first, which `hu` overrides with a six by
+    // four by four box in the middle of the cell.
+    std::vector<u8> terrain;
+    fillSheet(&terrain, 200, 100);
+    IconSheets sheets{terrain.data(), nullptr};
+
+    Canvas button;
+    gui::drawItemIcon(button.surface(), 0, 0, Canvas::kSize, sheets,
+                      itemNamed("stone_button", item::IconSheet::Terrain));
+    Canvas stone;
+    gui::drawItemIcon(stone.surface(), 0, 0, Canvas::kSize, sheets,
+                      itemNamed("stone", item::IconSheet::Terrain));
+
+    // Same tile on both -- a button is drawn in the stone texture, which is
+    // `new hu(77, 1)`'s second argument -- so this is a shape difference and
+    // nothing else.
+    CHECK_EQ(int(item::def(itemNamed("stone_button", item::IconSheet::Terrain)).icon),
+             int(item::def(itemNamed("stone", item::IconSheet::Terrain)).icon));
+
+    int buttonPixels = 0;
+    int stonePixels = 0;
+    bool differ = false;
+    for (int i = 0; i < Canvas::kSize * Canvas::kSize; ++i) {
+        buttonPixels += button.pixels[i] != 0 ? 1 : 0;
+        stonePixels += stone.pixels[i] != 0 ? 1 : 0;
+        differ = differ || button.pixels[i] != stone.pixels[i];
+    }
+    CHECK(differ);
+    // Small, and still there: a shape that had collapsed to nothing would also
+    // "differ" from a stone cube.
+    CHECK(buttonPixels > 0);
+    CHECK(buttonPixels < stonePixels / 2);
+}

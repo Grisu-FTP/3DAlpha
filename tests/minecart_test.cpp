@@ -697,10 +697,10 @@ TEST(a_right_click_on_a_cart_mounts_it_and_a_chest_cart_refuses)
     item::EntityTarget target;
     target.kind = item::EntityTarget::Kind::Minecart;
     target.index = 0;
-    CHECK(item::interactWithEntity(target, pools));
+    CHECK(item::interactWithEntity(track.w(), target, pools, 0).taken);
     CHECK_EQ(track.carts.riddenIndex(), 0);
     target.index = 1;
-    CHECK(!item::interactWithEntity(target, pools));
+    CHECK(!item::interactWithEntity(track.w(), target, pools, 0).taken);
     CHECK_EQ(track.carts.riddenIndex(), 0);
 }
 

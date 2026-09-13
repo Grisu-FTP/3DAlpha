@@ -91,15 +91,27 @@ bool deleteWorld(io::FileSystem& fs, std::string_view worldDir);
 // which has to clear a staging directory that is deliberately *not* a world.
 bool removeTree(io::FileSystem& fs, std::string_view path);
 
+// Asked between entries while a world is being measured. False stops the walk,
+// which then reports failure like an unreadable directory does -- a caller that
+// asked for the stop is the one that knows it was not one.
+using SizeScanContinue = bool (*)(void* context);
+
 // Adds up what a world occupies. **Walks the whole tree**, which for a folder
 // world means a stat per chunk file across up to 4,096 leaf directories -- so
 // it is called for one world when the player asks, never for every row of a
-// list.
+// list. It is also why `SizeScan` exists: on a big world this is long enough to
+// be seen, so the screen runs it on a thread rather than in the frame that
+// wants the number. See size_scan.hpp.
 //
 // The cluster size comes from io::queryVolumeInfo; with no answer available
 // `onDiskBytes` equals `contentBytes` rather than being guessed at from an
 // assumed cluster that a measured card has already contradicted.
-bool worldSize(io::FileSystem& fs, std::string_view worldDir, WorldSize* out);
+//
+// `out` is only meaningful when this returns true. It is written as the walk
+// goes, so a `keepGoing` that stops the walk leaves a partial total behind
+// rather than a number anyone may show.
+bool worldSize(io::FileSystem& fs, std::string_view worldDir, WorldSize* out,
+               void* context = nullptr, SizeScanContinue keepGoing = nullptr);
 
 // Copies a world directory to a new path, file for file.
 //

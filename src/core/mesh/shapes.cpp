@@ -133,17 +133,50 @@ void addStairs(const MeshScratch& scratch, int x, int y, int z, BlockId id, cons
     }
 }
 
-// `bc.o` -- one three-sixteenths box against a wall, which is the door's
-// collision box exactly.
+// `fw.a(II)I` -- **BlockDoor.getBlockTexture(face, metadata)**, whole. It
+// answers a *negative* tile to mean "mirror u", and `renderBlockDoor` turns
+// that into its `flipTexture` field for the one face; `mirrored` carries the
+// sign so the tile can stay an index.
 //
-// **The top half shows the tile one row up.** `BlockDoor.getBlockTexture`
-// answers `blockIndexInTexture` for the lower half and the tile sixteen before
-// it for the upper, which in a 16-wide atlas is the row above; the block table
-// carries the lower one, because that is what a no-metadata query returns. The
-// door is also the block whose table row is *negative* on one face, meaning
-// "mirror this horizontally" -- `configure.py` stores the magnitude and the
-// flip is not reproduced, which is a real deviation and is why a door's two
-// sides look alike here and do not in the original.
+// **The mirror is how a door shows its hinge.** A door whose hinge
+// `ItemDoor.onItemUse` flipped -- the second of a pair -- is written as the
+// facing a quarter back with bit 2 set, which is the same box as a closed door
+// of the plain facing. The two differ only in `k`'s bit 2 term below, so a
+// renderer that drops the sign draws the second door of a pair hinged on the
+// wrong side, and that is exactly what this used to do.
+//
+// The top and bottom, and the two thin edges, answer `blockIndexInTexture` in
+// **both halves**: only the two broad faces of the upper half take the tile one
+// row up, `(metadata & 8) * 2` being sixteen tiles back in a 16-wide atlas.
+// The block table carries the lower tile, because that is what a no-metadata
+// query returns. Checked against the running jar for every face and metadata
+// of both doors; tests/shapes_test.cpp holds the table.
+struct DoorFace {
+    int tile;
+    bool mirrored;
+};
+
+DoorFace doorFace(int face, u8 metadata, int texture)
+{
+    if (face == kFaceNegY || face == kFacePosY) {
+        return DoorFace{texture, false};
+    }
+    // `fw.c(I)I`: which wall the door is against, open or not.
+    const int state = (metadata & 4) == 0 ? (metadata - 1) & 3 : metadata & 3;
+    const bool edge = (state == 0 || state == 2) != (face <= kFacePosZ);
+    if (edge) {
+        return DoorFace{texture, false};
+    }
+    int k = state / 2 + ((face & 1) ^ state);
+    k += (metadata & 4) / 4;
+    const int tile = texture - (metadata & 8) * 2;
+    // A door tile in the atlas's top row has no row above it. a1.1.2's is
+    // tile 97, so this is a guard against a table it was not written for.
+    return DoorFace{tile < 0 ? texture : tile, (k & 1) != 0};
+}
+
+// `bc.o` -- one three-sixteenths box against a wall, which is the door's
+// collision box exactly, with each face's tile and mirror from `doorFace`.
 void addDoor(const MeshScratch& scratch, int x, int y, int z, BlockId id, const BlockDef& def,
              u8 metadata, MeshBuilder& out)
 {
@@ -152,11 +185,15 @@ void addDoor(const MeshScratch& scratch, int x, int y, int z, BlockId id, const 
     if (count == 0) {
         return;
     }
-    const bool upper = (metadata & 8) != 0;
-    const int tile = int(def.texture) - (upper ? kTileRow : 0);
-    const Tiles tiles = uniform(u16(tile < 0 ? int(def.texture) : tile));
-    addBox(x, y, z, boxes[0], tiles.face, lightAt(scratch, x, y, z, def), kFlat, kAllBoxFaces,
-           out);
+    u16 tiles[kFaceCount];
+    int mirror = 0;
+    for (int face = 0; face < kFaceCount; ++face) {
+        const DoorFace f = doorFace(face, metadata, int(def.texture));
+        tiles[face] = u16(f.tile);
+        mirror |= f.mirrored ? 1 << face : 0;
+    }
+    addBox(x, y, z, boxes[0], tiles, lightAt(scratch, x, y, z, def), kFlat, kAllBoxFaces, out,
+           DetailPass::Opaque, mirror);
 }
 
 // `bc.g` -- **one flat quad, five hundredths of a block off the wall**, and
@@ -238,29 +275,38 @@ void addLadder(const MeshScratch& scratch, int x, int y, int z, const BlockDef& 
     addSheet(corner, sheetUv, light, out);
 }
 
-// `bc.l` -- the sides pulled in by a sixteenth, the top and bottom left at full
-// size. That is the whole of what makes a cactus a cactus rather than a green
-// block: the four side sheets stand proud of nothing, so a column of them has a
-// visible seam at every block.
+// `bc.b(ly,IIIFFF)`, which `bc.l` hands to -- the top and bottom at the cell's
+// full extent, and each side a **full-size face pushed in by a sixteenth**.
+// That is the whole of what makes a cactus a cactus rather than a green block:
+// the side sheets stand proud of nothing, so a column of them has a visible
+// seam at every block.
+//
+// **The spikes are those sheets' outer texel columns.** The original does not
+// narrow a side to the inset; it draws the standard face across the whole cell
+// with `Tessellator.setTranslation(0, 0, 0.0625F)` around it, so the tile's
+// edge columns -- transparent except for the spike pixels -- hang out past the
+// neighbouring sides, and the alpha test cuts them out. Narrowing the side to
+// the inset box, as this used to, cropped exactly those columns off and drew a
+// smooth green post. Still six quads either way, so a spike costs nothing to
+// draw at any distance: there is no geometry to fade out.
+//
+// **The boxes and their face masks are `block::renderBoxes`'s**, which is the
+// same shape `bc.a(Lly;)V` gives a cactus in a slot, in the hand and on the
+// ground: the two methods in the jar agree, so this port keeps one copy of
+// them. This is the only render type that reads the mask.
 void addCactus(const MeshScratch& scratch, int x, int y, int z, BlockId id, const BlockDef& def,
                MeshBuilder& out)
 {
-    AABB boxes[block::kMaxCollisionBoxes];
-    const int count = block::collisionBoxes(id, 0, boxes, block::kMaxCollisionBoxes);
+    AABB boxes[block::kMaxRenderBoxes];
+    int faceMask[block::kMaxRenderBoxes];
+    const int count = block::renderBoxes(id, 0, 0, boxes, block::kMaxRenderBoxes, faceMask);
     if (count == 0) {
         return;
     }
     const u8 light = lightAt(scratch, x, y, z, def);
-    const AABB& inset = boxes[0];
-
-    // Top and bottom at the cell's full extent, the four sides at the inset.
-    const AABB caps{0.0, inset.minY, 0.0, 1.0, 1.0, 1.0};
-    constexpr int kCapFaces = (1 << kFaceNegY) | (1 << kFacePosY);
-    addBox(x, y, z, caps, def.faces, light, kFlat, kCapFaces, out);
-
-    const AABB sides{inset.minX, 0.0, inset.minZ, inset.maxX, 1.0, inset.maxZ};
-    constexpr int kSideFaces = kAllBoxFaces & ~kCapFaces;
-    addBox(x, y, z, sides, def.faces, light, kFlat, kSideFaces, out);
+    for (int box = 0; box < count; ++box) {
+        addBox(x, y, z, boxes[box], def.faces, light, kFlat, faceMask[box], out);
+    }
 }
 
 // ---------------------------------------------------------------------------

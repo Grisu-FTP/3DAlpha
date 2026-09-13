@@ -63,7 +63,7 @@ i16 insetHigh(i16 v) { return static_cast<i16>(v - kUvInset); }
 }  // namespace
 
 void addBox(int x, int y, int z, const AABB& bounds, const u16 tiles[6], u8 light, bool shaded,
-            int faceMask, MeshBuilder& out, DetailPass pass)
+            int faceMask, MeshBuilder& out, DetailPass pass, int mirrorMask)
 {
     for (int face = 0; face < kFaceCount; ++face) {
         if ((faceMask & (1 << face)) == 0) {
@@ -83,8 +83,15 @@ void addBox(int x, int y, int z, const AABB& bounds, const u16 tiles[6], u8 ligh
         const double vMin = boundLow(bounds, map.v);
         const double vMax = boundHigh(bounds, map.v);
 
-        const i16 uLo = insetLow(uvAt(tileU, uMin));
-        const i16 uHi = insetHigh(uvAt(tileU, uMax));
+        i16 uLo = insetLow(uvAt(tileU, uMin));
+        i16 uHi = insetHigh(uvAt(tileU, uMax));
+        // The original swaps its two u ends after computing them, so the
+        // mirror is of the face's own slice of the tile, not of the whole tile.
+        if ((mirrorMask & (1 << face)) != 0) {
+            const i16 swap = uLo;
+            uLo = uHi;
+            uHi = swap;
+        }
         const i16 vLo = insetLow(uvAt(tileV, vMin));
         const i16 vHi = insetHigh(uvAt(tileV, vMax));
 

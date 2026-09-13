@@ -42,6 +42,24 @@
 
 namespace mc::render {
 
+// **Half the detail format's precision, so a sign reaches a1.1.2's 64 blocks.**
+//
+// `fz.a(Lic;F)V` -- the tile entity render dispatcher -- draws a sign whenever
+// its squared distance from the viewer is under `4096.0D`. A detail vertex is a
+// signed short at 1/1024 of a block from the eye, which runs out at 31.25 blocks
+// on any axis, so signs used to vanish at half the distance the game draws them
+// -- and stay gone for as long as the player stood further off than that.
+// Written at 1/512 instead, the same short reaches 62.5 blocks; the draw scales
+// the matrix by `kSignUnitScale` to put them back, and the shader is untouched.
+// A glyph edge rounds to a 1/1024 of a block either way, which at arm's length
+// on a 400-pixel screen is a third of a pixel.
+inline constexpr int kSignUnitsPerBlock = 512;
+inline constexpr float kSignUnitScale =
+    float(mesh::kDetailUnitsPerBlock) / float(kSignUnitsPerBlock);
+
+// `4096.0D`, the dispatcher's squared distance.
+inline constexpr double kSignDrawDistanceSq = 4096.0;
+
 // `0.6666667F`, the scale `TileEntitySignRenderer` wraps the whole sign in.
 inline constexpr float kSignScale = 0.6666667f;
 
@@ -63,6 +81,9 @@ inline constexpr int kSignDrawBudget = 64;
 inline constexpr int kSignMaxVertices =
     kSignDrawBudget * (kSignVerticesEach + kSignGlyphsEach * 4);
 
+// **Both builders write positions in `kSignUnitsPerBlock`**, not the detail
+// format's own units, and whoever draws them scales by `kSignUnitScale`.
+//
 // Fills `out` with the board and post quads for every sign in the store -- the
 // nearest, when `max` could not also hold every one's text behind them.
 //

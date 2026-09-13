@@ -65,7 +65,23 @@ public:
     // Reads the manifest's metadata block without claiming the world: one open
     // and one 64-byte read, no region touched and no NBT parsed. The folder
     // backend's equivalent has to read and gunzip level.dat.
+    //
+    // **Only `lastPlayed` and `randomSeed` are filled** -- they are what the
+    // metadata block carries and what the world list draws. Every other field
+    // is left at its default, which is not the same as saying the world holds
+    // the default: a caller that needs `snowCovered`, the spawn or the player
+    // must use `readLevel` below.
     bool peekLevel(std::string_view worldDir, LevelData* out);
+
+    // The whole level, still without claiming the world: the manifest, the
+    // level blob out of it, inflate and decode. That is what `peekLevel`
+    // exists to avoid, so this is for the one caller that needs a field the
+    // metadata block does not carry -- World Settings' Extra Settings screen,
+    // which shows and edits `SnowCovered`.
+    //
+    // Touches none of this object's state, like `peekLevel`, and writes no
+    // lock and no `lastPlayed`: **looking at a world must not claim it.**
+    bool readLevel(std::string_view worldDir, LevelData* out);
 
     bool close(i64 nowMillis);
 

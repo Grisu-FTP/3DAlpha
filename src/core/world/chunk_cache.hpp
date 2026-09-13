@@ -219,6 +219,19 @@ public:
 
         bool hasInventory = false;
         std::vector<item::ItemStack> inventory;
+
+        // **Health and the five counters `ge` and `kh` save beside it** --
+        // `Health`, `HurtTime`, `DeathTime`, `AttackTime`, `Air`, `Fire`. Six
+        // stores, so a frame may set them; `hasVitals` false leaves what was
+        // read exactly as it was, which is what a mode that never had a body
+        // must do. See core/entity/player_vitals.hpp.
+        bool hasVitals = false;
+        i16 health = 20;
+        i16 hurtTime = 0;
+        i16 deathTime = 0;
+        i16 attackTime = 0;
+        i16 air = 300;
+        i16 fire = 0;
     };
 
     explicit ChunkCache(io::FileSystem& fs) : storage_(fs) {}

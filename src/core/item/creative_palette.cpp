@@ -21,7 +21,7 @@ ItemId paletteItem(int index)
 
 int paletteIndexOf(ItemId id)
 {
-    // A scan over 66 entries, called when a slot is redrawn and never in the
+    // A scan over 149 entries, called when a slot is redrawn and never in the
     // per-frame path. A reverse table would be another 512 bytes of .rodata to
     // save a loop nobody is waiting on.
     for (int i = 0; i < mcver::kPaletteSize; ++i) {

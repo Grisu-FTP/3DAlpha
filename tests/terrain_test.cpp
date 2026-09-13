@@ -337,3 +337,101 @@ TEST(snow_covered_puts_ice_only_at_the_waterline)
     // nothing. Case 4 of the fixtures is this same chunk with snow on.
     CHECK(iceBlocks > 0);
 }
+
+// **The bedrock hole, measured, and the switch that closes it.**
+//
+// `nw.b`'s floor test is `y <= random.nextInt(6) - 1`, drawn once for every one
+// of the 128 steps of every column. At y = 0 it fails whenever the draw comes
+// back 0, which is one time in six -- so roughly a sixth of a1.1.2's columns
+// have stone rather than bedrock at the bottom of the world, and a player who
+// digs one out falls through the floor.
+//
+// Both halves are asserted. Without the fix the holes have to be there and
+// have to be about a sixth of the columns, or the claim on the Extra Settings
+// screen is wrong; with it there must be none at all.
+TEST(bedrock_has_holes_in_the_floor_and_the_fix_closes_them)
+{
+    constexpr int kChunks = 16;  // 4,096 columns, enough to pin a sixth
+    constexpr u8 kBedrock = u8(mcver::Block::Bedrock);
+
+    int holes = 0;
+    int columns = 0;
+    {
+        GeneratorOptions options;
+        ChunkProvider provider(4242LL, options);
+        std::vector<u8> blocks(usize(kChunkBlocks), 0);
+        for (int cx = 0; cx < kChunks; ++cx) {
+            for (int cz = 0; cz < kChunks; ++cz) {
+                provider.generateColumn(cx, cz, blocks.data());
+                for (int i = 0; i < 16; ++i) {
+                    for (int j = 0; j < 16; ++j) {
+                        ++columns;
+                        if (blocks[usize((i * 16 + j) * 128)] != kBedrock) {
+                            ++holes;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    CHECK_EQ(columns, kChunks * kChunks * 256);
+    CHECK(holes > 0);
+    // A sixth, with room for the sampling: 4,096 columns puts the expected
+    // count near 683.
+    CHECK(holes * 6 > columns - columns / 4);
+    CHECK(holes * 6 < columns + columns / 4);
+
+    // And with the fix, none -- in the same chunks, from the same seed.
+    {
+        GeneratorOptions options;
+        options.fixBedrockHole = true;
+        ChunkProvider provider(4242LL, options);
+        std::vector<u8> blocks(usize(kChunkBlocks), 0);
+        int fixedHoles = 0;
+        for (int cx = 0; cx < kChunks; ++cx) {
+            for (int cz = 0; cz < kChunks; ++cz) {
+                provider.generateColumn(cx, cz, blocks.data());
+                for (int i = 0; i < 16; ++i) {
+                    for (int j = 0; j < 16; ++j) {
+                        if (blocks[usize((i * 16 + j) * 128)] != kBedrock) {
+                            ++fixedHoles;
+                        }
+                    }
+                }
+            }
+        }
+        CHECK_EQ(fixedHoles, 0);
+    }
+}
+
+// **The fix must not move anything above y = 0.** The bedrock draw is one step
+// of the stream every later column is in phase with, so the switch widens what
+// counts as bedrock and changes no draw: a world with it on has to be
+// identical to a1.1.2 everywhere except the floor it fills in.
+TEST(the_bedrock_fix_changes_nothing_above_the_floor)
+{
+    GeneratorOptions plain;
+    GeneratorOptions fixed;
+    fixed.fixBedrockHole = true;
+
+    ChunkProvider a(-7788LL, plain);
+    ChunkProvider b(-7788LL, fixed);
+    std::vector<u8> want(usize(kChunkBlocks), 0);
+    std::vector<u8> got(usize(kChunkBlocks), 0);
+
+    // Negative chunk coordinates on purpose; the floor is where the storage
+    // tests look for sign bugs too.
+    const int chunks[3][2] = {{0, 0}, {-3, 5}, {12, -9}};
+    for (const auto& chunk : chunks) {
+        a.generateColumn(chunk[0], chunk[1], want.data());
+        b.generateColumn(chunk[0], chunk[1], got.data());
+
+        for (int i = 0; i < kChunkBlocks; ++i) {
+            if ((i & 127) == 0) {
+                continue;  // y = 0, the one height the fix is allowed to touch
+            }
+            CHECK_EQ(int(got[usize(i)]), int(want[usize(i)]));
+        }
+    }
+}

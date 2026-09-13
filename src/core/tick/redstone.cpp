@@ -1,7 +1,7 @@
 #include "core/tick/redstone.hpp"
-#include "core/tick/drop.hpp"
 
 #include "core/block/registry.hpp"
+#include "core/tick/drop.hpp"
 #include "core/tick/tick_world.hpp"
 
 namespace mc::tick {
@@ -847,6 +847,17 @@ void redstoneOreActivated(TickWorld& world, i32 x, int y, i32 z, BlockId self)
     // to the item in the hand. It is the one activation that does not consume.
     if (self != id(mcver::Block::RedstoneOre)) return;
     world.setBlockWithNotify(x, y, z, id(mcver::Block::LitRedstoneOre));
+}
+
+
+void tntNeighbourChanged(TickWorld& world, i32 x, int y, i32 z, BlockId fromId)
+{
+    if (fromId == block::kAir || !canProvidePower(fromId)) return;
+    if (!world.isIndirectlyPowered(x, y, z)) return;
+
+    // `onBlockDestroyedByPlayer` first, then the air -- see redstone.hpp.
+    tntDestroyedByPlayer(world, x, y, z);
+    world.setBlockWithNotify(x, y, z, block::kAir);
 }
 
 }  // namespace mc::tick

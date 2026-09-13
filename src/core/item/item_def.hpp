@@ -92,6 +92,24 @@ struct ItemDef {
     // `Item.maxDamage`. Carried so a stack round-trips; nothing wears out yet.
     u16 durability;
 
+    // `di.a(Lkh;)I` -- **getDamageVsEntity**, and it is the whole of how hard a
+    // click lands: `EntityPlayer.attackTargetEntityWithCurrentItem` is
+    // `int i = inventory.getDamageVsEntity(entity); if (i > 0)
+    // entity.attackEntityFrom(this, i);` and nothing else scales it.
+    //
+    // 1 for the great majority, because `Item`'s own method returns that
+    // constant and only two classes override it -- `bs` (ItemTool) answers
+    // `material + kind`, so a wooden shovel is 1 and a diamond axe 6, and `iu`
+    // (ItemSword) answers `4 + material * 2`, so a wooden sword is 4 and a
+    // diamond one 10. **Gold is material 0**, beside wood, which is why a
+    // golden sword hits for 4 and wears out in 32 uses.
+    //
+    // The unknown row carries 1 as well, which makes `def(held).damageVsEntity`
+    // the empty hand's answer too -- `InventoryPlayer.getDamageVsEntity`
+    // returns 1 when the slot holds nothing, so the fallback and the constant
+    // are the same number by the jar's own arithmetic and not by coincidence.
+    u8 damageVsEntity;
+
     // `Item.maxStackSize`. 64 for most things, 1 for tools and doors, 16 for a
     // snowball.
     u8 stack;
@@ -156,6 +174,16 @@ struct ItemDef {
     // it is a property of the tile rather than of the item -- see
     // tools/genref.java's emitItems and core/texture/compass_fx.hpp.
     bool animatedIcon;
+
+    // **Whether this item turns grass or dirt into farmland** -- `fu`, ItemHoe,
+    // asked as a class by the generator.
+    //
+    // It is a column for the same reason `spawns` is one, and it is the same
+    // hole: `places` is measured by using the item on a face and reading the
+    // cell the face offsets into, and a hoe writes its farmland into the cell
+    // that was *struck*. So all five hoes measure `places` as 0 -- correctly --
+    // and 0 also means "does nothing", which is what they did.
+    bool tills;
 
     // Whether the Creative hand offers it. Two rules decide this and they are
     // applied in the generator, not here -- see tools/genref.java's emitItems.

@@ -14,9 +14,11 @@
 #include "core/nbt/preserved.hpp"
 #include "core/util/types.hpp"
 #include "core/world/section.hpp"
+#include "core/world/tile_entity.hpp"
 #include "version_config.hpp"
 
 #include <cassert>
+#include <vector>
 
 namespace mc::world {
 
@@ -49,10 +51,17 @@ public:
     u8 heightMap[kArea] = {};
 
     // Tags carried through unchanged. `preserved` holds the ones inside Level
-    // -- which for now includes Entities and TileEntities -- and `preservedRoot`
-    // the rare sibling of Level itself. See core/nbt/preserved.hpp.
+    // -- which still includes Entities -- and `preservedRoot` the rare sibling
+    // of Level itself. See core/nbt/preserved.hpp.
     nbt::PreservedTags preserved;
     nbt::PreservedTags preservedRoot;
+
+    // **`TileEntities`, which is modelled rather than preserved.** The chest's
+    // contents, the furnace's, the sign's text and the spawner's mob, decoded
+    // on load and re-encoded on save -- see core/world/tile_entity.hpp for why
+    // all four had to land together. Usually empty: a real column has one of
+    // these every few hundred chunks.
+    std::vector<TileEntity> tileEntities;
 
     Section& section(int sy)
     {

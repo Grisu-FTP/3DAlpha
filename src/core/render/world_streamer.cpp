@@ -1,5 +1,6 @@
 #include "core/render/world_streamer.hpp"
 
+#include "core/settings/world_settings.hpp"
 #include "core/util/worker.hpp"
 
 #include <algorithm>
@@ -47,11 +48,31 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
     // what narrows it again, and a radius chosen against the old distance says
     // nothing about the new one.
     memoryRadius_ = loadRadius_;
+
+    // **No centre yet, whatever the last world left here.** The console keeps
+    // one streamer for the whole process and builds a fresh renderer per world,
+    // and the first `update()` is the only thing that tells that renderer where
+    // its field is -- but only when the centre *moved*. Reopening a world in
+    // the chunk the previous session ended in left `centreSet_` true and the
+    // centre equal, so the new renderer stayed centred on (0, 0), refused every
+    // column as out of range, and nothing was drawn until the player crossed a
+    // chunk boundary. See `a_world_reopened_in_the_chunk_it_was_left_in_draws`.
+    centreSet_ = false;
     buildGrid();
 
     if (generateMissing_) {
         mcver::WorldGenOptions options;
         options.snowCovered = level_.snowCovered;
+
+        // **The world's own Extra Settings, read here rather than handed in.**
+        // These change what a chunk generates, so they belong to the world and
+        // not to whoever opened it -- the host harness, the console's menu and
+        // a test all have to agree, and the only thing all three share is the
+        // world directory. Absent is the ordinary case and means off.
+        settings::WorldSettings worldSettings;
+        settings::loadWorldSettings(fs_, worldDir, &worldSettings);
+        options.fixOreVeinBounds = worldSettings.fixOreGeneration;
+        options.fixBedrockHole = worldSettings.fixBedrockHole;
 
         mcver::ChunkGenerator::Store store;
         store.context = this;
@@ -86,6 +107,14 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
     tick_ = std::make_unique<tick::TickWorld>(tickAccess, level_.randomSeed);
     tick_->setTime(level_.time);
     tick_->setSnowCovered(level_.snowCovered);
+    {
+        // Read here for the reason the generator's two fixes are: the world
+        // directory is the one thing every caller shares. The console's pause
+        // menu applies a change to the running tick itself.
+        settings::WorldSettings worldSettings;
+        settings::loadWorldSettings(fs_, worldDir, &worldSettings);
+        tick_->setImprovedFencePlacement(worldSettings.improvedFencePlacement);
+    }
     tickDirtyCells_ = 0;
 
     // The relighter reaches columns through the same hook the tick does -- both
@@ -129,6 +158,16 @@ void WorldStreamer::lightSectionLit(void* ctx, i32 chunkX, int sectionY, i32 chu
     }
 }
 
+void WorldStreamer::markColumnModified(i32 x, i32 z)
+{
+    if (Cell* cell = find(x >> 4, z >> 4)) {
+        if (!cell->tickDirty) {
+            cell->tickDirty = true;
+            ++tickDirtyCells_;
+        }
+    }
+}
+
 void WorldStreamer::tickBlockChanged(void* ctx, i32 x, int y, i32 z)
 {
     auto* self = static_cast<WorldStreamer*>(ctx);
@@ -157,6 +196,15 @@ void WorldStreamer::tickBlockChanged(void* ctx, i32 x, int y, i32 z)
         if (lx == 15) self->tickRenderer_->invalidateSection(cx + 1, sy, cz);
         if (lz == 0) self->tickRenderer_->invalidateSection(cx, sy, cz - 1);
         if (lz == 15) self->tickRenderer_->invalidateSection(cx, sy, cz + 1);
+        // **And the fourth corner, which face culling never needed and the
+        // chest does.** `BlockChest.getBlockTexture` asks about the two cells
+        // beside its partner, so a block dropped diagonally across a column
+        // corner decides which way a double chest faces. Only a block in a
+        // corner cell pays for it, and it is one section rather than four.
+        if ((lx == 0 || lx == 15) && (lz == 0 || lz == 15)) {
+            self->tickRenderer_->invalidateSection(lx == 0 ? cx - 1 : cx + 1, sy,
+                                                  lz == 0 ? cz - 1 : cz + 1);
+        }
         if (ly == 0 && sy > 0) self->tickRenderer_->invalidateSection(cx, sy - 1, cz);
         if (ly == world::Section::kSize - 1 &&
             sy + 1 < world::ChunkColumn::kSectionCount) {
@@ -171,6 +219,19 @@ void WorldStreamer::tickBlockChanged(void* ctx, i32 x, int y, i32 z)
             cell->tickDirty = true;
             ++self->tickDirtyCells_;
         }
+        // **And the map, which is the other thing a block change invalidates.**
+        // Unconditional, where the section invalidation above is bracketed by
+        // `tickRenderer_`: a fluid spreading or a leaf decaying changes the
+        // picture whether or not anyone is holding a renderer, and the map
+        // reads this whenever it next looks rather than at the moment of the
+        // write. See `blockChangeSerial`.
+        cell->mapSerial = ++self->blockSerial_;
+        // **...and the coordinate goes on the list, once.** A fluid rewrites
+        // hundreds of blocks in this chunk in one tick and every one of them
+        // arrives here; `ChunkQueue::push` answers the second and the
+        // three-hundredth of them in a probe and a compare. See
+        // `takeChangedColumn`.
+        self->mapDirty_.push(cx, cz);
     }
 }
 
@@ -194,20 +255,17 @@ void WorldStreamer::stepTicks(ChunkRenderer& renderer, int ticks)
 
     const tick::TickWorld::Centre centre{centreX_, centreZ_};
 
-    tickRenderer_ = &renderer;
-    for (int i = 0; i < ticks; ++i) {
-        tick_->tick(&centre, 1, radius);
+    {
+        // **Settles what the ticks disturbed on the way out, with the renderer
+        // still in hand.** The relighter reports the sections whose stored
+        // light moved, and those need remeshing exactly as a block change does
+        // -- light is baked into vertices. Budgeted, so a roof coming off costs
+        // latency rather than a frame; what is left stays queued for the next.
+        RenderBracket draws(*this, renderer);
+        for (int i = 0; i < ticks; ++i) {
+            tick_->tick(&centre, 1, radius);
+        }
     }
-
-    // **Settle what the ticks disturbed, with the renderer still in hand.** The
-    // relighter reports the sections whose stored light moved, and those need
-    // remeshing exactly as a block change does -- light is baked into vertices.
-    // Budgeted, so a roof coming off costs latency rather than a frame; what is
-    // left stays queued for the next one.
-    if (light_ != nullptr) {
-        light_->drain(kLightBudgetPerFrame);
-    }
-    tickRenderer_ = nullptr;
 
     level_.time = tick_->time();
 }
@@ -224,20 +282,17 @@ bool WorldStreamer::setBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
 
     // The same bracket stepTicks uses, and for the same reason: without it the
     // change callback below has no renderer to invalidate sections through.
-    tickRenderer_ = &renderer;
-    const bool changed = tick_->setBlockAndDataWithNotify(x, y, z, id, metadata);
-    if (light_ != nullptr) {
-        light_->drain(kLightBudgetPerFrame);
-    }
-    tickRenderer_ = nullptr;
-
-    return changed;
+    RenderBracket draws(*this, renderer);
+    return tick_->setBlockAndDataWithNotify(x, y, z, id, metadata);
 }
 
 bool WorldStreamer::rightClick(ChunkRenderer& renderer, item::ItemId held,
                               const entity::RayHit& hit, const AABB& playerBox,
-                              float yawDegrees, const item::Effects& effects)
+                              float yawDegrees, const item::Effects& effects, bool* itemTook)
 {
+    if (itemTook != nullptr) {
+        *itemTook = false;
+    }
     if (tick_ == nullptr) {
         return false;
     }
@@ -245,15 +300,8 @@ bool WorldStreamer::rightClick(ChunkRenderer& renderer, item::ItemId held,
         return false;
     }
 
-    tickRenderer_ = &renderer;
-    const bool changed =
-        item::rightClick(*tick_, held, hit, playerBox, yawDegrees, effects);
-    if (light_ != nullptr) {
-        light_->drain(kLightBudgetPerFrame);
-    }
-    tickRenderer_ = nullptr;
-
-    return changed;
+    RenderBracket draws(*this, renderer);
+    return item::rightClick(*tick_, held, hit, playerBox, yawDegrees, effects, itemTook);
 }
 
 item::ItemUse WorldStreamer::useItem(ChunkRenderer& renderer, item::ItemId held, double eyeX,
@@ -264,15 +312,8 @@ item::ItemUse WorldStreamer::useItem(ChunkRenderer& renderer, item::ItemId held,
         return item::ItemUse{false, held};
     }
 
-    tickRenderer_ = &renderer;
-    const item::ItemUse used =
-        item::useItem(*tick_, held, eyeX, eyeY, eyeZ, dirX, dirY, dirZ, effects);
-    if (light_ != nullptr) {
-        light_->drain(kLightBudgetPerFrame);
-    }
-    tickRenderer_ = nullptr;
-
-    return used;
+    RenderBracket draws(*this, renderer);
+    return item::useItem(*tick_, held, eyeX, eyeY, eyeZ, dirX, dirY, dirZ, effects);
 }
 
 bool WorldStreamer::breakBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
@@ -285,14 +326,26 @@ bool WorldStreamer::breakBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
         return false;
     }
 
-    tickRenderer_ = &renderer;
-    const bool changed = item::destroyBlock(*tick_, x, y, z, effects);
-    if (light_ != nullptr) {
-        light_->drain(kLightBudgetPerFrame);
-    }
-    tickRenderer_ = nullptr;
+    RenderBracket draws(*this, renderer);
+    return item::destroyBlock(*tick_, x, y, z, effects);
+}
 
-    return changed;
+WorldStreamer::RenderBracket::RenderBracket(WorldStreamer& streamer, ChunkRenderer& renderer)
+    : streamer_(streamer), previous_(streamer.tickRenderer_)
+{
+    streamer_.tickRenderer_ = &renderer;
+}
+
+WorldStreamer::RenderBracket::~RenderBracket()
+{
+    // The same drain `stepTicks` and `setBlock` do, and for the same reason:
+    // what the writes inside queued has to reach the card while there is still
+    // a renderer to invalidate through. Skipped when this is a nested bracket,
+    // whose outer one will drain once on its own way out.
+    if (previous_ == nullptr && streamer_.light_ != nullptr) {
+        streamer_.light_->drain(kLightBudgetPerFrame);
+    }
+    streamer_.tickRenderer_ = previous_;
 }
 
 void WorldStreamer::flushTickDirty()
@@ -308,6 +361,11 @@ void WorldStreamer::flushTickDirty()
     for (Cell& cell : cells_) {
         if (!cell.tickDirty) continue;
         if (cell.state == CellState::Loaded && cell.column != nullptr) {
+            // Whatever the session holds outside the column -- sign text,
+            // spawner state -- goes back into it first. See setColumnSinks.
+            if (columnSaving_ != nullptr) {
+                columnSaving_(columnSinkCtx_, *cell.column);
+            }
             // Main thread: queue the write, never perform it here.
             cache_.save(*cell.column, world::ChunkCache::SavePressure::Defer);
         }
@@ -401,6 +459,9 @@ void WorldStreamer::waitForWorkerIdle()
     if (!workerRunning_) {
         return;
     }
+    // Whoever needs the worker idle needs it out of the columns too, and this
+    // takes queueLock_ of its own so it goes before the lock below.
+    reclaimColumnWork();
     std::unique_lock<std::mutex> guard(queueLock_);
     // **Pause first, then wait.** The worker takes its own next job the moment
     // it finishes one, so waiting for "not busy" without stopping it handing
@@ -465,12 +526,28 @@ void WorldStreamer::workerMain()
         {
             std::unique_lock<std::mutex> guard(queueLock_);
             wake_.wait(guard, [this] {
-                return workerStop_ || (!queuePaused_ && !slate_.empty());
+                return workerStop_ || (!queuePaused_ && !slate_.empty()) || columnWorkPosted_;
             });
             if (workerStop_) {
                 jobActive_ = false;
+                columnWorkBusy_ = false;
+                idle_.notify_all();
                 return;
             }
+
+            // **Generation first, every time round.** The slate is looked at
+            // before the offered work is, so a column that is owed is never
+            // behind a map sample -- which is the whole of what "generation has
+            // priority" means here, said in one `if` rather than in a policy the
+            // caller has to honour.
+            if (queuePaused_ || slate_.empty()) {
+                if (!columnWorkPosted_) {
+                    continue;
+                }
+                runColumnWorkLocked(guard);
+                continue;
+            }
+
             takeSlateLocked(&at);
             inFlight_ = at;
             jobActive_ = true;
@@ -498,6 +575,53 @@ void WorldStreamer::workerMain()
         jobActive_ = false;
         idle_.notify_all();
     }
+}
+
+// One offered batch, with `guard` holding queueLock_ on the way in and on the
+// way out. The lock is dropped for each column and taken again between them,
+// which is what lets the two things that can interrupt a batch actually do so:
+// a column coming onto the slate, and `reclaimColumnWork` withdrawing the
+// offer. Neither can wait for a whole batch -- a batch is eight chunks of
+// somebody else's work.
+void WorldStreamer::runColumnWorkLocked(std::unique_lock<std::mutex>& guard)
+{
+    columnWorkBusy_ = true;
+    const ColumnWork work = columnWork_;
+    void* const ctx = columnWorkCtx_;
+    const int count = columnWorkCount_;
+
+    int done = 0;
+    for (; done < count; ++done) {
+        const world::ChunkColumn* column = columnWorkColumns_[done];
+        if (column == nullptr) {
+            break;
+        }
+        guard.unlock();
+        work(ctx, done, *column);
+        guard.lock();
+        // **Both of the ways out, checked in the order they matter.** A
+        // withdrawal means the main thread is waiting on this loop and the
+        // column pointers are about to stop being anybody's; a column on the
+        // slate means the world is owed something the player can walk into.
+        if (!columnWorkPosted_ || workerStop_) {
+            ++done;
+            break;
+        }
+        if (!queuePaused_ && !slate_.empty()) {
+            ++done;
+            break;
+        }
+    }
+
+    columnWorkDone_ = done;
+    columnWorkPosted_ = false;
+    columnWorkBusy_ = false;
+    // **Set here and not only in `reclaimColumnWork`**, because a batch that
+    // finished before the next frame asked for it back leaves nothing for that
+    // call to wait on -- it returns early, and a result that announced itself
+    // only there would never be collected at all.
+    columnWorkReady_ = true;
+    idle_.notify_all();
 }
 
 bool WorldStreamer::generationIdle() const
@@ -603,6 +727,14 @@ void WorldStreamer::buildGrid()
     cells_.clear();
     cells_.resize(usize(edge_) * edge_);
 
+    // **As long as the grid has cells**, which is the most distinct coordinates
+    // that can be waiting on it at once: a coordinate only goes on when a cell
+    // answers to it. Rebuilt with the grid rather than kept, because a change
+    // list written against a different radius names ground this grid may not
+    // have -- and the reader falls back to looking at everything when the list
+    // says it lost some, which a grid rebuild has just made true anyway.
+    mapDirty_.setCapacity(int(cells_.size()));
+
     // Nearest first, so the columns under the player's feet arrive before the
     // ones at the horizon. Ordering it once here is what keeps the per-frame
     // load step to a scan rather than a search.
@@ -641,6 +773,10 @@ void WorldStreamer::setMeshDistance(int meshDistance, ChunkRenderer& renderer)
     if (!open_ || meshDistance < 1 || meshDistance == meshDistance_) {
         return;
     }
+
+    // The grid is about to be rebuilt around a different radius, which moves
+    // every column in it. Nothing may be reading one. See `offerColumnWork`.
+    reclaimColumnWork();
 
     // The old grid is moved aside rather than indexed in place: the new one
     // wraps modulo a different edge, so a column's cell index changes even
@@ -855,7 +991,18 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     finished_.clear();
     completed_.clear();
     slate_.clear();
+    mapDirty_.clear();
+    // stopWorker() joined the worker above, so nothing is reading a column and
+    // there is nobody left to hand a result to.
+    columnWork_ = nullptr;
+    columnWorkCtx_ = nullptr;
+    columnWorkCount_ = 0;
+    columnWorkDone_ = 0;
+    columnWorkPosted_ = false;
+    columnWorkBusy_ = false;
+    columnWorkReady_ = false;
     queuePaused_ = false;
+    centreSet_ = false;
     generator_.reset();
     open_ = false;
 }
@@ -1018,6 +1165,21 @@ void WorldStreamer::adoptColumn(Cell& cell, std::unique_ptr<world::ChunkColumn> 
     cell.state = CellState::Loaded;
     cell.published = false;
     cell.freshlyAdopted = true;
+    // A column the map may have a sample of from a previous visit, and one it
+    // cannot tell from the cell's last tenant by coordinates alone. A fresh
+    // serial says "this is not what you last drew" to anything holding an old
+    // one; see `blockChangeSerial`.
+    cell.mapSerial = ++blockSerial_;
+    // On the same list a block change goes on, so a reader learns about ground
+    // arriving and ground changing by one road rather than two. A column that
+    // is adopted twice without being dropped is on it once.
+    mapDirty_.push(chunkX, chunkZ);
+
+    // `cn.b(Lcu;)V` -- the tile entities this column carries join the running
+    // world. See the note on `setColumnSinks`.
+    if (columnAdopted_ != nullptr) {
+        columnAdopted_(columnSinkCtx_, *cell.column);
+    }
 }
 
 // **How much world the generator is allowed to remember**, as a radius around
@@ -1307,11 +1469,21 @@ void WorldStreamer::dropCell(Cell& cell, ChunkRenderer& renderer)
     // Saving here costs one clone and one queued write, on a path that already
     // runs only when the render distance moves past a column.
     if (cell.tickDirty && cell.column != nullptr) {
+        if (columnSaving_ != nullptr) {
+            columnSaving_(columnSinkCtx_, *cell.column);
+        }
         cache_.save(*cell.column, world::ChunkCache::SavePressure::Defer);
     }
     if (cell.tickDirty) {
         cell.tickDirty = false;
         if (tickDirtyCells_ > 0) --tickDirtyCells_;
+    }
+
+    // `cn.c(Lcu;)V`, and it happens **after** the save above rather than
+    // before it: the saving sink reads the very entries this one erases, so
+    // dropping first would write a column with no sign text in it.
+    if (columnDropped_ != nullptr) {
+        columnDropped_(columnSinkCtx_, cell.chunkX, cell.chunkZ);
     }
 
     // **Given back rather than freed.** A column that leaves the grid is one
@@ -1477,6 +1649,11 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     if (!open_) {
         return;
     }
+
+    // **Before anything here touches a cell.** The worker may be reading a
+    // column the next few hundred lines can drop, re-adopt or mesh, and this is
+    // the line that says it is not. See `offerColumnWork`.
+    reclaimColumnWork();
 
     // Moving the centre invalidates nothing by itself -- the grid wraps -- but
     // a cell now holding a column from outside the new radius has to go, or it
@@ -1736,6 +1913,19 @@ void WorldStreamer::snapshotEntities()
     if (state->capture(entityPools_)) player_.entities = std::move(state);
 }
 
+void WorldStreamer::setPlayerVitals(i16 health, i16 hurtTime, i16 deathTime, i16 attackTime,
+                                    i16 air, i16 fire)
+{
+    player_.valid = true;
+    player_.hasVitals = true;
+    player_.health = health;
+    player_.hurtTime = hurtTime;
+    player_.deathTime = deathTime;
+    player_.attackTime = attackTime;
+    player_.air = air;
+    player_.fire = fire;
+}
+
 void WorldStreamer::setPlayerInventory(const std::vector<item::ItemStack>& stacks)
 {
     player_.valid = true;
@@ -1805,6 +1995,122 @@ const world::ChunkColumn* WorldStreamer::residentColumn(i32 chunkX, i32 chunkZ) 
         return nullptr;
     }
     return cell->column.get();
+}
+
+u32 WorldStreamer::columnBlockSerial(i32 chunkX, i32 chunkZ) const
+{
+    const Cell* cell = find(chunkX, chunkZ);
+    // The same gate `residentColumn` uses, so a caller that reads the serial
+    // and then asks for the column cannot be told "changed" by a cell whose
+    // column it is not allowed to have.
+    if (cell == nullptr || cell->state != CellState::Loaded) {
+        return 0;
+    }
+    return cell->mapSerial;
+}
+
+bool WorldStreamer::takeChangedColumn(i32* chunkX, i32* chunkZ)
+{
+    return mapDirty_.pop(chunkX, chunkZ);
+}
+
+// ---------------------------------------------------------------------------
+// Column work on the generation worker. See `offerColumnWork` in the header for
+// what makes the borrow safe; these four are the mechanism and nothing more.
+// ---------------------------------------------------------------------------
+
+bool WorldStreamer::columnWorkAvailable() const
+{
+    std::lock_guard<std::mutex> guard(queueLock_);
+    return workerRunning_ && !columnWorkPosted_ && !columnWorkBusy_ && !columnWorkReady_;
+}
+
+int WorldStreamer::offerColumnWork(i32* chunkX, i32* chunkZ, int count, ColumnWork work,
+                                   void* ctx)
+{
+    if (work == nullptr || count <= 0) {
+        return 0;
+    }
+    if (count > kColumnWorkMax) {
+        count = kColumnWorkMax;
+    }
+
+    // **Resolved here, on the main thread**, because this is the one place the
+    // grid is known to be settled: `update()` has run and nothing else will
+    // move a cell until the next one. The worker never looks a coordinate up.
+    const world::ChunkColumn* columns[kColumnWorkMax] = {};
+    int taken = 0;
+    for (int i = 0; i < count; ++i) {
+        const Cell* cell = find(chunkX[i], chunkZ[i]);
+        if (cell == nullptr || cell->state != CellState::Loaded || cell->column == nullptr) {
+            continue;
+        }
+        columns[taken] = cell->column.get();
+        // Compacted in place, so the caller's arrays and `index` in the
+        // callback mean the same thing.
+        chunkX[taken] = chunkX[i];
+        chunkZ[taken] = chunkZ[i];
+        ++taken;
+    }
+    if (taken == 0) {
+        return 0;
+    }
+
+    {
+        std::lock_guard<std::mutex> guard(queueLock_);
+        if (!workerRunning_ || columnWorkPosted_ || columnWorkBusy_ || columnWorkReady_) {
+            return 0;
+        }
+        for (int i = 0; i < taken; ++i) {
+            columnWorkColumns_[i] = columns[i];
+        }
+        columnWork_ = work;
+        columnWorkCtx_ = ctx;
+        columnWorkCount_ = taken;
+        columnWorkDone_ = 0;
+        columnWorkPosted_ = true;
+    }
+    // The worker may be asleep with an empty slate, which is exactly the state
+    // this exists for.
+    wake_.notify_one();
+    return taken;
+}
+
+bool WorldStreamer::takeColumnWork(int* done)
+{
+    std::lock_guard<std::mutex> guard(queueLock_);
+    // **Only a reclaimed offer has an answer.** One still in flight says
+    // nothing -- the worker may be halfway through it -- so this is false until
+    // the next `update()` has withdrawn it, which is where the rule in the
+    // header comes from rather than being a second one.
+    if (!columnWorkReady_) {
+        return false;
+    }
+    if (done != nullptr) {
+        *done = columnWorkDone_;
+    }
+    columnWorkReady_ = false;
+    columnWorkDone_ = 0;
+    columnWorkCount_ = 0;
+    columnWork_ = nullptr;
+    columnWorkCtx_ = nullptr;
+    return true;
+}
+
+void WorldStreamer::reclaimColumnWork()
+{
+    std::unique_lock<std::mutex> guard(queueLock_);
+    if (!columnWorkPosted_ && !columnWorkBusy_) {
+        return;
+    }
+    // **Withdrawn first, then waited on**, which is the same shape
+    // waitForWorkerIdle uses and for the same reason: the worker checks this
+    // between columns, so clearing it stops a batch that is running as well as
+    // one that has not started. What is left to wait for is at most the one
+    // column it is inside.
+    columnWorkPosted_ = false;
+    idle_.wait(guard, [this] { return !columnWorkBusy_; });
+    columnWorkReady_ = true;
 }
 
 gui::ChunkState WorldStreamer::progressAt(i32 chunkX, i32 chunkZ,

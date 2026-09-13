@@ -1,6 +1,7 @@
 #include "core/tick/fluid.hpp"
 
 #include "core/block/registry.hpp"
+#include "core/entity/particle.hpp"
 #include "core/tick/fire.hpp"
 #include "core/tick/tick_world.hpp"
 
@@ -206,6 +207,33 @@ void setNotStationary(TickWorld& world, i32 x, int y, i32 z, BlockId self)
     world.scheduleBlockUpdate(x, y, z, flowing);
 }
 
+// `jp.i(Lcn;III)V` -- **the hiss and the steam when lava turns to stone.**
+//
+// One `random.fizz`, pitched high and scattered wide, and then **eight
+// `largesmoke` a fifth of a block above the cell** -- which is above the block
+// that has just been placed there, so the steam rises off the new stone rather
+// than out of it.
+//
+// The pitch is `2.6 + (nextFloat - nextFloat) * 0.8`, two draws off the
+// *world's* generator rather than a pool's, because `jp.i` reads `worldObj.rand`
+// -- and the eight positions come off `Math.random()`, which reproduces nothing
+// in either build.
+void fizz(TickWorld& world, i32 x, int y, i32 z)
+{
+    JavaRandom& rand = world.random();
+    // Two draws, and the order of the subtraction's operands is unspecified in
+    // C++ where it is fixed in the jar -- so they are named rather than nested.
+    const float low = rand.nextFloat();
+    const float high = rand.nextFloat();
+    world.playSoundAt("random.fizz", double(x) + 0.5f, double(y) + 0.5f, double(z) + 0.5f,
+                      0.5f, 2.6f + (low - high) * 0.8f);
+    for (int i = 0; i < 8; ++i) {
+        const double px = double(x) + rand.nextDouble();
+        const double pz = double(z) + rand.nextDouble();
+        world.spawnParticle(int(entity::ParticleKind::LargeSmoke), px, double(y) + 1.2, pz);
+    }
+}
+
 // `jp.j(Lcn;III)V` -- checkForHarden. Lava beside or above water turns to
 // stone: obsidian at a source, cobblestone at any level up to 4. Note there is
 // no check below -- lava sitting on water is not quenched.
@@ -227,7 +255,7 @@ void checkForHarden(TickWorld& world, i32 x, int y, i32 z, BlockId self)
     } else if (level <= 4) {
         world.setBlockWithNotify(x, y, z, id(mcver::Block::Cobblestone));
     }
-    // `jp.i` is the fizz and the smoke, which are audio and particles.
+    fizz(world, x, y, z);
 }
 
 // `hn.k(Lcn;III)Z` folded over the six neighbours: does anything around this

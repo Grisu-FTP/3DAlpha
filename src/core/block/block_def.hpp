@@ -144,10 +144,99 @@ enum class TickBehaviour : u8 {
     Stairs,          // shapes itself from its neighbours; a full block under a solid one
     Slab,            // merges with the slab under it into a double slab
     Furnace,         // turns its mouth away from an opaque neighbour when put down
+    MobSpawner,      // a tile entity that ticks: forgets its mob when the block goes
+
+    // **The chest, which does not tick at all.** It is here because this column
+    // is also where "which `ic` does this block build" is answered from, and
+    // four of the five container blocks were already in it. `b` -- BlockChest
+    // -- has no `onBlockAdded` of its own and inherits `jt`'s, and its
+    // `onBlockRemoval` spills the contents before calling the same `jt` one;
+    // the spill is not ported, the tile entity half is. See
+    // core/world/tile_entity.hpp.
+    Chest,
+
+    // **The workbench, which does not tick either.** `cs.a(Lcn;IIILdm;)Z`
+    // opens the 3 x 3 crafting screen and takes the click, and that is the whole
+    // class. It is a row here for the chest's reason: the right-click dispatch
+    // reads this column, and a block id is not allowed to decide.
+    Workbench,
     Count,
 };
 
 const char* tickBehaviourName(TickBehaviour behaviour);
+
+// **Whether a block of this behaviour carries a tile entity**, which is
+// `ly.q[]` -- Block.isBlockContainer, set for a block by `jt`'s constructor and
+// read by `Chunk.getChunkBlockTileEntity` before it heals a missing one.
+//
+// Lives here rather than in core/world so that a Section can answer "could this
+// hold one" off its palette without knowing what a tile entity is.
+bool tileEntityBearing(TickBehaviour behaviour);
+
+// **What a block does to something standing in it** -- `ly.b(Lcn;IIILkh;)V`,
+// onEntityCollidedWithBlock, which the tail of `kh.c(DDD)V` (moveEntity) calls
+// once for every cell the entity's box overlaps, every tick it moves.
+//
+// The grouping is one row per class that overrides it, the rule TickBehaviour
+// already follows, and in a1.1.2 that is **two classes and three blocks**:
+//
+//     public void b(cn var1, int var2, int var3, int var4, kh var5) {
+//         var5.a((kh)null, 1);          // hy -- attackEntityFrom(null, 1)
+//     }
+//
+// and `al`, both pressure plates, whose override arms the plate unless its
+// metadata already says armed.
+//
+// Nothing else in the version answers this call, and in particular **fire does
+// not**: standing in a flame burns through a box test in the same tail rather
+// than through the block. See core/entity/fire_entry.hpp, which had to correct
+// that reading once already.
+enum class Contact : u8 {
+    None = 0,
+
+    // The cactus, and one point of damage per overlapping cell per tick with
+    // no invulnerability window of its own -- so what a touch costs depends
+    // entirely on what the entity does with `attackEntityFrom`. See
+    // core/entity/block_contact.hpp.
+    Hurt,
+
+    // Both pressure plates. **Listed for the grouping's sake and dispatched by
+    // nothing**: this port arms a plate from the plate's own sense pass in
+    // core/tick/redstone.cpp, which asks the world which entities are standing
+    // in it rather than waiting to be told. Two paths for one effect would
+    // press it twice, so the entity side deliberately ignores this row.
+    PressurePlate,
+
+    Count,
+};
+
+const char* contactName(Contact contact);
+
+// **Whose tile a face shows when the tile depends on the neighbours**, which is
+// the one thing `faces` above cannot carry: it is a table and this is a
+// question about the world.
+//
+// a1.1.2 has two blocks whose `getBlockTexture(IBlockAccess, x, y, z, face)`
+// reads a cell other than its own -- grass, which wears a snowy side under a
+// snow layer, and the chest, which turns its front away from the blocks around
+// it and joins a neighbouring chest into one two-cell picture. (The extractor
+// reports four: the two staircases forward to a model block whose world
+// overload reads the metadata and then ignores it, which probes the world
+// without depending on a neighbour.) It can only *report* them, because the
+// rule is a branch rather than a value; this column says which rule, and
+// core/block/world_texture.hpp is where they live.
+//
+// The numbering is ours -- a1.1.2 has no such concept -- and the column is
+// assigned by a maintainer in blocks.json, exactly as `tick` is. A block
+// carrying anything but `None` is kept off the mesher's fast path by the
+// generator, because that path draws `faces` and never looks at a neighbour.
+enum class WorldTexture : u8 {
+    None = 0,
+    Chest,
+    Count,
+};
+
+const char* worldTextureName(WorldTexture texture);
 
 // **What a block sounds like underfoot and when it breaks** -- `bb`, a1.1.2's
 // StepSound, which is nine singletons that seventy blocks point at.
@@ -368,6 +457,14 @@ struct BlockDef {
     // Row in `mcver::kStepSounds`. 0 is the silent row and no constructed
     // block takes it; see `block::stepSoundOf`.
     u8 stepSound;
+
+    // What touching this block does to an entity. `None` for all but three
+    // blocks in a1.1.2; see the enum above.
+    Contact contact;
+
+    // Which world-dependent texture rule the faces follow, or `None` for the
+    // sixty-nine blocks whose `faces` row is the whole answer.
+    WorldTexture worldTexture;
 };
 
 }  // namespace mc::block

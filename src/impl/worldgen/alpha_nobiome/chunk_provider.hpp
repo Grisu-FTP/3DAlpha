@@ -40,6 +40,20 @@ inline constexpr int kChunkBlocks = 32768;
 // and not a debug switch.
 struct GeneratorOptions {
     bool snowCovered = false;
+
+    // **The two Extra Settings that change what a chunk generates.** Both are
+    // off by default and off in every fixture, so the derivation suite still
+    // pins the original's output; they are per-world switches a player turns
+    // on, carried here from `<world>/3dalpha.ini`. See
+    // core/settings/world_settings.hpp and docs/worldgen-a1.1.2.md.
+    //
+    // `fixOreVeinBounds` floors WorldGenMinable's bounding box instead of
+    // truncating it toward zero, which is what makes the negative quadrants
+    // generate as much ore as the positive one.
+    bool fixOreVeinBounds = false;
+    // `fixBedrockHole` lays bedrock at y = 0 whatever the draw said. The draw
+    // itself still happens -- it is a step of the shared stream.
+    bool fixBedrockHole = false;
 };
 
 // **Roughly 300 KB. Heap-allocate it; never make one a local.** Eight octave
@@ -48,6 +62,10 @@ struct GeneratorOptions {
 // function that tries. One instance per world, owned by the chunk worker.
 class ChunkProvider {
 public:
+    // Where the sea stands, and so where water fills in over stone. Public for
+    // the main menu's world diorama, whose table top is this height.
+    static constexpr int kSeaLevel = 64;
+
     ChunkProvider(i64 seed, GeneratorOptions options);
 
     // `nw.b(int,int)` up to but not including caves. Fills `blocks`, which must
@@ -84,7 +102,6 @@ private:
     void initializeNoiseField(i32 x, i32 y, i32 z);
 
     static constexpr int kCells = 4;         // 4 x 4 noise cells across a chunk
-    static constexpr int kSeaLevel = 64;
     static constexpr int kLatticeX = kCells + 1;  // 5
     static constexpr int kLatticeY = 17;
     static constexpr int kLatticeZ = kCells + 1;  // 5

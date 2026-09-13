@@ -8,20 +8,28 @@
 // along the top. The maintainer's half is three text pages behind SELECT + Y,
 // unchanged and deliberately still a text console.
 //
-//   Player    the tab strip, the hotbar along the bottom, and one of:
+//   Player    the hotbar along the top, the tab strip along the bottom, and
+//             one of:
 //               **Map**    the world around the player, with their coordinates
 //                          beside it and nothing else. The d-pad zooms it and
 //                          cycles the chunk and map-tile grids over it, and
 //                          that is the one player page that reads the d-pad at
 //                          all -- unless the screen is focused, see below. See
 //                          map_screen.hpp.
-//               **Items**  the inventory, drawn empty. Only in Survival and
-//                          Creative -- Spectator carries nothing, so it is not
-//                          offered one.
-//               **Blocks** the Creative block palette, which is **not** the
+//               **Inventory** what the player is carrying, drawn empty. Only
+//                          in Survival and Creative -- Spectator carries
+//                          nothing, so it is not offered one.
+//               **Items**  the Creative palette, which is **not** the
 //                          inventory and is a page of its own for that reason:
-//                          a catalogue of every block the version defines, held
+//                          a catalogue of every item the version defines, held
 //                          by nobody. Creative only.
+//
+//             **The two labels were "Items" and "Blocks" and are the other way
+//             about now.** The palette was blocks-only when it was named and is
+//             the whole item table today -- swords, ingots, armour, and the two
+//             music discs -- so "Blocks" described a third of the page. The
+//             enum members are still `Items` and `Blocks`; a page's name in
+//             code is not what a player reads.
 //               **Look**   a pad to drag on, with a compass ribbon over it.
 //
 //             **The hotbar is a band under all four of them**, in every mode
@@ -38,6 +46,14 @@
 //             pair doing what a mouse wheel does -- on an old console the
 //             focused d-pad is the way, which is the other reason the focus
 //             exists.
+//
+//             **X is the throw while a stack is picked up**, and the focus
+//             toggle only when the hands are empty. A stack lifted off a slot
+//             is the cursor of a1.1.2's own container screens, and clicking
+//             outside the window with a full cursor spills it -- there is no
+//             window to click outside of here, so the button that would
+//             otherwise be spare takes the gesture. One press still does one
+//             thing; which thing is decided by whether anything is in hand.
 //
 //             **The Look page exists because a drag has to belong to someone.**
 //             The bottom screen is both the game's UI and the only pointing
@@ -77,7 +93,10 @@
 // only when the number in it moved.
 
 #include "core/entity/item_entity.hpp"
+#include "core/gui/container_layout.hpp"
 #include "core/gui/paint.hpp"
+#include "core/item/container_session.hpp"
+#include "core/tick/tick_world.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/atlas_image.hpp"
@@ -223,7 +242,11 @@ public:
 
     // The player's pages, in the order their tabs are laid out. Which of them
     // a gamemode offers is `tabs()`; Spectator has no inventory and so has no
-    // Items tab.
+    // `Items` page.
+    //
+    // **These names are older than the labels on them.** `Items` is the
+    // inventory and is drawn "Inventory"; `Blocks` is the Creative palette and
+    // is drawn "Items", because it stopped being blocks-only. See `tabs()`.
     enum class PlayerPage {
         Map,
         Items,
@@ -329,16 +352,35 @@ public:
     // screen noticing.
     item::ItemId dropHeldItem();
 
+    // **The whole of the stack in hand, thrown.** X with a stack picked up is
+    // a1.1.2's own "click outside the window": `GuiContainer.mouseClicked`
+    // passes slot -999 and `PlayerController.windowClick` spills the entire
+    // cursor stack into the world. A stack picked up here is the cursor, so X
+    // spills it -- and X keeps toggling the focus whenever nothing is in hand,
+    // because a press that means two things is still one press at a time.
+    //
+    // **Split in two for the reason `dropHeldItem` is split**: the pool that
+    // holds dropped items can refuse a spawn, and a stack spent for an entity
+    // that never appeared is a stack destroyed. `throwRequest` says what the
+    // player asked to throw and leaves it exactly where it is; the caller
+    // spawns, and then calls `finishThrow` on success or `cancelThrow` on
+    // failure. Either one clears the request, so a frame that answers neither
+    // cannot leave one standing.
+    const item::ItemStack* throwRequest() const;
+    void finishThrow();
+    void cancelThrow();
+
     // **What the held stack turns into**, which is one item in a1.1.2 and it is
     // the bucket: emptied it becomes full, poured it becomes empty. `id` is
     // `item::ItemUse::becomes`, so passing back what was already there is a
     // no-op rather than a case the caller has to filter.
     //
-    // The count and the damage are left alone deliberately. A bucket stacks to
-    // one, so there is nothing to split, and this build spends nothing --
-    // Survival is where a stack of buckets has to decide whether the filled one
-    // goes back into the same slot. Here for the same reason `dropHeldItem` is:
-    // it writes the inventory, so it is what marks the bottom screen dirty.
+    // The count and the damage are left alone deliberately, and that is right
+    // because a bucket stacks to one: `ac.a` sets `itemstack.id` on the stack
+    // it was handed and never splits it, so a filled bucket goes back into the
+    // slot the empty one came out of in Survival too. Here for the same reason
+    // `dropHeldItem` is: it writes the inventory, so it is what marks the
+    // bottom screen dirty.
     void replaceHeldItem(item::ItemId id);
 
     // `dx.b(dm)` from the player's side -- **walking over what is lying about**.
@@ -352,6 +394,72 @@ public:
     // True once after anything in the inventory changed, and false until it
     // changes again. The caller writes it back to the world on a true.
     bool takeInventoryChange();
+
+    // **The inventory, for a rule that is not this screen's.** Survival writes
+    // the forty slots from outside the bottom screen: a death empties them, a
+    // hit wears the armour, a break wears the tool, food and placement spend
+    // the stack. Each of those is core code that takes an `item::Inventory&`,
+    // so this hands one over -- and **the caller must follow any write with
+    // `inventoryEdited`**, which is what redraws the band and the open page and
+    // queues the save, exactly as `dropHeldItem` does for its own write.
+    item::Inventory& editInventory() { return inventory_; }
+    void inventoryEdited() { inventoryWritten(); }
+
+    // **The game-over screen** -- `au`, GuiGameOver. a1.1.2 opens it the moment
+    // health reaches zero and draws "Game over!", the score, and two buttons:
+    // Respawn, and Title menu. **It does not pause the game** (`au.b()` is
+    // false), so the world keeps ticking under it, which is why it is a state of
+    // this screen and not a trip through the pause menu.
+    //
+    // While it is up it owns the bottom screen's input: the d-pad moves between
+    // the two buttons, A presses one, and a touch presses whichever it lands
+    // on. `takeDeathChoice` hands the press to the caller once.
+    enum class DeathChoice : u8 { None, Respawn, TitleMenu };
+    void setDead(bool dead, int score);
+    bool dead() const { return dead_; }
+    DeathChoice takeDeathChoice();
+
+    // **The container screens** -- `hx` the workbench, `id` the furnace, `ea`
+    // a chest -- opened by `tick::blockActivated` through the world's container
+    // sink, and **the Survival inventory's own 2 x 2 grid** on the Inv. page.
+    // All four are one `item::ContainerSession` with a cursor stack, clicked by
+    // a1.1.2's `ee.a(III)V` rules: A (or a touch) is the left button, Y (or a
+    // touch with Y held) the right one, X throws what is on the cursor. See
+    // core/item/container_session.hpp.
+    //
+    // **A world container takes the whole screen and the buttons**: the tabs
+    // become one Close tab, the screen is focused for as long as it is up, and
+    // the caller stops walking -- an open `GuiScreen` is what stops a1.1.2's
+    // player reading the movement keys. B or Close shuts it.
+    //
+    // **Closing drops the cursor and a crafting grid**, as `ar.a(Ldm;)V` and
+    // its overrides do, and the Overlay cannot spawn anything: the stacks wait
+    // in `closedStack` for the caller, one at a time, like a throw. Creative's
+    // Inv. page keeps its swap-only edit and never opens a session.
+    void openContainer(tick::TickWorld& world, tick::TickWorld::ContainerKind kind, i32 x,
+                       int y, i32 z);
+    bool containerOpen() const
+    {
+        return session_.isOpen() && session_.kind() != item::ScreenKind::Inventory;
+    }
+    // Once a frame with a world: re-reads a furnace or a chest, closes a screen
+    // whose block has gone, and redraws what a tick changed.
+    void tickContainer(tick::TickWorld* world);
+    // The next stack a close left for the ground, or null. `finishClosedStack`
+    // with whether the caller spawned it; one that was refused goes back into
+    // the inventory where it fits, rather than nowhere.
+    const item::ItemStack* closedStack() const
+    {
+        return closedCount_ > 0 ? &closed_[closedCount_ - 1] : nullptr;
+    }
+    void finishClosedStack(bool spawned);
+    // On the way out of a world: shuts any screen and puts what it would have
+    // dropped back in the inventory, since there is no ground left to drop it
+    // on.
+    void closeContainerIntoInventory();
+    // Whether Y is the screen's right click this frame, so the caller does not
+    // also crouch on it.
+    bool containerTakesY() const { return focus_ && session_.isOpen(); }
 
     // Whether this gamemode has a hotbar at all. Spectator does not: it has no
     // body, no reach and nothing to hold.
@@ -392,7 +500,7 @@ public:
     // every time a player opened it. A sample is 1.3 microseconds and the store
     // is allocated at world open whatever the mode, so what this costs is what
     // it always cost.
-    void tickMap(const render::WorldStreamer& world, const Camera& camera);
+    void tickMap(render::WorldStreamer& world, const Camera& camera);
 
     // Which core the generation worker actually got, as a label for the debug
     // page. Asked for and got are different questions -- a New 3DS launched
@@ -528,11 +636,109 @@ private:
     void touchSlot(int slot);
     void cancelHeld();
 
+    // **Every write to the forty slots goes through here**, which is what keeps
+    // the page above the band in step with the band. Marking only the hotbar
+    // was right while the hotbar was the only thing drawing stacks; the Items
+    // page draws twenty-seven more of them and the palette's caption names
+    // what is in the hand, so an item picked up off the floor used to appear in
+    // the band and not in the open backpack above it until something else
+    // forced a redraw.
+    void inventoryWritten();
+
+    // The same, for a change of *which* slot is in hand rather than of what is
+    // in it. Not a save -- `selected` is not written to the file -- so this is
+    // the redraw half of `inventoryWritten` on its own.
+    void selectionMoved();
+
+    // **Puts the focused cursor on the slot that is now in hand.** ZL and ZR
+    // change the hand from anywhere, and on a page with a grid the cursor is
+    // usually down in that grid -- so without this the two marks on the screen
+    // end up on different slots and neither one is obviously the live one. It
+    // knows the two cursor spaces this screen has: a container session numbers
+    // the hand as its last nine slots, and every other page has the band as the
+    // place the cursor is when it is not on the grid.
+    //
+    // Does nothing on the map page, which has no cursor to move.
+    void cursorToHand();
+
+    // **Where the carried stack is drawn floating**, as a cell on the Items
+    // page and as an index into the hotbar band; at most one of the two is set,
+    // and both are -1 when nothing is in hand.
+    //
+    // It follows the cursor, because the cursor is the slot the next press acts
+    // on -- a stack in hand is drawn on the slot it is about to go into. With
+    // the focus off there is no cursor to follow: the pointing device is a
+    // finger, which is not on the screen between presses, so it hovers over the
+    // slot it came out of instead and the player can still see what they are
+    // carrying.
+    void carriedPosition(int* itemsCell, int* hotbarSlot) const;
+
     // Fills the selected hand slot from the palette cursor's cell. A copy
     // rather than a move -- the palette holds nothing to take away.
     void takeFromPalette();
 
+    // The container session's half. `closeSession` shuts whatever is open and
+    // queues its drops; `closeContainer` is the player's B, which also gives
+    // the focus back and reopens the inventory grid if that page is up;
+    // `syncInventorySession` opens or shuts the Survival Inv. page's grid to
+    // match the page and the mode.
+    void closeSession();
+    void closeContainer();
+    void syncInventorySession();
+    bool handleContainerInput(u32 down);
+    void clickContainer(int index, int button);
+    // X on a focused screen: `item::ContainerSession::quickMove`.
+    void quickMoveContainer(int index);
+    // Moves the chest window by `rows` and rebuilds the layout. False when it
+    // was already at that end, or when the screen does not scroll.
+    bool scrollContainer(int rows);
+    bool scrollAtChestEdge(int dy);
+    // L and R's tab change, shared by the palette's focus and the inventory's.
+    void stepTab(bool forward);
+
     const NdspBackend* audio_ = nullptr;
+
+public:
+    // **What the mobs are doing**, which is otherwise invisible on a console.
+    // Set once a tick by the frame loop; every field is a count and none of it
+    // is drawn outside the Info page.
+    //
+    // `taken` and `hits` are the player-damage seam's running total, kept now
+    // that hearts say what health is left: a session total answers a different
+    // question from a bar -- whether anything is reaching you at all, and how
+    // often -- and a mob hitting a Creative player subtracts nothing from
+    // anywhere else. See `PlayerHarm` in platform/ctr/main.cpp.
+    struct MobStats {
+        int animals = 0;
+        int monsters = 0;
+        unsigned searches = 0;
+        unsigned exhausted = 0;
+        int taken = 0;
+        int hits = 0;
+
+        // **What the monster spawner has been doing since the world opened**,
+        // which is the one question a console cannot otherwise answer. "No
+        // monsters" and "monsters, ninety blocks under you" look the same from
+        // the surface and are completely different here -- see
+        // core/entity/mob_spawn.hpp's SpawnCounters.
+        int spawned = 0;
+        unsigned chunksTried = 0;
+        unsigned floors = 0;
+
+        // **And the *block* spawners**, which answer a different question
+        // entirely: how many dungeon cages are resident, and whether any of
+        // them has had a player near enough to run. A `cage` that is non-zero
+        // with `fire` at zero is a player who has not stood close enough; both
+        // at zero is a world with no dungeons in range. See
+        // core/entity/mob_spawner.hpp.
+        int cages = 0;
+        int cagesFired = 0;
+        int cagesSpawned = 0;
+    };
+    void setMobStats(const MobStats& stats) { mobStats_ = stats; }
+
+private:
+    MobStats mobStats_{};
 
     int drawInfo(const Renderer& renderer, const render::WorldStreamer& world,
                  const Camera& camera, float timeOfDay);
@@ -570,8 +776,38 @@ private:
     // change: the stack never leaves the array, and putting it down is a swap.
     int heldSlot_ = -1;
 
+    // The slot X asked to throw, or -1. A slot number for the same reason
+    // `heldSlot_` is one, and it outlives the button press by exactly as long
+    // as it takes the caller to spawn the entity -- see `throwRequest`.
+    int throwSlot_ = -1;
+
     // Set by every edit, cleared by takeInventoryChange.
     bool inventoryChanged_ = false;
+
+    // The open container screen, where its slots are, the slot the next press
+    // acts on, and the world its furnace or chest is in -- borrowed from the
+    // frame loop, which hands it over again every tickContainer.
+    item::ContainerSession session_;
+    gui::ContainerLayout layout_;
+    int containerCursor_ = 0;
+    // **The top chest row on the screen**, for a chest with more rows than the
+    // band can hold -- three chests joined together or more, which is a thing
+    // a1.1.2 lets you build through a puddle. 0 for every other screen, and
+    // clamped by the layout rather than here.
+    int containerScroll_ = 0;
+    tick::TickWorld* containerWorld_ = nullptr;
+    // X asked to throw the cursor stack; answered like `throwSlot_`.
+    bool throwCursor_ = false;
+    // The furnace's arrow and flame, as last drawn.
+    bool progressDirty_ = false;
+    int shownCook_ = -1;
+    int shownBurn_ = -1;
+    // What closes left for the ground. Two closes' worth -- a cursor and a
+    // 3 x 3 grid each -- since a world container and the inventory grid can
+    // both shut in one frame.
+    static constexpr int kMaxClosedStacks = 20;
+    item::ItemStack closed_[kMaxClosedStacks];
+    int closedCount_ = 0;
 
     // **Focus is two booleans and not a mode enum**, because there are exactly
     // three states and the third is not reachable: the screen is unfocused, or
@@ -585,6 +821,13 @@ private:
     // and the page says which grid.
     bool focus_ = false;
     bool focusGrid_ = false;
+
+    // The game-over screen: whether it is up, the score it shows, which of its
+    // two buttons the d-pad is on, and a press not yet collected.
+    bool dead_ = false;
+    int deathScore_ = 0;
+    int deathCursor_ = 0;
+    DeathChoice deathChoice_ = DeathChoice::None;
 
     // The two sheets' pixels, borrowed. Null until a pack has been handed over;
     // the items one stays null for a pack that has no gui/items.png, which

@@ -11,6 +11,7 @@
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/entity_skins.hpp"
 #include "core/texture/font.hpp"
+#include "core/texture/particle_sheet.hpp"
 #include "core/util/types.hpp"
 
 #include <citro3d.h>
@@ -24,6 +25,17 @@ namespace mc::ctr {
 inline constexpr int kAtlasTilesPerEdge = texture::kAtlasTilesPerEdge;
 inline constexpr int kAtlasTilePixels = texture::kAtlasTilePixels;
 inline constexpr int kAtlasEdge = texture::kAtlasEdge;
+
+// The widest run of side-by-side tiles `updateTile` will push from one picture.
+// Two, because that is what `tileSize = 2` asks for: a fluid's flowing texture
+// covers a 2 x 2 block of the atlas, one row of which is one copy.
+inline constexpr int kMaxTileRun = 2;
+
+// **How many tiles' worth of staging one frame's pushes may use**, in tiles.
+// Two flames, a still and a flowing block for each fluid, and the compass is
+// thirteen; sixteen is that with a little room. See `tileStagingUsed_` for why
+// a push cannot simply reuse the last one's buffer.
+inline constexpr int kTileStagingTiles = 16;
 
 class Atlas {
 public:
@@ -54,6 +66,14 @@ public:
 
     bool hasItems() const { return itemsReady_; }
 
+    // **`gui/icons.png`**, 256 x 256 in ordinary linear memory for the reason
+    // the item sheet is: fifty quads a frame at most. Always present in a built
+    // atlas -- see core/texture/icon_sheet.hpp -- so `hasIcons()` false means no
+    // memory rather than no pack.
+    bool initIcons(const texture::AtlasImage& image);
+    bool hasIcons() const { return iconsReady_; }
+    void bindIcons(int unit) const { C3D_TexBind(unit, const_cast<C3D_Tex*>(&icons_)); }
+
     // **The two entity sheets**, which are not square and so do not go through
     // `initItems`.
     //
@@ -79,6 +99,23 @@ public:
     bool initFont(const texture::FontImage& font);
     bool hasFont() const { return fontReady_; }
     void bindFont(int unit) const { C3D_TexBind(unit, const_cast<C3D_Tex*>(&font_)); }
+
+    // **`particles.png`, the third sheet the particle pass samples.** 128 x 128
+    // and 64 KB, in ordinary linear memory for the reason the font is: it is
+    // read by a few dozen quads a frame at most, and VRAM is 6 MB with render
+    // targets already in it.
+    //
+    // **This one cannot fail for want of a pack.** `buildParticleSheet` lays
+    // down a generated stand-in before it reads anything, so `hasParticles()`
+    // false means "no memory", not "no pack" -- and a console that answers
+    // false simply does not draw the eight sprite kinds, where the two cut out
+    // of terrain.png and gui/items.png carry on.
+    bool initParticles(const std::vector<u8>& sheet);
+    bool hasParticles() const { return particlesReady_; }
+    void bindParticles(int unit) const
+    {
+        C3D_TexBind(unit, const_cast<C3D_Tex*>(&particles_));
+    }
 
     bool hasEntities() const { return entityReady_; }
     bool hasArt() const { return artReady_; }
@@ -154,11 +191,23 @@ public:
     // not up or the staging buffer could not be had, in which case the tile
     // simply keeps whatever `applyAnimatedTiles` baked into it.
     //
+    // **`across` writes a run of tiles side by side from the one picture**, and
+    // that is what a fluid's flowing tile wants: `tileSize = 2` in the original
+    // means the same 256 texels land in a 2 x 2 block of the atlas, and two
+    // tiles in the same row are **adjacent in memory** -- their runs meet
+    // exactly -- so a row of the block is one pair of copies rather than two.
+    // Six fluid tiles a tick would otherwise be twelve of them.
+    //
     // **Between frames, not during one.** The GPU samples this texture for
     // every fragment of every chunk; the copy has to land while nothing is
     // reading it, which is why the caller runs it beside the lightmap update
     // and not inside the draw.
-    bool updateTile(int tile, const u8* texels);
+    bool updateTile(int tile, const u8* texels, int across = 1);
+
+    // **Every tile copy queued so far has finished**, so the staging they read
+    // can be handed out again. Only a caller that has just watched
+    // `C3D_FrameBegin` drain the GX queue may say so. See `tileStagingUsed_`.
+    void tileCopiesRetired() { tileStagingUsed_ = 0; }
 
     // The same thing on the **items** sheet, which is what the compass needs.
     //
@@ -174,17 +223,23 @@ public:
     bool inVram() const { return inVram_; }
 
 private:
-    // The body of both `updateTile` and `updateItemsTile`: one 16 x 16 tile
-    // into one tiled, vertically flipped RGBA8 texture.
-    bool updateTileOf(C3D_Tex* target, bool live, bool vram, int tile, const u8* texels);
+    // The body of both `updateTile` and `updateItemsTile`: one run of 16 x 16
+    // tiles into one tiled, vertically flipped RGBA8 texture.
+    bool updateTileOf(C3D_Tex* target, bool live, bool vram, int tile, const u8* texels,
+                      int across);
 
-    // One 16 x 16 block of `edge`-wide texture at 16-texel column and row --
-    // an atlas tile, or one 16 x 16 block of a slot in the cube atlas.
-    bool writeTile(C3D_Tex* target, bool vram, u32 column, u32 row, u32 edge, const u8* texels);
+    // A run of `across` 16 x 16 blocks of `edge`-wide texture, starting at
+    // 16-texel column and row -- atlas tiles, or 16 x 16 blocks of a slot in
+    // the cube atlas. Every tile in the run gets the same picture.
+    bool writeTile(C3D_Tex* target, bool vram, u32 column, u32 row, u32 edge, const u8* texels,
+                   u32 across = 1);
 
     // Builds and uploads the cube atlas from the image, a slot row at a time
     // through `staging`, which has to hold at least kCubeBandBytes.
-    bool initCube(const texture::AtlasImage& image, u32* staging);
+    // Two staging buffers, alternated band by band, and that is load-bearing
+    // rather than tidy: see the note in `initCube`. `spare` is the buffer the
+    // ordinary atlas never touched; `shared` is the one it was uploaded from.
+    bool initCube(const texture::AtlasImage& image, u32* spare, u32* shared);
 
     // One RGBA8 texture of any power-of-two size, tiled and flipped the way
     // every other sheet here is. The three `init*` above would otherwise be
@@ -193,21 +248,43 @@ private:
 
     C3D_Tex tex_{};
     C3D_Tex items_{};
+    C3D_Tex icons_{};
+    bool iconsReady_ = false;
     C3D_Tex entity_{};
     C3D_Tex art_{};
     C3D_Tex font_{};
+    C3D_Tex particles_{};
     C3D_Tex wire_{};
     C3D_Tex cube_{};
     C3D_Tex cubeWire_{};
     // Linear memory, because it is what the GPU reads when the destination is
     // VRAM. One allocation, made the first time a tile is pushed and kept for
-    // the life of the atlas; 1 KB.
+    // the life of the atlas; 16 KB, `kTileStagingTiles` tiles' worth.
     u32* tileStaging_ = nullptr;
+
+    // **How much of `tileStaging_` this frame's pushes have taken**, in tiles,
+    // and the reason a push may not just reuse the start of the buffer.
+    //
+    // Read out of `libcitro3d.a`: outside a frame `C3D_SyncTextureCopy` waits
+    // for the GX queue to empty, *then* queues its copy, starts it, and waits
+    // on `GSPGPU_EVENT_PPF` with `nextEvent = false` -- which returns at once
+    // when the last frame's display transfer left a PPF unconsumed. So the
+    // wait that makes a copy safe to follow happens at the start of the *next*
+    // copy, and `writeTile` fills its staging before it gets there. A push that
+    // reused the buffer overwrote the words the previous push's second copy was
+    // still reading. With two flames that was half of one tile; with six fluid
+    // runs straight behind them it would put water on the fire.
+    //
+    // So each push takes fresh words, and they are handed back only by
+    // `tileCopiesRetired`, after `C3D_FrameBegin` has drained the queue. A push
+    // that finds the pool spent is refused and the tile keeps its last picture.
+    int tileStagingUsed_ = 0;
     bool ready_ = false;
     bool itemsReady_ = false;
     bool entityReady_ = false;
     bool artReady_ = false;
     bool fontReady_ = false;
+    bool particlesReady_ = false;
     bool wireReady_ = false;
     bool inVram_ = false;
     bool cubeReady_ = false;
@@ -242,7 +319,7 @@ private:
 // (iq.class), and the PICA has no fog equation -- only a 128-entry LUT. The
 // natural move is to sample the line into that LUT, which is what this class
 // did. It cannot work: the LUT is indexed by **window depth**, which is 1/d,
-// and with a 0.2-block near plane against a 176-block far plane the whole
+// and with a 0.05-block near plane against a 176-block far plane the whole
 // 40-to-160-block ramp falls inside the first of the 128 entries. See
 // docs/3ds-performance.md section 5. Fog is now a line in the vertex shader
 // and an INTERPOLATE combiner stage; renderer.cpp holds both halves.

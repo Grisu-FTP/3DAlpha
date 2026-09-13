@@ -32,20 +32,26 @@
 // field is core/block/fluid_flow.hpp now and an item in a river drifts
 // downstream, the same push the player gets.
 //
-// **Two things here are openly not a1.1.2's**, and they are the second half of
-// the split the drop button already is:
+// **Dropped items never merge**, and that is the original's behaviour rather
+// than an omission. `dx.e_()` has no such step, and neither does any version
+// for the next two years: the whole of Alpha, the whole of Beta and release
+// 1.2.5 leave two heaps of dirt thrown side by side as two heaps for the five
+// minutes they live. `EntityItem.combineItems` is first there in **1.3.1**,
+// where `onUpdate` walks the entities in `boundingBox.expand(0.5, 0, 0.5)`
+// every tick; the `age % 25` throttle on that scan is later still (it is there
+// by 1.8.9). The bisect that gives that is absent-in-1.2.5, present-in-1.3.1
+// -- the 2012 snapshots between the two are not in the version manifest it
+// used, so it is a release bound and not a snapshot one. Measured, not
+// remembered: docs/status.md records the jars and the bytecode.
 //
-//   * **Items on the ground merge.** `dx.e_()` in this version has no such
-//     step -- ground merging arrives with Beta 1.8's `combineItems` -- so two
-//     heaps of dirt thrown side by side stay two heaps for the five minutes
-//     they live, and a floor covered in drops is 64 entities that all have to
-//     be walked over one at a time. That is a1.1.2's, and it is the sort of
-//     thing this project keeps; it is *also* the thing the pool ceiling below
-//     makes expensive, and it was asked for. So `combineItems` is transcribed
-//     from the later version and marked, rather than invented: the bigger
-//     stack absorbs the smaller, the survivor keeps the *younger* age and the
-//     *longer* pickup delay, and the scan runs every 25 ticks as it does
-//     there. See kItemMergeInterval.
+// This file did once carry 1.3.1's `combineItems`, transcribed and marked as a
+// deviation. It does not any more: a floor covered in drops is 64 separate
+// entities to walk over, which is what a1.1.2 looks like, and that is the
+// thing this project keeps. The pool ceiling below is what pays for it.
+//
+// **One thing here is openly not a1.1.2's**, and it is the other half of the
+// split the drop button already is:
+//
 //   * **An item outside a loaded chunk does not tick at all**, so its five
 //     minutes do not run while nobody is there. a1.1.2 has no such rule for
 //     the trivial reason that its entities live *in* chunks and an unloaded
@@ -57,6 +63,7 @@
 // Drawing is elsewhere, as it is for particles: core/render/item_entity_mesh.hpp
 // turns one of these into quads and this file has never heard of a camera.
 
+#include "core/entity/water_entry.hpp"
 #include "core/item/item_def.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/java_random.hpp"
@@ -96,20 +103,17 @@ inline constexpr float kItemGroundDrag = 0.58800006f;
 // the header.
 inline constexpr int kItemMaxAge = 6000;
 
-// `EntityItem.onUpdate`'s `age % 25 == 0` in the version the merge comes from.
-// Every tick would be 64 x 64 box tests at 20 Hz for nothing: two items that
-// land together are still two items for at most a second and a quarter, which
-// is what the original looks like.
-inline constexpr int kItemMergeInterval = 25;
-
-// `boundingBox.expand(0.5, 0.0, 0.5)` -- the box a merge looks in. Horizontal
-// only, so a heap on a slab does not swallow the one on the floor beneath it.
-inline constexpr double kItemMergeReach = 0.5;
-
 // `kh.G()` -- isInLava -- shrinks the box by this much top and bottom before
 // asking, exactly as `kh.g_()` does for water. The same number for both, which
 // is what reading the two methods side by side settles.
 inline constexpr double kLavaProbeInset = -0.4000000059604645;
+
+// **`dx`'s health, which the constructor sets to 5** -- and it is the only
+// health in the version that is not a living thing's. `dx.a(Lkh;I)Z` subtracts
+// the damage and calls `setDead()` at or below zero, with no invulnerability
+// window of any kind, so five one-point hits in five consecutive ticks kill a
+// stack. That is exactly what standing in fire does to it.
+inline constexpr i16 kItemHealth = 5;
 
 // `if (posY < -64.0D) setDead()`, the last line of `Entity.onEntityUpdate`.
 inline constexpr double kVoidFloor = -64.0;
@@ -124,6 +128,9 @@ inline constexpr int kItemDropPickupDelay = 40;
 // second -- long enough that walking through a falling torch does not pick it
 // up before it has landed, and short enough that you do not wait for it.
 inline constexpr int kBlockDropPickupDelay = 10;
+
+// `je`, from core/entity/explosion.hpp. Only `takeBlast` names it.
+class Explosion;
 
 struct ItemEntity {
     // **The box is the authority and the position is derived from it**, for
@@ -157,6 +164,19 @@ struct ItemEntity {
     u8 light = 0;
 
     bool onGround = false;
+
+    // `kh`'s `aV` and `c`, which is all a splash needs. Not saved: the jar
+    // does not save it either, and a stack reloaded in a river should not
+    // splash on the tick the world opens.
+    WaterEntry water{};
+
+    // **`dx.f` -- the five points of health a dropped stack has**, and `kh.aT`,
+    // the fire counter every entity carries. The two together are what makes a
+    // stack thrown into a fire burn up: `moveEntity`'s tail deals one point a
+    // tick and `dx.a(Lkh;I)Z` calls `setDead()` at zero, so five ticks in a
+    // flame is the end of it. See core/entity/fire_entry.hpp.
+    i16 health = kItemHealth;
+    i16 fire = 0;
 
     bool alive() const { return count > 0; }
 
@@ -202,6 +222,25 @@ public:
                         float yawDegrees, float pitchDegrees, item::ItemId id, int count,
                         i16 damage);
 
+    // `dm.a(Lev;Z)V` with `flag` true -- **the scatter a death drops the
+    // inventory with**: a random heading, up to half a block a tick of it, a
+    // fixed 0.2 upward, and the same two-second pickup delay as a throw. The
+    // draws are the *player's* generator (`aQ`), which is why it is passed in.
+    //
+    // **Evicts rather than refuses**, unlike a throw: the slot is emptied
+    // whether or not the item found room, so a refusal here would be the loss
+    // the throw's refusal exists to avoid.
+    bool dropOnDeath(const tick::TickWorld& world, double eyeX, double eyeY, double eyeZ,
+                     item::ItemId id, int count, i16 damage, JavaRandom& thrower);
+
+    // **A stack put into the world with a velocity chosen for it** -- a broken
+    // chest's spill, which builds the entity and then overwrites its motion.
+    // Evicts rather than refuses, for the death drop's reason: the stack has
+    // already left the chest.
+    bool spawnMoving(const tick::TickWorld& world, double px, double py, double pz,
+                     item::ItemId id, int count, i16 damage, double motionX, double motionY,
+                     double motionZ);
+
     // `dx.<init>` on its own, for a drop that is not thrown by anybody: the
     // upward hop and the small horizontal scatter, and nothing else.
     // `pickupDelay` is the constructor's 5 unless the caller says otherwise;
@@ -211,9 +250,9 @@ public:
     bool spawn(const tick::TickWorld& world, double px, double py, double pz, item::ItemId id,
                int count, i16 damage, int pickupDelay = kItemPickupDelay);
 
-    // One 20 Hz tick of `dx.e_()` for every live item. Ages them out at 6000,
-    // merges the ones lying on top of each other, and skips entirely any whose
-    // column is not resident.
+    // One 20 Hz tick of `dx.e_()` for every live item. Ages them out at 6000
+    // and skips entirely any whose column is not resident. Two items lying on
+    // top of each other stay two: see the header.
     void tick(const tick::TickWorld& world);
 
     // `dx.b(dm)` -- **onCollideWithPlayer**, driven from the player's side
@@ -223,6 +262,15 @@ public:
     // Returns how many items were taken, so the caller can play `random.pop`
     // once per pickup without this having a sound engine.
     int collect(const AABB& playerBox, item::Inventory& inventory);
+
+    // **`je`'s middle phase for every stack in reach.** The blast calls
+    // `kh.a(Lkh;I)Z` on each entity in its box and `dx`'s override is the
+    // subtraction `hurt` makes, so a stack takes the same damage a mob would
+    // and five points ends it -- anything close to a creeper is gone. The
+    // impulse is added whether or not it survived, as `je` adds it. Dead
+    // stacks are swept before returning, since a blast never runs inside
+    // `tick`'s walk.
+    void takeBlast(const tick::TickWorld& world, const Explosion& blast);
 
     void clear() { items_.clear(); }
 
@@ -245,17 +293,6 @@ private:
     ItemEntity* place(const tick::TickWorld& world, double px, double py, double pz,
                       item::ItemId id, int count, i16 damage, int pickupDelay, bool mayEvict);
     void removeAt(int index);
-
-    // `combineItems`, for the pair (a, b). Answers true when one of them was
-    // emptied -- which one is the method's own rule, not the caller's, so this
-    // says nothing about the order it was handed them in.
-    //
-    // **A merge empties a stack rather than removing it**, because `tick` is
-    // walking the pool while this runs and `removeAt` swaps the last entry
-    // into the hole. The sweep at the end of the tick is what actually
-    // reclaims them, which is `setDead()` and `World.releaseEntitySkin` doing
-    // the same two jobs in the same order.
-    bool combine(ItemEntity& a, ItemEntity& b);
 
     SegmentedPool<ItemEntity, kInitialCapacity> items_;
     u32 refused_ = 0;

@@ -8,14 +8,20 @@
 // come from, and skipping the second eye when the slider is at zero.
 
 #include "core/mesh/vertex.hpp"
+#include "core/render/break_overlay.hpp"
 #include "core/render/chat_mesh.hpp"
+#include "core/render/hud_mesh.hpp"
 #include "core/render/chunk_renderer.hpp"
 #include "core/render/falling_block_mesh.hpp"
+#include "core/render/primed_tnt_mesh.hpp"
 #include "core/render/held_item.hpp"
 #include "core/render/item_entity_mesh.hpp"
 #include "core/render/arrow_mesh.hpp"
 #include "core/render/boat_mesh.hpp"
 #include "core/render/minecart_mesh.hpp"
+#include "core/render/entity_fire_mesh.hpp"
+#include "core/render/mob_mesh.hpp"
+#include "core/render/spawner_mesh.hpp"
 #include "core/render/sign_mesh.hpp"
 #include "core/render/painting_mesh.hpp"
 #include "core/render/particle_mesh.hpp"
@@ -193,12 +199,28 @@ public:
 
     void setSkyDarken(int subtracted) { lightmap_.setSkyDarken(subtracted); }
 
+    // **What time it is, for everything that is not a block.** The lightmap
+    // above takes the day as an integer 0..11; the sky takes it as three
+    // colours and an angle, and they are not the same function of it -- the
+    // ground steps down eleven times while the sky fades smoothly, which is
+    // what a1.1.2 looks like.
+    //
+    // Called once a frame beside `setSkyDarken`, with the same day-relative
+    // tick count and the frame's partial. Everything it computes lands in
+    // members the eyes read: the clear colour, the fog constant the world's
+    // third combiner stage fades to, the two sky plane colours, how bright the
+    // stars are and where the sun is.
+    void setWorldTime(i64 dayTicks, float partialTicks);
+
     // **Fire, moving.** One 16 x 16 tile replaced in the block atlas -- see
     // `Atlas::updateTile` for why that is two 512-byte copies and not a
     // re-upload. Called from the frame loop beside `setSkyDarken` and for the
     // same reason: both write a texture the draw is about to sample, so both
     // belong before it rather than inside it.
-    bool setAtlasTile(int tile, const u8* texels) { return atlas_.updateTile(tile, texels); }
+    bool setAtlasTile(int tile, const u8* texels, int across = 1)
+    {
+        return atlas_.updateTile(tile, texels, across);
+    }
 
     // **The compass, moving**, on the other sheet. A compass lying on the
     // ground is a `gui/items.png` sprite drawn by the detail pass, so it wants
@@ -240,6 +262,15 @@ public:
     // because the font is a different file with a different failure: a pack
     // with no `default.png` is a pack, and its signs show a blank board.
     bool setFont(const texture::FontImage& font) { return atlas_.initFont(font); }
+
+    // **The pack's `particles.png`.** Separate from `setAtlas` for the reason
+    // the font is, and unlike the font it never has nothing to upload: the
+    // builder falls back to a generated stand-in, so false here means the
+    // console had no memory for a 64 KB texture.
+    bool setParticleSheet(const std::vector<u8>& sheet)
+    {
+        return atlas_.initParticles(sheet);
+    }
 
     // **Call this after anything else has *taken* the top screen.**
     //
@@ -326,6 +357,21 @@ public:
     // option available. See core/render/outline.hpp.
     void setSelection(const AABB& worldBox);
 
+    // **The crack over the block Survival is breaking** -- the block, where it
+    // is and which of the ten stages to draw. Set every frame there is progress
+    // and cleared every frame there is not. See core/render/break_overlay.hpp.
+    void setBreakOverlay(mc::block::BlockId block, u8 metadata, i32 x, int y, i32 z, int stage)
+    {
+        breakBlock_ = block;
+        breakMeta_ = metadata;
+        breakX_ = x;
+        breakY_ = y;
+        breakZ_ = z;
+        breakStage_ = stage;
+        breakVisible_ = true;
+    }
+    void clearBreakOverlay() { breakVisible_ = false; }
+
     // **What the particles are this frame**, handed over once and drawn inside
     // the world passes where they belong.
     //
@@ -356,6 +402,14 @@ public:
         fallingBlocks_ = blocks;
     }
 
+    // **What is counting down this frame**, on the same terms as the falling
+    // blocks: it shares the item entities' eye and partial, so this takes only
+    // the pool. Two passes come out of it -- see core/render/primed_tnt_mesh.hpp.
+    void setPrimedTnt(const mc::entity::PrimedTntSystem* tnt)
+    {
+        primedTnt_ = tnt;
+    }
+
     // **What is hanging on the walls**, on the same terms and sharing the same
     // eye. A painting does not move and does not interpolate, so unlike the two
     // above it needs neither a yaw nor a partial -- only the pool.
@@ -371,6 +425,15 @@ public:
     // **What is floating**, on the same eye and partial. A boat is the first
     // thing here drawn from a box model -- see core/render/box_model.hpp.
     void setBoats(const mc::entity::BoatSystem* boats) { boats_ = boats; }
+
+    // **What is grazing.** Sixteen animals in range, posed and rebuilt every
+    // frame like every other entity pass -- see core/render/mob_mesh.hpp, which
+    // also explains why eleven texture pages are still one bind.
+    void setMobs(const mc::entity::MobSystem* mobs) { mobs_ = mobs; }
+
+    // The mob spawner blocks, whose contents ride the mob pass. Null is a build
+    // with no spawner store, which draws the cages and nothing inside them.
+    void setSpawners(const mc::entity::MobSpawnerStore* spawners) { spawners_ = spawners; }
 
     // **What is on the rails.** Unlike every other entity pass this one needs
     // the world, because a cart is tilted along the *track* rather than along
@@ -419,6 +482,17 @@ public:
     // and no arm to show either. Distinct from `setHeldItem(0, ...)`, which is
     // an empty hand and does draw one.
     void clearHeldItem() { heldVisible_ = false; }
+
+    // **The hearts, the armour row and the bubbles** -- Survival's half of
+    // GuiIngame, over the world on the top screen. Set every frame a Survival
+    // body is being drawn; `clearHud` for every other mode, which `lu` hides the
+    // rows in too (`PlayerController.shouldDrawHUD`). See core/render/hud_mesh.hpp.
+    void setHud(const mc::render::HudInput& hud)
+    {
+        hudInput_ = hud;
+        hudVisible_ = true;
+    }
+    void clearHud() { hudVisible_ = false; }
 
     void clearSelection() { hasSelection_ = false; }
 
@@ -485,6 +559,22 @@ private:
     float fogStartBlocks() const { return fogEndBlocks() * 0.25f; }
 
     void drawEye(int eye, const Camera& camera, float iod);
+
+    // **The sky, first in the eye and the only pass with a matrix of its own.**
+    //
+    // Two matrices, in fact, and the pair of them is the whole of the day's
+    // motion: one with the camera at the origin for the two flat planes, and
+    // that one turned about X by the celestial angle for the sun, the moon and
+    // the stars. Neither carries the camera's position, because a1.1.2's sky
+    // does not -- see core/render/sky.hpp.
+    //
+    // Its own far plane, too. The sun hangs a hundred blocks away and the
+    // planes reach four hundred; the world's far plane is the render distance
+    // plus a ring, which at six chunks would clip the sun out of the sky
+    // entirely. Depth writes are off and the pass runs before anything else,
+    // so a different depth range costs nothing.
+    void drawSky(const Camera& camera, float iod);
+    C3D_Mtx skyViewProjection(const Camera& camera, float iod) const;
 
     // C3D_FrameBegin, with a deadline while the quad format is live. Returns
     // false when the deadline expired and no frame was opened -- the caller
@@ -592,12 +682,33 @@ private:
     bool hasSelection_ = false;
     bool outlineDirty_ = false;
 
+    // The crack: the block it covers and where, rebuilt in each eye into one
+    // linear allocation of `render::kBreakOverlayMaxVertices`.
+    void* breakVerts_ = nullptr;
+    mc::block::BlockId breakBlock_ = 0;
+    u8 breakMeta_ = 0;
+    i32 breakX_ = 0;
+    int breakY_ = 0;
+    i32 breakZ_ = 0;
+    int breakStage_ = 0;
+    bool breakVisible_ = false;
+
     void drawSelection(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+
+    // `drawBlockBreaking`, right after the outline and before the crosshair.
+    void drawBreakOverlay(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawCrosshair(const C3D_Mtx& viewProjection, const Camera& camera,
                        i32 originChunkX, i32 originChunkZ);
 
     // Drawn between the opaque and the translucent terrain passes, which is
     // where `EntityRenderer.renderWorld` puts `renderParticles`.
+    //
+    // **Three draws, because `EffectRenderer` keeps three lists and binds a
+    // texture per list**: the sprites off `particles.png`, the digging flecks
+    // off the block atlas, and the two breaking kinds off `gui/items.png`. The
+    // three spans are built into disjoint parts of the one buffer *before* any
+    // of them is drawn, for the reason `drawItemEntities` gives at length: a
+    // draw call names an address the GPU does not read until the frame ends.
     void drawParticles(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
 
     // **Two draws, because a1.1.2 loads two textures for this.** A block on the
@@ -607,10 +718,16 @@ private:
     // where `renderEntities` runs.
     void drawItemEntities(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawFallingBlocks(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawPrimedTnt(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    // The white overlay half of the pass above, which runs on the outline
+    // pipeline and takes the matrix that pass has already folded.
+    void drawPrimedTntFlash(const C3D_Mtx& mvp);
     void drawPaintings(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawArrows(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawBoats(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawMinecarts(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    void drawEntityFire(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
 
     // **The hand, last in the eye and in camera space.** It takes the eye's
@@ -624,6 +741,10 @@ private:
     // draw the same lines at the same place, and drawn in each.
     void buildChat();
     void drawChat();
+
+    // **The Survival rows, last of all**: at the screen plane, off
+    // `gui/icons.png`, alpha-tested and unlit.
+    void drawHud();
 
     // Four vertices a quad, and the worst case is a stack of 21+ -- four
     // copies -- of a block, which is six faces. The pool has no cap, so no
@@ -650,6 +771,23 @@ private:
     // nearest.
     static constexpr int kMaxMinecartVertices = mc::render::kMinecartMaxVertices;
 
+    // Sixteen animals in range at up to twelve boxes each -- a fleeced sheep is
+    // two models -- which is 4,608 vertices and 72 KB; past that, the nearest.
+    //
+    // **The mob spawners' miniatures share it**, and share the bind and the
+    // draw call with them: they are the same models out of the same sheet, and
+    // the only thing that differs is the transform. Four more models is 1,152
+    // vertices and 18 KB. See core/render/spawner_mesh.hpp.
+    static constexpr int kMaxMobVertices =
+        mc::render::kMobMaxVertices + mc::render::kSpawnerMaxVertices;
+
+    // Thirty-two burning entities at once -- the frame's sixteen animals plus
+    // the carts, boats and stacks a fire in a storeroom lights -- at four
+    // sheets each, which is one more than anything in a1.1.2 can need. 16 KB,
+    // one buffer and one draw for all of them. See
+    // core/render/entity_fire_mesh.hpp.
+    static constexpr int kMaxEntityFireVertices = mc::render::kEntityFireMaxVertices;
+
     // **Sized for the text, which is much the larger half.** Sixty-four signs
     // of two boxes is 6,144 vertices; sixty-four signs of sixty glyphs is
     // 15,360. The buffer holds the worst of the two and both passes build into
@@ -661,6 +799,13 @@ private:
     // the nearest.
     static constexpr int kMaxFallingVertices = mc::render::kFallingBlockMaxVertices;
 
+    // Ninety-six primed blocks in range at six faces each, 36 KB -- a chain
+    // lights every cell in a wall at once, so this is larger than the falling
+    // blocks' budget. The flash pass is separate and tiny: position-only
+    // triangles for at most sixteen cubes, 6.8 KB.
+    static constexpr int kMaxPrimedTntVertices = mc::render::kPrimedTntMaxVertices;
+    static constexpr int kMaxPrimedTntFlashVertices = mc::render::kPrimedTntFlashMaxVertices;
+
     // One item, 66 quads at worst. 4 KB.
     static constexpr int kMaxHeldVertices = mc::render::kMaxHeldItemVertices;
 
@@ -668,6 +813,9 @@ private:
     const mc::entity::ItemEntitySystem* items_ = nullptr;
     void* fallingVerts_ = nullptr;
     const mc::entity::FallingBlockSystem* fallingBlocks_ = nullptr;
+    void* tntVerts_ = nullptr;
+    void* tntFlashVerts_ = nullptr;
+    const mc::entity::PrimedTntSystem* primedTnt_ = nullptr;
     void* paintingVerts_ = nullptr;
     const mc::entity::PaintingSystem* paintings_ = nullptr;
     void* arrowVerts_ = nullptr;
@@ -676,6 +824,10 @@ private:
     const mc::entity::BoatSystem* boats_ = nullptr;
     void* minecartVerts_ = nullptr;
     const mc::entity::MinecartSystem* minecarts_ = nullptr;
+    void* mobVerts_ = nullptr;
+    void* entityFireVerts_ = nullptr;
+    const mc::entity::MobSystem* mobs_ = nullptr;
+    const mc::entity::MobSpawnerStore* spawners_ = nullptr;
     const mc::tick::TickWorld* minecartWorld_ = nullptr;
     void* signVerts_ = nullptr;
     const mc::world::SignStore* signs_ = nullptr;
@@ -685,10 +837,19 @@ private:
     // lines, six corners each. Built before the first eye and read by both.
     void* chatVerts_ = nullptr;
     void* chatStrips_ = nullptr;
+    // The sky: 70 KB written once at init and never touched again, because
+    // every part of it that changes with the time of day is a uniform or a
+    // combiner constant. See core/render/sky.hpp.
+    void* skyVerts_ = nullptr;
     const mc::gui::ChatLog* chat_ = nullptr;
     const mc::texture::FontImage* chatFont_ = nullptr;
     mc::render::ChatSpan chatSpans_[mc::gui::kChatShownLines];
     int chatSpanCount_ = 0;
+    // The HUD's quads: `render::kHudMaxVertices` of them, one linear
+    // allocation for the life of the renderer, rebuilt in each eye.
+    void* hudVerts_ = nullptr;
+    mc::render::HudInput hudInput_{};
+    bool hudVisible_ = false;
     bool heldVisible_ = false;
     mc::item::ItemId heldItem_ = 0;
     float heldEquipped_ = 0.0f;
@@ -726,6 +887,19 @@ private:
 
     Atlas atlas_;
     Lightmap lightmap_;
+
+    // What `setWorldTime` worked out, in the form each user of it wants: the
+    // clear colour in the render target's RGBA8 and the three combiner
+    // constants in the texenv's reversed 0xAABBGGRR, with floats for the two
+    // that are not colours. The defaults are full daylight at eight chunks, so
+    // a renderer whose owner never sets a time draws the sky this port drew
+    // before there was one to set.
+    u32 clearColour_ = 0xB3D1FFFF;
+    u32 fogColour_ = 0xFFFFD1B3;
+    u32 skyPlaneColour_ = 0xFFFFBB88;
+    u32 voidPlaneColour_ = 0xFFB33025;
+    float starBrightness_ = 0.0f;
+    float celestialAngle_ = 0.0f;
 
     // One immutable index buffer for the whole process: 4 vertices per quad,
     // repeating 0,1,2, 0,2,3. Chunk meshes therefore carry no index data at all.

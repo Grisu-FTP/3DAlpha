@@ -109,6 +109,9 @@ struct FallingBlock {
     // `(sky << 4) | block` where it is, resampled every tick as the item
     // entities resample theirs.
     u8 light = 0;
+    // `kh.aT` -- the fire counter. See core/entity/fire_entry.hpp.
+    i16 fire = 0;
+
     bool onGround = false;
 
     bool alive() const { return block != 0; }

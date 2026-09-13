@@ -285,6 +285,10 @@ ChunkGenerator::Entry* ChunkGenerator::ensure(i32 x, i32 z)
                 existing->section(sy).writeBlocks(sectionScratch_.data());
                 scatterBlocks(sectionScratch_.data(), sy, blocks);
             }
+            // A column already on the card may still be owed a population --
+            // its chest is not this sweep's to invent, and a dungeon dropped
+            // into it must be added to what it has rather than replace it.
+            entry->tileEntities = existing->tileEntities;
         }
     }
     if (loaded) {
@@ -455,11 +459,19 @@ void ChunkGenerator::populate(i32 px, i32 pz)
 
     view_.reset(px - 1, pz - 1, 3, 3, window);
 
-    // Dungeon tile-entity records have no consumer here: their chest/spawner
-    // blocks are already in the column and the vectors were thrown away below.
-    // Do not allocate those transient records on the generation worker.
-    populateChunk(provider_, view_, px, pz, nullptr);
+    // **The dungeon's tile entities, which are the one thing the block array
+    // cannot carry**: the mob in the cage and what is in the chests. They are
+    // routed onto the entries of the columns they landed in, which are not
+    // necessarily this one -- a pass writes into a 2x2 quadrant.
+    //
+    // The vectors are a member and are cleared rather than rebuilt, so the
+    // common case (no dungeon, which is nearly every call) allocates nothing
+    // on the generation worker.
+    sideEffects_.spawners.clear();
+    sideEffects_.chests.clear();
+    populateChunk(provider_, view_, px, pz, &sideEffects_);
     ++stats_.populated;
+    recordDungeons();
 
     stats_.refusedOutOfWindow += view_.refusedOutOfWindow();
 
@@ -505,6 +517,39 @@ bool ChunkGenerator::lightable(i32 x, i32 z) const
     return true;
 }
 
+// Puts a pass's dungeon records onto the entries of the columns they landed
+// in. A record outside the cache is dropped: population is asserted to write
+// only inside the 2x2 quadrant, and every column of that quadrant is resident
+// by the trigger's own precondition, so this cannot fire -- it is here for the
+// same reason `populationEscapes` is counted rather than assumed.
+void ChunkGenerator::recordDungeons()
+{
+    for (const DungeonSpawner& spawner : sideEffects_.spawners) {
+        Entry* e = find(spawner.x >> 4, spawner.z >> 4);
+        if (e == nullptr) {
+            continue;
+        }
+        world::TileEntity& tile =
+            world::putTileEntity(e->tileEntities, spawner.x, int(spawner.y), spawner.z,
+                                 world::TileEntityKind::MobSpawner);
+        // `cg`'s own string. Empty only on the fourth branch of `cg.b`, which
+        // `nextInt(4)` cannot reach; `bd`'s default stands if it ever did.
+        if (spawner.mob != nullptr && spawner.mob[0] != '\0') {
+            tile.entityId = spawner.mob;
+        }
+    }
+
+    for (const DungeonChest& chest : sideEffects_.chests) {
+        Entry* e = find(chest.x >> 4, chest.z >> 4);
+        if (e == nullptr) {
+            continue;
+        }
+        world::TileEntity& tile = world::putTileEntity(
+            e->tileEntities, chest.x, int(chest.y), chest.z, world::TileEntityKind::Chest);
+        tile.items = chest.contents;
+    }
+}
+
 bool ChunkGenerator::finish(i32 chunkX, i32 chunkZ, world::ChunkColumn* out)
 {
     const u8* window[9] = {};
@@ -546,7 +591,9 @@ bool ChunkGenerator::finish(i32 chunkX, i32 chunkZ, world::ChunkColumn* out)
         // nothing to copy in.
     }
 
-    find(chunkX, chunkZ)->delivered = true;
+    Entry* centre = find(chunkX, chunkZ);
+    out->tileEntities = centre->tileEntities;
+    centre->delivered = true;
     return true;
 }
 

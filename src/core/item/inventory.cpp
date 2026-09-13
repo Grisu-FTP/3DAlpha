@@ -3,6 +3,8 @@
 #include "core/item/creative_palette.hpp"
 #include "core/item/registry.hpp"
 
+#include <utility>
+
 namespace mc::item {
 
 namespace {
@@ -132,6 +134,25 @@ ItemId Inventory::dropOne()
     return taken;
 }
 
+bool Inventory::consumeOne(ItemId id)
+{
+    // `eu.f(I)I` finds the first main slot whose stack is that item, in index
+    // order, and `eu.b(I)Z` takes one off it.
+    for (int slot = 0; slot < kMainSlots; ++slot) {
+        ItemStack& stack = main[slot];
+        if (stack.empty() || stack.id != id) {
+            continue;
+        }
+        if (stack.count <= 1) {
+            set(slot, 0, 0);
+        } else {
+            --stack.count;
+        }
+        return true;
+    }
+    return false;
+}
+
 void Inventory::cycle(int delta)
 {
     // `% kHotbarSlots` after adding the width keeps the intermediate positive
@@ -231,6 +252,112 @@ void Inventory::swap(int a, int b)
     // swap the addresses.
     first.slot = i8(a);
     second.slot = i8(b);
+}
+
+namespace {
+
+int stackCeiling(ItemId id)
+{
+    const int own = int(def(id).stack);
+    return own < kInventoryStackLimit ? own : kInventoryStackLimit;
+}
+
+// As much of `from` as fits into `slots[first, end)`: onto the matching stacks
+// first, then into the empty ones. The slot numbers stay with the array
+// positions, as they do in `swap`.
+bool mergeInto(ItemStack* slots, int first, int end, ItemStack& from)
+{
+    if (from.empty()) {
+        return false;
+    }
+    const i8 fromNumber = from.slot;
+    const int ceiling = stackCeiling(ItemId(from.id));
+    bool moved = false;
+    for (int pass = 0; pass < 2 && !from.empty(); ++pass) {
+        for (int i = first; i < end && !from.empty(); ++i) {
+            ItemStack& slot = slots[i];
+            if (&slot == &from) {
+                continue;
+            }
+            if (pass == 0) {
+                if (slot.empty() || slot.id != from.id || int(slot.count) >= ceiling) {
+                    continue;
+                }
+                int take = ceiling - int(slot.count);
+                take = take < int(from.count) ? take : int(from.count);
+                slot.count = i8(int(slot.count) + take);
+                from.count = i8(int(from.count) - take);
+            } else {
+                if (!slot.empty()) {
+                    continue;
+                }
+                const i8 number = slot.slot;
+                if (int(from.count) <= ceiling) {
+                    // Whole, so whatever tags the stack carries go with it.
+                    slot = std::move(from);
+                    from = ItemStack{};
+                } else {
+                    slot = ItemStack{};
+                    slot.id = from.id;
+                    slot.damage = from.damage;
+                    slot.count = i8(ceiling);
+                    from.count = i8(int(from.count) - ceiling);
+                }
+                slot.slot = number;
+            }
+            if (from.count <= 0) {
+                from = ItemStack{};
+            }
+            from.slot = fromNumber;
+            moved = true;
+        }
+    }
+    return moved;
+}
+
+}  // namespace
+
+bool Inventory::quickMove(int slot)
+{
+    if (Layout::isMain(slot)) {
+        ItemStack& from = main[slot];
+        if (from.empty()) {
+            return false;
+        }
+        const int wornSlot = armourSlotFor(ItemId(from.id));
+        if (wornSlot >= 0) {
+            const int index = Layout::armourIndex(wornSlot);
+            if (mergeInto(armour, index, index + 1, from)) {
+                return true;
+            }
+        }
+        return slot < kHotbarSlots ? mergeInto(main, kHotbarSlots, kMainSlots, from)
+                                   : mergeInto(main, 0, kHotbarSlots, from);
+    }
+    if (Layout::isArmour(slot)) {
+        ItemStack& from = armour[Layout::armourIndex(slot)];
+        bool moved = mergeInto(main, kHotbarSlots, kMainSlots, from);
+        if (!from.empty()) {
+            moved = mergeInto(main, 0, kHotbarSlots, from) || moved;
+        }
+        return moved;
+    }
+    return false;
+}
+
+bool Inventory::giveStack(ItemId id)
+{
+    if (id <= 0 || def(id).stack <= 0) {
+        return false;
+    }
+    ItemStack stack;
+    stack.id = i16(id);
+    stack.count = i8(stackCeiling(id));
+    bool moved = mergeInto(main, 0, kHotbarSlots, stack);
+    if (!stack.empty()) {
+        moved = mergeInto(main, kHotbarSlots, kMainSlots, stack) || moved;
+    }
+    return moved;
 }
 
 void Inventory::fillHandFromPalette(int firstPaletteIndex)

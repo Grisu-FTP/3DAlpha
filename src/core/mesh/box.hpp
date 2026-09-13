@@ -55,8 +55,14 @@ inline constexpr int kAllBoxFaces = 0x3F;
 // its bit clear. `shaded` picks between the per-face brightness table and flat
 // white, because a1.1.2 draws some shapes unshaded and it is a per-shape fact
 // rather than a per-face one.
+//
+// `mirrorMask` is a bit per face whose two u ends swap, which is what
+// `RenderBlocks` does with its `flipTexture` field (`bc.c`) when a block
+// answers a *negative* tile index. Only the door does that in a1.1.2, and it is
+// the whole of how a door shows which side its hinge is on.
 void addBox(int x, int y, int z, const AABB& bounds, const u16 tiles[6], u8 light, bool shaded,
-            int faceMask, MeshBuilder& out, DetailPass pass = DetailPass::Opaque);
+            int faceMask, MeshBuilder& out, DetailPass pass = DetailPass::Opaque,
+            int mirrorMask = 0);
 
 // The same, with one tile on all six faces.
 void addBox(int x, int y, int z, const AABB& bounds, u16 tile, u8 light, bool shaded,

@@ -62,6 +62,7 @@ with no arguments prints every mode; the ones that come up most:
 ./build-host/3dalpha --generate [seed] [radius]    # worldgen only
 ./build-host/3dalpha --mesh <world-dir>            # mesh a world, report the numbers
 ./build-host/3dalpha --walk <world-dir> 8 2000    # walk it with the player body; non-zero on a fall-through
+./build-host/3dalpha --spawns <world-dir> 6000 18000 gen  # where the monsters go; non-zero if none
 ./build-host/3dalpha --map <world-dir>             # draw the bottom screen's map
 ./build-host/3dalpha --world-info <world-dir>      # format, seed, on-disk cost
 ```

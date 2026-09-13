@@ -4,6 +4,9 @@
 #include "core/entity/minecart.hpp"
 
 #include "core/block/registry.hpp"
+#include "core/entity/particle.hpp"
+#include "core/entity/block_contact.hpp"
+#include "core/entity/fire_entry.hpp"
 #include "core/entity/sweep.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/math_helper.hpp"
@@ -272,12 +275,22 @@ bool MinecartSystem::mount(int index)
     return true;
 }
 
-void MinecartSystem::dismount()
+RiderSeat MinecartSystem::dismount()
 {
+    RiderSeat off;
     if (ridden_ >= 0 && ridden_ < carts_.size()) {
-        carts_[ridden_].ridden = false;
+        Minecart& c = carts_[ridden_];
+        c.ridden = false;
+        // `mountEntity`'s tail -- the rider is put on the cart's roof, which
+        // it can stand on. See core/entity/rider.hpp.
+        off.valid = true;
+        off.x = c.x;
+        off.y = c.box.minY + kMinecartHeight;
+        off.z = c.z;
+        off.yaw = c.yaw;
     }
     ridden_ = -1;
+    return off;
 }
 
 void MinecartSystem::collideWithPlayer(const AABB& playerBox, double playerX, double playerZ,
@@ -488,12 +501,20 @@ void MinecartSystem::tick(const tick::TickWorld& world, const VehicleRider& ride
                 double mx = moveX;
                 double my = 0.0;
                 double mz = moveZ;
+                // `&c` keeps the cart out of its own collision list, which
+                // it is in now that a minecart is solid -- see
+                // `TickWorld::forEachSolidBox`. Another cart on the same track
+                // still stops this one, and so does anything else standing on
+                // it: `oc.b_(kh)` answers with the neighbour's box whatever the
+                // neighbour is, which is the `true`. See
+                // core/entity/entity_boxes.hpp.
+                const Mover who{&c, true};
                 const BlockRange range = sweepRange(box.extend(mx, my, mz));
-                my = clipAxis(world, range, box, kAxisY, my);
+                my = clipAxis(world, range, box, kAxisY, my, who);
                 box = box.offset(0.0, my, 0.0);
-                mx = clipAxis(world, range, box, kAxisX, mx);
+                mx = clipAxis(world, range, box, kAxisX, mx, who);
                 box = box.offset(mx, 0.0, 0.0);
-                mz = clipAxis(world, range, box, kAxisZ, mz);
+                mz = clipAxis(world, range, box, kAxisZ, mz, who);
                 box = box.offset(0.0, 0.0, mz);
                 c.box = box;
                 c.x = (box.minX + box.maxX) / 2.0;
@@ -609,12 +630,15 @@ void MinecartSystem::tick(const tick::TickWorld& world, const VehicleRider& ride
             double my = c.motionY;
             double mz = c.motionZ;
             const double wantY = my;
+            // The same two facts as the on-rails move above: out of its own
+            // list, and stopped by everything else in it.
+            const Mover who{&c, true};
             const BlockRange range = sweepRange(box.extend(mx, my, mz));
-            my = clipAxis(world, range, box, kAxisY, my);
+            my = clipAxis(world, range, box, kAxisY, my, who);
             box = box.offset(0.0, my, 0.0);
-            mx = clipAxis(world, range, box, kAxisX, mx);
+            mx = clipAxis(world, range, box, kAxisX, mx, who);
             box = box.offset(mx, 0.0, 0.0);
-            mz = clipAxis(world, range, box, kAxisZ, mz);
+            mz = clipAxis(world, range, box, kAxisZ, mz, who);
             box = box.offset(0.0, 0.0, mz);
             c.box = box;
             c.x = (box.minX + box.maxX) / 2.0;
@@ -629,6 +653,48 @@ void MinecartSystem::tick(const tick::TickWorld& world, const VehicleRider& ride
                 c.motionX *= kMinecartAirDrag;
                 c.motionY *= kMinecartAirDrag;
                 c.motionZ *= kMinecartAirDrag;
+            }
+        }
+
+        // **The blocks it is standing in come first in that tail**, and a
+        // cactus is the only one in a1.1.2 that answers. One point per cell
+        // per tick reaches `attackEntityFrom`, which for a cart is ten of the
+        // forty it takes to break one -- so a cart pushed against a cactus is
+        // kindling in four seconds. See core/entity/block_contact.hpp.
+        {
+            const int hits = blockContactHits(world, c.box);
+            bool broken = false;
+            for (int hit = 0; hit < hits && !broken; ++hit) {
+                const int before = carts_.size();
+                attack(world, index, kContactDamage);
+                broken = carts_.size() != before;
+            }
+            if (broken) {
+                continue;
+            }
+        }
+
+        // **`moveEntity`'s tail**, and one call covers both branches above
+        // because exactly one of them runs in a tick. A cart standing in fire
+        // takes ten of its forty points a tick through `oc.a(Lkh;I)Z`, so four
+        // seconds of flame leaves the planks and wheels a broken cart leaves.
+        // The one thing this is not exact about is the rail branch's slope
+        // step, which the jar performs *after* its `moveEntity` and this reads
+        // the box from: on a sloped rail the burn test is a tick ahead of the
+        // jar's. See core/entity/fire_entry.hpp.
+        {
+            const FireEntryResult burn = updateFireEntry(
+                &c.fire, boundingBoxBurning(world, c.box), fireWetProbe(world, c.box));
+            if (burn.fizz) {
+                world.playSoundAt(kFizzSound, c.x, c.y - kMinecartYOffset, c.z, 0.7f,
+                                  fizzPitch(rand_));
+            }
+            if (burn.damage) {
+                const int before = carts_.size();
+                attack(world, index, 1);
+                if (carts_.size() != before) {
+                    continue;
+                }
             }
         }
 
@@ -662,6 +728,13 @@ void MinecartSystem::tick(const tick::TickWorld& world, const VehicleRider& ride
                 c.pushX = 0.0;
                 c.pushZ = 0.0;
             }
+            // **The chimney, on the same one-tick-in-four the fuel burns on**
+            // -- not a tick of its own. So a furnace cart puffs at exactly the
+            // rate it is spending coal, which is the whole of the effect: an
+            // empty one goes quiet the moment the fuel runs out, because the
+            // branch it is in stops being taken.
+            world.spawnParticle(int(entity::ParticleKind::LargeSmoke), c.x, c.y + 0.8,
+                                c.z);
         }
 
         c.light = packedLightAt(world, c.x, c.y, c.z);

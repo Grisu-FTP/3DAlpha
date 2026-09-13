@@ -1,6 +1,7 @@
 #include "core/tick/tick_world.hpp"
 
 #include "core/tick/behaviour.hpp"
+#include "core/tick/furnace.hpp"
 #include "core/tick/redstone.hpp"
 #include "core/world/daylight.hpp"
 
@@ -562,6 +563,11 @@ void TickWorld::tick(const Centre* centres, int centreCount, int radius)
                 ++stats_.chunksTicked;
                 snowAndIce(*column);
                 randomTickChunk(*column);
+                // **Over the same square the random ticks walk**, which is a
+                // narrowing: a1.1.2 updates every loaded tile entity from
+                // `updateEntities`, and a furnace out past the tick radius in
+                // the original keeps cooking where this one waits.
+                tickTileEntities(*column);
             }
         }
     }
@@ -571,6 +577,35 @@ void TickWorld::tick(const Centre* centres, int centreCount, int radius)
     // wirePropagate with no notifyNeighbours below it on the stack. Nothing
     // deferred is allowed to outlive the tick that deferred it.
     drainDeferredNotifications();
+}
+
+void TickWorld::tickTileEntities(world::ChunkColumn& column)
+{
+    if (column.tileEntities.empty()) {
+        return;
+    }
+    // **Positions first, then the ticks.** A furnace that lights or goes out
+    // rewrites its own block, which drops and re-adds its entry and moves the
+    // list's order under any index held across the call. A column holds a
+    // handful of tile entities; past the array the rest wait a tick.
+    constexpr int kMaxFurnacesPerColumn = 32;
+    struct Where {
+        i32 x;
+        i32 z;
+        int y;
+    };
+    Where furnaces[kMaxFurnacesPerColumn];
+    int count = 0;
+    for (const world::TileEntity& tile : column.tileEntities) {
+        if (tile.kind == world::TileEntityKind::Furnace && count < kMaxFurnacesPerColumn) {
+            furnaces[count++] = Where{tile.x, tile.z, tile.y};
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        if (furnaceTickAt(*this, furnaces[i].x, furnaces[i].y, furnaces[i].z)) {
+            markTileEntityChanged(furnaces[i].x, furnaces[i].z);
+        }
+    }
 }
 
 }  // namespace mc::tick

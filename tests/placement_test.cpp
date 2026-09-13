@@ -27,6 +27,7 @@
 #include "core/item/registry.hpp"
 #include "core/item/use.hpp"
 #include "core/mesh/vertex.hpp"
+#include "core/tick/behaviour.hpp"
 #include "core/tick/tick_world.hpp"
 #include "framework.hpp"
 #include "placement_vectors.hpp"
@@ -386,4 +387,89 @@ TEST(a_staircase_under_something_solid_turns_into_the_block_it_is_made_of)
     }
     CHECK_EQ(int(block::modelOf(bid(mcver::Block::WoodenStairs))), int(mcver::Block::Planks));
     CHECK_EQ(int(block::modelOf(bid(mcver::Block::Stone))), 0);
+}
+
+// **A torch clicked onto another torch hangs on the wall beside it**, not on the
+// torch. Reported from play: the second torch was drawn standing on the first,
+// and only fell when the wall that was really holding it went. `mj.d` keeps
+// `onBlockAdded`'s wall unless the struck face is itself an opaque cube, and a
+// torch is not one. The ladder's `br.d` has the same shape with its own order.
+TEST(a_torch_clicked_onto_a_torch_hangs_on_the_wall_that_holds_it)
+{
+    test::SceneWorld scene(0, 0);
+    resetScene(scene);
+    const BlockId stone = BlockId(mcver::Block::Stone);
+    const BlockId torch = BlockId(mcver::Block::Torch);
+
+    // Two stones stacked, and a torch on the lower one's +x face.
+    scene.place(kCx, kCy + 1, kCz, stone, 0);
+    scene.place(kCx + 1, kCy, kCz, torch, 1);
+
+    const bool placed = item::rightClick(scene.w(), item::ItemId(mcver::Block::Torch),
+                                         hitOn(kCx + 1, kCy, kCz, mesh::kFacePosY), kNoPlayer,
+                                         0.0f);
+    CHECK(placed);
+    CHECK_EQ(int(scene.w().blockAt(kCx + 1, kCy + 1, kCz)), int(torch));
+    // On the upper stone, which is at -x: orientation 1, not the floor's 5.
+    CHECK_EQ(int(scene.w().dataAt(kCx + 1, kCy + 1, kCz)), 1);
+
+    // So the torch underneath can go without taking it along...
+    scene.w().setBlockWithNotify(kCx + 1, kCy, kCz, block::kAir);
+    CHECK_EQ(int(scene.w().blockAt(kCx + 1, kCy + 1, kCz)), int(torch));
+    // ...and the wall cannot.
+    scene.w().setBlockWithNotify(kCx, kCy + 1, kCz, block::kAir);
+    CHECK_EQ(int(scene.w().blockAt(kCx + 1, kCy + 1, kCz)), int(block::kAir));
+}
+
+TEST(a_ladder_clicked_onto_a_ladder_hangs_on_the_wall_that_holds_it)
+{
+    test::SceneWorld scene(0, 0);
+    resetScene(scene);
+    const BlockId stone = BlockId(mcver::Block::Stone);
+    const BlockId ladder = BlockId(mcver::Block::Ladder);
+
+    // A wall two blocks long on the -x side, and a ladder on the first block.
+    scene.place(kCx, kCy, kCz + 1, stone, 0);
+    scene.place(kCx + 1, kCy, kCz, ladder, 5);
+
+    // The ladder's +z face: the table answers 3, "on the -z wall", which is the
+    // ladder itself.
+    CHECK_EQ(int(placementMetadata(ladder, mesh::kFacePosZ)), 3);
+    const bool placed = item::rightClick(scene.w(), item::ItemId(mcver::Block::Ladder),
+                                         hitOn(kCx + 1, kCy, kCz, mesh::kFacePosZ), kNoPlayer,
+                                         0.0f);
+    CHECK(placed);
+    CHECK_EQ(int(scene.w().blockAt(kCx + 1, kCy, kCz + 1)), int(ladder));
+    CHECK_EQ(int(scene.w().dataAt(kCx + 1, kCy, kCz + 1)), 5);
+}
+
+// **`fh.a(Lcn;III)Z`**: a fence refuses another fence underneath it and any
+// material that is not solid, so in a1.1.2 it stands on the ground or nowhere.
+// The Extra Setting lifts both halves and leaves the base cell test alone.
+TEST(a_fence_needs_solid_ground_that_is_not_a_fence_unless_placement_is_improved)
+{
+    test::SceneWorld scene(0, 0);
+    resetScene(scene);
+    tick::TickWorld& w = scene.w();
+    const BlockId fence = bid(mcver::Block::Fence);
+
+    // On the stone cube, yes; in the air beside it, no.
+    CHECK(tick::canPlaceAt(w, fence, kCx, kCy + 1, kCz));
+    CHECK(!tick::canPlaceAt(w, fence, kCx + 1, kCy, kCz));
+
+    // Not on another fence.
+    scene.place(kCx, kCy + 1, kCz, fence, 0);
+    CHECK(!tick::canPlaceAt(w, fence, kCx, kCy + 2, kCz));
+
+    // Nor over a material that is not solid, which a torch is.
+    scene.place(kCx + 1, kCy - 1, kCz, BlockId(mcver::Block::Stone), 0);
+    scene.place(kCx + 1, kCy, kCz, bid(mcver::Block::Torch), 5);
+    CHECK(!tick::canPlaceAt(w, fence, kCx + 1, kCy + 1, kCz));
+
+    w.setImprovedFencePlacement(true);
+    CHECK(tick::canPlaceAt(w, fence, kCx, kCy + 2, kCz));
+    CHECK(tick::canPlaceAt(w, fence, kCx - 1, kCy + 2, kCz));
+    CHECK(tick::canPlaceAt(w, fence, kCx + 1, kCy + 1, kCz));
+    // The cell itself still has to be free.
+    CHECK(!tick::canPlaceAt(w, fence, kCx, kCy, kCz));
 }

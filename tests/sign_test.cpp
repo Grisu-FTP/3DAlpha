@@ -340,9 +340,9 @@ TEST(the_board_sits_at_the_block_it_belongs_to)
     double lo[3] = {1e30, 1e30, 1e30};
     double hi[3] = {-1e30, -1e30, -1e30};
     for (int i = 0; i < written; ++i) {
-        const double p[3] = {double(verts[i].x) / double(mesh::kDetailUnitsPerBlock),
-                             double(verts[i].y) / double(mesh::kDetailUnitsPerBlock) + 64.0,
-                             double(verts[i].z) / double(mesh::kDetailUnitsPerBlock)};
+        const double p[3] = {double(verts[i].x) / double(render::kSignUnitsPerBlock),
+                             double(verts[i].y) / double(render::kSignUnitsPerBlock) + 64.0,
+                             double(verts[i].z) / double(render::kSignUnitsPerBlock)};
         for (int a = 0; a < 3; ++a) {
             lo[a] = p[a] < lo[a] ? p[a] : lo[a];
             hi[a] = p[a] > hi[a] ? p[a] : hi[a];
@@ -427,7 +427,7 @@ TEST(text_is_upright_on_the_front_of_the_board)
     double boardLo = 1e30;
     double boardHi = -1e30;
     for (int i = 0; i < render::kSignVerticesEach / render::kSignParts; ++i) {
-        const double y = double(board[i].y) / double(mesh::kDetailUnitsPerBlock) + 64.0;
+        const double y = double(board[i].y) / double(render::kSignUnitsPerBlock) + 64.0;
         boardLo = y < boardLo ? y : boardLo;
         boardHi = y > boardHi ? y : boardHi;
     }
@@ -435,10 +435,10 @@ TEST(text_is_upright_on_the_front_of_the_board)
     mesh::DetailVertex text[4096];
     CHECK_EQ(render::buildSignText(post.signs, font, 0.0, 64.0, 0.0, text, 4096), 2 * 4);
     const auto y = [&](int i) {
-        return double(text[i].y) / double(mesh::kDetailUnitsPerBlock) + 64.0;
+        return double(text[i].y) / double(render::kSignUnitsPerBlock) + 64.0;
     };
     const auto z = [&](int i) {
-        return double(text[i].z) / double(mesh::kDetailUnitsPerBlock);
+        return double(text[i].z) / double(render::kSignUnitsPerBlock);
     };
 
     // On the board, not under it.
@@ -456,4 +456,40 @@ TEST(text_is_upright_on_the_front_of_the_board)
     for (int i = 0; i < 8; ++i) {
         CHECK(z(i) < 0.5 - 0.04);
     }
+}
+
+// **A sign is drawn out to the 64 blocks a1.1.2 draws one at, and no further.**
+//
+// `fz.a(Lic;F)V` gates every tile entity on a squared distance under
+// `4096.0D`. Reported from play as "signs turn invisible when you go far away":
+// the detail format's 1/1024 of a block ran out at 31.25, so a sign disappeared
+// at half the game's distance. The builders write 1/512 now -- see
+// render::kSignUnitsPerBlock.
+TEST(a_sign_is_drawn_out_to_sixty_four_blocks_and_not_past_them)
+{
+    // Room for one whole sign as the budget charges it -- the board *and* four
+    // full lines of text. Sized to the board alone, the cutoff admitted nothing
+    // and this never got as far as a position.
+    mesh::DetailVertex verts[render::kSignVerticesEach + render::kSignGlyphsEach * 4];
+    const int room = int(sizeof(verts) / sizeof(verts[0]));
+
+    world::SignStore near;
+    CHECK(near.put(50, 64, 0, false, 0) >= 0);
+    const int drawn = render::buildSignBoards(near, 0.0, 64.0, 0.0, verts, room, nullptr);
+    CHECK_EQ(drawn, render::kSignVerticesEach);
+    // Fifty blocks out, in the units the draw scales back up.
+    for (int i = 0; i < drawn; ++i) {
+        const double x = double(verts[i].x) / double(render::kSignUnitsPerBlock);
+        CHECK(x > 49.0 && x < 52.0);
+    }
+
+    world::SignStore far;
+    CHECK(far.put(70, 64, 0, false, 0) >= 0);
+    CHECK_EQ(render::buildSignBoards(far, 0.0, 64.0, 0.0, verts, room, nullptr), 0);
+
+    // Inside the reach of the short on every axis, and still past the
+    // distance: 40 blocks along two axes is 56.6 of them.
+    world::SignStore diagonal;
+    CHECK(diagonal.put(40, 64 + 40, 40, false, 0) >= 0);
+    CHECK_EQ(render::buildSignBoards(diagonal, 0.0, 64.0, 0.0, verts, room, nullptr), 0);
 }

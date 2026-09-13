@@ -206,6 +206,57 @@ TEST(storing_a_chunk_twice_replaces_it)
     CHECK_EQ(store.stats().evicted, 0u);
 }
 
+// **A chunk is re-sampled when the world writes into it, and the map has to be
+// able to tell "written into" from "looks different".**
+//
+// The first is the streamer's block-change serial and the second is this: a
+// re-sample whose surface is identical to the one held changes nothing anyone
+// can see, and must not advance the counter `MapScreen`'s redraw signature
+// hangs off, or a player mining a tunnel would re-shade the whole window on
+// every frame for a picture that never changes. The serial is still taken, so
+// the chunk is not re-read again until the next write into it.
+TEST(a_resample_that_changes_nothing_costs_nothing_but_still_takes_the_serial)
+{
+    MapStore store;
+    store.setCapacity(4);
+
+    MapChunkSample sample;
+    sample.surface[0] = kStone;
+    sample.height[0] = 64;
+
+    CHECK(store.store(3, -5, sample, 11u));
+    CHECK_EQ(store.stats().stored, 1u);
+    CHECK_EQ(store.sampleSerial(3, -5), 11u);
+
+    // Drawn, so there is a patch to lose.
+    CHECK(store.claimPatch(3, -5, 7u) != nullptr);
+    CHECK(!store.patchStale(3, -5, 7u));
+
+    // The same ground, re-read after a block changed under the surface.
+    CHECK(!store.store(3, -5, sample, 12u));
+    CHECK_EQ(store.stats().stored, 1u);
+    CHECK_EQ(store.sampleSerial(3, -5), 12u);
+    CHECK(!store.patchStale(3, -5, 7u));
+
+    // ...and now something the map can see. The patch goes, and so does the one
+    // to the south, whose first row shades against this chunk's last.
+    MapChunkSample south;
+    south.surface[0] = kStone;
+    south.height[0] = 64;
+    CHECK(store.store(3, -4, south, 13u));
+    CHECK(store.claimPatch(3, -4, 7u) != nullptr);
+
+    sample.height[0] = 70;
+    CHECK(store.store(3, -5, sample, 14u));
+    CHECK_EQ(store.stats().stored, 3u);
+    CHECK_EQ(store.sampleSerial(3, -5), 14u);
+    CHECK(store.patchStale(3, -5, 7u));
+    CHECK(store.patchStale(3, -4, 7u));
+
+    // A chunk nobody ever stored has no serial to give.
+    CHECK_EQ(store.sampleSerial(40, 40), 0u);
+}
+
 TEST(the_tile_grid_is_the_one_later_versions_centre_maps_on)
 {
     // `MathHelper.floor((x + 64) / 128)` and a first block of `tile * 128 - 64`:

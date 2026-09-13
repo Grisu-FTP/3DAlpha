@@ -88,8 +88,12 @@ public:
 
     // `cn.j(III)I` -- getBlockLightValue: sky light less the day's
     // subtraction, or block light, whichever is brighter. This is what grass,
-    // mushrooms, crops and ice all read, so the time of day is an input to
-    // block behaviour and not only to the lightmap.
+    // mushrooms and crops read, so the time of day is an input to block
+    // behaviour and not only to the lightmap.
+    //
+    // **Ice and snow are not among them** -- they read `blockLightAt` above,
+    // and the comment here used to say otherwise. See behaviour.cpp's note
+    // above `iceTick` for what that cost.
     int lightValue(i32 x, int y, i32 z, bool checkNeighbours = true) const;
 
     // `cn.i(III)Z` -- World.canBlockSeeTheSky, answered from the chunk's own
@@ -138,6 +142,86 @@ public:
         return entityQuery_ != nullptr && entityQuery_(entityQueryCtx_, box, filter);
     }
 
+    // ---- the entities that are solid -----------------------------------
+    //
+    // **`kh.f_()` -- getBoundingBox -- and the half of
+    // `cn.a(Lkh;Lcf;)Ljava/util/List;` this port did not have.**
+    // `getCollidingBoundingBoxes` is not only a block loop: after it has
+    // gathered the blocks it asks every entity within a quarter of a block of
+    // the swept volume for `getBoundingBox()`, and adds whatever is not null.
+    // Every `moveEntity` in the game clips against that same list, so an
+    // entity with a box there is something to walk into and stand on.
+    //
+    // **Exactly two classes in this jar answer with a box**, and it was worth
+    // disassembling all 402 of them to be sure: `dc` (EntityBoat) and `oc`
+    // (EntityMinecart) both return their own `boundingBox`, and `kh`'s own
+    // method -- which every mob, item, arrow and particle inherits -- returns
+    // null. That is why a cow can be walked through and a minecart cannot, and
+    // why "you can stand on top of a minecart" is a statement about two
+    // classes rather than about entities in general.
+    //
+    // A **fold rather than a list**, for the reason `anyEntityIn` is a
+    // predicate: the sweep wants one number per axis and the pools belong to
+    // the frame loop, so nothing has to allocate or cap to answer. The sink is
+    // handed every solid box that intersects `swept` -- the original's final
+    // `intersectsWith` gate, which is what makes the 0.25 expansion on its
+    // candidate query invisible from here.
+    //
+    // `self` is `getCollidingBoundingBoxes`'s first argument: **the entity
+    // doing the moving, which is left out of its own collision list.** A cart
+    // whose own box came back would find it overlapping every swept volume it
+    // ever builds and would refuse to move at all. Anything that is not solid
+    // passes null, because it cannot be in the list in the first place.
+    //
+    // **The same list has a second entry per neighbour**, and it is the
+    // mover's own answer rather than the neighbour's:
+    //
+    //     AABB c = entity.getCollisionBox(e);   // kh.b_(kh), on the MOVER
+    //     if (c != null && c.intersectsWith(box)) list.add(c);
+    //
+    // `kh.b_` is null, so for a player, a mob, an item or a falling block this
+    // branch adds nothing at all. `dc.b_(kh)` and `oc.b_(kh)` are both
+    // `return e.boundingBox` -- unconditional, with no liveness or
+    // can-be-collided-with test in front of them -- so **a moving boat or
+    // minecart is stopped by every entity near it**, not only by the other
+    // boats and carts. That is `moverCollidesWithEntities`, and it is a
+    // property of the thing moving, which is why it travels with `self`
+    // instead of being asked of each candidate.
+    //
+    // **Unset means nothing is solid**, which is the honest answer for the
+    // headless tools: `--fly` moves a body through a world with no vehicles in
+    // it, and the block half of the sweep is unchanged.
+    using SolidBoxSink = void (*)(void* sinkCtx, const AABB& box);
+    using SolidBoxQuery = void (*)(void* ctx, const AABB& swept, const void* self,
+                                   bool moverCollidesWithEntities, SolidBoxSink sink,
+                                   void* sinkCtx);
+    void setSolidBoxQuery(SolidBoxQuery query, void* ctx)
+    {
+        solidBoxQuery_ = query;
+        solidBoxQueryCtx_ = ctx;
+    }
+    void forEachSolidBox(const AABB& swept, const void* self, bool moverCollidesWithEntities,
+                         SolidBoxSink sink, void* sinkCtx) const
+    {
+        if (solidBoxQuery_ != nullptr) {
+            solidBoxQuery_(solidBoxQueryCtx_, swept, self, moverCollidesWithEntities, sink,
+                           sinkCtx);
+        }
+    }
+
+    // `getCollidingBoundingBoxes(...).isEmpty()` asked of the entity half
+    // alone -- what the sneak walk-back and `isOffsetPositionInLiquid` want on
+    // top of their block loop.
+    bool anySolidBoxIn(const AABB& box, const void* self = nullptr,
+                       bool moverCollidesWithEntities = false) const
+    {
+        bool hit = false;
+        forEachSolidBox(box, self, moverCollidesWithEntities,
+                        [](void* ctx, const AABB&) { *static_cast<bool*>(ctx) = true; },
+                        &hit);
+        return hit;
+    }
+
     // `cn.a(Lkh;)Z` -- spawnEntityInWorld, narrowed to the one entity a block
     // behaviour ever asks for: a dropped item, at a position, of an id, one
     // deep. Set beside `setEntityQuery` and for the same reason -- the pool
@@ -171,6 +255,34 @@ public:
         return fallingSink_ != nullptr && fallingSink_(fallingSinkCtx_, x, y, z, u16(id));
     }
 
+    // `q`'s three `new jd(...)` sites -- **BlockTNT priming itself**, and the
+    // second block behaviour in this version that spawns an entity. The cell
+    // is already air by the time this is called, exactly as it is in the jar:
+    // `hq.b(IIII)Z` writes the air and then calls `onBlockDestroyedByPlayer`,
+    // and `je`'s phase three does the same before
+    // `onBlockDestroyedByExplosion`.
+    //
+    // **The fuse is the caller's** and not this seam's. Two of the three sites
+    // want the constructor's 80; the third, `q.c(Lcn;III)V`, re-rolls it as
+    // `world.rand.nextInt(20) + 10` -- and that draw has to stay on the
+    // world's generator, in the order the jar makes it, or every random after
+    // it in the tick moves.
+    //
+    // **Unset throws the entity away**, which is the bargain `spawnItem` takes
+    // and for the same reason: the pool belongs to the frame loop. A headless
+    // tool breaking TNT therefore gets a cell of air and no blast, and makes
+    // every draw it would have made either way. Returns whether it was taken.
+    using PrimedTntSink = bool (*)(void* ctx, i32 x, int y, i32 z, int fuse);
+    void setPrimedTntSink(PrimedTntSink sink, void* ctx)
+    {
+        tntSink_ = sink;
+        tntSinkCtx_ = ctx;
+    }
+    bool spawnPrimedTnt(i32 x, int y, i32 z, int fuse) const
+    {
+        return tntSink_ != nullptr && tntSink_(tntSinkCtx_, x, y, z, fuse);
+    }
+
     // `cn.a(DDDLjava/lang/String;FF)V` -- **World.playSoundEffect**, the one
     // thing a block behaviour does that is neither a block nor an entity.
     //
@@ -199,6 +311,31 @@ public:
     {
         if (soundSink_ != nullptr) {
             soundSink_(soundSinkCtx_, key, x, y, z, volume, pitch);
+        }
+    }
+
+    // **`cn.a(String, DDDDDD)` -- World.spawnParticle**, and it is a seam for
+    // exactly the reason the sound is: a block behaviour and an entity tick
+    // both ask the world for a puff of smoke, and the pool that holds the
+    // particles belongs to the frame loop.
+    //
+    // `kind` is `entity::ParticleKind` as an integer, so this header does not
+    // have to include the particle pool to declare the seam -- `core/entity`
+    // already depends on `core/tick` and the reverse has never been true. The
+    // one caller that installs the sink converts it back.
+    using ParticleSink = void (*)(void* ctx, int kind, double x, double y, double z,
+                                  double motionX, double motionY, double motionZ);
+    void setParticleSink(ParticleSink sink, void* ctx)
+    {
+        particleSink_ = sink;
+        particleSinkCtx_ = ctx;
+    }
+    bool hasParticleSink() const { return particleSink_ != nullptr; }
+    void spawnParticle(int kind, double x, double y, double z, double motionX = 0.0,
+                       double motionY = 0.0, double motionZ = 0.0) const
+    {
+        if (particleSink_ != nullptr) {
+            particleSink_(particleSinkCtx_, kind, x, y, z, motionX, motionY, motionZ);
         }
     }
 
@@ -234,6 +371,90 @@ public:
     {
         if (tileEntitySink_ != nullptr) {
             tileEntitySink_(tileEntitySinkCtx_, x, y, z);
+        }
+    }
+
+    // `cn.a(IIILic;)V` -- **World.setBlockTileEntity**, the other half of the
+    // pair. `jt.e` -- BlockContainer.onBlockAdded -- calls it with whatever
+    // `getBlockEntity()` builds, on *every* way the block can appear rather
+    // than on a click, which is why this hangs off the block-added dispatch
+    // and not off `core/item/use.cpp`.
+    //
+    // It carries no contents: all four of this version's tile entities start
+    // from their own constructor's defaults, and the only one with anything
+    // interesting in it -- `bd`'s `"Pig"` -- is the store's business. A world
+    // file's saved contents arrive by a different road; see
+    // core/entity/mob_spawner.hpp.
+    void setTileEntityAddedSink(TileEntitySink sink, void* ctx)
+    {
+        tileEntityAddedSink_ = sink;
+        tileEntityAddedSinkCtx_ = ctx;
+    }
+    void addTileEntity(i32 x, int y, i32 z) const
+    {
+        if (tileEntityAddedSink_ != nullptr) {
+            tileEntityAddedSink_(tileEntityAddedSinkCtx_, x, y, z);
+        }
+    }
+
+    // **The furnace's and the chest's contents**, which live in the column's
+    // own list rather than in a store -- see core/world/tile_entity.hpp. Null
+    // for a column that is not resident.
+    std::vector<world::TileEntity>* tileEntitiesAt(i32 x, i32 z) const
+    {
+        world::ChunkColumn* column = columnAtBlock(x, z);
+        return column != nullptr ? &column->tileEntities : nullptr;
+    }
+
+    // `ic.j_()` -- **onInventoryChanged**, which marks the chunk modified so
+    // the next save writes what is in a furnace or a chest. Not a block write:
+    // nothing is remeshed.
+    using ColumnModifiedSink = void (*)(void* ctx, i32 x, i32 z);
+    void setColumnModifiedSink(ColumnModifiedSink sink, void* ctx)
+    {
+        columnModifiedSink_ = sink;
+        columnModifiedSinkCtx_ = ctx;
+    }
+    void markTileEntityChanged(i32 x, i32 z) const
+    {
+        if (columnModifiedSink_ != nullptr) {
+            columnModifiedSink_(columnModifiedSinkCtx_, x, z);
+        }
+    }
+
+    // **A screen a block opens** -- `dm.a(Lgh;)V` for a chest, `dm.l()` for the
+    // workbench, `dm.a(Lke;)V` for a furnace. The screens are the frame loop's;
+    // this says which and where, and the block has already taken the click.
+    enum class ContainerKind : u8 { Workbench, Furnace, Chest };
+    using ContainerSink = void (*)(void* ctx, ContainerKind kind, i32 x, int y, i32 z);
+    void setContainerSink(ContainerSink sink, void* ctx)
+    {
+        containerSink_ = sink;
+        containerSinkCtx_ = ctx;
+    }
+    void openContainer(ContainerKind kind, i32 x, int y, i32 z) const
+    {
+        if (containerSink_ != nullptr) {
+            containerSink_(containerSinkCtx_, kind, x, y, z);
+        }
+    }
+
+    // **A whole stack thrown with its own motion** -- `new EntityItem(...)` with
+    // the stack's damage and a velocity the caller chose, which is how a broken
+    // chest spills. `spawnItem` above is the block-drop constructor and cannot
+    // carry either.
+    using StackSink = void (*)(void* ctx, double x, double y, double z, u16 item, int count,
+                               i16 damage, double motionX, double motionY, double motionZ);
+    void setStackSink(StackSink sink, void* ctx)
+    {
+        stackSink_ = sink;
+        stackSinkCtx_ = ctx;
+    }
+    void spawnItemStack(double x, double y, double z, u16 item, int count, i16 damage,
+                        double motionX, double motionY, double motionZ) const
+    {
+        if (stackSink_ != nullptr) {
+            stackSink_(stackSinkCtx_, x, y, z, item, count, damage, motionX, motionY, motionZ);
         }
     }
 
@@ -421,6 +642,11 @@ public:
     void setSnowCovered(bool v) { snowCovered_ = v; }
     bool snowCovered() const { return snowCovered_; }
 
+    // The Extra Setting `improvedFencePlacement` -- see
+    // core/settings/world_settings.hpp. Off is a1.1.2's `fh` rule.
+    void setImprovedFencePlacement(bool v) { improvedFencePlacement_ = v; }
+    bool improvedFencePlacement() const { return improvedFencePlacement_; }
+
     // The column cache holds a raw pointer into whatever owns the chunks, and
     // that owner may evict between ticks. Anything that moves or frees a
     // column must say so; `tick()` does it itself.
@@ -450,21 +676,39 @@ private:
     EntityQuery entityQuery_ = nullptr;
     void* entityQueryCtx_ = nullptr;
 
+    SolidBoxQuery solidBoxQuery_ = nullptr;
+    void* solidBoxQueryCtx_ = nullptr;
+
     DropSink dropSink_ = nullptr;
     void* dropSinkCtx_ = nullptr;
 
     FallingBlockSink fallingSink_ = nullptr;
     void* fallingSinkCtx_ = nullptr;
 
+    PrimedTntSink tntSink_ = nullptr;
+    void* tntSinkCtx_ = nullptr;
+
+    ParticleSink particleSink_ = nullptr;
+    void* particleSinkCtx_ = nullptr;
+    TileEntitySink tileEntityAddedSink_ = nullptr;
+    void* tileEntityAddedSinkCtx_ = nullptr;
     SoundSink soundSink_ = nullptr;
     void* soundSinkCtx_ = nullptr;
 
     TileEntitySink tileEntitySink_ = nullptr;
     void* tileEntitySinkCtx_ = nullptr;
 
+    ColumnModifiedSink columnModifiedSink_ = nullptr;
+    void* columnModifiedSinkCtx_ = nullptr;
+    ContainerSink containerSink_ = nullptr;
+    void* containerSinkCtx_ = nullptr;
+    StackSink stackSink_ = nullptr;
+    void* stackSinkCtx_ = nullptr;
+
     i64 time_ = 0;
     int skyDarken_ = 0;
     bool snowCovered_ = false;
+    bool improvedFencePlacement_ = false;
     bool wiresProvidePower_ = true;
 
     struct TorchToggle {
@@ -524,6 +768,10 @@ private:
     void runScheduled();
     void randomTickChunk(world::ChunkColumn& column);
     void snowAndIce(world::ChunkColumn& column);
+
+    // `ic.b()` for every tile entity in the column that ticks -- the furnace;
+    // the spawner has its own store. See core/tick/furnace.hpp.
+    void tickTileEntities(world::ChunkColumn& column);
 
     i32 nextLcg()
     {

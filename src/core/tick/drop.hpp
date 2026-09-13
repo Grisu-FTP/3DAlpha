@@ -59,7 +59,15 @@ class TickWorld;
 // every headless tool here -- see `TickWorld::setDropSink`. It still consumes
 // the same draws either way, so a world ticked with no entity pool stays the
 // same world.
-void dropBlockAsItem(TickWorld& world, i32 x, int y, i32 z, block::BlockId self, u8 metadata);
+// **`chance` is `dropBlockAsItemWithChance`'s own argument**, and it is not a
+// generalisation invented here: the method has always taken it and
+// `dropBlockAsItem` has always been the call with 1.0. Exactly one caller in
+// this version passes anything else -- `je`, the explosion, which drops three
+// blocks in ten (core/tick/explosion.hpp). The draw happens either way, so a
+// chance of 1.0 stays bit-identical to what this function did before it took
+// the parameter.
+void dropBlockAsItem(TickWorld& world, i32 x, int y, i32 z, block::BlockId self, u8 metadata,
+                     float chance = 1.0f);
 
 // `ly.b(Lcn;IIII)V` -- **onBlockDestroyedByPlayer**, the hook `hq.b(IIII)Z`
 // runs on the block it has just written to air, with the metadata it read
@@ -75,9 +83,12 @@ void dropBlockAsItem(TickWorld& world, i32 x, int y, i32 z, block::BlockId self,
 //     they are this method.
 //   * `km` (BlockStairs) -- forwards to the model block, whose own override is
 //     the empty one. Nothing to do.
-//   * `q` (BlockTNT) -- primes it. There is no primed-TNT entity in this build
-//     and `core/tick/fire.cpp` already names the same deviation at the other
-//     call site; it is named again here rather than left silent.
+//   * `q` (BlockTNT) -- **primes it**, which is why breaking TNT in a1.1.2
+//     hands you nothing and lights a four-second fuse instead. `q`'s
+//     `quantityDropped` is a hard zero and this override has no metadata
+//     guard, so there is no way to pick a placed block back up; the
+//     `if (metadata == 1)` that changes that arrives in a later version.
+//     `tntDestroyedByPlayer` below is its body.
 //
 // **Its draws come out of the world's random**, exactly as `dropBlockAsItem`'s
 // do, so a build that skipped it would generate different flowers downstream.
@@ -86,5 +97,46 @@ void dropBlockAsItem(TickWorld& world, i32 x, int y, i32 z, block::BlockId self,
 // the cell is already air by the time a1.1.2 calls this.
 void blockDestroyedByPlayer(TickWorld& world, i32 x, int y, i32 z, block::BlockId self,
                             u8 metadata);
+
+// **`q.b(Lcn;IIII)V`** -- BlockTNT's half of the hook above, reached from
+// `blockDestroyedByPlayer` and, on the same terms, from a fire spreading into
+// the block (`core/tick/fire.cpp`).
+//
+// ```
+// EntityTNTPrimed tnt = new EntityTNTPrimed(world, i + 0.5F, j + 0.5F, k + 0.5F);
+// world.spawnEntityInWorld(tnt);
+// world.playSoundAtEntity(tnt, "random.fuse", 1.0F, 1.0F);
+// ```
+//
+// **The sound is at the entity and not at the block**, which for TNT means
+// `posY - yOffset` -- the cell's centre less half the entity's height, so
+// `y + 0.01` rather than `y + 0.5`. `cn.a(Lkh;Ljava/lang/String;FF)V` takes
+// that subtraction for every entity sound in the game; it is transcribed here
+// because this is the only block that makes one.
+//
+// **It plays whether or not the entity was taken.** A full pool loses the
+// blast and keeps the fuse, which is wrong in exactly one direction -- a
+// sound with nothing behind it -- and is preferable to a silent gap where a
+// block used to be.
+void tntDestroyedByPlayer(TickWorld& world, i32 x, int y, i32 z);
+
+// **`q.c(Lcn;III)V`** -- onBlockDestroyedByExplosion, and the only override of
+// it in a1.1.2. Reached from `core/entity/explosion.cpp`'s third phase.
+//
+// ```
+// EntityTNTPrimed tnt = new EntityTNTPrimed(world, ...);
+// tnt.fuse = world.rand.nextInt(tnt.fuse / 4) + tnt.fuse / 8;   // nextInt(20) + 10
+// world.spawnEntityInWorld(tnt);
+// ```
+//
+// **Half a second to a second and a half, and no `random.fuse`.** That spread
+// is the whole reason a wall of TNT ripples instead of going off as one bang,
+// and the silence is why a chain sounds like a chain rather than like a
+// hundred fuses lighting at once.
+//
+// **The draw is on the world's generator** and is made whether or not there is
+// a pool to put the entity in, for the reason `dropBlockAsItem` makes its
+// draws either way: the ordering of `world.rand` is observable downstream.
+void tntDestroyedByExplosion(TickWorld& world, i32 x, int y, i32 z);
 
 }  // namespace mc::tick

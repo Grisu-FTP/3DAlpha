@@ -41,29 +41,43 @@
 #include "platform/ctr/progress_screen.hpp"
 #include "platform/ctr/renderer.hpp"
 #include "core/audio/block_sound.hpp"
+#include "core/audio/effect_preload.hpp"
 #include "core/audio/sound_engine.hpp"
 #include "core/entity/falling_block.hpp"
+#include "core/entity/primed_tnt.hpp"
 #include "core/gui/chat_log.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/entity/arrow.hpp"
 #include "core/entity/boat.hpp"
 #include "core/entity/minecart.hpp"
+#include "core/entity/mob.hpp"
+#include "core/entity/mob_spawn.hpp"
+#include "core/entity/mob_spawner.hpp"
 #include "core/world/sign_store.hpp"
 #include "core/entity/painting.hpp"
 #include "core/entity/particle.hpp"
+#include "core/entity/entity_boxes.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/io/volume_info.hpp"
 #include "core/block/collision.hpp"
+#include "core/entity/block_contact.hpp"
+#include "core/entity/fire_entry.hpp"
 #include "core/entity/player_body.hpp"
+#include "core/entity/player_vitals.hpp"
 #include "core/entity/sprint_gesture.hpp"
+#include "core/item/block_breaking.hpp"
+#include "core/item/tool_rules.hpp"
 #include "core/item/registry.hpp"
 #include "core/tick/behaviour.hpp"
+#include "core/tick/display.hpp"
 #include "core/entity/ray_trace.hpp"
 #include "core/texture/compass_fx.hpp"
+#include "core/texture/fluid_fx.hpp"
 #include "core/texture/texture_fx.hpp"
 #include "core/tick/tick_timer.hpp"
 #include "core/render/held_item.hpp"
 #include "core/render/world_streamer.hpp"
+#include "core/util/coord_text.hpp"
 #include "core/util/math_helper.hpp"
 #include "core/util/memory.hpp"
 #include "core/util/worker.hpp"
@@ -92,6 +106,10 @@ constexpr float kPi = 3.14159265358979f;
 // debug page's ceiling -- 2,601 of them. It is written once a frame while a
 // world is being made and never read again, which is exactly what a static
 // scratch buffer is for. See the same argument on `world` and `overlay` below.
+// How long a body put at a spawn point will wait for the column under it before
+// it gives up and moves anyway. Ten seconds of ticks; see `spawnWaitTicks`.
+constexpr int kSpawnWaitTicks = 200;
+
 constexpr int kMaxProgressRadius = ctr::kDebugMaxDistance + 1;
 constexpr int kMaxProgressEdge = kMaxProgressRadius * 2 + 1;
 gui::ChunkState gProgressCells[kMaxProgressEdge * kMaxProgressEdge];
@@ -196,7 +214,86 @@ void flyCamera(ctr::Camera& camera, float dt, bool sprint)
         camera.y -= speed;
     }
 
-    camera.y = camera.y < 1.0 ? 1.0 : (camera.y > 254.0 ? 254.0 : camera.y);
+    // Not the world's height: Spectator may fly above or below it, and a
+    // teleport may put it there. See mc::kCameraYLimit.
+    camera.y = camera.y < -mc::kCameraYLimit
+                   ? -mc::kCameraYLimit
+                   : (camera.y > mc::kCameraYLimit ? mc::kCameraYLimit : camera.y);
+}
+
+// Puts the body under a camera that moved without it -- Spectator handing back
+// to a body mode, or a teleport. `camera.y` is the eye, which is what `eyeY()`
+// hands out, so the feet are that minus the offset -- the same conversion world
+// entry makes from a saved `Pos[1]`.
+//
+// **A crouching camera is 0.08 below the eye it came from**, so the drop is
+// added back before the conversion rather than being quietly banked as a
+// position: without it every teleport taken while sneaking would sink the
+// player that much, the same shape of bug as the 1.62 that used to be added
+// twice on world entry.
+//
+// A camera that was flying has no velocity worth inheriting, and a banked
+// `fallDistance` would be cashed in the moment the body touched down. `setFeet`
+// has already snapped the interpolation, so the first frame draws where the
+// camera already was rather than sliding there.
+void placeBodyAtEye(mc::entity::PlayerBody& body, const ctr::Camera& camera, bool sneaking)
+{
+    const double eye = camera.y + (sneaking ? mc::entity::kSneakEyeDrop : 0.0);
+    body.setFeet(camera.x, eye - double(mc::entity::kEyeHeight), camera.z);
+    body.motionX = 0.0;
+    body.motionY = 0.0;
+    body.motionZ = 0.0;
+    body.fallDistance = 0.0f;
+    body.onGround = false;
+}
+
+// `Minecraft.o()` -- **Respawn**, which throws the dead player away and builds a
+// new one. `dm`'s constructor stands it at `spawnX + 0.5, spawnY + 1,
+// spawnZ + 0.5` through `setLocationAndAngles`, and that method adds `yOffset`
+// to the y it is handed -- so `spawnY + 1` is where the *feet* go, not the eye.
+// Size, eye height and motion all come back to the constructor's with the fresh
+// body.
+//
+// **The lift out of the ground is not done here**, though `bi.q()` runs on the
+// very next line of `Minecraft.o()`. See `liftIntoTheWorld`: on this console the
+// column the spawn point is in may not be resident yet, and a lift against a
+// world that is all air lifts nothing.
+void respawnBody(mc::entity::PlayerBody& body, const mc::world::LevelData& level)
+{
+    body = mc::entity::PlayerBody{};
+    body.setFeet(double(level.spawnX) + 0.5, double(level.spawnY) + 1.0,
+                 double(level.spawnZ) + 0.5);
+}
+
+// `kh.q()` -- **preparePlayerToSpawn**, the tail of it: walk the body up until
+// nothing collides with it, then stop it dead and level its pitch.
+//
+// a1.1.2 runs this the moment a player is built, which it can because the world
+// it is built into has already generated the spawn area. Here the columns
+// stream in behind the player, so the call is owed rather than made: the frame
+// loop holds the body still and runs this on the first tick its own column is
+// resident. A lift made any earlier would find air, decide there was nothing to
+// climb out of, and leave the player to be buried by the terrain arriving
+// underneath them -- which in Survival is a suffocation the player never sees
+// the cause of.
+void liftIntoTheWorld(mc::entity::PlayerBody& body, const mc::tick::TickWorld& world,
+                      ctr::Camera* camera)
+{
+    // **The whole height of the world, not `liftOutOfGround`'s default eight.**
+    // `kh.q()` climbs until nothing collides and has no bound at all, and the
+    // eight-block default is a teleport's "did I land in a wall", which is a
+    // different question. A world whose spawn point predates the search in
+    // core/world/spawn_point.hpp has `spawnY` at 64 with whatever the ground at
+    // x = 0, z = 0 happens to be doing on top of it, and eight blocks of climb
+    // out of a hillside leaves the player just as buried as before.
+    body.liftOutOfGround(world, 128);
+    body.motionX = 0.0;
+    body.motionY = 0.0;
+    body.motionZ = 0.0;
+    body.fallDistance = 0.0f;
+    if (camera != nullptr) {
+        camera->pitch = 0.0f;
+    }
 }
 
 // The circle pad and the two body buttons, as the original's heading inputs.
@@ -204,7 +301,7 @@ void flyCamera(ctr::Camera& camera, float dt, bool sprint)
 // **Strafe is negated.** `moveFlying` sends a positive strafe to +X at yaw 0,
 // and yaw 0 faces +Z, so +X is the player's *left*; the circle pad's positive x
 // is their right. One of the two has to flip and it is this one.
-mc::entity::PlayerInput readBodyInput(const ctr::Camera& camera, u32 held)
+mc::entity::PlayerInput readBodyInput(const ctr::Camera& camera, u32 held, bool sneaking)
 {
     circlePosition pad;
     hidCircleRead(&pad);
@@ -214,7 +311,14 @@ mc::entity::PlayerInput readBodyInput(const ctr::Camera& camera, u32 held)
     input.forward = axis(pad.dy);
     input.yawDegrees = camera.yaw * 180.0f / kPi;
     input.jump = (held & KEY_B) != 0;
-    input.sneak = (held & KEY_Y) != 0;
+    // **Sneak is a toggle and is handed in**, not read off Y here: it is the
+    // one movement input this build holds state for, because a crouch is a
+    // stance rather than a key. See `sneaking` in the world loop.
+    input.sneak = sneaking;
+    // ...and then slowed, which a1.1.2 does to the stick in this very function
+    // -- `MovementInputFromOptions` scales `moveStrafe` and `moveForward` by
+    // 0.3 once the sneak key is read. See `applySneakSlowdown`.
+    mc::entity::applySneakSlowdown(input);
     return input;
 }
 
@@ -266,6 +370,11 @@ struct EntityScene {
     const mc::entity::PlayerBody* body = nullptr;
     const mc::entity::ItemEntitySystem* items = nullptr;
 
+    // **The animals**, which are the first thing in this build that is a mob
+    // and not the player -- so a stone pressure plate finally has something
+    // other than the player to tell apart from a dropped stack.
+    const mc::entity::MobSystem* mobs = nullptr;
+
     // The same pool again, writable, and the world the drop lands in. Two
     // fields rather than casting the const away, because the two seams really
     // do ask different things: the plate wants to *read* what is standing on
@@ -273,6 +382,7 @@ struct EntityScene {
     mc::entity::ItemEntitySystem* mutableItems = nullptr;
     const mc::tick::TickWorld* world = nullptr;
     mc::entity::FallingBlockSystem* falling = nullptr;
+    mc::entity::PrimedTntSystem* primedTnt = nullptr;
 };
 
 bool anyEntityIn(void* ctx, const mc::AABB& box, mc::tick::EntityFilter filter)
@@ -287,6 +397,18 @@ bool anyEntityIn(void* ctx, const mc::AABB& box, mc::tick::EntityFilter filter)
     // filters differ only in what they *exclude*, below.
     if (scene->body != nullptr && scene->body->box.intersects(box)) {
         return true;
+    }
+
+    // **An animal answers two of the three.** `js.b` selects `EntityLiving`,
+    // which a cow is, and `js.c` selects `EntityPlayer`, which it is not -- so
+    // a cow presses a stone plate and not a wooden one's player-only cousin.
+    if (filter != mc::tick::EntityFilter::Players && scene->mobs != nullptr) {
+        for (int i = 0; i < scene->mobs->count(); ++i) {
+            const mc::entity::Mob& mob = (*scene->mobs)[i];
+            if (mob.alive && mob.body.box.intersects(box)) {
+                return true;
+            }
+        }
     }
 
     // **A dropped item is neither a mob nor a player**, which is the whole
@@ -321,6 +443,50 @@ void spawnDroppedItem(void* ctx, double x, double y, double z, mc::u16 item, int
                                mc::entity::kBlockDropPickupDelay);
 }
 
+// **A stack thrown with its own velocity** -- a broken chest's spill. The same
+// pool and the same world as the block drop above; see
+// `TickWorld::openContainer`: a chest, a workbench or a furnace took a right
+// click. **Held, not opened here**, because the click lands inside the edit
+// path with the Overlay's screen state halfway through a frame; the loop opens
+// it straight after the edit returns.
+struct PendingContainer {
+    bool open = false;
+    mc::tick::TickWorld::ContainerKind kind = mc::tick::TickWorld::ContainerKind::Chest;
+    mc::i32 x = 0;
+    int y = 0;
+    mc::i32 z = 0;
+};
+
+void requestContainer(void* ctx, mc::tick::TickWorld::ContainerKind kind, mc::i32 x, int y,
+                      mc::i32 z)
+{
+    PendingContainer& pending = *static_cast<PendingContainer*>(ctx);
+    pending.open = true;
+    pending.kind = kind;
+    pending.x = x;
+    pending.y = y;
+    pending.z = z;
+}
+
+// `TickWorld::spawnItemStack`.
+void spawnItemStack(void* ctx, double x, double y, double z, mc::u16 item, int count,
+                    mc::i16 damage, double motionX, double motionY, double motionZ)
+{
+    EntityScene* scene = static_cast<EntityScene*>(ctx);
+    if (scene->mutableItems == nullptr || scene->world == nullptr) {
+        return;
+    }
+    scene->mutableItems->spawnMoving(*scene->world, x, y, z, mc::item::ItemId(item), count,
+                                     damage, motionX, motionY, motionZ);
+}
+
+// `ic.j_()` reaching the streamer: a furnace's or a chest's contents changed,
+// so the column is written at the next save. No remesh -- nothing drawn moved.
+void markTileEntityColumn(void* ctx, mc::i32 x, mc::i32 z)
+{
+    static_cast<render::WorldStreamer*>(ctx)->markColumnModified(x, z);
+}
+
 // `cn.a(DDDLjava/lang/String;FF)V` -- what a block behaviour asks the mixer
 // for. The engine outlives the world, so the context is the engine itself
 // rather than the scene.
@@ -343,12 +509,96 @@ bool spawnFallingBlock(void* ctx, mc::i32 x, int y, mc::i32 z, mc::u16 block)
     return scene->falling->spawn(*scene->world, x, y, z, mc::block::BlockId(block));
 }
 
-// `cn.l(III)V` -- World.removeBlockTileEntity. Signs are the only tile entities
-// with a store, so the context is the store itself.
-void removeSign(void* ctx, mc::i32 x, int y, mc::i32 z)
+// `q`'s `new jd(...)`, and the cell it names is already air. A full pool loses
+// the blast; the `random.fuse` that goes with a broken block is played by
+// `core/tick/drop.cpp` either way, which is the one place this differs from
+// the original and is argued there.
+bool spawnPrimedTnt(void* ctx, mc::i32 x, int y, mc::i32 z, int fuse)
 {
-    static_cast<mc::world::SignStore*>(ctx)->erase(x, y, z);
+    EntityScene* scene = static_cast<EntityScene*>(ctx);
+    if (scene->primedTnt == nullptr || scene->world == nullptr) {
+        return false;
+    }
+    return scene->primedTnt->spawn(*scene->world, x, y, z, fuse);
 }
+
+// `cn.a(IIILic;)V` and `cn.l(III)V` -- World.setBlockTileEntity and
+// World.removeBlockTileEntity. **Two stores now**, so the context is both of
+// them rather than one; a position is in at most one of the two and neither
+// store minds being asked about a block it has never heard of.
+//
+// The other three sinks are the column's: a column arriving fills the stores
+// out of its decoded `TileEntities`, a column being saved takes their state
+// back, and a column leaving empties them of it. Chests and furnaces have no
+// store and need none -- nothing in this build opens one -- and they are
+// carried in the column itself, reconciled against the blocks at the save.
+// See core/world/tile_entity.hpp.
+struct TileEntities {
+    mc::world::SignStore* signs = nullptr;
+    mc::entity::MobSpawnerStore* spawners = nullptr;
+
+    // Only the spawner has anything to build here: `jt.e` hands the world a
+    // fresh `bd`, and a sign's tile entity is built by the placement itself
+    // because it has to refuse the click when the heap is full (see
+    // core/item/use.cpp).
+    static void added(void* ctx, mc::i32 x, int y, mc::i32 z)
+    {
+        TileEntities& self = *static_cast<TileEntities*>(ctx);
+        if (self.spawners != nullptr) {
+            self.spawners->put(x, y, z);
+        }
+    }
+
+    static void removed(void* ctx, mc::i32 x, int y, mc::i32 z)
+    {
+        TileEntities& self = *static_cast<TileEntities*>(ctx);
+        if (self.signs != nullptr) {
+            self.signs->erase(x, y, z);
+        }
+        if (self.spawners != nullptr) {
+            self.spawners->erase(x, y, z);
+        }
+    }
+
+    static void adopted(void* ctx, const mc::world::ChunkColumn& column)
+    {
+        TileEntities& self = *static_cast<TileEntities*>(ctx);
+        if (self.spawners != nullptr) {
+            mc::entity::readMobSpawners(column.tileEntities, *self.spawners);
+        }
+        if (self.signs != nullptr) {
+            mc::world::readSigns(column, *self.signs);
+        }
+    }
+
+    static void saving(void* ctx, mc::world::ChunkColumn& column)
+    {
+        TileEntities& self = *static_cast<TileEntities*>(ctx);
+        // **The blocks first**, which is `ga.d`'s heal and `jt.b`'s removal in
+        // one pass: a chest placed this session gains an empty entry, and one
+        // broken by a creeper loses its. Then the two stores write over what
+        // they own, so a spawner the store never took keeps the mob the file
+        // gave it rather than being reset to `bd`'s default.
+        mc::world::reconcileTileEntities(column);
+        if (self.signs != nullptr) {
+            mc::world::writeSigns(*self.signs, column);
+        }
+        if (self.spawners != nullptr) {
+            mc::entity::writeMobSpawners(*self.spawners, column);
+        }
+    }
+
+    static void dropped(void* ctx, mc::i32 chunkX, mc::i32 chunkZ)
+    {
+        TileEntities& self = *static_cast<TileEntities*>(ctx);
+        if (self.signs != nullptr) {
+            self.signs->eraseColumn(chunkX, chunkZ);
+        }
+        if (self.spawners != nullptr) {
+            self.spawners->eraseColumn(chunkX, chunkZ);
+        }
+    }
+};
 
 // **Where the player is told a spawn was refused**: the chat lines on the top
 // screen, in Legacy Console Edition's words. `widths` is the pack font's
@@ -367,11 +617,56 @@ struct ChatSink {
     }
 };
 
+// `ItemStack.hitEntity` and `hitBlock` as the hand feels them: the held stack
+// wears by `amount`, and one that wears through is taken out of the hand --
+// `destroyCurrentEquippedItem`. Survival only; see core/item/tool_rules.hpp.
+void wearHeld(ctr::Overlay& overlay, int amount)
+{
+    if (amount <= 0) {
+        return;
+    }
+    mc::item::Inventory& inventory = overlay.editInventory();
+    mc::item::ItemStack& stack = inventory.main[inventory.selected];
+    if (stack.empty()) {
+        return;
+    }
+    if (mc::entity::wearStack(stack, amount)) {
+        stack.id = mc::item::kEmptyItemId;
+        stack.count = 0;
+        stack.damage = 0;
+    }
+    overlay.inventoryEdited();
+}
+
+// `stackSize -= count`, and a stack that reaches nothing is taken out of the
+// hand -- what every Survival use method does to the stack it was called with.
+void spendHeld(ctr::Overlay& overlay, int count)
+{
+    if (count <= 0) {
+        return;
+    }
+    mc::item::Inventory& inventory = overlay.editInventory();
+    mc::item::ItemStack& stack = inventory.main[inventory.selected];
+    if (stack.empty()) {
+        return;
+    }
+    const int left = int(stack.count) - count;
+    if (left <= 0) {
+        stack.id = mc::item::kEmptyItemId;
+        stack.count = 0;
+        stack.damage = 0;
+    } else {
+        stack.count = mc::i8(left);
+    }
+    overlay.inventoryEdited();
+}
+
 void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                 const ctr::Camera& camera, const mc::entity::PlayerBody& body,
                 ctr::Overlay& overlay, u32 down, u32 heldButtons, i64 nowTick,
                 i64* lastEditTick, const mc::item::Effects& effects,
-                mc::render::HeldItemState* hand, const ChatSink& chat)
+                mc::render::HeldItemState* hand, const ChatSink& chat,
+                mc::item::BlockBreaker* breaker, mc::entity::PlayerVitals* vitals)
 {
     // An empty hotbar slot still breaks; it just has nothing to place. Checked
     // at the placement branch rather than here.
@@ -422,7 +717,26 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
         // none of the three left anything on the ground before it existed. See
         // core/item/use.hpp.
         if (target.found()) {
-            mc::item::attackEntity(*tickWorld, target, effects);
+            // The attacker's position, which only a living target reads: a
+            // struck animal is knocked away from whoever hit it.
+            mc::item::Attacker attacker;
+            attacker.present = true;
+            attacker.x = camera.x;
+            attacker.z = camera.z;
+            // **A Creative punch does not start a fight.** The same player the
+            // target search refuses (see below, and `MobPlayer::targetable`)
+            // must not be handed a target through the back door of having hit
+            // something.
+            attacker.provokes = overlay.gamemode() != mc::settings::Gamemode::Creative;
+            mc::item::attackEntity(*tickWorld, target, heldItem, effects, attacker);
+            // `bi.a(Lkh;)V`: **the stack wears on anything living it hits**,
+            // whether or not the hit got past the target's window -- the call
+            // follows `attackEntityFrom` without looking at its answer. A boat,
+            // a cart and a painting are not `ge` and cost it nothing.
+            if (overlay.gamemode() == mc::settings::Gamemode::Survival
+                && target.kind == mc::item::EntityTarget::Kind::Mob) {
+                wearHeld(overlay, mc::item::wearOnHit(heldItem));
+            }
             return;
         }
         if (!hit.hit) {
@@ -437,6 +751,24 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
         // will have to take away rather than a thing Creative added.
         // The tile entity goes with the block inside the write, through
         // `TickWorld::removeTileEntity` -- see core/tick/behaviour.cpp.
+        //
+        // **Except in Survival**, where it is taken away: a press is
+        // `Minecraft.clickMouse`'s block branch -- `cn.i` puts out fire on the
+        // struck face, then `nj.a(IIII)` clicks the block, which opens a door,
+        // flips a lever, lights redstone ore, and breaks only what one tick of
+        // progress already finishes. The held button's per-tick progress is in
+        // the tick loop. See core/item/block_breaking.hpp.
+        if (overlay.gamemode() == mc::settings::Gamemode::Survival && breaker != nullptr) {
+            mc::render::WorldStreamer::RenderBracket draws(world, chunks);
+            mc::item::extinguishFireOnFace(*tickWorld, hit.x, hit.y, hit.z, int(hit.face));
+            mc::item::BreakContext ctx{*tickWorld, overlay.editInventory(), effects};
+            ctx.eyeInWater = mc::entity::playerEyeInWater(*tickWorld, body);
+            ctx.onGround = body.onGround;
+            if (breaker->click(ctx, hit.x, hit.y, hit.z, int(hit.face))) {
+                overlay.inventoryEdited();
+            }
+            return;
+        }
         world.breakBlock(chunks, hit.x, hit.y, hit.z, effects);
         return;
     }
@@ -449,8 +781,31 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // `interact` runs and the block behind it is never clicked -- even when
     // `interact` refuses, as a chest cart does here. A boat or a plain cart
     // takes the player aboard, and that ends the click.
-    if (target.found() && mc::item::interactWithEntity(target, effects.entities)) {
-        return;
+    if (target.found()) {
+        const mc::item::EntityInteraction answer =
+            mc::item::interactWithEntity(*tickWorld, target, effects.entities, heldItem);
+        if (answer.taken) {
+            // **A bucket becomes a milk bucket and a saddle becomes nothing**,
+            // which is the same "what did the stack turn into" the item path
+            // below already handles -- see `ItemUse::becomes`.
+            // **Creative's bucket stays what it is**, the same rule as the
+            // pour and fill below.
+            if (answer.becomes != heldItem
+                && (overlay.gamemode() == mc::settings::Gamemode::Survival
+                    || mc::item::def(heldItem).bucket == mc::item::ItemDef::kNotABucket)) {
+                hand->reequip();
+                // **A saddle put on a pig is spent in Survival** -- `jw.b`
+                // decrements the stack -- which is the one "becomes nothing"
+                // `replaceHeldItem` deliberately ignores for Creative.
+                if (answer.becomes == 0
+                    && overlay.gamemode() == mc::settings::Gamemode::Survival) {
+                    spendHeld(overlay, 1);
+                } else {
+                    overlay.replaceHeldItem(answer.becomes);
+                }
+            }
+            return;
+        }
     }
 
     // **Everything the right hand does, and it is not only placing.**
@@ -459,21 +814,28 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // hands the click to the item. All of it is `item::rightClick`, in core and
     // under test; what is left here is the button and the renderer.
     //
-    // **Nothing is spent.** There is no stack depletion in that path and no
-    // code that would have done it; Survival is where it becomes a
-    // subtraction. See docs/todo-m3.md step 4.
+    // **Creative spends nothing; Survival spends what the item's own class
+    // does.** `itemTook` is what tells a placement from a door opening -- only
+    // the first costs the stack -- and the cost itself is the item table's
+    // answer. See item::spendOnUse.
     // **Marked before either entry point runs**, so a click the heap turned
     // down can be told apart from one that simply had nowhere to go. See
     // item::RefusalMark.
     const mc::item::RefusalMark refusals = mc::item::markRefusals(effects.entities);
+    const bool survival = overlay.gamemode() == mc::settings::Gamemode::Survival;
 
+    bool itemTook = false;
     if (hit.hit && !target.found()
         && world.rightClick(chunks, heldItem, hit, body.box, camera.yaw * 180.0f / kPi,
-                            effects)) {
+                            effects, &itemTook)) {
         // **Only when the click was taken**, which is the other half of
         // `clickMouse`'s split: `if (onPlayerRightClick(...)) swingItem()`.
         // Waving at a wall that refuses the block does not swing.
         hand->swing();
+        if (survival && itemTook) {
+            wearHeld(overlay, mc::item::wearOnUse(heldItem));
+            spendHeld(overlay, mc::item::spendOnUse(heldItem));
+        }
         // **The keyboard, which is the other half of "signs don't work".**
         // `ItemSign.onItemUse` ends with `displayGUIEditSign`, and a sign
         // placed with no way to type into it can never say anything. The store
@@ -486,6 +848,12 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
             const int placedSign = effects.entities.signs->takeJustPlaced();
             if (placedSign >= 0) {
                 overlay.editSignViaKeyboard(effects.entities.signs, placedSign);
+                // `nv` closing calls `ob.j_()`, which is `ga.f()` --
+                // setChunkModified. Text is not a block, so nothing else marks
+                // the column, and without this the first line typed onto a
+                // sign would never reach the card.
+                const mc::world::SignText& sign = (*effects.entities.signs)[placedSign];
+                world.markColumnModified(sign.x, sign.z);
             }
         }
         return;
@@ -497,9 +865,36 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // a bucket aimed at water works even though the crosshair's ray is not
     // allowed to see water at all, and that is the whole reason this is here
     // rather than folded into the call above. See core/item/use.hpp.
+    if (survival) {
+        // `oj.a(Lev;Lcn;Ldm;)Lev;` -- **ItemFood**: one off the stack and the
+        // health back, on every right-click and whatever the health already is.
+        const int heals = mc::item::foodHeals(heldItem);
+        if (heals > 0) {
+            spendHeld(overlay, 1);
+            if (vitals != nullptr) {
+                vitals->heal(heals);
+            }
+            return;
+        }
+        // `jg.a(...)` -- **the bow takes an arrow from anywhere in the
+        // inventory first, and does nothing at all without one.** The arrow is
+        // gone whether or not the shot's entity found room, because the jar
+        // ignores `spawnEntityInWorld`'s answer.
+        if (mc::item::def(heldItem).spawns == mc::item::SpawnsEntity::Arrow) {
+            if (!overlay.editInventory().consumeOne(mc::item::ItemId(mcver::Item::Arrow))) {
+                return;
+            }
+            overlay.inventoryEdited();
+        }
+    }
     const mc::item::ItemUse used = world.useItem(chunks, heldItem, camera.x, camera.y,
                                                  camera.z, double(dx), double(dy),
                                                  double(dz), effects);
+    // The boat's own `stackSize--`, on the same success path. A bucket turns
+    // into something else below instead, and the bow spent its arrow above.
+    if (survival && used.changed && used.becomes == heldItem) {
+        spendHeld(overlay, mc::item::spendOnUse(heldItem));
+    }
     // Either entry point may have been the one refused -- a cart or a sign
     // goes through the first, a boat or an arrow through the second -- and
     // both have run by here whenever neither was taken.
@@ -509,10 +904,20 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // when the stack it got back is not the stack it handed in -- a bucket
     // becoming a water bucket -- and there is no `swingItem` on this path at
     // all.
-    if (used.becomes != heldItem) {
+    //
+    // **Creative's bucket stays what it is.** The water still goes down and
+    // still comes up -- it is the hand that does not change, so an empty
+    // bucket keeps scooping and a full one keeps pouring, the way every later
+    // Creative mode has it. a1.1.2 has no Creative, so this is ours; Survival
+    // keeps `ItemBucket`'s swap.
+    mc::item::ItemId becomes = used.becomes;
+    if (!survival && mc::item::def(heldItem).bucket != mc::item::ItemDef::kNotABucket) {
+        becomes = heldItem;
+    }
+    if (becomes != heldItem) {
         hand->reequip();
     }
-    overlay.replaceHeldItem(used.becomes);
+    overlay.replaceHeldItem(becomes);
 }
 
 // Pitch is clamped just short of straight up and straight down, because
@@ -922,6 +1327,16 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     mc::entity::PlayerBody body;
     body.setFeet(spawnX, feetY, spawnZ);
 
+    // **The player's health**, which is Survival's and which Creative keeps too,
+    // flagged invulnerable, so a mode change mid-world carries the counters
+    // across rather than inventing new ones. Loaded from the saved player
+    // below. Time-seeded: `aQ` is a `new Random()` in the original.
+    mc::entity::PlayerVitals vitals(i64(ctr::nowMillis()) ^ 0x7ea1);
+
+    // **Survival's break in progress** -- `nj`'s cell, progress and delay. See
+    // core/item/block_breaking.hpp. Creative never touches it.
+    mc::item::BlockBreaker breaker;
+
     // **The particle pool and the two things a click can set off.** Both are
     // stack objects with the lifetime of the world, which is what lets the core
     // side take borrowed pointers and a headless build pass neither. The seed
@@ -935,6 +1350,13 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // does; what the rule forbids is allocating on a *frame*, and this never
     // does.
     auto particles = std::make_unique<mc::entity::ParticleSystem>(i64(ctr::nowMillis()));
+
+    // **The `new Random()` `cn.m` hands each block**, made once here rather
+    // than once a tick: the jar builds a fresh time-seeded one per call and
+    // reproduces nothing with it either, so what matters is that it is not the
+    // world's -- the *offsets* come off the world's generator and the block's
+    // own draws do not. See core/tick/display.hpp.
+    mc::JavaRandom displayRand(i64(ctr::nowMillis()) ^ 0x5eed);
 
     // **What is hanging on the walls.** Thirty-two, on the heap for the same
     // stack reason the particles are, and time-seeded because the art a
@@ -957,10 +1379,162 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     auto minecarts =
         std::make_unique<mc::entity::MinecartSystem>(i64(ctr::nowMillis()) ^ 0xca27);
 
+    // **What is grazing.** The four peaceful animals, on the heap for the same
+    // stack reason the rest are, and time-seeded because everything an animal
+    // does is a draw -- where it wanders, what it drops, when it makes a noise.
+    // The pool holds 32 from construction, which is a1.1.2's spawn cap of 15
+    // plus room for a bred pen; past that it grows. See core/entity/mob.hpp.
+    auto mobs = std::make_unique<mc::entity::MobSystem>(i64(ctr::nowMillis()) ^ 0x1108);
+
+    // **Where every hit on the player lands** -- `PlayerVitals::attack`, which
+    // is `dm.a(Lkh;I)Z`: difficulty, armour, the window, the knockback, the
+    // sound and, at zero, death. See core/entity/player_vitals.hpp.
+    //
+    // The pools that deal damage reach it through a function pointer, because
+    // core/entity/ must not know what a player is; this is the other end of that
+    // seam, holding what a hit needs that the pools do not have. `world`,
+    // `difficulty` and `yawDegrees` are refreshed on every tick before anything
+    // that can hit runs. Creative's invulnerability is the vitals' own flag, so
+    // nothing here asks the gamemode.
+    //
+    // `taken` and `hits` are the Info page's running totals.
+    struct PlayerHarm {
+        mc::entity::PlayerVitals* vitals = nullptr;
+        mc::entity::PlayerBody* body = nullptr;
+        ctr::Overlay* overlay = nullptr;
+        mc::entity::ItemEntitySystem* drops = nullptr;
+        mc::tick::TickWorld* world = nullptr;
+        int difficulty = 2;
+        float yawDegrees = 0.0f;
+        int taken = 0;
+        int hits = 0;
+        // Set when a hit killed; the frame loop shows the game-over screen and
+        // clears it.
+        bool died = false;
+
+        bool ready() const
+        {
+            return vitals != nullptr && body != nullptr && overlay != nullptr && world != nullptr;
+        }
+
+        mc::entity::PlayerContext context()
+        {
+            mc::entity::PlayerContext ctx{*world, *body, overlay->editInventory()};
+            ctx.drops = drops;
+            ctx.difficulty = difficulty;
+            ctx.yawDegrees = yawDegrees;
+            return ctx;
+        }
+
+        // A hit that landed can have worn the armour, and one that killed has
+        // emptied the inventory; both are writes the bottom screen and the
+        // save have to hear about.
+        void record(const mc::entity::Harm& harm, int healthBefore)
+        {
+            if (harm.landed) {
+                taken += healthBefore - int(vitals->health);
+                ++hits;
+                overlay->inventoryEdited();
+            }
+            if (harm.died) {
+                died = true;
+            }
+        }
+
+        void deal(int amount, mc::entity::DamageSource source, double fromX, double fromZ)
+        {
+            if (!ready()) {
+                return;
+            }
+            mc::entity::PlayerContext ctx = context();
+            mc::entity::Attacker from;
+            from.source = source;
+            from.x = fromX;
+            from.z = fromZ;
+            const int before = vitals->health;
+            record(vitals->attack(ctx, amount, from), before);
+        }
+
+        void fall(float distance)
+        {
+            if (!ready()) {
+                return;
+            }
+            mc::entity::PlayerContext ctx = context();
+            const int before = vitals->health;
+            record(vitals->fall(ctx, distance), before);
+        }
+
+        void tick(bool inWater)
+        {
+            if (!ready()) {
+                return;
+            }
+            mc::entity::PlayerContext ctx = context();
+            const int before = vitals->health;
+            record(vitals->tick(ctx, inWater), before);
+        }
+
+        static void hurt(void* ctx, int amount, mc::entity::DamageSource source, double fromX,
+                         double fromZ)
+        {
+            static_cast<PlayerHarm*>(ctx)->deal(amount, source, fromX, fromZ);
+        }
+    };
+    PlayerHarm harm;
+
+    // `cw.a(Lkh;F)V`'s arrow, reaching the pool it belongs to. The mob tick has
+    // no arrow system and must not grow one -- see `MobSurroundings::shootArrow`
+    // -- so this is the seam's other end, and it carries the world with it
+    // because `shootFrom` reads the light where the arrow appears.
+    struct SkeletonBow {
+        mc::entity::ArrowSystem* arrows = nullptr;
+        const mc::tick::TickWorld* world = nullptr;
+
+        static void shoot(void* ctx, double x, double y, double z, double dx, double dy,
+                          double dz, float velocity, float inaccuracy)
+        {
+            SkeletonBow& self = *static_cast<SkeletonBow*>(ctx);
+            if (self.arrows == nullptr || self.world == nullptr) {
+                return;
+            }
+            self.arrows->shootFrom(*self.world, x, y, z, dx, dy, dz, velocity, inaccuracy,
+                                   mc::entity::ArrowShooter::Skeleton);
+        }
+    };
+    SkeletonBow skeletonBow;
+
+    // The spawner's own stream. a1.1.2 draws it from the *world's* random --
+    // `az` has no `Random` of its own -- and ours is separate for the reason
+    // every other pool's is: a draw made here must not shift what the tick
+    // does. See core/entity/mob_spawn.hpp.
+    mc::JavaRandom spawnRand(i64(ctr::nowMillis()) ^ 0x5a2d);
+
+    // **Kept across the whole session**, because the numbers only mean anything
+    // as totals: three passes a tick each find nothing at all, and a single
+    // tick's worth of them says nothing about whether the spawner works. Shown
+    // on the Info page -- see Overlay::MobStats.
+    mc::entity::SpawnCounters monsterSpawns;
+
     // **What is written on the walls.** A tile entity rather than an entity --
     // see core/world/sign_store.hpp. Sign text still needs tile entity
     // persistence, separate from the entity snapshot below.
     auto signs = std::make_unique<mc::world::SignStore>();
+
+    // **What is in the cages.** The other tile entity with a store, and the
+    // only one of the four that ticks -- see core/entity/mob_spawner.hpp. Its
+    // contents come out of the chunk's `TileEntities` as columns arrive, so a
+    // dungeon written by the real client keeps the mob it was generated with.
+    auto spawners = std::make_unique<mc::entity::MobSpawnerStore>();
+    mc::entity::MobSpawnerCounters spawnerCounters;
+    TileEntities tileEntities{signs.get(), spawners.get()};
+
+    // **Where a saved spawner's mob comes from, and where a written sign's text
+    // goes.** The chunk's `TileEntities` is decoded into the column now rather
+    // than carried as an opaque tag, so this reads it on the way in and writes
+    // it on the way out. See core/world/tile_entity.hpp.
+    world.setColumnSinks(TileEntities::adopted, TileEntities::dropped, TileEntities::saving,
+                         &tileEntities);
 
     // **What the game says to the player**, bottom left of the top screen --
     // a1.1.2's chat lines, which is where a spawn the heap refused is
@@ -970,7 +1544,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     const mc::item::Effects effects{
         particles.get(), &sound,
         mc::item::EntityPools{paintings.get(), arrows.get(), boats.get(),
-                              minecarts.get(), signs.get()}};
+                              minecarts.get(), mobs.get(), signs.get()}};
 
     // **What is lying on the ground.** Sixty-four entities, on the heap for the
     // same stack reason the particles are, and time-seeded for the same reason
@@ -983,14 +1557,27 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // core/entity/falling_block.hpp for why the pool is this small and what
     // happens when it is full.
     auto fallingBlocks = std::make_unique<mc::entity::FallingBlockSystem>();
+    // **What is counting down.** Time-seeded, and the seed buys one thing: the
+    // little hop a primed block makes comes off `Math.random()` in the
+    // original, not off the world's generator, so lighting TNT must not move
+    // the block-tick stream. See core/entity/primed_tnt.hpp.
+    auto primedTnt = std::make_unique<mc::entity::PrimedTntSystem>(
+        i64(ctr::nowMillis()) ^ 0x746e74);
 
     world.bindEntities(mc::entity::EntityPools{paintings.get(), arrows.get(), boats.get(),
-        minecarts.get(), droppedItems.get(), fallingBlocks.get()});
+        minecarts.get(), droppedItems.get(), fallingBlocks.get(), primedTnt.get(),
+        mobs.get()});
 
     // `random.pop`'s pitch, which is `((r - r) * 0.7 + 1) * 2` per pickup. Its
     // own generator so that drawing a pitch cannot shift the scatter on the
     // next thing thrown.
     mc::JavaRandom pickupRand(i64(ctr::nowMillis()));
+
+    // The harm sink's borrowed pointers, set once everything a hit reaches
+    // exists. `world` is the tick's and is set per tick. See `PlayerHarm` above.
+    harm.vitals = &vitals;
+    harm.body = &body;
+    harm.drops = droppedItems.get();
 
     // **The fire tiles, still running.** `applyAnimatedTiles` baked a settled
     // flame into the atlas when the pack loaded, which is what the bottom
@@ -998,6 +1585,15 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // the flame in the *world* moves. On the heap for the stack reason above --
     // two 16 x 20 float fields each is 7 KB, and a 3DSX main thread has 32.
     auto flames = std::make_unique<mc::texture::FlameAnimation>();
+
+    // **And the four fluid tiles, for the same reason.** `TextureWaterFX`,
+    // `TextureWaterFlowFX`, `TextureLavaFX` and `TextureLavaFlowFX` are the
+    // other four `TextureFX` a1.1.2 registers against terrain.png, and a build
+    // that draws what the pack holds there draws lava in a red the client never
+    // shows -- see core/texture/fluid_fx.hpp. On the heap with the flames and
+    // for the same reason: four 16 x 16 float fields each is 16 KB, and a 3DSX
+    // main thread has 32.
+    auto fluids = std::make_unique<mc::texture::FluidAnimation>();
 
     // **The compass, which is a texture and not an item.** See
     // core/texture/compass_fx.hpp: a1.1.2's item 345 is a plain `di` with no
@@ -1032,21 +1628,52 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // The world can ask about both of them from here on. `tick_` is built when
     // the world opens and torn down when it closes, neither of which happens
     // inside this loop, so this is set once.
-    EntityScene scene{&body,           droppedItems.get(), droppedItems.get(),
-                      world.worldTick(), fallingBlocks.get()};
+    EntityScene scene{&body,          droppedItems.get(),   mobs.get(),
+                      droppedItems.get(), world.worldTick(), fallingBlocks.get(),
+                      primedTnt.get()};
+
+    // **The boxes `moveEntity` has to stop at**, which is a different question
+    // from the one the scene above answers: a pressure plate wants to know what
+    // is standing on it, and the sweep wants what is in the way. The first two
+    // are solid to everything; the rest are what a moving boat or minecart
+    // alone collides with. See core/entity/entity_boxes.hpp.
+    const mc::entity::EntityBoxes entityBoxes{boats.get(),      minecarts.get(),
+                                              mobs.get(),       droppedItems.get(),
+                                              arrows.get(),     paintings.get(),
+                                              primedTnt.get(),  fallingBlocks.get(),
+                                              &body};
+    static PendingContainer pendingContainer;
+    pendingContainer = PendingContainer{};
     if (mc::tick::TickWorld* entityWorld = world.worldTick()) {
         entityWorld->setEntityQuery(anyEntityIn, &scene);
+        // **And the entity half of `getCollidingBoundingBoxes`.** Without this
+        // the block sweep is the whole of it and a player walks through a
+        // parked minecart; with it they stop at one and stand on it, and the
+        // cart in turn stops at the cow on the track. See
+        // core/entity/entity_boxes.hpp.
+        mc::entity::bindEntityBoxes(*entityWorld, &entityBoxes);
         // **And what a block leaves behind when it falls off a wall.** Without
         // this every `dropBlockAsItem` in core is a draw from the world's random
         // and nothing else, which is what it was before there was a pool to put
         // the answer in. See core/tick/drop.hpp.
         entityWorld->setDropSink(spawnDroppedItem, &scene);
+        entityWorld->setStackSink(spawnItemStack, &scene);
+        entityWorld->setColumnModifiedSink(markTileEntityColumn, &world);
+        // **And the screens a chest, a workbench and a furnace open.** Without
+        // it `blockActivated` still takes the click, which is what headless
+        // callers get: a container that opens nothing.
+        entityWorld->setContainerSink(requestContainer, &pendingContainer);
         // **And the sand that is falling rather than teleporting.** Setting
         // this is what turns `BlockSand.fallInstantly` off for the parts of the
         // world a player is watching; nothing else in the process sets it, so
         // world generation and the headless tools keep the instant path. See
         // core/entity/falling_block.hpp.
         entityWorld->setFallingBlockSink(spawnFallingBlock, &scene);
+        // **And the TNT that is now an entity rather than a comment.** Three
+        // block paths reach it -- a break, a fire and a blast -- and without
+        // this the block still disappears and still makes its noise, which is
+        // what every headless caller gets. See core/entity/primed_tnt.hpp.
+        entityWorld->setPrimedTntSink(spawnPrimedTnt, &scene);
         // **And the click a plate makes.** A pressure plate is flush with the
         // floor and its whole state is one bit of metadata, so without this the
         // only way to know it had armed was to look at what it was wired to --
@@ -1057,7 +1684,18 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // **And the text that goes with a sign.** Every removal of a sign
         // block reaches this -- the player's break, and a sign dropped because
         // the block it stood or hung on went. See core/tick/tick_world.hpp.
-        entityWorld->setTileEntityRemovedSink(removeSign, signs.get());
+        entityWorld->setTileEntityRemovedSink(TileEntities::removed, &tileEntities);
+        // **And the one that builds them.** `jt.e` -- BlockContainer's
+        // onBlockAdded -- runs on every way a mob spawner can appear, not just
+        // on a click, which is why this hangs off the block dispatch.
+        entityWorld->setTileEntityAddedSink(TileEntities::added, &tileEntities);
+        // **And `World.spawnParticle` itself.** Every puff in the game past a
+        // broken block comes through here: a torch's smoke, a creeper's blast,
+        // an animal drowning, a boat's wake. Without it the block behaviours
+        // and the entity ticks run exactly as they do now and simply throw
+        // nothing, which is what the host harness gets. See
+        // core/entity/particle.hpp.
+        mc::entity::bindParticles(*entityWorld, particles.get());
     }
 
     // What the break/place repeat is paced against. Its own count rather than
@@ -1088,6 +1726,36 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     bool flying = false;
     float lastJumpTap = -1.0f;
     float sinceStart = 0.0f;
+
+    // **Sneaking is a toggle**, held here rather than read off the button each
+    // frame. On a keyboard a crouch is a key you can rest a finger on; on this
+    // console Y is also the dismount, the descent while flying and half the
+    // page cycle, and a crouch that has to be held is a finger that cannot
+    // also be on the shoulders to break and place -- which is what a player
+    // sneaking at a cliff edge is doing.
+    //
+    // Off at world entry, like flight and the sprint: `level.dat` has no key
+    // for a stance and inventing one would make a world this build saved mean
+    // something to nothing else.
+    bool sneaking = false;
+    // **A respawn waits for its ground.** The spawn point can be far from where
+    // the player died, and a column that has not streamed in contributes no
+    // collision -- which is right at the edge of the world and wrong for a body
+    // that has just been put there. So the body holds still until the column
+    // under it is resident, and this is cleared by the first tick it moves.
+    bool respawnPending = false;
+    // **The lift `kh.q()` owes this body**, paid on the tick its column becomes
+    // resident. See `liftIntoTheWorld`. A world with a saved player in it does
+    // not owe one: a1.1.2 builds the player, lifts it, and *then* reads `Pos`
+    // over the top of both -- so a saved position is used exactly as saved,
+    // however buried it is.
+    bool spawnLiftOwed = false;
+    // **And a bound on the wait**, which the original needs no equivalent of: a
+    // world whose spawn column never becomes resident -- an Alpha save opened
+    // with nothing to generate the missing chunk with -- would otherwise hold
+    // the body still for the rest of the session. Ten seconds of ticks, then
+    // the lift is taken against whatever is there and the player can move.
+    int spawnWaitTicks = 0;
     // Off at world entry for the same reason flight is: it is a gesture, not a
     // saved state. See core/entity/sprint_gesture.hpp for why it is not
     // a1.1.2's at all.
@@ -1098,7 +1766,18 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         body.motionZ = world.level().player.motion[2];
         body.onGround = world.level().player.onGround;
         body.fallDistance = world.level().player.fallDistance;
+        vitals.load(world.level().player);
     }
+    // **Entering a world is the same standing start a respawn is.** The body is
+    // at a spawn point whose column has not arrived, so it waits for it -- and
+    // a world with no player in it yet gets the lift `dm`'s constructor's
+    // `q()` would have given it. `spawnY` defaults to 64 whatever the ground
+    // there does, exactly as a1.1.2's does, and that lift is the whole of what
+    // stops a new world starting the player inside a hill.
+    respawnPending = true;
+    spawnLiftOwed = !world.level().player.present;
+    // Only Survival can be hurt. See core/entity/player_vitals.hpp.
+    vitals.invulnerable = choice.gamemode != settings::Gamemode::Survival;
 
     ctr::Camera camera;
     camera.x = body.x;
@@ -1135,12 +1814,20 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // which card their worlds are on. `choice` outlives this call, which is why
     // the overlay may keep the pointer.
     overlay.begin(choice.worldName.c_str(), isNew3DS ? "New 3DS" : "Old 3DS");
+    // The last of the harm sink's pointers: a hit writes the inventory the
+    // overlay holds. See `PlayerHarm`.
+    harm.overlay = &overlay;
     overlay.setAudio(&audio);
     // **The bottom screen is the world's gamemode's**, which is why this is read
     // off the choice rather than assumed: Spectator gets the map and no hotbar,
     // Creative gets the palette page as well, and Survival gets the inventory
     // frame without one.
     overlay.setGamemode(choice.gamemode);
+    // **The world's difficulty**, which is the game's own setting rather than
+    // this port's -- `cn.l`. Unlike gamemode nothing in the overlay draws it,
+    // so it is a plain local that the pause menu writes back into; see
+    // core/settings/world_settings.hpp.
+    mc::settings::Difficulty difficulty = choice.difficulty;
     // **What the world says the player is carrying.** After setGamemode,
     // because a mode with no hotbar still loads it -- Spectator must not empty
     // a hand the real client filled -- and after begin(), which clears it.
@@ -1153,6 +1840,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     overlay.setAtlas(choice.atlas);
     // ...and the same pack's font, which is what sign text is drawn with.
     renderer.setFont(menu.fontImage());
+    renderer.setParticleSheet(menu.particleSheet());
     // ...and the same dirt the menu draws its own backdrop with, behind the
     // panels on the bottom screen. Copied out here too, in the format the
     // framebuffer wants.
@@ -1391,22 +2079,18 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // already at the eye the body was handing it.
             const settings::Gamemode previousMode = overlay.gamemode();
             overlay.setGamemode(paused.gamemode);
+            difficulty = paused.difficulty;
+            if (world.worldTick() != nullptr) {
+                world.worldTick()->setImprovedFencePlacement(paused.improvedFencePlacement);
+            }
+            vitals.invulnerable = paused.gamemode != settings::Gamemode::Survival;
+            breaker.reset();
             if (previousMode == settings::Gamemode::Spectator
                 && paused.gamemode != settings::Gamemode::Spectator) {
-                // `camera.y` is the eye, which is what `eyeY()` hands out, so
-                // the feet are that minus the offset -- the same conversion
-                // world entry makes from a saved `Pos[1]`.
-                body.setFeet(camera.x, camera.y - double(mc::entity::kEyeHeight), camera.z);
-                // A camera that was flying has no velocity worth inheriting,
-                // and a banked `fallDistance` would be cashed in the moment the
-                // body touched down. `setFeet` has already snapped the
-                // interpolation, so the first frame back draws where the camera
-                // already was rather than sliding there.
-                body.motionX = 0.0;
-                body.motionY = 0.0;
-                body.motionZ = 0.0;
-                body.fallDistance = 0.0f;
-                body.onGround = false;
+                // Spectator's camera is a bare eye with no crouch in it, so
+                // the body it hands over to is standing up.
+                sneaking = false;
+                placeBodyAtEye(body, camera, sneaking);
                 sprintGesture.cancel();
             }
 
@@ -1419,6 +2103,9 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 // uploaded separately -- a pack with no `default.png` leaves
                 // signs blank rather than leaving the world untextured.
                 renderer.setFont(menu.fontImage());
+                // ...and `particles.png` beside it, on the same terms: a pack
+                // without one gets the stand-in, not a blank particle.
+                renderer.setParticleSheet(menu.particleSheet());
                 // The map is drawn from the same pack as the world, so ground
                 // sampled under the old one is recoloured rather than redrawn:
                 // the store holds block ids, not pixels.
@@ -1454,7 +2141,82 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // held. Applying is the caller's job because a render distance means
         // rebuilding the field, the pool and the streamer's grid -- in that
         // order, since the streamer republishes into whatever field it finds.
-        if (overlay.handleInput(down, held, &settings, &camera)) {
+        const double cameraWasX = camera.x;
+        const double cameraWasY = camera.y;
+        const double cameraWasZ = camera.z;
+        const bool settingsChanged = overlay.handleInput(down, held, &settings, &camera);
+
+        // **A teleport moves the camera, and outside Spectator the camera is
+        // not where the position lives.** Every body mode overwrites it from the
+        // body at the end of the frame, so a teleport the body was not told
+        // about was undone before it was ever drawn. The debug page's teleport
+        // row is the only thing handleInput moves the camera for.
+        //
+        // A vehicle would pull the body straight back to its seat, so the
+        // teleport leaves it behind -- the same as pressing Y first.
+        if (overlay.gamemode() != settings::Gamemode::Spectator
+            && (camera.x != cameraWasX || camera.y != cameraWasY || camera.z != cameraWasZ)) {
+            boats->dismount();
+            minecarts->dismount();
+            placeBodyAtEye(body, camera, sneaking);
+            sprintGesture.cancel();
+        }
+
+        // **Death, and the screen that follows it.** `Minecraft.a(Lbh;)V` puts
+        // up `au` whenever no screen is open and the player's health is not
+        // above zero -- so a hit that killed, and equally a world saved with a
+        // dead player in it, both land here. The world keeps running under it.
+        harm.died = false;
+        if (overlay.gamemode() != settings::Gamemode::Spectator && !vitals.alive()
+            && !overlay.dead()) {
+            overlay.setDead(true, int(world.level().player.score));
+        }
+        // **What the world is allowed to hear this frame.** The death screen
+        // answers A, and answering it clears `dead()` -- so every guard below
+        // that asks `!overlay.dead()` would come back true again with this
+        // frame's A still in `down`, and the press that asked to respawn would
+        // also break a block or throw the stack in hand. The screen was up when
+        // the buttons were read; that is the state the rest of the frame runs
+        // against.
+        const bool wasDead = overlay.dead();
+        bool leaveWorld = false;
+        switch (overlay.takeDeathChoice()) {
+        case ctr::Overlay::DeathChoice::Respawn: {
+            // `Minecraft.o()`: a new player at the spawn point, the old one
+            // gone with everything it carried, and `nj.a(dm)` turning the new
+            // one to face -180.
+            boats->dismount();
+            minecarts->dismount();
+            mobs->dismount();
+            vitals.respawn();
+            breaker.reset();
+            respawnBody(body, world.level());
+            respawnPending = true;
+            spawnLiftOwed = true;
+            spawnWaitTicks = 0;
+            sneaking = false;
+            sprintGesture.cancel();
+            camera.x = body.x;
+            camera.y = body.eyeY();
+            camera.z = body.z;
+            camera.yaw = -kPi;
+            camera.pitch = 0.0f;
+            overlay.setDead(false, 0);
+            break;
+        }
+        case ctr::Overlay::DeathChoice::TitleMenu:
+            // `au`'s second button, which is the pause menu's Exit World: the
+            // world is saved and closed on the way out, as it is there.
+            leaveWorld = true;
+            break;
+        case ctr::Overlay::DeathChoice::None:
+            break;
+        }
+        if (leaveWorld) {
+            break;
+        }
+
+        if (settingsChanged) {
             if (settings.renderDistance != renderer.config().meshDistance) {
                 renderer.setMeshDistance(settings.renderDistance);
                 world.setMeshDistance(settings.renderDistance, renderer.chunks());
@@ -1543,6 +2305,35 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // world -- has to put the player back on the ground rather than leave
         // them hanging with no way to switch it off.
         flying = flying && overlay.gamemode() == settings::Gamemode::Creative;
+
+        // **Y toggles the crouch**, everywhere Y is not already spoken for.
+        //
+        // It is a toggle rather than a held button because of what a player
+        // sneaks *for*: edging out over a drop to place a block under
+        // themselves, which on this console means a thumb on the circle pad and
+        // a finger on a shoulder. A held Y takes the thumb that is steering.
+        // Nothing about the physics changes -- `PlayerInput::sneak` is still
+        // read once a tick and still means the same thing -- only where the
+        // state lives.
+        //
+        // **Three places already own Y and keep it**: Spectator descends with
+        // it, Creative's flight descends with it, and a rider dismounts with
+        // it. SELECT + Y is the bottom screen's page cycle, so a held SELECT
+        // takes the press as well.
+        const bool yIsSpokenFor = flying
+                                  || overlay.gamemode() == settings::Gamemode::Spectator
+                                  || boats->riddenIndex() >= 0
+                                  || minecarts->riddenIndex() >= 0
+                                  || mobs->riddenIndex() >= 0;
+        if ((down & KEY_Y) != 0 && !yIsSpokenFor && !(held & KEY_SELECT)
+            && !overlay.containerTakesY()) {
+            sneaking = !sneaking;
+        }
+        // ...and the same three stand the player back up, rather than leaving a
+        // toggle on that its own button can no longer reach. A crouch is
+        // something done on your own feet: there is none in a seat, none in the
+        // air, and none in a camera with no body.
+        sneaking = sneaking && !yIsSpokenFor;
         // **The focused circle pad, before the look.** It scrolls the map when
         // the map is the focused page and does nothing otherwise; the body's
         // heading is zeroed to match, further down.
@@ -1568,6 +2359,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         const i64 dayTicks = worldTicks - (worldTicks / 24000) * 24000;
         const float timeOfDay = float(double(dayTicks) / 24000.0);
         renderer.setSkyDarken(world::skyLightSubtracted(dayTicks, tickTimer.partialTicks()));
+        // **The same clock, and a different function of it.** The line above
+        // takes the day as the integer the block light steps down by; this one
+        // takes it as the sky's three colours, the star brightness and the
+        // angle the sun is at. Alpha dims the ground in eleven jumps and fades
+        // the sky smoothly, so the two cannot share an answer.
+        renderer.setWorldTime(dayTicks, tickTimer.partialTicks());
 
         // **Where the player is and what time it is, for whatever saves next.**
         // Four stores a frame; the autosave timer below, the flush when the
@@ -1597,6 +2394,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                              hasBody ? body.eyeY() : camera.y,
                              hasBody ? body.z : camera.z, camera.yaw * 180.0f / kPi,
                              camera.pitch * 180.0f / kPi, worldTicks);
+        // Health beside it, and only from a mode with a body: Spectator must
+        // leave the counters the real client saved exactly as they were.
+        if (hasBody) {
+            world.setPlayerVitals(vitals.health, vitals.hurtTime, vitals.deathTime,
+                                  vitals.attackTime, vitals.air, vitals.fire);
+        }
 
         // **What the crosshair is on, for the outline.** Once a frame rather
         // than once an eye: both eyes look at the same block, and the ray walk
@@ -1626,9 +2429,25 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 } else {
                     renderer.clearSelection();
                 }
+                // **The crack follows the break, not the crosshair**: it is
+                // drawn on the cell the controller is damaging, at the stage
+                // interpolated between its last two ticks, and only while there
+                // is progress to show. See core/item/block_breaking.hpp.
+                const int crack = overlay.gamemode() == settings::Gamemode::Survival
+                                      ? breaker.crackStage(tickTimer.partialTicks())
+                                      : -1;
+                if (crack >= 0) {
+                    renderer.setBreakOverlay(
+                        aimWorld->blockAt(breaker.x(), breaker.y(), breaker.z()),
+                        aimWorld->dataAt(breaker.x(), breaker.y(), breaker.z()), breaker.x(),
+                        breaker.y(), breaker.z(), crack);
+                } else {
+                    renderer.clearBreakOverlay();
+                }
             }
         } else {
             renderer.clearSelection();
+            renderer.clearBreakOverlay();
         }
 
         // **The billboard basis, once a frame.** `EntityFX.renderParticle` is
@@ -1656,6 +2475,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // core/render/falling_block_mesh.hpp. It rides the item pass's eye
             // and partial, which the call above just set.
             renderer.setFallingBlocks(fallingBlocks.get());
+            // The same cube again, with a swell and a flash on it -- see
+            // core/render/primed_tnt_mesh.hpp. It rides the item pass's eye
+            // and partial too.
+            renderer.setPrimedTnt(primedTnt.get());
             // Paintings do not move and do not interpolate, so this is the pool
             // and nothing else -- it uses the eye the item pass just set.
             renderer.setPaintings(paintings.get());
@@ -1663,6 +2486,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // painting they do interpolate, because they move.
             renderer.setArrows(arrows.get());
             renderer.setBoats(boats.get());
+            // The animals, which interpolate like a boat and pose like nothing
+            // else in the build -- see core/render/mob_mesh.hpp.
+            renderer.setMobs(mobs.get());
+            renderer.setSpawners(spawners.get());
             // The only entity pass that needs the world: a cart leans along the
             // track rather than along its own motion.
             renderer.setMinecarts(minecarts.get(), world.worldTick());
@@ -1720,11 +2547,20 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // **Suspended while the bottom screen is focused**, because the
             // shoulders are the palette's pager then. One press does one thing;
             // see Overlay::handleFocusedInput.
-            if (!overlay.uiFocused()) {
+            if (!overlay.uiFocused() && !wasDead) {
                 const ChatSink chatSink{
                     chat.get(), menu.fontImage().empty() ? nullptr : menu.fontImage().widths};
                 editBlocks(world, renderer.chunks(), camera, body, overlay, down, held,
-                           editTick, &lastEditTick, effects, &hand, chatSink);
+                           editTick, &lastEditTick, effects, &hand, chatSink, &breaker,
+                           &vitals);
+                if (pendingContainer.open) {
+                    pendingContainer.open = false;
+                    if (mc::tick::TickWorld* screenWorld = world.worldTick()) {
+                        overlay.openContainer(*screenWorld, pendingContainer.kind,
+                                              pendingContainer.x, pendingContainer.y,
+                                              pendingContainer.z);
+                    }
+                }
 
                 // **A drops one of what is in the hand.** a1.1.2 has no drop
                 // key at all -- `dropOneItem` does not exist in it and the only
@@ -1757,9 +2593,72 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 }
             }
 
+            // **X throws the whole of a stack picked up on the bottom screen**,
+            // which is the original's click outside an open container window
+            // rather than its drop key -- see Overlay::throwRequest.
+            //
+            // **Outside the focus guard above**, unlike A's single drop: a
+            // stack is picked up *with* the screen focused, so a throw that
+            // only ran unfocused could never be asked for in the first place.
+            // The press itself is the Overlay's and is already spent there.
+            if (const mc::item::ItemStack* throwing = overlay.throwRequest()) {
+                mc::tick::TickWorld* dropWorld = world.worldTick();
+                const mc::u32 refusedBefore = droppedItems->refused();
+                // The entity first and the stack second, for the reason the A
+                // path gives: a refused spawn must not have spent anything.
+                if (dropWorld != nullptr
+                    && droppedItems->dropFromPlayer(
+                           *dropWorld, body.x, body.posY, body.z, camera.yaw * 180.0f / kPi,
+                           camera.pitch * 180.0f / kPi, mc::item::ItemId(throwing->id),
+                           int(throwing->count), throwing->damage)) {
+                    overlay.finishThrow();
+                } else {
+                    if (droppedItems->refused() != refusedBefore) {
+                        const ChatSink throwSink{chat.get(), menu.fontImage().empty()
+                                                                 ? nullptr
+                                                                 : menu.fontImage().widths};
+                        throwSink.limitReached(mc::item::LimitedEntity::DroppedItem);
+                    }
+                    overlay.cancelThrow();
+                }
+            }
+
+            // **The open container screen, and what shutting one left.** A
+            // furnace cooks under an open screen and a chest can be blown up
+            // under one, so it is re-read every frame; the cursor and a
+            // crafting grid go on the ground the way a throw does, and one the
+            // pool refuses goes back into the inventory.
+            overlay.tickContainer(world.worldTick());
+            while (const mc::item::ItemStack* closing = overlay.closedStack()) {
+                mc::tick::TickWorld* dropWorld = world.worldTick();
+                const bool spawned =
+                    dropWorld != nullptr
+                    && droppedItems->dropFromPlayer(
+                           *dropWorld, body.x, body.posY, body.z, camera.yaw * 180.0f / kPi,
+                           camera.pitch * 180.0f / kPi, mc::item::ItemId(closing->id),
+                           int(closing->count), closing->damage);
+                overlay.finishClosedStack(spawned);
+            }
+
             tick::TickWorld* tickWorld = world.worldTick();
             if (tickWorld != nullptr) {
-                mc::entity::PlayerInput bodyInput = readBodyInput(camera, held);
+                // **The body's ticks write blocks**, and they do it outside
+                // `stepTicks`: `moveEntity`'s tail tramples farmland and arms
+                // pressure plates. Held for the whole of the body loop rather
+                // than per write, and it is what keeps a trampled furrow from
+                // leaving its crop standing on screen. See
+                // WorldStreamer::RenderBracket.
+                mc::render::WorldStreamer::RenderBracket draws(world, renderer.chunks());
+                mc::entity::PlayerInput bodyInput = readBodyInput(camera, held, sneaking);
+                // **A dead player does not move**: the game-over screen owns
+                // the buttons, and the body falls where it lies.
+                if (!vitals.alive()) {
+                    bodyInput.strafe = 0.0f;
+                    bodyInput.forward = 0.0f;
+                    bodyInput.jump = false;
+                    bodyInput.sneak = false;
+                    bodyInput.sprint = false;
+                }
                 // **B belongs to the bottom screen while it is focused**, where
                 // it is the back button. Jumping on the same press would be one
                 // button doing two things, which is the thing the focus exists
@@ -1774,6 +2673,14 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 if (overlay.mapPanActive()) {
                     bodyInput.strafe = 0.0f;
                     bodyInput.forward = 0.0f;
+                }
+                // **And nothing walks while a container screen is up**: an open
+                // `GuiScreen` is what stops a1.1.2 reading the movement keys at
+                // all, and the stick is not the screen's to lend.
+                if (overlay.containerOpen()) {
+                    bodyInput.strafe = 0.0f;
+                    bodyInput.forward = 0.0f;
+                    bodyInput.jump = false;
                 }
                 // **The double-tap sprint**, read once a frame off the same
                 // stick and handed to every tick this frame owes.
@@ -1800,6 +2707,135 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // early. See core/render/held_item.hpp.
                     hand.tick(overlay.inventory().selectedItem());
 
+                    // **The owed spawn lift, and it has to run before `y()`.**
+                    //
+                    // This used to sit down in the mover, below -- which put a
+                    // whole `onEntityUpdate` in front of it, run against a body
+                    // still standing where `respawnBody` left it. That is
+                    // `spawnY + 1`, and `spawnY` is 64 whatever the ground
+                    // there is doing, so as often as not it is inside a
+                    // hillside. `ge.y()` asks whether the eye is in an opaque
+                    // block and takes a point off for it, so a fresh Survival
+                    // world greeted the player with half a heart gone and
+                    // nothing on screen to say why.
+                    //
+                    // a1.1.2 cannot have that bug: `kh.q()` is called from the
+                    // constructor, so the body is out of the ground before
+                    // anything ticks it at all. The order is the same here now
+                    // -- lift, then `y()`, then move -- and the wait for the
+                    // column is the whole of what is left of the difference.
+                    // See `liftIntoTheWorld`.
+                    //
+                    // **Flight is left out**, as the mover leaves it out: a
+                    // Creative player under their own power is not waiting for
+                    // the ground to arrive under them.
+                    bool spawnHolding = false;
+                    if (respawnPending && !flying) {
+                        if (++spawnWaitTicks < kSpawnWaitTicks
+                            && !tickWorld->chunkResident(body.chunkX(), body.chunkZ())) {
+                            // Held where it was put until its column arrives.
+                            // See `respawnPending`.
+                            spawnHolding = true;
+                        } else {
+                            if (spawnLiftOwed) {
+                                liftIntoTheWorld(body, *tickWorld, &camera);
+                            }
+                            respawnPending = false;
+                            spawnLiftOwed = false;
+                            spawnWaitTicks = 0;
+                        }
+                    }
+
+                    // **`Entity.onEntityUpdate`'s splash, which the player has
+                    // to be given explicitly.** `PlayerBody::tick` is
+                    // `onLivingUpdate` and `moveEntityWithHeading`; `y()` runs
+                    // before both, and the animals reach it inside
+                    // `MobSystem::updateCounters`. So this is the player's
+                    // `y()`, and it belongs here rather than in the body for
+                    // the reason `PlayerBody::updateWaterEntry` gives.
+                    //
+                    // **Before the riding branch**, which returns early: a
+                    // player rowing a boat into a lake still splashes, and in
+                    // the jar so does the boat, separately and at its own
+                    // volume.
+                    //
+                    // The volume comes off the motion the *previous* tick
+                    // left, which is the whole character of the sound: a dive
+                    // from a cliff is loud and wading in is not. The position
+                    // is the feet -- `posY - yOffset`, and the player's
+                    // `yOffset` is 1.62 -- which is what `playSoundAtEntity`
+                    // passes and what the footstep below already uses.
+                    //
+                    // **Skipped entirely while the body is held for its
+                    // column.** It is standing at an unlifted spawn point in a
+                    // chunk that is not there yet; `y()` against that is the
+                    // suffocation the lift above exists to prevent, and a
+                    // splash off water that has not streamed in would be a
+                    // sound with nothing under it.
+                    if (!spawnHolding) {
+                        const mc::entity::WaterEntryResult wet =
+                            body.updateWaterEntry(*tickWorld);
+                        if (wet.splash) {
+                            sound.playSoundAt(mc::entity::kSplashSound, body.x,
+                                              body.posY - double(mc::entity::kEyeHeight), body.z,
+                                              wet.volume,
+                                              mc::entity::splashPitch(pickupRand));
+                            // ...and the spray. The player is 0.6 across, so
+                            // thirteen bubbles and thirteen splashes off the
+                            // surface of the cell the feet are in. See
+                            // core/entity/water_entry.hpp.
+                            mc::entity::waterEntryParticles(
+                                *tickWorld, pickupRand, body.x, body.box.minY, body.z,
+                                body.width, body.motionX, body.motionY, body.motionZ);
+                        }
+
+                        // **The rest of `onEntityUpdate`, and `onLivingUpdate`'s
+                        // regeneration**: fire, lava, the void, suffocation,
+                        // drowning, the counters and death -- after the water
+                        // branch, which puts a fire out first, and before the
+                        // body moves. See PlayerVitals::tick.
+                        harm.world = tickWorld;
+                        harm.difficulty = int(difficulty);
+                        harm.yawDegrees = camera.yaw * 180.0f / kPi;
+                        harm.tick(wet.inWater);
+                    }
+
+                    // `Minecraft.a(IZ)V` -- **Survival's held button, once a
+                    // tick**: `nj.c(IIII)` on the block under the crosshair
+                    // while R is down on one, `nj.a()` -- reset -- on every tick
+                    // it is not. Before the body moves, as `runTick` runs it
+                    // before the world updates its entities.
+                    if (overlay.gamemode() == settings::Gamemode::Survival) {
+                        breaker.update();
+                        bool digging = false;
+                        if (vitals.alive() && !overlay.uiFocused() && !wasDead
+                            && (held & KEY_R) != 0) {
+                            float lx = 0.0f;
+                            float ly = 0.0f;
+                            float lz = 0.0f;
+                            camera.look(&lx, &ly, &lz);
+                            const mc::entity::RayHit aim = mc::entity::rayTrace(
+                                *tickWorld, camera.x, camera.y, camera.z, double(lx),
+                                double(ly), double(lz));
+                            const mc::item::EntityTarget onEntity = mc::item::pickEntity(
+                                effects.entities, camera.x, camera.y, camera.z, double(lx),
+                                double(ly), double(lz), aim);
+                            if (aim.hit && !onEntity.found()) {
+                                mc::item::BreakContext dig{*tickWorld, overlay.editInventory(),
+                                                           effects};
+                                dig.eyeInWater = mc::entity::playerEyeInWater(*tickWorld, body);
+                                dig.onGround = body.onGround;
+                                if (breaker.damage(dig, aim.x, aim.y, aim.z, int(aim.face))) {
+                                    overlay.inventoryEdited();
+                                }
+                                digging = true;
+                            }
+                        }
+                        if (!digging) {
+                            breaker.reset();
+                        }
+                    }
+
                     // **Riding, which is neither walking nor flying.**
                     //
                     // The body keeps turning the stick into motion exactly as
@@ -1810,12 +2846,35 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // **Y dismounts**, which is the sneak button and is what
                     // the original uses. It is tested before the tick so that
                     // the tick the button is pressed on is a walking one.
+                    //
+                    // Still the held button rather than the crouch toggle: a
+                    // rider has no crouch -- `yIsSpokenFor` above suppresses
+                    // the toggle and stands the player up for as long as they
+                    // are in a seat -- so Y here means one thing only.
                     const bool inBoat = boats->riddenIndex() >= 0;
                     const bool inCart = minecarts->riddenIndex() >= 0;
-                    if (inBoat || inCart) {
+                    // **A saddled pig is the third thing that can be ridden**,
+                    // and the one that steers itself: `mv` reads nothing from
+                    // its rider, so the movement keys still become the
+                    // *player's* motion and go nowhere, and the pig walks where
+                    // its own AI says. See core/entity/mob.hpp.
+                    const bool onPig = mobs->riddenIndex() >= 0;
+                    if (inBoat || inCart || onPig) {
                         if ((held & KEY_Y) != 0) {
-                            boats->dismount();
-                            minecarts->dismount();
+                            // **Getting off puts the player on the roof**, not
+                            // in the seat: that is `mountEntity`'s own tail
+                            // (see core/entity/rider.hpp), and with a boat and
+                            // a minecart now solid it is a place to stand
+                            // rather than a place to sink through.
+                            const mc::entity::RiderSeat leftBoat = boats->dismount();
+                            const mc::entity::RiderSeat leftCart = minecarts->dismount();
+                            const mc::entity::RiderSeat leftPig = mobs->dismount();
+                            const mc::entity::RiderSeat off =
+                                leftBoat.valid ? leftBoat
+                                               : (leftCart.valid ? leftCart : leftPig);
+                            if (off.valid) {
+                                body.setFeet(off.x, off.y, off.z);
+                            }
                         } else {
                             mc::entity::VehicleRider seat;
                             seat.present = true;
@@ -1825,9 +2884,13 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                             if (inBoat) {
                                 boats->tick(*tickWorld, seat);
                                 where = boats->seat();
-                            } else {
+                            } else if (inCart) {
                                 minecarts->tick(*tickWorld, seat);
                                 where = minecarts->seat();
+                            } else {
+                                // The pig is ticked with every other animal,
+                                // below; all this needs is where it ended up.
+                                where = mobs->seat();
                             }
                             if (where.valid) {
                                 body.tickRiding(bodyInput, where.x, where.y, where.z);
@@ -1849,8 +2912,30 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                         // its boost and Creative does not.
                         body.tickFlying(*tickWorld, bodyInput, (held & KEY_B) != 0,
                                         (held & KEY_Y) != 0, mc::entity::kFlightSpeed);
+                    } else if (spawnHolding) {
+                        // Held where it was put until its column arrives. The
+                        // wait, the lift and the counter are all decided above,
+                        // before anything is allowed to hurt the body.
                     } else {
                         body.tick(*tickWorld, bodyInput);
+                    }
+
+                    // The footstep's other half, and out here for the same
+                    // reason the loop below is: `moveEntity` hands the cell
+                    // underfoot to `onEntityWalking` before it runs the
+                    // collision scan, and that is what trample a field back to
+                    // dirt as it is crossed. See tick::entityWalkedOnBlock.
+                    if (body.steppedOn) {
+                        mc::tick::entityWalkedOnBlock(*tickWorld, body.stepBlockX,
+                                                      body.stepBlockY, body.stepBlockZ);
+                    }
+
+                    // `ge.c(F)V` -- **fall damage**, which `moveEntity` deals
+                    // the moment it lands and before its tail runs. The body
+                    // only reports the distance; see PlayerBody::landedFall.
+                    if (body.landedFall > 0.0f) {
+                        harm.fall(body.landedFall);
+                        body.landedFall = 0.0f;
                     }
 
                     // `moveEntity`'s tail, which `PlayerBody` cannot run
@@ -1858,6 +2943,31 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // what arms a pressure plate the moment it is stood on;
                     // see tick::entityCollidedWithBlocks.
                     mc::tick::entityCollidedWithBlocks(*tickWorld, body.box);
+
+                    // **The same tail's two costs**, in its order: a cactus
+                    // pricks once per cell the box is in, and then fire and
+                    // lava catch or a burning player goes under and hisses.
+                    // Both are `attackEntityFrom(null, 1)` -- see
+                    // core/entity/block_contact.hpp and fire_entry.hpp.
+                    {
+                        const int pricks = mc::entity::blockContactHits(*tickWorld, body.box);
+                        for (int n = 0; n < pricks; ++n) {
+                            harm.deal(mc::entity::kContactDamage, mc::entity::DamageSource::World,
+                                      0.0, 0.0);
+                        }
+                        const mc::entity::FireEntryResult burn = mc::entity::updateFireEntry(
+                            &vitals.fire, mc::entity::boundingBoxBurning(*tickWorld, body.box),
+                            mc::entity::fireWetProbe(*tickWorld, body.box),
+                            mc::entity::kPlayerFireResistance);
+                        if (burn.damage) {
+                            harm.deal(1, mc::entity::DamageSource::World, 0.0, 0.0);
+                        }
+                        if (burn.fizz) {
+                            sound.playSoundAt(mc::entity::kFizzSound, body.x,
+                                              body.posY - double(body.yOffset), body.z, 0.7f,
+                                              mc::entity::fizzPitch(pickupRand));
+                        }
+                    }
 
                     // A flying Creative player still has the ordinary player
                     // body, so it must participate in minecart collisions.
@@ -1871,8 +2981,19 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // the two horizontal axes and by nothing on y before it
                     // asks the world what is inside -- so an item is reached
                     // from a step away sideways and never from a floor below.
+                    //
+                    // **A corpse picks nothing up.** `dm.j()` guards the whole
+                    // sweep with `if (health > 0)`, and it has to: death drops
+                    // the inventory at the player's feet with the pool's own
+                    // pickup delay on it, and the death screen stands there for
+                    // longer than that delay. Without the guard the body
+                    // vacuums its own grave back up and the player respawns
+                    // holding everything, which is what "dying did not drop my
+                    // items" looks like from the outside.
                     const AABB reach = body.box.expand(1.0, 0.0, 1.0);
-                    const int picked = overlay.collectItems(*droppedItems, reach);
+                    const int picked = vitals.alive()
+                                           ? overlay.collectItems(*droppedItems, reach)
+                                           : 0;
                     for (int p = 0; p < picked; ++p) {
                         // `random.pop` at volume 0.2, and the pitch is the
                         // original's expression rather than a constant: two
@@ -1911,7 +3032,11 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // is being drawn at. See PlayerBody::renderX.
             const float partial = tickTimer.partialTicks();
             camera.x = body.renderX(partial);
-            camera.y = body.renderEyeY(partial);
+            // **Not `renderEyeY`**: a crouching player's camera sits 0.08
+            // lower, and this is the only place that difference is applied.
+            // The aim ray is cast from `camera` too, so the crosshair drops
+            // with the view rather than staying at a standing eye.
+            camera.y = body.cameraEyeY(partial);
             camera.z = body.renderZ(partial);
         }
 
@@ -1944,6 +3069,26 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             } else {
                 renderer.setHeldItem(hand.item(), hand.equippedProgress(handPartial),
                                      hand.swingProgress(handPartial), handLight);
+            }
+
+            // **The hearts**, Survival's alone -- `lu` draws the rows only while
+            // `PlayerController.shouldDrawHUD` is true, and a Creative or
+            // Spectator player has nothing for them to count. Dead or alive:
+            // the game-over screen is drawn over the overlay, not instead of it.
+            if (overlay.gamemode() == settings::Gamemode::Survival) {
+                mc::render::HudInput hud;
+                hud.health = vitals.health;
+                hud.prevHealth = vitals.prevHealth;
+                hud.hurtResistant = vitals.hurtResistant;
+                hud.armour = mc::entity::armourValue(overlay.inventory());
+                hud.air = vitals.air;
+                const mc::tick::TickWorld* wet = world.worldTick();
+                hud.eyeInWater = wet != nullptr && mc::entity::playerEyeInWater(*wet, body);
+                // `lu.h` counts ticks; the world's tick count is the same clock.
+                hud.updateCounter = u32(editTick);
+                renderer.setHud(hud);
+            } else {
+                renderer.clearHud();
             }
         }
 
@@ -1980,8 +3125,27 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // frame's -- so a console at 24 fps sees the same cloud a console at 60
         // does, only sampled less often.
         if (mc::tick::TickWorld* fxWorld = world.worldTick()) {
+            // The same bracket, for the same reason: a mob's footstep tramples
+            // a field, a falling block lands, a dropped stack presses a plate
+            // -- all of it out here rather than inside `stepTicks`, and all of
+            // it invisible without a renderer held. One scope for every pool
+            // and every tick in the frame, so the light it queues is drained
+            // once. See WorldStreamer::RenderBracket.
+            mc::render::WorldStreamer::RenderBracket draws(world, renderer.chunks());
             for (int i = 0; i < ticksDue; ++i) {
                 particles->tick(*fxWorld);
+                // **`cn.m(III)V` -- a thousand darts at the blocks round the
+                // player**, which is where almost every particle in quiet play
+                // comes from: the torch that smokes, the fire that smoulders,
+                // the redstone that glitters, the lava that spits. It runs on
+                // the world's clock beside the pool it feeds and is skipped
+                // entirely by anything with no particle sink. See
+                // core/tick/display.hpp.
+                mc::tick::displayTick(*fxWorld,
+                                      mc::MathHelper::floorDouble(camera.x),
+                                      int(mc::MathHelper::floorDouble(camera.y)),
+                                      mc::MathHelper::floorDouble(camera.z),
+                                      displayRand);
                 droppedItems->tick(*fxWorld);
                 // **The one entity here that writes blocks**, which is why it
                 // takes the world by reference where the other two do not: it
@@ -2002,21 +3166,155 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 if (minecarts->riddenIndex() < 0) {
                     minecarts->tick(*fxWorld, mc::entity::VehicleRider{});
                 }
+                // **The animals.** They need to know where the player is --
+                // they despawn by distance, watch one that comes close and are
+                // shoved by one that walks into them -- and the shove goes both
+                // ways, which is why the body's motion is handed over by
+                // pointer. See core/entity/mob.hpp.
+                {
+                    // **The camera, not the body**, because Spectator has no
+                    // body to speak of: it flies and leaves `body` wherever it
+                    // was last placed, and animals would then spawn and despawn
+                    // around a ghost. In every other mode the camera *is* the
+                    // body's eye -- it is assigned from it at the end of each
+                    // tick -- so this is the same number.
+                    const bool hasBody =
+                        overlay.gamemode() != settings::Gamemode::Spectator;
+                    mc::entity::MobSurroundings around;
+                    around.player.present = true;
+                    around.player.x = camera.x;
+                    around.player.y = camera.y;
+                    around.player.z = camera.z;
+                    // **Creative is not hunted.** Present all the same: the
+                    // animals still despawn around this position and a cow
+                    // still turns its head. See core/entity/mob.hpp.
+                    around.player.targetable =
+                        overlay.gamemode() != settings::Gamemode::Creative && vitals.alive();
+                    // What a hit from this tick's mobs needs and the pools do
+                    // not carry. See `PlayerHarm`.
+                    harm.world = fxWorld;
+                    harm.difficulty = int(difficulty);
+                    harm.yawDegrees = camera.yaw * 180.0f / kPi;
+                    if (hasBody) {
+                        // Only a body can be shoved, and only a body is
+                        // something to shove against -- and only a body can be
+                        // hit or thrown by a blast. **Spectator is not
+                        // invulnerable by a special case**; it simply has
+                        // nothing for a fist to reach.
+                        around.player.box = body.box;
+                        around.player.motionX = &body.motionX;
+                        around.player.motionY = &body.motionY;
+                        around.player.motionZ = &body.motionZ;
+                        around.hurtPlayer.sink = &PlayerHarm::hurt;
+                        around.hurtPlayer.ctx = &harm;
+                    }
+                    around.difficulty = int(difficulty);
+                    skeletonBow.arrows = arrows.get();
+                    skeletonBow.world = fxWorld;
+                    around.shootArrow = &SkeletonBow::shoot;
+                    around.shootArrowCtx = &skeletonBow;
+                    // A creeper's blast and TNT's both destroy what is lying
+                    // near them. See `MobSurroundings::items`.
+                    around.items = droppedItems.get();
+                    mobs->tick(*fxWorld, around);
+
+                    // **Primed TNT, ticked here and not beside the falling
+                    // blocks above**, because the last tick of a fuse is a
+                    // blast and a blast needs to know who is standing in it --
+                    // which is the `around` this block has just built and
+                    // nothing outside it has. It writes blocks like a falling
+                    // block does, over a five-block radius rather than one
+                    // cell. See core/entity/primed_tnt.hpp.
+                    primedTnt->tick(*fxWorld, mobs.get(), &around);
+
+                    // `ia.c()` -- the spawner, every tick and not on a timer.
+                    // a1.1.2 has no world-generation spawning at all, so this
+                    // is the only thing that ever makes an animal.
+                    mc::entity::SpawnContext spawnAt;
+                    spawnAt.playerPresent = true;
+                    spawnAt.playerX = camera.x;
+                    spawnAt.playerY = camera.y;
+                    spawnAt.playerZ = camera.z;
+                    spawnAt.spawnX = world.level().spawnX;
+                    spawnAt.spawnY = world.level().spawnY;
+                    spawnAt.spawnZ = world.level().spawnZ;
+                    spawnAt.difficulty = int(difficulty);
+                    spawnAt.worldSeed = world.level().randomSeed;
+                    // `ia.c()` runs both spawners every tick, monsters first,
+                    // out of the same random. The order is observable -- the
+                    // two share `world.rand` -- so it is the jar's.
+                    mc::entity::spawnMonsters(*fxWorld, *mobs, spawnRand, spawnAt,
+                                              &monsterSpawns);
+                    mc::entity::spawnAnimals(*fxWorld, *mobs, spawnRand, spawnAt);
+
+                    // **The tile-entity tick list, and it has one member.**
+                    // `cn`'s own loop walks every tile entity and calls
+                    // `ic.b()`; only `ke` (furnace) and `bd` (mob spawner)
+                    // override it, and the furnace is not ported -- so this is
+                    // the whole of it. The draws come out of the *world's*
+                    // random, which is `fxWorld`'s and not `spawnRand`. See
+                    // core/entity/mob_spawner.hpp.
+                    mc::entity::tickMobSpawners(*spawners, *fxWorld, *mobs,
+                                                fxWorld->random(), spawnAt,
+                                                &spawnerCounters);
+
+                    // **A pig moves after its rider does**, unlike a boat or a
+                    // cart: it ignores the rider entirely, so it is ticked here
+                    // with the other animals rather than in the body loop, and
+                    // the rider is put back on it afterwards. See
+                    // PlayerBody::followSeat.
+                    if (mobs->riddenIndex() >= 0) {
+                        const mc::entity::RiderSeat seat = mobs->seat();
+                        if (seat.valid) {
+                            body.followSeat(seat.x, seat.y, seat.z);
+                        } else {
+                            mobs->dismount();
+                        }
+                    }
+
+                    // The Info page's mob line. Counts only; see
+                    // Overlay::MobStats on why the damage is one of them.
+                    ctr::Overlay::MobStats stats;
+                    stats.animals = mobs->animalCount();
+                    stats.monsters = mobs->monsterCount();
+                    stats.searches = mobs->pathFinder().searches();
+                    stats.exhausted = mobs->pathFinder().exhausted();
+                    stats.taken = harm.taken;
+                    stats.hits = harm.hits;
+                    stats.spawned = monsterSpawns.spawned;
+                    stats.chunksTried = unsigned(monsterSpawns.chunksTried);
+                    stats.floors = unsigned(monsterSpawns.positions - monsterSpawns.noFloor);
+                    stats.cages = spawners->count();
+                    stats.cagesFired = spawnerCounters.fired;
+                    stats.cagesSpawned = spawnerCounters.spawned;
+                    overlay.setMobStats(stats);
+                }
                 // A tile entity does not tick, but its light does: a torch put
                 // beside a sign has to brighten it, and the store is the only
                 // thing that knows where the signs are.
                 signs->refreshLight(*fxWorld);
+                spawners->refreshLight(*fxWorld);
                 // **Arrows, which move by ray rather than by sweep.** One
                 // `rayTraceBlocks` per live arrow per tick, and a stuck one
                 // costs a block read and nothing else -- see
                 // core/entity/arrow.hpp.
-                arrows->tick(*fxWorld, mc::entity::ArrowTargets{paintings.get(), boats.get(),
-                                                                minecarts.get()});
-                for (int n = 0; n < arrows->struckLastTick(); ++n) {
-                    // `random.drr`, once per arrow that landed. The pitch is
-                    // the original's `1.2F / (rand * 0.2F + 0.9F)`.
-                    sound.playSoundAt("random.drr", body.x, body.eyeY(), body.z, 1.0f,
-                                      1.2f / (pickupRand.nextFloat() * 0.2f + 0.9f));
+                {
+                    // **Arrows reach the mobs and the player now**, which is
+                    // the other half of the bow landing and the whole of a
+                    // skeleton being dangerous.
+                    mc::entity::ArrowTargets hits;
+                    hits.paintings = paintings.get();
+                    hits.boats = boats.get();
+                    hits.minecarts = minecarts.get();
+                    hits.mobs = mobs.get();
+                    if (overlay.gamemode() != mc::settings::Gamemode::Spectator
+                        && vitals.alive()) {
+                        hits.playerPresent = true;
+                        hits.playerBox = body.box;
+                        hits.hurtPlayer = &PlayerHarm::hurt;
+                        hits.hurtPlayerCtx = &harm;
+                    }
+                    arrows->tick(*fxWorld, hits);
                 }
                 // Same tail, per item: a wooden plate is pressed by a dropped
                 // stack and a stone one is not. Particles are not entities in
@@ -2047,6 +3345,17 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 if (tile >= 0) {
                     renderer.setAtlasTile(tile, flames->texels(which));
                 }
+            }
+        }
+
+        // **Water and lava, on the same clock and in the same place.** Six
+        // runs rather than six tiles: a flowing fluid's four tiles hold one
+        // picture, and a row of two of them is a single pair of copies. See
+        // `Atlas::updateTile`.
+        if (ticksDue > 0 && fluids->present()) {
+            fluids->tick(ticksDue);
+            for (int i = 0; i < fluids->writeCount(); ++i) {
+                renderer.setAtlasTile(fluids->tile(i), fluids->texels(i), fluids->across(i));
             }
         }
 
@@ -2123,6 +3432,16 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         }
     }
 
+    // **Anything still in a crafting grid or on the cursor goes back in the
+    // inventory**, since the ground it would have dropped on is about to be
+    // saved without it. Then the inventory is handed over one last time.
+    overlay.closeContainerIntoInventory();
+    if (overlay.takeInventoryChange()) {
+        std::vector<mc::item::ItemStack> stacks;
+        overlay.inventory().save(&stacks);
+        world.setPlayerInventory(stacks);
+    }
+
     // The original says the same thing on its way out of a world, and it is
     // worth saying: close() rewrites level.dat and flushes every dirty column,
     // which on a card is long enough for a still screen to look like a hang.
@@ -2154,6 +3473,14 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // until after the last frame the save screen draws. See
     // crashlogs/009-save-with-a-minecart/.
     renderer.setMinecarts(nullptr, nullptr);
+    // **And the one the *streamer* borrows.** `world` is static and outlives
+    // this call (see the note on its declaration), while the spawner store is a
+    // local; leaving the sinks bound would point the next world's first
+    // adoption at freed memory. `close()` above still needs them -- it drops
+    // every cell, and each drop is a column's spawners leaving -- so this is
+    // after it and not before.
+    world.setColumnSinks(nullptr, nullptr, nullptr, nullptr);
+    renderer.setSpawners(nullptr);
     renderer.shutdown();
     return 0;
 }
@@ -2173,24 +3500,9 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
 // not concurrency, it is borrowing a stack. See the call site.
 void preloadOnWorker(void* arg)
 {
-    auto& sound = *static_cast<mc::audio::SoundEngine*>(arg);
-    sound.preloadSound("random.click");
-    // **The five other keys a block behaviour can name**, all of them cued
-    // from `core/tick/` through `TickWorld::playSoundAt` or from
-    // `core/item/use.cpp`. They are listed rather than derived because there
-    // is nothing to derive them from: a sound a *behaviour* plays has no
-    // column in the block table, unlike a footstep. A key the player has no
-    // files for costs nothing, so a short list that is slightly too long is
-    // free and one that is too short is a silence.
-    sound.preloadSound("random.door_open");
-    sound.preloadSound("random.door_close");
-    sound.preloadSound("random.pop");
-    sound.preloadSound("random.fizz");
-    sound.preloadSound("fire.ignite");
-    // **Every footstep and break sound the block table can name.** Bounded by
-    // the table rather than by the card -- nine singletons name six distinct
-    // keys in a1.1.2 -- and a key the player has no files for costs nothing.
-    mc::audio::preloadBlockSounds(sound);
+    // Every effect key this build can name, in one list shared with the host
+    // harness that measures what it costs. See core/audio/effect_preload.hpp.
+    mc::audio::preloadEffects(*static_cast<mc::audio::SoundEngine*>(arg));
 }
 
 void preloadInterfaceSounds(mc::audio::SoundEngine& sound)

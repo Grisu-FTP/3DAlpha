@@ -1,7 +1,9 @@
 #include "platform/ctr/renderer.hpp"
 
 #include "core/mesh/vertex.hpp"
+#include "core/render/sky.hpp"
 #include "core/texture/dev_art.hpp"
+#include "core/world/daylight.hpp"
 #include "core/texture/entity_skins.hpp"
 
 #include <3ds.h>
@@ -36,33 +38,103 @@ void geoTrace(const char* what)
 
 namespace {
 
-// Alpha's sky, as the RGBA8 the render target is cleared to.
-constexpr u32 kSkyColour = 0x90D9FFFF;
+// **The sky and the fog are the same colour and neither is a constant any more.**
+//
+// They used to be one daylit blue each, written here. a1.1.2 computes both from
+// the time of day -- `World.getFogColor` pulled towards `World.getSkyColor` by
+// the render distance, in `EntityRenderer.updateFogColor` -- and hands the same
+// three floats to `glClearColor` and `glFogfv(GL_FOG_COLOR)`, which is what
+// keeps the horizon seamless: terrain at the fog end lands on exactly the
+// colour behind it. Both now live in `Renderer::clearColour_` and `fogColour_`,
+// written once a frame by setWorldTime. See core/world/daylight.hpp.
+//
+// **Two packings, because the two consumers disagree**, and getting them the
+// same way round tints the whole screen. A texenv constant is 0xAABBGGRR --
+// alpha in the top byte, red in the bottom -- and `C3D_RenderTargetClear` takes
+// the render target's own RGBA8, which is the exact reverse.
+u32 colourByte(float value)
+{
+    const float scaled = value * 255.0f + 0.5f;
+    return u32(scaled < 0.0f ? 0 : (scaled > 255.0f ? 255 : int(scaled)));
+}
 
-// The same colour as a texenv constant, which is 0xAABBGGRR. Terrain at the fog
-// end therefore lands on exactly the colour behind it and the horizon has no
-// seam.
-constexpr u32 kFogColour = 0xFFFFD990;
+u32 packAbgr(float r, float g, float b)
+{
+    return 0xFF000000u | (colourByte(b) << 16) | (colourByte(g) << 8) | colourByte(r);
+}
+
+u32 packRgba(float r, float g, float b)
+{
+    return (colourByte(r) << 24) | (colourByte(g) << 16) | (colourByte(b) << 8) | 0xFFu;
+}
 
 constexpr u32 kDisplayTransferFlags =
     GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0)
     | GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)
     | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
 
-// Enough near plane to stand inside a block without the wall in front of your
-// face being clipped away, and no more: depth precision is the cost, and a
-// 16-bit depth buffer has little to spare.
-constexpr float kNearPlane = 0.2f;
+// **a1.1.2's own**, and the whole of the reason it has to be is that the near
+// plane is not a plane at all -- it is a rectangle, with corners, and on this
+// console it does not even sit in front of the eye.
+//
+// This was 0.2, traded up from the original's 0.05 for depth precision a 16-bit
+// buffer could not spare. Both eyes are `GPU_RB_DEPTH24_STENCIL8` now, which
+// multiplies that precision by 256, so the trade has nothing left to buy: at
+// 0.05 and a 176-block far plane one depth unit still spans 0.037 of a block at
+// the far plane itself. The cost was being paid at the near end, where it was
+// visible -- three separate reports of the view cutting into solid blocks, and
+// all three are this number.
+//
+// **What the near rectangle actually reaches**, per eye, with fov 70 on a 5:3
+// screen (t = tan(fov/2) = 0.700, A = 400/240) and the default 7 px of infinity
+// disparity. `Mtx_PerspStereoTilt` builds an off-axis frustum, so from the row
+// read out of libcitro3d.a in `cullFrustum` the eye is displaced sideways by
+// `t*A*iod/2` -- **0.19 of a block**, which is most of the way to the player's
+// own half-width -- and the rectangle's far edge sits `t*A*near` past that:
+//
+//     near   sideways   upward    corner
+//     0.2    0.420      0.244     0.486
+//     0.05   0.248      0.061     0.255
+//
+// Against those: the player box is 0.6 across, so **0.30** to a wall it is flush
+// with, and 1.8 tall against a 1.62 eye, so **0.18** to a ceiling its head is
+// against. At 0.2 both are lost -- jumping into a ceiling clips through it, and
+// standing along a wall clips through that, worst where a pitch swings the
+// rectangle's corner into it. At 0.05 both clear, and the sideways figure is
+// the tight one because the stereo offset does not shrink with the near plane.
+//
+// The stereo offset is horizontal in *screen* space, and nothing here rolls the
+// camera, so it never costs ceiling clearance -- only wall clearance.
+//
+// What this gives up is what the original gives up: stand inside a block and
+// the face is drawn rather than clipped away, which is the face filling the
+// screen. That is the behaviour being matched.
+constexpr float kNearPlane = 0.05f;
 
-// **The hand gets its own, and it is the original's.** `iq.a(FI)V` sets the
-// world up with `gluPerspective(fov, aspect, 0.05F, far)` and `renderHand`
-// reuses it; this renderer trades that near plane away for depth precision the
-// world needs and the hand does not. At 0.2 the nearest corner of a held sword
-// -- which reaches 0.193 of a block in front of the eye -- is clipped off, so
-// the one pass that is drawn in camera space builds its own projection with
-// a1.1.2's own value. It costs nothing: `drawHeldItem` remaps its depth into a
-// sliver of the buffer anyway, so the precision this near plane would have
-// spent is not being spent on the world.
+// **The sky's far plane, which is not the world's.**
+//
+// The original's is 256 blocks -- `256 >> renderDistance` at the Far setting --
+// and it clips the far corners of the sky plane, which cannot be seen because
+// they are fully fogged by then and the screen behind them is the fog colour.
+// What it never clips is the sun and the moon, at 100 blocks with a corner at
+// 108. This port's world far plane is the render distance plus a ring, which at
+// four chunks is 80 -- so a sky drawn through it would have no sun in it at
+// all. 512 is past everything the sky contains, and costs nothing: the pass
+// writes no depth.
+constexpr float kSkyFarPlane = 512.0f;
+
+
+// **The hand's own, which is the same number the world now uses.** `iq.a(FI)V`
+// sets the world up with `gluPerspective(fov, aspect, 0.05F, far)` and
+// `renderHand` reuses it -- one near plane for both, as here.
+//
+// **Kept as its own constant even so**, because the two are equal by agreement
+// and not by construction: this one is pinned to the geometry (the nearest
+// corner of a held sword reaches 0.193 of a block in front of the eye, so
+// anything above that clips the tip off it) and `kNearPlane` is pinned to the
+// player's box. The pass builds its own projection regardless -- see
+// `drawHeldItem` for the two numbers that really do differ, the stereo scale
+// and the focal distance.
 constexpr float kHeldItemNearPlane = 0.05f;
 
 // **How much of the depth range the hand is given, and why it needs any.**
@@ -79,10 +151,12 @@ constexpr float kHeldItemNearPlane = 0.05f;
 // reversed -- the buffer is cleared to 0 and the test is GPU_GREATER, so
 // nearer is *larger* -- and `C3D_DepthMap` scales what the projection produces
 // before it is written. Compressed into the top 5 %, the hand beats any world
-// fragment whose own depth is below 0.95, which with `kNearPlane` at 0.2 and a
-// far plane of 128 means anything further away than 0.21 of a block. The near
-// plane already clips everything nearer than 0.2, so what is left is a
-// one-centimetre shell that no block face can be in without filling the screen.
+// fragment whose own depth is below 0.95, and window depth is `near/d` to a
+// far plane's worth of rounding -- so a world fragment reaches 0.95 only within
+// `kNearPlane / 0.95` of the eye, which the near plane itself clips all but the
+// last 5 % of. The shell that is left is five millimetres deep and no block
+// face can be in it without filling the screen. **It shrinks with the near
+// plane**, so this got safer when that came down to 0.05, not riskier.
 //
 // 5 % and not 1 %: the hand still has to sort against *itself*, and an
 // extruded icon is only a sixteenth of a unit thick. A twentieth of a 16-bit
@@ -358,6 +432,11 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
     itemVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxItemVertices));
     // 24 KB more: sixty-four falling blocks of six faces each.
     fallingVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxFallingVertices));
+    // 36 KB more: ninety-six primed blocks of six faces each, plus 6.8 KB of
+    // position-only triangles for the white flash over at most sixteen of them.
+    tntVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxPrimedTntVertices));
+    tntFlashVerts_ =
+        linearAlloc(sizeof(render::OutlineVertex) * usize(kMaxPrimedTntFlashVertices));
     // 24 KB more: eight full-size paintings at six faces per 16 x 16 cell. See
     // kMaxPaintingVertices for why it is eight and not the pool's thirty-two.
     paintingVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxPaintingVertices));
@@ -367,19 +446,53 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
     boatVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxBoatVertices));
     // 72 KB more: thirty-two minecarts of six boxes each.
     minecartVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMinecartVertices));
+    // 72 KB more: sixteen animals at up to twelve boxes each.
+    mobVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMobVertices));
+    // 16 KB more, and a buffer of its own rather than room at the end of the
+    // one above: a mob's flames come off the *block* atlas and its body off the
+    // entity sheet, so the two are different draws whatever they are built
+    // into -- and the flames on a burning boat, cart, stack, falling block or
+    // block of primed TNT go in here with them. See
+    // core/render/entity_fire_mesh.hpp.
+    entityFireVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxEntityFireVertices));
     // 240 KB, and it is the text that costs it -- see kMaxSignVertices.
     signVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxSignVertices));
     // 4 KB, and the smallest of the lot: one item, 66 quads at the worst.
     heldVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxHeldVertices));
+    // 70 KB for the whole sky -- two 169-quad planes, the sun, the moon and 780
+    // stars -- written once below and never again. See core/render/sky.hpp.
+    skyVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kSkyVertexCount));
+    if (skyVerts_ != nullptr) {
+        auto* verts = static_cast<mesh::DetailVertex*>(skyVerts_);
+        if (render::buildSky(verts, render::kSkyVertexCount) == render::kSkyVertexCount) {
+            GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex)
+                                             * u32(render::kSkyVertexCount));
+        } else {
+            // Cannot happen -- the size is a compile-time constant of the same
+            // header -- but a half-built sky would be geometry pointing at
+            // uninitialised memory, so it is a sky that is not drawn instead.
+            linearFree(skyVerts_);
+            skyVerts_ = nullptr;
+        }
+    }
+
     // 64 KB of glyphs and under a kilobyte of strips, for the chat lines.
     chatVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kChatMaxVertices));
     chatStrips_ = linearAlloc(sizeof(render::OutlineVertex) * 6u
                               * usize(mc::gui::kChatShownLines));
+    // 3 KB for the hearts. A console without it draws no HUD, which `drawHud`
+    // checks, rather than refusing to start.
+    hudVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kHudMaxVertices));
+    // 3 KB for the crack over a block being broken; the same terms.
+    breakVerts_ =
+        linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kBreakOverlayMaxVertices));
 
     return outlineVerts_ != nullptr && crosshairVerts_ != nullptr && particleVerts_ != nullptr
-           && itemVerts_ != nullptr && fallingVerts_ != nullptr
+           && itemVerts_ != nullptr && fallingVerts_ != nullptr && tntVerts_ != nullptr
+           && tntFlashVerts_ != nullptr
            && paintingVerts_ != nullptr && arrowVerts_ != nullptr
-           && boatVerts_ != nullptr && minecartVerts_ != nullptr
+           && boatVerts_ != nullptr && minecartVerts_ != nullptr && mobVerts_ != nullptr
+           && entityFireVerts_ != nullptr
            && signVerts_ != nullptr && heldVerts_ != nullptr && chatVerts_ != nullptr
            && chatStrips_ != nullptr;
 }
@@ -419,13 +532,54 @@ void Renderer::drawParticles(const C3D_Mtx& viewProjection, i32 originChunkX,
     const double eyeBlockZ = std::floor(particleEyeZ_);
 
     auto* verts = static_cast<mesh::DetailVertex*>(particleVerts_);
-    const int written = render::buildParticles(*particles_, particleCamera_, eyeBlockX,
-                                               eyeBlockY, eyeBlockZ, particlePartial_,
-                                               verts, kMaxParticleVertices);
-    if (written < 4) {
+
+    // **The three sheets, in the order that costs the fewest binds.** The block
+    // atlas is already bound from the passes above, so the digging flecks go
+    // first and pay nothing; `particles.png` and `gui/items.png` each cost one
+    // bind, and the atlas is put back at the end.
+    //
+    // **All three spans are built before any of them is drawn**, into disjoint
+    // parts of the one buffer, for the reason `drawItemEntities` gives at
+    // length: `C3D_DrawElements` records an *address* the GPU does not read
+    // until `C3D_FrameEnd`, so building over a span that has already been
+    // "drawn" draws the new geometry with the old texture.
+    //
+    // The three share one `DrawCutoff`, settled by the first -- which is handed
+    // the whole buffer, as `draw_budget.hpp` requires.
+    struct Span {
+        mc::entity::ParticleSheet sheet;
+        int count;
+    };
+    Span spans[3] = {
+        {mc::entity::ParticleSheet::Terrain, 0},
+        {mc::entity::ParticleSheet::Particles, 0},
+        {mc::entity::ParticleSheet::Items, 0},
+    };
+
+    render::DrawCutoff cutoff;
+    int built = 0;
+    for (Span& span : spans) {
+        // A pack with no `gui/items.png` cannot draw the two breaking kinds,
+        // and neither can a console that had no memory for `particles.png`.
+        // Both are a missing sprite rather than a lie, which is the same call
+        // `drawItemEntities` makes for a dropped item.
+        const bool haveSheet =
+            span.sheet == mc::entity::ParticleSheet::Items    ? atlas_.hasItems()
+            : span.sheet == mc::entity::ParticleSheet::Particles ? atlas_.hasParticles()
+                                                                : true;
+        if (!haveSheet) {
+            continue;
+        }
+        span.count = render::buildParticles(*particles_, particleCamera_, eyeBlockX,
+                                            eyeBlockY, eyeBlockZ, particlePartial_,
+                                            span.sheet, verts + built,
+                                            kMaxParticleVertices - built, &cutoff);
+        built += span.count;
+    }
+    if (built < 4) {
         return;
     }
-    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(built));
 
     bindPipeline(detailPipeline_);
 
@@ -442,18 +596,43 @@ void Renderer::drawParticles(const C3D_Mtx& viewProjection, i32 originChunkX,
     }
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
-    C3D_BufInfo bufInfo;
-    BufInfo_Init(&bufInfo);
-    BufInfo_Add(&bufInfo, particleVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
-    C3D_SetBufInfo(&bufInfo);
+    bool rebound = false;
+    int base = 0;
+    for (const Span& span : spans) {
+        if (span.count < 4) {
+            base += span.count;
+            continue;
+        }
+        if (span.sheet == mc::entity::ParticleSheet::Particles) {
+            atlas_.bindParticles(0);
+            rebound = true;
+        } else if (span.sheet == mc::entity::ParticleSheet::Items) {
+            atlas_.bindItems(0);
+            rebound = true;
+        }
 
-    // Four vertices a quad through the shared index buffer, exactly as a
-    // section's detail range is drawn -- which is why no new index buffer and
-    // no new shader were needed for any of this.
-    const int quads = written / 4;
-    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
-    ++frameStats_.drawCalls;
-    frameStats_.quads += usize(quads);
+        // **The base pointer is what separates the draws**, so each still
+        // indexes from zero through the shared quad index buffer.
+        C3D_BufInfo bufInfo;
+        BufInfo_Init(&bufInfo);
+        BufInfo_Add(&bufInfo, verts + base, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&bufInfo);
+
+        // Four vertices a quad through the shared index buffer, exactly as a
+        // section's detail range is drawn -- which is why no new index buffer
+        // and no new shader were needed for any of this.
+        const int quads = span.count / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+        base += span.count;
+    }
+
+    // **Put the block atlas back**, for the reason `drawItemEntities` gives:
+    // everything after this in the frame assumes unit 0 is the atlas.
+    if (rebound) {
+        atlas_.bind(0, wireframe_);
+    }
 }
 
 void Renderer::setItemEntities(const mc::entity::ItemEntitySystem* items,
@@ -621,6 +800,188 @@ void Renderer::drawFallingBlocks(const C3D_Mtx& viewProjection, i32 originChunkX
     frameStats_.quads += usize(quads);
 }
 
+// **Two passes, because `hw` is two draws.** The first is a falling block by
+// another name -- one terrain cube per entity, through the detail pipeline --
+// and it is not folded into `drawFallingBlocks` because the cube swells: the
+// scale is a function of the fuse, and a shared loop would carry a branch for
+// a case the falling blocks never take.
+//
+// The second is the white flash, and it cannot be a colour on the first. The
+// detail pipeline modulates the atlas by the vertex colour and modulation only
+// darkens, so a white TNT is not expressible there. It goes through the
+// **outline pipeline** instead -- the texture-free, blended, uniform-tinted
+// program the selection box already uses -- which is a faithful reading of
+// what the jar does: `glDisable(GL_TEXTURE_2D)`, `glDisable(GL_LIGHTING)`,
+// `glEnable(GL_BLEND)`, `glColor4f(1, 1, 1, alpha)`, draw the block again.
+//
+// **The tint is a uniform, so the flash is one draw per entity**, and that is
+// what `kPrimedTntFlashBudget` bounds. It is also why the flash runs after the
+// whole textured pass rather than interleaved: the pipeline is bound once.
+//
+// The one state the jar sets that this does not is the blend function.
+// `hw` asks for `GL_SRC_ALPHA, GL_DST_ALPHA`, which on a framebuffer with no
+// destination alpha is not what it reads as; the outline pass's
+// `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` is the ordinary over-blend and is what the
+// effect looks like on a real client.
+void Renderer::drawPrimedTnt(const C3D_Mtx& viewProjection, i32 originChunkX,
+                             i32 originChunkZ)
+{
+    if (primedTnt_ == nullptr || primedTnt_->count() == 0 || tntVerts_ == nullptr) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(tntVerts_);
+    const int written = render::buildPrimedTnt(*primedTnt_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                               itemPartial_, verts, kMaxPrimedTntVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    // The same chunk-relative fold the falling blocks use: the eye's block is
+    // folded into the matrix so the vertices stay inside a 16-bit range.
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+
+    bindPipeline(detailPipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, tntVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    drawPrimedTntFlash(mvp);
+}
+
+// The white half of the pass above. Split out because everything in it is
+// state the textured half must not inherit, and because the loop is one draw
+// per entity rather than one for the lot.
+void Renderer::drawPrimedTntFlash(const C3D_Mtx& mvp)
+{
+    if (tntFlashVerts_ == nullptr) {
+        return;
+    }
+
+    // Count first: binding the outline pipeline and tearing the world state
+    // down for a frame with nothing flashing would be a waste on every other
+    // group of five ticks.
+    int flashing = 0;
+    for (int i = 0; i < primedTnt_->count() && flashing == 0; ++i) {
+        if (render::primedTntFlashing((*primedTnt_)[i].fuse)) {
+            ++flashing;
+        }
+    }
+    if (flashing == 0) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    bindPipeline(outlinePipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, outlinePipeline_.uLocMvp, &mvp);
+
+    // One combiner stage, the vertex colour straight through -- the same
+    // configuration `drawSelection` sets, and for the same reason: there is no
+    // texture on this shape.
+    C3D_TexEnv* env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+    for (int i = 1; i < 3; ++i) {
+        C3D_TexEnvInit(C3D_GetTexEnv(i));
+    }
+
+    // **Depth test on, writes off, and `GEQUAL` rather than the world's
+    // `GREATER`.** The comparison is the one thing here that is deliberately
+    // not `applyWorldState`'s: this pass redraws the *same* vertices through
+    // the same matrix, so its fragments land at exactly the depth the textured
+    // pass just wrote, and a strict `GREATER` would reject every one of them --
+    // the flash would never appear at all. `GEQUAL` lets the equal case
+    // through, which is what makes this an overlay rather than a second
+    // surface. Writes stay off so it does not leave one.
+    //
+    // This is the same problem `drawSelection` has and it is solved the other
+    // way there, by expanding the box 0.002 -- a1.1.2's own number for the
+    // outline. There is no such expansion in `hw`, so there is none here.
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+    C3D_DepthTest(true, GPU_GEQUAL, GPU_WRITE_COLOR);
+    C3D_CullFace(GPU_CULL_NONE);
+
+    auto* verts = static_cast<render::OutlineVertex*>(tntFlashVerts_);
+    int drawn = 0;
+    for (int i = 0; i < primedTnt_->count() && drawn < render::kPrimedTntFlashBudget; ++i) {
+        const mc::entity::PrimedTnt& e = (*primedTnt_)[i];
+        const int written = render::buildPrimedTntFlash(
+            e, eyeBlockX, eyeBlockY, eyeBlockZ, itemPartial_, verts,
+            render::kPrimedTntFlashVerticesEach);
+        if (written == 0) {
+            continue;
+        }
+        GSPGPU_FlushDataCache(verts, sizeof(render::OutlineVertex) * u32(written));
+
+        // `glColor4f(1.0F, 1.0F, 1.0F, f1)`.
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, outlinePipeline_.uLocTint, 1.0f, 1.0f, 1.0f,
+                      render::primedTntFlashAlpha(e.fuse, itemPartial_));
+
+        C3D_BufInfo* buf = C3D_GetBufInfo();
+        BufInfo_Init(buf);
+        BufInfo_Add(buf, verts, sizeof(render::OutlineVertex), 1, 0x0);
+        C3D_DrawArrays(GPU_TRIANGLES, 0, written);
+        ++frameStats_.drawCalls;
+        ++drawn;
+    }
+
+    // **Put the world back, and put all of it back.** Unlike `drawSelection`,
+    // this is not the last thing in the eye -- the paintings, the arrows, the
+    // mobs, the signs and then the *translucent terrain pass* all follow it --
+    // so anything left set here is inherited by the rest of the frame.
+    //
+    // **This is what tinted the ocean white.** An earlier version restored
+    // three pieces of state by hand and left the texture combiner where the
+    // outline pass had put it: one stage, primary colour, REPLACE. Every draw
+    // after it in the eye then ran with no texture at all, and the biggest
+    // surface in the frame is the sea -- which came out as a flat sheet of
+    // vertex colour, with the fog amount the shader parks in primary alpha as
+    // its opacity. The three hand-restored values were wrong as well
+    // (`GPU_GEQUAL` for `GPU_GREATER`, an alpha reference of 0 for
+    // `kAlphaTestRef`, and a src-alpha blend where the world wants `ONE/ZERO`).
+    //
+    // Restating the whole thing is both the correct fix and the cheaper one to
+    // keep correct: `applyWorldState` is the single description of what a world
+    // pass runs under, it already exists for exactly this reason, and a state
+    // added to it in future is then added here too. It costs two texture binds
+    // and a combiner setup, on the frames where TNT is actually flashing on
+    // screen and only those.
+    applyWorldState();
+    // The one thing `applyWorldState` states that this point in the eye does
+    // not want: it sets `GPU_CULL_BACK_CCW`, and the entity passes run with
+    // culling off -- a crossed square is meant to be seen from both sides, and
+    // the mesher emits both windings. `drawEye` turns it back on itself once
+    // the entities are done.
+    C3D_CullFace(GPU_CULL_NONE);
+}
+
 void Renderer::drawPaintings(const C3D_Mtx& viewProjection, i32 originChunkX,
                              i32 originChunkZ)
 {
@@ -768,6 +1129,125 @@ void Renderer::drawBoats(const C3D_Mtx& viewProjection, i32 originChunkX, i32 or
     atlas_.bind(0, wireframe_);
 }
 
+void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ)
+{
+    const int liveMobs = mobs_ != nullptr ? mobs_->count() : 0;
+    const int liveSpawners = spawners_ != nullptr ? spawners_->count() : 0;
+    if ((liveMobs == 0 && liveSpawners == 0) || mobVerts_ == nullptr
+        || !atlas_.hasEntities()) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(mobVerts_);
+    int written = 0;
+    if (liveMobs > 0) {
+        written = render::buildMobs(*mobs_, eyeBlockX, eyeBlockY, eyeBlockZ, itemPartial_,
+                                    verts, render::kMobMaxVertices);
+    }
+    // **The miniatures append to the same buffer**, so a spawner costs no bind
+    // and no draw call of its own -- see the note on `kMaxMobVertices`. They
+    // take the room the animals did not, never the room they need.
+    if (liveSpawners > 0) {
+        written += render::buildSpawnerMobs(*spawners_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                            itemPartial_, verts + written,
+                                            kMaxMobVertices - written);
+    }
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+    atlas_.bindEntity(0);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, mobVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    atlas_.bind(0, wireframe_);
+}
+
+// **The flames on everything that is burning** -- `ak.a(Lkh;DDDF)V`, which the
+// original runs from `doRenderShadowAndFire` immediately after each model it
+// belongs to. Here it is one pass at the end of the entity passes, for two
+// reasons: the sheets are tiles of the *block* atlas where most of those models
+// are the entity sheet, so they could never have shared a draw; and every
+// burning entity in the world draws from the same tile, so all of them together
+// are one draw call. `drawMobs` put the block atlas back on its way out, so
+// this costs no bind either. See core/render/entity_fire_mesh.hpp.
+void Renderer::drawEntityFire(const C3D_Mtx& viewProjection, i32 originChunkX,
+                           i32 originChunkZ)
+{
+    if (entityFireVerts_ == nullptr) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    render::FireScene scene;
+    scene.mobs = mobs_;
+    scene.items = items_;
+    scene.boats = boats_;
+    scene.minecarts = minecarts_;
+    scene.fallingBlocks = fallingBlocks_;
+    scene.primedTnt = primedTnt_;
+
+    auto* verts = static_cast<mesh::DetailVertex*>(entityFireVerts_);
+    const int written =
+        render::buildEntityFires(scene, itemViewYaw_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                 itemPartial_, verts, kMaxEntityFireVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, entityFireVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+}
+
 void Renderer::drawMinecarts(const C3D_Mtx& viewProjection, i32 originChunkX,
                              i32 originChunkZ)
 {
@@ -856,10 +1336,18 @@ void Renderer::drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 or
     const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
     const float ty = float(eyeBlockY);
     const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+    // The same translation every entity pass makes, and then **a scale**: the
+    // sign builders write 1/512 of a block where the shader divides by 1024, so
+    // that a sign reaches the 64 blocks a1.1.2 draws one at. See
+    // render::kSignUnitsPerBlock. Translation first, from the unscaled columns,
+    // because the scale belongs inside it.
     C3D_Mtx mvp = viewProjection;
     for (int row = 0; row < 4; ++row) {
         const float* r = viewProjection.r[row].c;
         mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+        mvp.r[row].c[1] = r[1] * render::kSignUnitScale;
+        mvp.r[row].c[2] = r[2] * render::kSignUnitScale;
+        mvp.r[row].c[3] = r[3] * render::kSignUnitScale;
     }
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
@@ -1070,8 +1558,9 @@ void Renderer::drawCrosshair(const C3D_Mtx& viewProjection, const Camera& camera
 // also why this takes `iod` rather than the eye's view-projection -- the
 // stereo separation still applies, the camera's position and heading do not.
 //
-// **Two: its own near plane**, kHeldItemNearPlane, because the world's would
-// clip the nearest corner off a held sword.
+// **Two: its own near plane**, kHeldItemNearPlane -- equal to the world's since
+// that came down to a1.1.2's 0.05, and still stated separately because the two
+// are pinned to different things. See the constant.
 //
 // **Three: its own slice of the depth buffer**, which is this port's answer to
 // the `glClear(GL_DEPTH_BUFFER_BIT)` the original does first. Both constants
@@ -1309,6 +1798,128 @@ void Renderer::drawChat()
     atlas_.bind(0, wireframe_);
 }
 
+void Renderer::drawBreakOverlay(const C3D_Mtx& viewProjection, i32 originChunkX,
+                                i32 originChunkZ)
+{
+    if (!breakVisible_ || breakVerts_ == nullptr) {
+        return;
+    }
+    auto* verts = static_cast<mesh::DetailVertex*>(breakVerts_);
+    const int written = render::buildBreakOverlay(breakBlock_, breakMeta_, breakStage_, verts,
+                                                  render::kBreakOverlayMaxVertices);
+    if (written < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+
+    // Block-local vertices, moved to the block -- the falling blocks' own
+    // translation, done in the matrix so the positions stay small.
+    const float tx = float(double(breakX_) - double(originChunkX) * 16.0);
+    const float ty = float(breakY_);
+    const float tz = float(double(breakZ_) - double(originChunkZ) * 16.0);
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    // terrain.png, never the wireframe atlas: the crack tiles are the texture.
+    atlas_.bind(0, false);
+
+    // **`glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR)` with the alpha test off**,
+    // which is twice the product of the crack and what is already there: a
+    // mid-grey texel leaves the block as it was and the dark lines darken it.
+    // Unlit, for the reason the original draws it in plain white -- the block
+    // under it is already lit.
+    C3D_TexEnv* env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_MODULATE);
+    C3D_TexEnvSrc(env, C3D_Alpha, GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0);
+    C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+    for (int i = 1; i < 3; ++i) {
+        C3D_TexEnvInit(C3D_GetTexEnv(i));
+    }
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_DST_COLOR, GPU_SRC_COLOR, GPU_DST_ALPHA,
+                   GPU_SRC_ALPHA);
+    C3D_CullFace(GPU_CULL_BACK_CCW);
+    C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_COLOR);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, verts, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    atlas_.bind(0, wireframe_);
+}
+
+void Renderer::drawHud()
+{
+    if (!hudVisible_ || hudVerts_ == nullptr || !atlas_.hasIcons()) {
+        return;
+    }
+    auto* verts = static_cast<mesh::DetailVertex*>(hudVerts_);
+    const int count = render::buildHud(hudInput_, verts, render::kHudMaxVertices);
+    if (count < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(count));
+
+    // The chat's space: screen pixels at the screen plane, no stereo offset,
+    // with the detail shader's 1/1024 undone by the builder's sixteen units a
+    // pixel.
+    C3D_Mtx screen;
+    Mtx_OrthoTilt(&screen, 0.0f, 400.0f, 240.0f, 0.0f, 1.0f, -1.0f, true);
+    Mtx_Scale(&screen, float(mesh::kDetailUnitsPerBlock / render::kHudUnitsPerPixel),
+              float(mesh::kDetailUnitsPerBlock / render::kHudUnitsPerPixel), 1.0f);
+
+    // **Cut out rather than blended.** Every texel `lu` draws is either solid or
+    // clear, so the world's alpha test is the right answer and blending would
+    // only cost fill on a fill-bound device.
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    C3D_AlphaTest(true, GPU_GREATER, kAlphaTestRef);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+
+    bindPipeline(detailPipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &screen);
+    atlas_.bindIcons(0);
+
+    // **Unlit, and the alpha straight off the texture.** Stage 0 alone: the
+    // lightmap and the fog the world's stages 1 and 2 apply would darken the
+    // hearts at night and fade them with distance from a camera they are not
+    // in. The vertex alpha is the shader's fog amount and must not reach the
+    // test either, which is why alpha is the texture's and nothing else.
+    C3D_TexEnv* env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_MODULATE);
+    C3D_TexEnvSrc(env, C3D_Alpha, GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0);
+    C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+    for (int i = 1; i < 3; ++i) {
+        C3D_TexEnvInit(C3D_GetTexEnv(i));
+    }
+
+    C3D_BufInfo buf;
+    BufInfo_Init(&buf);
+    BufInfo_Add(&buf, verts, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&buf);
+    const int quads = count / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    atlas_.bind(0, wireframe_);
+}
+
 // The geometry-shader program. Three things differ from the two above.
 //
 // **A second DVLE.** picasso puts every source file it is given into one shbin,
@@ -1438,20 +2049,26 @@ bool Renderer::init(const Config& config, bool isNew3DS)
     // 24-bit depth, not 16.
     //
     // 16 bits cannot describe this world. Window depth is 1/d, so with a
-    // 0.2-block near plane and a 176-block far plane one depth unit spans
+    // 0.05-block near plane and a 176-block far plane one depth unit spans
     //
     //     dd = d^2 * (far - near) / (near * far * 65536)
     //
-    // which is 0.19 blocks at 50 away, 0.76 at 100, and 1.95 at 160. Past
-    // roughly 110 blocks two surfaces a whole block apart land on the *same*
-    // depth value, so which one wins is decided by rounding -- and it changes
-    // as the camera moves, and differs between the two eyes, which is what
-    // makes it read as shimmer rather than as a static artefact.
+    // which is 0.76 blocks at 50 away, 3.05 at 100, and 7.81 at 160. Well
+    // inside 50 blocks two surfaces a whole block apart already land on the
+    // *same* depth value, so which one wins is decided by rounding -- and it
+    // changes as the camera moves, and differs between the two eyes, which is
+    // what makes it read as shimmer rather than as a static artefact.
     //
-    // 24 bits multiplies every one of those figures by 256: a block of
-    // separation at 160 blocks is 178 depth units. The cost is one more byte
-    // per pixel in each eye's depth buffer, 375 KB total, against the ~5 MB of
-    // VRAM M0 measured free.
+    // (Those are the figures at the near plane this renderer settled on. The
+    // shimmer was measured and fixed while `kNearPlane` was still 0.2, where
+    // they are a quarter of the size -- 0.19, 0.76, 1.95 -- and 16 bits was not
+    // enough even then. 24 is what made dropping the near plane free; see
+    // `kNearPlane`.)
+    //
+    // 24 bits multiplies every one of those figures by 256: at 160 blocks a
+    // depth unit is 0.03 of a block, so a block of separation is 33 of them.
+    // The cost is one more byte per pixel in each eye's depth buffer, 375 KB
+    // total, against the ~5 MB of VRAM M0 measured free.
     eye_[0] = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     eye_[1] = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     if (eye_[0] == nullptr || eye_[1] == nullptr) {
@@ -1507,6 +2124,17 @@ bool Renderer::init(const Config& config, bool isNew3DS)
     if (!atlas_.init(atlasImage) || !lightmap_.init()) {
         return false;
     }
+
+    // **The item sheet, here as well as in setAtlas.** It used to be uploaded
+    // only on a texture-pack change, so from launch `hasItems()` was false and
+    // every gui/items.png sprite -- a sword in the hand, a dropped apple, the
+    // compass -- drew nothing until the player happened to switch packs. Not
+    // fatal either: a pack without the sheet, or no room for its 256 KB, is
+    // what `hasItems()` answers for.
+    atlas_.initItems(atlasImage);
+    // The icon sheet the hearts come off, on the same terms -- and uploaded at
+    // init for the reason the item sheet now is.
+    atlas_.initIcons(atlasImage);
 
     // **Not fatal if it fails.** The entity and art sheets are 32 KB and
     // 256 KB of ordinary linear memory; a console that cannot spare them draws
@@ -1675,6 +2303,7 @@ bool Renderer::setAtlas(const texture::AtlasImage& image)
         // core/texture/atlas_image.hpp -- and `hasItems()` is what the item
         // pass asks before it draws anything from it.
         atlas_.initItems(image);
+        atlas_.initIcons(image);
         // ...and so do the entity sheets, which unlike the item sheet are
         // always present: `buildEntitySkins` lays down stand-ins for whatever
         // the pack does not carry.
@@ -1759,9 +2388,11 @@ void Renderer::shutdown()
     // Returning from a world to the menu and opening another must not exhaust
     // linear memory one renderer instance at a time.
     for (void** buffer : {&outlineVerts_, &crosshairVerts_, &particleVerts_, &itemVerts_,
-                          &fallingVerts_, &paintingVerts_, &arrowVerts_, &boatVerts_,
-                          &minecartVerts_, &signVerts_, &heldVerts_, &chatVerts_,
-                          &chatStrips_}) {
+                          &fallingVerts_, &tntVerts_, &tntFlashVerts_, &paintingVerts_,
+                          &arrowVerts_, &boatVerts_,
+                          &minecartVerts_, &mobVerts_, &entityFireVerts_, &signVerts_,
+                          &heldVerts_,
+                          &chatVerts_, &chatStrips_, &skyVerts_}) {
         if (*buffer != nullptr) {
             linearFree(*buffer);
             *buffer = nullptr;
@@ -1780,6 +2411,241 @@ void Renderer::shutdown()
             target = nullptr;
         }
     }
+}
+
+// **Everything about the sky that changes, worked out once a frame.**
+//
+// `iq.h(F)V` -- updateFogColor -- and the three `World` colours it calls, plus
+// the two things renderSky asks for directly: how bright the stars are and
+// where the sun is. None of it is per-eye and none of it is per-vertex, which
+// is why the sky's 4,480 vertices are written once at start-up and never again.
+void Renderer::setWorldTime(i64 dayTicks, float partialTicks)
+{
+    const world::SkyColour sky = world::skyColour(dayTicks, partialTicks);
+    const world::SkyColour fog =
+        world::viewFogColour(dayTicks, partialTicks, config_.meshDistance);
+    const world::SkyColour below = render::voidPlaneColour(sky);
+
+    // **The clear and the fog are the same colour, and that is the point.**
+    // Whatever the far plane cuts off -- and at a six-chunk render distance
+    // that includes most of the sky plane -- is already fully fogged where it
+    // is cut, so the seam between geometry and background cannot be seen.
+    clearColour_ = packRgba(fog.r, fog.g, fog.b);
+    fogColour_ = packAbgr(fog.r, fog.g, fog.b);
+    skyPlaneColour_ = packAbgr(sky.r, sky.g, sky.b);
+    voidPlaneColour_ = packAbgr(below.r, below.g, below.b);
+
+    starBrightness_ = world::starBrightness(dayTicks, partialTicks);
+    celestialAngle_ = world::celestialAngle(dayTicks, partialTicks);
+}
+
+// The sky's own view-projection: the camera's rotation with none of its
+// position, and a far plane that does not depend on the render distance.
+//
+// **The eye is at the origin rather than at the camera**, which is the one
+// thing that makes this not simply `viewProjection` with a different far plane.
+// a1.1.2 draws the sky before it translates anything into world space, so the
+// plane is sixteen blocks above *you* wherever you stand and the sun is a
+// hundred blocks away whatever you are standing on. Stereo is kept: the
+// interocular offset is in the projection, so the sky sits at the far end of
+// the depth budget instead of being flattened onto the screen plane.
+C3D_Mtx Renderer::skyViewProjection(const Camera& camera, float iod) const
+{
+    C3D_Mtx projection;
+    Mtx_PerspStereoTilt(&projection, C3D_AngleFromDegrees(config_.fovDegrees), 400.0f / 240.0f,
+                        kNearPlane, kSkyFarPlane, iod, focalBlocks_, false);
+
+    float dx, dy, dz;
+    camera.look(&dx, &dy, &dz);
+    C3D_FVec eye = FVec3_New(0.0f, 0.0f, 0.0f);
+    C3D_FVec target = FVec3_New(dx, dy, dz);
+    C3D_FVec up = FVec3_New(0.0f, 1.0f, 0.0f);
+
+    C3D_Mtx view;
+    Mtx_LookAt(&view, eye, target, up, false);
+
+    C3D_Mtx vp;
+    Mtx_Multiply(&vp, &projection, &view);
+    return vp;
+}
+
+// **`e.a(F)V` -- renderSky -- in the order the original draws it**: the sky
+// plane, then the sun, the moon and the stars added over it, then the plane
+// below. First in the eye, with depth writes off, so every one of them is
+// behind the whole world whatever distance it claims to be at.
+//
+// Five draws off one buffer. Four states differ between the two halves and each
+// one is the original's:
+//
+//   * the **planes are fogged**, which is where the horizon comes from -- a
+//     flat ceiling with a linear fade across it reads as a dome;
+//   * the **sun, moon and stars are not**, and are **added** rather than
+//     blended (`glBlendFunc(GL_ONE, GL_ONE)`), so a star over the sky brightens
+//     it and a star over nothing is the star;
+//   * the **alpha test is off** for all five, because the fog amount lives in
+//     the vertex alpha here as everywhere else and the world's test would throw
+//     the foggy end of the sky away;
+//   * **culling is off**, because half of this is seen from below and half from
+//     above and neither has a back worth finding out about.
+//
+// **Named deviation: this draws at every render distance.** `iq.c(F)V` guards
+// the whole call with `if (renderDistance < 2)`, so a1.1.2 at Short or Tiny has
+// no sky at all -- no sun, no moon, no stars, just the clear colour. That is a
+// 2010 frame-rate concession and not something a player chose to see, and this
+// port's rule is faithful to the game rather than to its limits. The sky is
+// 1,120 quads that never change and one full-screen plane's worth of fill; if a
+// console ever says that is too much, the guard is one line and it goes here.
+void Renderer::drawSky(const Camera& camera, float iod)
+{
+    if (skyVerts_ == nullptr) {
+        return;
+    }
+
+    const C3D_Mtx flat = skyViewProjection(camera, iod);
+    // The celestial half turns about X by the celestial angle, which is the
+    // whole of the day's motion. `Mtx_RotateX(..., true)` multiplies from the
+    // right, so this is `projection * view * rotate` -- the same order
+    // `glRotatef` after the camera transform produces.
+    C3D_Mtx turning = flat;
+    Mtx_RotateX(&turning, C3D_AngleFromDegrees(celestialAngle_ * 360.0f), true);
+
+    bindPipeline(detailPipeline_);
+    // The sky's own fog line, and not the world's: `iq.a(-1)` sets the start to
+    // zero and the end to eight tenths of the far plane, where the world's runs
+    // from a quarter of it. Overhead is therefore already slightly fogged,
+    // which is what the original looks like.
+    // Same two numbers bindPipeline writes for the world, over the sky's own
+    // start and end. The bound on `fogEnd` is a guard and not a setting: a
+    // render distance of zero would divide by it, and the debug page can set
+    // one.
+    const float fogStart = fogEndBlocks() * render::kSkyFogStartScale;
+    const float fogEnd = fogEndBlocks() * render::kSkyFogEndScale;
+    if (detailPipeline_.uLocFog >= 0 && fogEnd > fogStart + 1.0f) {
+        const float slope = 1.0f / (fogEnd - fogStart);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, detailPipeline_.uLocFog, slope, -fogStart * slope,
+                      0.0f, 0.0f);
+    }
+
+    // The scale the sky's own units need: the vertices are written at 1/64 of a
+    // block and the detail shader divides by 1024. See core/render/sky.hpp.
+    constexpr float kSkyScale =
+        float(mesh::kDetailUnitsPerBlock) / float(render::kSkyUnitsPerBlock);
+    C3D_Mtx planes = flat;
+    Mtx_Scale(&planes, kSkyScale, kSkyScale, kSkyScale);
+    C3D_Mtx celestial = turning;
+    Mtx_Scale(&celestial, kSkyScale, kSkyScale, kSkyScale);
+
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+
+    auto* base = static_cast<mesh::DetailVertex*>(skyVerts_);
+    // **A local `C3D_BufInfo` and `C3D_SetBufInfo` for every range, which is
+    // drawChat's pattern and not drawSelection's -- and the difference is the
+    // whole of what was wrong with this pass.**
+    //
+    // `C3D_GetBufInfo()` hands back the context's buffer config *and marks it
+    // dirty*; writing through that pointer afterwards does not. So fetching it
+    // once and re-basing it between draws -- which is fine for the one-draw
+    // passes that do it -- sent only the **first** range's base to the GPU, and
+    // every range after it drew the first range's vertices. The void plane, the
+    // sun, the moon and the stars were all drawing the sky plane: the void's
+    // colour landed on the plane *above* the camera and painted over it,
+    // nothing was drawn below at all, and the sun and moon became one 64-block
+    // quad at sixteen blocks up, turning with the day and seen edge-on as a
+    // pale stripe. Every reported symptom is that one missing dirty mark.
+    //
+    // It cannot be hoisted out of the lambda: each range has a different base,
+    // and the base is exactly what has to reach the GPU.
+    const auto drawRange = [&](int first, int vertices) {
+        C3D_BufInfo range;
+        BufInfo_Init(&range);
+        BufInfo_Add(&range, base + first, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&range);
+        const int quads = vertices / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+    };
+
+    // **A plane: a flat colour faded into the fog, and no texture at all.**
+    // Two stages rather than the world's three, because there is nothing to
+    // sample: stage 0 states the colour, stage 1 does the same INTERPOLATE the
+    // world's third stage does, with the fog amount the vertex shader left in
+    // primary alpha. The vertex colour bytes are unused here -- a constant can
+    // change once a frame where a vertex cannot.
+    //
+    // Stated twice, once per plane, because the celestial draws in between take
+    // both stages for their own.
+    const auto planeState = [&](u32 colour) {
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+        C3D_TexEnv* env0 = C3D_GetTexEnv(0);
+        C3D_TexEnvInit(env0);
+        C3D_TexEnvSrc(env0, C3D_Both, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+        C3D_TexEnvFunc(env0, C3D_Both, GPU_REPLACE);
+        C3D_TexEnvColor(env0, colour);
+        C3D_TexEnv* env1 = C3D_GetTexEnv(1);
+        C3D_TexEnvInit(env1);
+        C3D_TexEnvSrc(env1, C3D_RGB, GPU_CONSTANT, GPU_PREVIOUS, GPU_PRIMARY_COLOR);
+        C3D_TexEnvOpRgb(env1, GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR,
+                        GPU_TEVOP_RGB_SRC_ALPHA);
+        C3D_TexEnvFunc(env1, C3D_RGB, GPU_INTERPOLATE);
+        C3D_TexEnvColor(env1, fogColour_);
+        C3D_TexEnvSrc(env1, C3D_Alpha, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+        C3D_TexEnvFunc(env1, C3D_Alpha, GPU_REPLACE);
+        C3D_TexEnvInit(C3D_GetTexEnv(2));
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &planes);
+    };
+
+    planeState(skyPlaneColour_);
+    drawRange(render::kSkyPlaneFirst, render::kSkyPlaneVertices);
+
+    // **The three that turn, added rather than blended and with no fog.**
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ONE, GPU_ONE, GPU_ONE);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &celestial);
+
+    // The sun and the moon are two quads off the entity sheet, at full
+    // brightness: `glColor4f(1, 1, 1, 1)` with the texture straight through.
+    if (atlas_.hasEntities()) {
+        atlas_.bindEntity(0);
+        C3D_TexEnv* sun = C3D_GetTexEnv(0);
+        C3D_TexEnvInit(sun);
+        C3D_TexEnvSrc(sun, C3D_Both, GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0);
+        C3D_TexEnvFunc(sun, C3D_Both, GPU_REPLACE);
+        C3D_TexEnvInit(C3D_GetTexEnv(1));
+        drawRange(render::kSunFirst, render::kSunVertices);
+        drawRange(render::kMoonFirst, render::kMoonVertices);
+        atlas_.bind(0, wireframe_);
+    }
+
+    // The stars, all 780 of them in one draw, at the brightness the time of day
+    // says. Skipped entirely by day, which is what `if (f > 0)` does in the
+    // original -- and by day it is exactly zero, not merely small.
+    if (starBrightness_ > 0.0f) {
+        C3D_TexEnv* stars = C3D_GetTexEnv(0);
+        C3D_TexEnvInit(stars);
+        C3D_TexEnvSrc(stars, C3D_Both, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+        C3D_TexEnvFunc(stars, C3D_Both, GPU_REPLACE);
+        C3D_TexEnvColor(stars, packAbgr(starBrightness_, starBrightness_, starBrightness_));
+        C3D_TexEnvInit(C3D_GetTexEnv(1));
+        drawRange(render::kStarsFirst, render::kStarVertices);
+    }
+
+    // **The plane below, last, which is where renderSky puts it and it matters.**
+    // Nothing in this pass writes depth, so the order *is* the occlusion: the
+    // original draws this opaque plane after the celestial half precisely so
+    // that the half of the sky under your feet -- the moon by day, the stars
+    // below the horizon -- is covered by it rather than shining through the
+    // ground. Sixteen blocks down, so terrain hides it wherever there is any.
+    planeState(voidPlaneColour_);
+    drawRange(render::kVoidPlaneFirst, render::kVoidPlaneVertices);
+
+    // **Everything this pass changed, stated back.** It runs before the world
+    // rather than after it, so unlike the selection box and the crosshair it
+    // cannot leave the state where it likes -- and `applyWorldState` is the one
+    // description of what the world's passes need.
+    applyWorldState();
 }
 
 C3D_Mtx Renderer::viewProjection(const Camera& camera, float iod, float fovRadians) const
@@ -2276,8 +3142,14 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // reserve before it records a section, so it too has space for its late
     // passes even when the first eye consumed most of the frame budget.
     commandTailReserve_ = kCommandWordsPerLatePasses;
-    C3D_RenderTargetClear(eye_[eye], C3D_CLEAR_ALL, kSkyColour, 0);
+    C3D_RenderTargetClear(eye_[eye], C3D_CLEAR_ALL, clearColour_, 0);
     C3D_FrameDrawOn(eye_[eye]);
+
+    // **Before everything, which is where renderSky runs.** It writes no depth
+    // and its own far plane is past the world's, so the order is the only thing
+    // keeping it behind the terrain -- exactly as in the original, where
+    // `glDepthMask(false)` is the whole of the argument.
+    drawSky(camera, iod);
 
     const C3D_Mtx vp = viewProjection(camera, iod, C3D_AngleFromDegrees(config_.fovDegrees));
 
@@ -2297,8 +3169,12 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // the second eye that bind follows the first eye's detail draws. Same
     // hazard as the one on the way out, so the same drain: end the list first,
     // and the repartition happens with nothing of the previous pass in flight.
-    // `C3Di_SplitFrame` returns early when nothing has been recorded, so the
-    // first pass of a frame pays nothing for this.
+    // **On the first eye this used to cost nothing** -- `C3Di_SplitFrame`
+    // returns early when nothing has been recorded -- and now it does, because
+    // the sky pass above records five draws through the detail program before
+    // this one. That is the same hazard rather than a new cost: something has
+    // to drain between a detail draw and the bind that turns the geometry stage
+    // on, and this is where it happens.
     const bool splitAroundGeo =
         cubeFormat_ == mesh::CubeFormat::Quads && geoSplitPasses();
     if (splitAroundGeo) {
@@ -2350,10 +3226,13 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     drawParticles(vp, originChunkX, originChunkZ);
     drawItemEntities(vp, originChunkX, originChunkZ);
     drawFallingBlocks(vp, originChunkX, originChunkZ);
+    drawPrimedTnt(vp, originChunkX, originChunkZ);
     drawPaintings(vp, originChunkX, originChunkZ);
     drawArrows(vp, originChunkX, originChunkZ);
     drawBoats(vp, originChunkX, originChunkZ);
     drawMinecarts(vp, originChunkX, originChunkZ);
+    drawMobs(vp, originChunkX, originChunkZ);
+    drawEntityFire(vp, originChunkX, originChunkZ);
     drawSigns(vp, originChunkX, originChunkZ);
 
     C3D_CullFace(GPU_CULL_BACK_CCW);
@@ -2378,6 +3257,7 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // sorted against water and glass, and the one thing it must always be is
     // visible on the block the crosshair is on.
     drawSelection(vp, originChunkX, originChunkZ);
+    drawBreakOverlay(vp, originChunkX, originChunkZ);
     drawCrosshair(vp, camera, originChunkX, originChunkZ);
 
     // **Last, which is where `renderHand` runs.** After the crosshair rather
@@ -2388,6 +3268,7 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // intent rather than something a player can see.
     drawHeldItem(iod);
     drawChat();
+    drawHud();
 
     C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
@@ -2478,7 +3359,7 @@ void Renderer::applyWorldState()
         C3D_TexEnvOpRgb(env2, GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR,
                         GPU_TEVOP_RGB_SRC_ALPHA);
         C3D_TexEnvFunc(env2, C3D_RGB, GPU_INTERPOLATE);
-        C3D_TexEnvColor(env2, kFogColour);
+        C3D_TexEnvColor(env2, fogColour_);
         C3D_TexEnvSrc(env2, C3D_Alpha, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
         C3D_TexEnvFunc(env2, C3D_Alpha, GPU_REPLACE);
     }
@@ -2659,6 +3540,13 @@ void Renderer::drawFrame(const Camera& camera, void* overlayContext, Overlay2D o
         submitMs_ = 0.0f;
         return;
     }
+
+    // **The frame opened, so the GX queue is empty** -- `C3D_FrameBegin` does
+    // not return true before it is -- and every animated-tile copy queued
+    // since the last frame has finished reading its staging. That is the only
+    // point at which the staging can be handed out again; see
+    // `Atlas::tileStagingUsed_`.
+    atlas_.tileCopiesRetired();
 
     // **The ramp advances here and nowhere else** -- after a FrameBegin that
     // came back, which is the only proof the previous frame's list completed.

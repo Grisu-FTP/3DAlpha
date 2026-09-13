@@ -63,15 +63,36 @@ u16 blockOf(const item::ItemDef& def, item::ItemId id)
 }
 
 // `RenderBlocks.renderItemIn3d`, through the shape table rather than through a
-// second copy of the render-type list: `block::renderBoxes` answers with boxes
-// for exactly the four types that method returns true for, and zero for the
-// rest.
-int itemBoxes(u16 block, AABB* out, int max)
+// second copy of the render-type list: `block::itemRenderBoxes` answers with
+// boxes for exactly the four types that method returns true for, and zero for
+// the rest.
+//
+// **The item form and not the world form**, which is `renderBlockAsItem`'s own
+// first line -- `setBlockBoundsForItemRender` -- and is the difference between a
+// dropped button and a dropped stone cube. See core/block/model.hpp.
+int itemBoxes(u16 block, AABB* out, int* faceMask, int max)
 {
     if (block == 0) {
         return 0;
     }
-    return block::renderBoxes(block::BlockId(block), 0, 0, out, max);
+    return block::itemRenderBoxes(block::BlockId(block), out, max, faceMask);
+}
+
+// Four vertices for every face the mask keeps. Only the cactus drops any --
+// its three boxes contribute two faces each -- but the budget has to be the
+// number actually written, not the number a solid box would write, or a heap
+// of dropped cactus reserves three times the buffer it uses.
+int boxVertices(const int* faceMask, int count)
+{
+    int quads = 0;
+    for (int box = 0; box < count; ++box) {
+        for (int face = 0; face < 6; ++face) {
+            if ((faceMask[box] & (1 << face)) != 0) {
+                ++quads;
+            }
+        }
+    }
+    return quads * 4;
 }
 
 // A vertex, written once. Kept as a function because both branches write the
@@ -99,9 +120,10 @@ void writeVertex(mesh::DetailVertex& v, double x, double y, double z, i16 u, i16
 // because a1.1.2's item transform is applied about the entity's position and
 // `renderBlockAsItem` draws the block centred on it.
 int addSpunBox(const AABB& box, double cx, double cy, double cz, float scale, float sinSpin,
-               float cosSpin, const u16 tiles[6], u8 light, mesh::DetailVertex* out, int max)
+               float cosSpin, const u16 tiles[6], int faceMask, u8 light,
+               mesh::DetailVertex* out, int max)
 {
-    if (max < 6 * 4) {
+    if (max < boxVertices(&faceMask, 1)) {
         return 0;
     }
 
@@ -135,6 +157,10 @@ int addSpunBox(const AABB& box, double cx, double cy, double cz, float scale, fl
 
     int written = 0;
     for (int face = 0; face < 6; ++face) {
+        if ((faceMask & (1 << face)) == 0) {
+            // A cactus, whose sides and caps are three boxes of the same cell.
+            continue;
+        }
         const TileUv uv = tileUv(int(tiles[face]));
         for (int c = 0; c < 4; ++c) {
             const int idx = kFace[face][c];
@@ -190,11 +216,13 @@ int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegre
         const entity::ItemEntity& e = system[i];
         const item::ItemDef& def = item::def(e.item);
         AABB boxes[block::kMaxRenderBoxes];
+        int faceMask[block::kMaxRenderBoxes];
         const int boxCount =
             def.sheet == item::IconSheet::Terrain
-                ? itemBoxes(blockOf(def, e.item), boxes, block::kMaxRenderBoxes)
+                ? itemBoxes(blockOf(def, e.item), boxes, faceMask, block::kMaxRenderBoxes)
                 : 0;
-        return itemCopies(e.count) * (boxCount > 0 ? boxCount * 6 * 4 : 4);
+        return itemCopies(e.count)
+               * (boxCount > 0 ? boxVertices(faceMask, boxCount) : 4);
     };
     // **One cutoff for both sheets.** The first pass settles it over every
     // item against the whole buffer, and the second charges its own items to
@@ -233,10 +261,13 @@ int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegre
 
         const u16 block = blockOf(def, e.item);
         AABB boxes[block::kMaxRenderBoxes];
-        const int boxCount = def.sheet == item::IconSheet::Terrain
-                                 ? itemBoxes(block, boxes, block::kMaxRenderBoxes)
-                                 : 0;
+        int faceMask[block::kMaxRenderBoxes];
+        const int boxCount =
+            def.sheet == item::IconSheet::Terrain
+                ? itemBoxes(block, boxes, faceMask, block::kMaxRenderBoxes)
+                : 0;
         const bool asBlock = boxCount > 0;
+        const int blockVertices = asBlock ? boxVertices(faceMask, boxCount) : 0;
 
         // Which sheet this entity draws from, and therefore which pass owns it.
         const item::IconSheet mine =
@@ -250,7 +281,8 @@ int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegre
         double py = 0.0;
         double pz = 0.0;
         if (!place(i, &px, &py, &pz)
-            || !cutoff.admit(px, py, pz, itemCopies(e.count) * (asBlock ? boxCount * 6 * 4 : 4))) {
+            || !cutoff.admit(px, py, pz,
+                             itemCopies(e.count) * (asBlock ? blockVertices : 4))) {
             continue;
         }
 
@@ -289,12 +321,13 @@ int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegre
             if (asBlock) {
                 const block::BlockDef& bd = block::def(block::BlockId(block));
                 for (int b = 0; b < boxCount; ++b) {
-                    if (written + 6 * 4 > max) {
+                    if (written + boxVertices(&faceMask[b], 1) > max) {
                         return written;
                     }
                     written += addSpunBox(boxes[b], px + ox, py + oy, pz + oz,
                                           kItemBlockScale, spinSin, spinCos, bd.faces,
-                                          e.light, out + written, max - written);
+                                          faceMask[b], e.light, out + written,
+                                          max - written);
                 }
                 continue;
             }

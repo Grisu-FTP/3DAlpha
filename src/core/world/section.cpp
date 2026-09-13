@@ -451,6 +451,25 @@ bool Section::mayTickRandomly() const
     return true;
 }
 
+bool Section::mayHoldTileEntity() const
+{
+    switch (encoding_) {
+    case SectionEncoding::Uniform:
+        return block::tileEntityBearing(block::def(uniform_).tick);
+    case SectionEncoding::Palette4:
+    case SectionEncoding::Palette8:
+        for (BlockId id : palette_) {
+            if (block::tileEntityBearing(block::def(id).tick)) {
+                return true;
+            }
+        }
+        return false;
+    case SectionEncoding::Direct16:
+        return true;
+    }
+    return true;
+}
+
 usize Section::memoryUsage() const
 {
     usize bytes = palette_.capacity() * sizeof(BlockId);

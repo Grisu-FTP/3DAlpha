@@ -171,10 +171,25 @@ void writeVertex(mesh::DetailVertex& v, const Transform& t, float x, float y, fl
 // `mesh::kFaceShade` -- which is what a slot on the bottom screen already does
 // (`gui/item_icon.cpp`) and what the same block in the world is drawn with, so
 // all three agree.
-int addBox(const AABB& box, const Transform& t, const u16 tiles[6], u8 light,
+// Four vertices per face the mask keeps.
+int boxVertices(int faceMask)
+{
+    int quads = 0;
+    for (int face = 0; face < mesh::kFaceCount; ++face) {
+        if ((faceMask & (1 << face)) != 0) {
+            ++quads;
+        }
+    }
+    return quads * 4;
+}
+
+// `faceMask` is which of the six to emit, as `block::renderBoxes` fills it in.
+// Only the cactus asks for fewer than all of them, and it asks three times:
+// its item shape is one cell drawn as a cap box and two pairs of inset sides.
+int addBox(const AABB& box, const Transform& t, const u16 tiles[6], int faceMask, u8 light,
            mesh::DetailVertex* out, int max)
 {
-    if (max < 6 * 4) {
+    if (max < boxVertices(faceMask)) {
         return 0;
     }
     const double lo[3] = {box.minX, box.minY, box.minZ};
@@ -182,6 +197,9 @@ int addBox(const AABB& box, const Transform& t, const u16 tiles[6], u8 light,
 
     int written = 0;
     for (int face = 0; face < mesh::kFaceCount; ++face) {
+        if ((faceMask & (1 << face)) == 0) {
+            continue;
+        }
         const TileUv uv = tileUv(int(tiles[face]));
         for (int c = 0; c < 4; ++c) {
             const mesh::Corner& corner = mesh::kFaceCorner[face][c];
@@ -489,6 +507,7 @@ HeldItemMesh buildHeldItem(item::ItemId item, float equipped, float swing, float
     // through a second copy of the list, exactly as `item_entity_mesh.cpp` asks
     // it; everything else is the flat icon.
     AABB boxes[block::kMaxRenderBoxes];
+    int faceMask[block::kMaxRenderBoxes];
     u16 block = 0;
     int boxCount = 0;
     int icon = 0;
@@ -497,8 +516,8 @@ HeldItemMesh buildHeldItem(item::ItemId item, float equipped, float swing, float
         icon = int(def.icon);
         block = blockOf(def, item);
         if (def.sheet == item::IconSheet::Terrain && block != 0) {
-            boxCount =
-                block::renderBoxes(block::BlockId(block), 0, 0, boxes, block::kMaxRenderBoxes);
+            boxCount = block::itemRenderBoxes(block::BlockId(block), boxes,
+                                              block::kMaxRenderBoxes, faceMask);
         }
     }
     const bool asBlock = boxCount > 0;
@@ -571,10 +590,10 @@ HeldItemMesh buildHeldItem(item::ItemId item, float equipped, float swing, float
         int written = 0;
         for (int b = 0; b < boxCount; ++b) {
             const int room = max - written;
-            if (room < 6 * 4) {
+            if (room < boxVertices(faceMask[b])) {
                 break;
             }
-            written += addBox(boxes[b], t, bd.faces, light, out + written, room);
+            written += addBox(boxes[b], t, bd.faces, faceMask[b], light, out + written, room);
         }
         result.vertices = written;
         return result;

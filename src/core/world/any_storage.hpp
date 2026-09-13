@@ -51,7 +51,19 @@ public:
     bool close(i64 nowMillis);
 
     // Reads a world's level without claiming it, whichever shape it is in.
+    //
+    // **A packed world answers from its manifest's metadata block**, which
+    // carries `lastPlayed` and `randomSeed` and nothing else -- that is the
+    // whole point of it, since the alternative is inflating the level blob for
+    // every world on the card. Fields outside those two come back at their
+    // defaults, which says nothing about what the world holds. A caller that
+    // needs one of them wants `readLevel`.
     bool peekLevel(std::string_view worldDir, LevelData* out);
+
+    // The whole level, decoded, and still without claiming the world: no lock
+    // and no `lastPlayed` written. Costs an inflate on a packed world, so it
+    // is for a screen about one world rather than for a list of them.
+    bool readLevel(std::string_view worldDir, LevelData* out);
 
     bool isOpen() const;
     std::string_view worldDir() const;

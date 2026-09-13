@@ -71,20 +71,32 @@ const u8* const kPointGlyphs[8][2] = {
 
 // The look pad and the compass ribbon inside it, shared by the two calls that
 // draw them.
-constexpr int kPadX = 8;
-// **The page's top, not the body's**, and it stops eight pixels short of the
-// hotbar. It used to run 32..232; the hotbar took the bottom band and the focus
-// banner the top one, and a drag area that ran into either would be a drag
-// starting on a control.
-constexpr int kPadY = kPageTop;
-constexpr int kPadW = kScreenWidth - kPadX * 2;
-constexpr int kPadH = kTabTop - kPadY - 8;
-static_assert(kPadY + kPadH <= kTabTop, "the look pad must clear the tab strip");
-static_assert(kPadY >= kPageTop, "the look pad must clear the banner band");
-constexpr int kRibbonX = kPadX + 8;
-constexpr int kRibbonY = kPadY + 8;
-constexpr int kRibbonW = kPadW - 16;
-constexpr int kRibbonH = 32;
+//
+// **Everything hangs off the page's first row**, which is 48 in a mode with a
+// hotbar and 8 in one without: the pad is the page and it takes whatever the
+// page is given. It stops four pixels short of the tab strip -- a drag area
+// that ran into a control would be a drag starting on one -- and four is the
+// margin rather than eight, because the eight were dirt nobody was using.
+struct LookLayout {
+    int padX, padY, padW, padH;
+    int ribbonX, ribbonY, ribbonW, ribbonH;
+};
+
+constexpr int kRibbonHeight = 32;
+
+constexpr LookLayout lookLayout(int top)
+{
+    const int padX = 8;
+    const int padW = kScreenWidth - padX * 2;
+    const int padH = kTabTop - top - 4;
+    return LookLayout{padX,      top,        padW,          padH,
+                      padX + 8,  top + 8,    padW - 16,     kRibbonHeight};
+}
+
+static_assert(lookLayout(kBandedPageTop).padY + lookLayout(kBandedPageTop).padH <= kTabTop,
+              "the look pad must clear the tab strip");
+static_assert(lookLayout(kBarePageTop).padY >= kBannerHeight,
+              "the look pad must clear the banner row");
 constexpr u32 kRibbonFace = 0x0C0C0C;
 // 1.5 pixels a degree puts a little over 90 degrees either side of the centre
 // on a 288-pixel ribbon, which is wide enough that the point behind you is off
@@ -99,7 +111,19 @@ void tabSpan(const TabStrip& tabs, int index, int* left, int* width)
     *width = (index + 1) * kScreenWidth / tabs.count - *left;
 }
 
+// **Which shape the screen is in.** One bottom screen, one flag; see the note
+// on `setHotbarPresent` in the header for why it is not an argument. It starts
+// true because every mode but Spectator has a hotbar and the Overlay sets it
+// before the first frame either way.
+bool gHotbarPresent = true;
+
 }  // namespace
+
+void setHotbarPresent(bool present) { gHotbarPresent = present; }
+bool hotbarPresent() { return gHotbarPresent; }
+int hotbarHeight() { return gHotbarPresent ? kHotbarHeight : 0; }
+int bannerTop() { return hotbarHeight(); }
+int pageTop() { return bannerTop() + kBannerHeight; }
 
 bool bottomSurface(gui::Surface* out)
 {
@@ -253,9 +277,10 @@ int tabAt(const TabStrip& tabs, int touchX, int touchY)
 
 void drawLookPage(const gui::Surface& surface)
 {
-    readout(surface, kPadX, kPadY, kPadW, kPadH);
-    gui::bevelBox(surface, kRibbonX, kRibbonY, kRibbonW, kRibbonH, px(kRibbonFace), px(0x555555),
-                  px(0x000000), false);
+    const LookLayout lay = lookLayout(pageTop());
+    readout(surface, lay.padX, lay.padY, lay.padW, lay.padH);
+    gui::bevelBox(surface, lay.ribbonX, lay.ribbonY, lay.ribbonW, lay.ribbonH, px(kRibbonFace),
+                  px(0x555555), px(0x000000), false);
 
     // Where the ribbon is read: a notch under it, pointing up at the mark the
     // player is facing. Under it rather than on it, so it never sits on top of
@@ -263,17 +288,17 @@ void drawLookPage(const gui::Surface& surface)
     // rectangle the ribbon clears, because the centre is the one place on it
     // that never moves.
     for (int i = 0; i < 5; ++i) {
-        gui::hLine(surface, kRibbonX + kRibbonW / 2 - i, kRibbonY + kRibbonH + i, i * 2 + 1,
-                   px(0xFFD24A));
+        gui::hLine(surface, lay.ribbonX + lay.ribbonW / 2 - i, lay.ribbonY + lay.ribbonH + i,
+                   i * 2 + 1, px(0xFFD24A));
     }
 
     // **The drag area, marked at its corners.** A blank rectangle says nothing
     // about whether it is for touching; four brackets say it is, and they cost
     // no row of text to say it with.
-    const int dragTop = kRibbonY + kRibbonH + 8;
-    const int dragLeft = kPadX + 8;
-    const int dragRight = kPadX + kPadW - 9;
-    const int dragBottom = kPadY + kPadH - 9;
+    const int dragTop = lay.ribbonY + lay.ribbonH + 8;
+    const int dragLeft = lay.padX + 8;
+    const int dragRight = lay.padX + lay.padW - 9;
+    const int dragBottom = lay.padY + lay.padH - 9;
     const gui::Pixel bracket = px(0x3E3E3E);
     constexpr int kArm = 12;
     for (int corner = 0; corner < 4; ++corner) {
@@ -297,9 +322,11 @@ void drawLookPage(const gui::Surface& surface)
 
 void drawCompassRibbon(const gui::Surface& surface, float yawDegrees)
 {
+    const LookLayout lay = lookLayout(pageTop());
+
     // Cleared to the ribbon's own face rather than redrawn as a box, so the
     // bevel around it survives a turn.
-    gui::fillRect(surface, kRibbonX + 1, kRibbonY + 1, kRibbonW - 2, kRibbonH - 2,
+    gui::fillRect(surface, lay.ribbonX + 1, lay.ribbonY + 1, lay.ribbonW - 2, lay.ribbonH - 2,
                   px(kRibbonFace));
 
     // **The bearing, not the yaw.** Minecraft's yaw is zero looking south and
@@ -311,7 +338,7 @@ void drawCompassRibbon(const gui::Surface& surface, float yawDegrees)
         bearing += 360.0f;
     }
 
-    const int centreX = kRibbonX + kRibbonW / 2;
+    const int centreX = lay.ribbonX + lay.ribbonW / 2;
     const gui::Pixel tickColour = px(0x7A7A7A);
     const gui::Pixel pointColour = px(0xFFFFFF);
 
@@ -322,11 +349,11 @@ void drawCompassRibbon(const gui::Surface& surface, float yawDegrees)
         float offset = float(degrees) - bearing;
         offset = std::fmod(offset + 540.0f, 360.0f) - 180.0f;
         const int x = centreX + int(std::lround(offset * kPixelsPerDegree));
-        if (x < kRibbonX + 2 || x >= kRibbonX + kRibbonW - 2) {
+        if (x < lay.ribbonX + 2 || x >= lay.ribbonX + lay.ribbonW - 2) {
             continue;
         }
         const bool cardinal = (degrees % 45) == 0;
-        gui::vLine(surface, x, kRibbonY + kRibbonH - (cardinal ? 12 : 7), cardinal ? 10 : 5,
+        gui::vLine(surface, x, lay.ribbonY + lay.ribbonH - (cardinal ? 12 : 7), cardinal ? 10 : 5,
                    cardinal ? pointColour : tickColour);
         if (!cardinal) {
             continue;
@@ -336,7 +363,7 @@ void drawCompassRibbon(const gui::Surface& surface, float yawDegrees)
         const int width = letters * kGlyphWidth + (letters - 1);
         int letterX = x - width / 2;
         for (int i = 0; i < letters; ++i) {
-            drawGlyph(surface, letterX, kRibbonY + 6, glyphs[i], pointColour);
+            drawGlyph(surface, letterX, lay.ribbonY + 6, glyphs[i], pointColour);
             letterX += kGlyphWidth + 1;
         }
     }
@@ -363,14 +390,28 @@ namespace {
 constexpr int kPalGridWidth = kPaletteColumns * kSlotPixels;
 constexpr int kPalPanelX = (kScreenWidth - kPalGridWidth) / 2 - 8;
 constexpr int kPalPanelW = kPalGridWidth + 16;
-constexpr int kPalPanelY = kPageTop;
-constexpr int kPalPanelH = kTabTop - kPageTop - 8;
 constexpr int kPalGridX = kPalPanelX + 8;
-constexpr int kPalGridY = kPalPanelY + 24;          // under the title row
-constexpr int kPalTitleRow = kPalPanelY / kCell + 2;
-// The first whole character row under the grid. `text` rows are 1-based, so
-// the +1 is what puts it below the last slot instead of across it.
-constexpr int kPalCaptionRow = (kPalGridY + kPaletteRows * kSlotPixels) / kCell + 1;
+
+// **The vertical half is a function of where the page starts**, which is 48 in
+// a mode with a hotbar and 8 in one without. The panel runs to four pixels
+// short of the tab strip rather than eight: the eight were backdrop with
+// nothing in it.
+struct PaletteLayout {
+    int panelY, panelH;
+    int gridY;
+    int titleRow;
+    int captionRow;
+};
+
+constexpr PaletteLayout paletteLayout(int top)
+{
+    const int panelH = kTabTop - top - 4;
+    const int gridY = top + 24;  // under the title row
+    // The first whole character row under the grid. `text` rows are 1-based, so
+    // the +1 is what puts it below the last slot instead of across it.
+    return PaletteLayout{top, panelH, gridY, top / kCell + 2,
+                         (gridY + kPaletteRows * kSlotPixels) / kCell + 1};
+}
 
 // The two page arrows.
 //
@@ -387,8 +428,8 @@ constexpr int kPalCaptionRow = (kPalGridY + kPaletteRows * kSlotPixels) / kCell 
 // static_asserts below pin.
 constexpr int kArrowW = 16;
 constexpr int kArrowH = 16;
-constexpr int kArrowY = kPalPanelY + 4;
 constexpr int kArrowInset = (kArrowW - kCell) / 2;
+constexpr int arrowY(int top) { return top + 4; }
 constexpr int kArrowLeftX = kPalPanelX + 8;
 constexpr int kArrowRightX = kPalPanelX + kPalPanelW - 8 - kArrowW;
 
@@ -401,14 +442,18 @@ static_assert((kArrowRightX + kArrowInset) % kCell == 0,
               "the right arrow's glyph cell must land on the character grid");
 static_assert(kArrowLeftX >= kPalPanelX + 4 && kArrowRightX + kArrowW <= kPalPanelX + kPalPanelW - 4,
               "both arrows must stay inside the panel");
-static_assert(kArrowY + kArrowH <= kPalGridY, "the arrows must clear the palette grid");
-
-static_assert(kPalPanelY >= kPageTop, "the palette must clear the banner band");
-static_assert(kPalPanelY + kPalPanelH <= kTabTop, "the palette must clear the tab strip");
-static_assert(kPalGridY + kPaletteRows * kSlotPixels <= kPalPanelY + kPalPanelH,
-              "the palette grid must fit its panel");
-static_assert(kPalCaptionRow * kCell <= kPalPanelY + kPalPanelH,
-              "the caption must fit inside the panel");
+// **Checked at both page tops**, which is what makes neither of the screen's
+// two shapes the untested one.
+constexpr bool paletteFits(int top)
+{
+    const PaletteLayout lay = paletteLayout(top);
+    return arrowY(top) + kArrowH <= lay.gridY && lay.panelY >= kBannerHeight
+           && lay.panelY + lay.panelH <= kTabTop
+           && lay.gridY + kPaletteRows * kSlotPixels <= lay.panelY + lay.panelH
+           && lay.captionRow * kCell <= lay.panelY + lay.panelH;
+}
+static_assert(paletteFits(kBandedPageTop), "the palette must fit under a hotbar");
+static_assert(paletteFits(kBarePageTop), "the palette must fit without one");
 
 // Highlights. **Neither is a1.1.2's**, because a1.1.2 has neither: its hotbar
 // selection is a sprite off `gui.png` and it has no cursor at all, there being
@@ -480,11 +525,69 @@ void drawCount(const gui::Surface& surface, int x, int y, int w, int h, int coun
     }
 }
 
+// **The wear bar under a damaged item**, which is `ab.b(kd,ey,ev,II)V` --
+// RenderItem.renderItemOverlayIntoGUI -- and it is the one part of that method
+// this screen had never drawn. A tool that has been used is otherwise
+// indistinguishable from a new one until it breaks in your hand.
+//
+// The jar's arithmetic exactly, and it is integer arithmetic rather than the
+// `Math.round` of later versions:
+//
+//     int j = 13 - damage * 13 / maxDamage;     // how much bar is left
+//     int k = 255 - damage * 255 / maxDamage;   // how green it still is
+//
+// then three quads over a 16-texel icon, all at (x + 2, y + 13): a black one 13
+// wide and 2 tall, a dark one 12 wide and 1 tall in `(255 - k) / 4 << 16 |
+// 16128`, and the bar itself `j` wide and 1 tall in `(255 - k) << 16 | k << 8`.
+// So the empty part is a quarter-bright dark green and the full part runs green
+// to red as the tool wears -- and the black quad's second row is what gives the
+// whole thing an edge underneath.
+//
+// The icon is drawn larger than 16 pixels here, so every number above is scaled
+// by the icon's own size. A bar row can round to nothing on a small cell, which
+// is why the heights floor at one.
+void drawWearBar(const gui::Surface& surface, int iconX, int iconY, int iconSize, int damage,
+                 int maxDamage)
+{
+    if (damage <= 0 || maxDamage <= 0) {
+        return;
+    }
+    if (damage > maxDamage) {
+        damage = maxDamage;
+    }
+    constexpr int kIconTexels = 16;
+    // **Texel *edges* rather than texel counts**, which is what keeps the three
+    // quads in proportion at a size that is not a whole multiple of 16: the
+    // black quad is two texel rows tall and the coloured one is the first of
+    // them, so scaling each edge and subtracting gives 3 and 2 at a 24-pixel
+    // icon rather than 3 and 1. A row still floors at one pixel, because an
+    // icon small enough to round the bar away should show a thin bar and not
+    // none.
+    const auto edge = [&](int texel) { return texel * iconSize / kIconTexels; };
+    const auto span = [&](int from, int to) {
+        const int pixels = edge(to) - edge(from);
+        return pixels > 0 ? pixels : 1;
+    };
+    const int j = 13 - damage * 13 / maxDamage;
+    const int k = 255 - damage * 255 / maxDamage;
+
+    const int left = iconX + edge(2);
+    const int top = iconY + edge(13);
+    gui::fillRect(surface, left, top, span(2, 15), span(13, 15), px(0x000000));
+    gui::fillRect(surface, left, top, span(2, 14), span(13, 14),
+                  px(u32(((255 - k) / 4) << 16) | 0x3F00u));
+    if (j > 0) {
+        gui::fillRect(surface, left, top, span(2, 2 + j), span(13, 14),
+                      px(u32((255 - k) << 16) | u32(k << 8)));
+    }
+}
+
 // One cell of a grid: the slot, the item's icon in the middle of it, its count
-// if it has more than one, and whichever of the two edges apply.
+// if it has more than one, the wear bar if it has been used, and whichever of
+// the two edges apply.
 void drawCell(const gui::Surface& surface, int x, int y, int w, int h,
-              const gui::IconSheets& sheets, item::ItemId id, int count, bool selected,
-              bool cursor)
+              const gui::IconSheets& sheets, item::ItemId id, int count, int damage,
+              bool selected, bool cursor)
 {
     slot(surface, x, y, w, h);
     if (id != 0) {
@@ -492,7 +595,10 @@ void drawCell(const gui::Surface& surface, int x, int y, int w, int h,
         // 28 tall is not square, and an icon drawn to fill it would be too.
         const int size = kIconPixels < w - 2 ? kIconPixels : w - 2;
         const int fit = size < h - 2 ? size : h - 2;
-        gui::drawItemIcon(surface, x + (w - fit) / 2, y + (h - fit) / 2, fit, sheets, id);
+        const int iconX = x + (w - fit) / 2;
+        const int iconY = y + (h - fit) / 2;
+        gui::drawItemIcon(surface, iconX, iconY, fit, sheets, id);
+        drawWearBar(surface, iconX, iconY, fit, damage, int(item::def(id).durability));
         drawCount(surface, x, y, w, h, count);
     }
     // The cursor is drawn last so it wins where both apply -- which is the
@@ -507,10 +613,49 @@ void drawCell(const gui::Surface& surface, int x, int y, int w, int h,
 
 // The square case, which is every grid but the hotbar.
 void drawCell(const gui::Surface& surface, int x, int y, int size,
-              const gui::IconSheets& sheets, item::ItemId id, int count, bool selected,
-              bool cursor)
+              const gui::IconSheets& sheets, item::ItemId id, int count, int damage,
+              bool selected, bool cursor)
 {
-    drawCell(surface, x, y, size, size, sheets, id, count, selected, cursor);
+    drawCell(surface, x, y, size, size, sheets, id, count, damage, selected, cursor);
+}
+
+// How far the carried stack is lifted off the cell it is hovering over, before
+// the clamp below. Three pixels is what a 24-pixel icon has to spare inside a
+// 30-pixel slot, so this is an intent rather than a measurement: a bigger cell
+// would use all of it.
+constexpr int kCarriedLift = 4;
+
+// **The stack on the cursor, drawn over the cell it is hovering on** rather
+// than in the slot it came out of -- which is what makes a move in progress
+// visible at all. The source slot is drawn hollow (see `held` below), so the
+// stack is on the screen exactly once.
+//
+// Up and to the left of centre, and never outside the cell: every cell around
+// this one is already drawn and this is the last thing on the page, so an icon
+// that overflowed would land on a neighbour and stay there until the next full
+// redraw. The cell's own count is suppressed by the caller for the same reason
+// two numbers in one corner would be unreadable -- the one that matters while a
+// stack is in hand is the one in hand.
+void drawCarried(const gui::Surface& surface, int x, int y, int w, int h,
+                 const gui::IconSheets& sheets, const item::ItemStack& stack)
+{
+    if (stack.empty()) {
+        return;
+    }
+    const int size = kIconPixels < w - 2 ? kIconPixels : w - 2;
+    const int fit = size < h - 2 ? size : h - 2;
+    const int marginX = (w - fit) / 2;
+    const int marginY = (h - fit) / 2;
+    const int liftX = marginX < kCarriedLift ? marginX : kCarriedLift;
+    const int liftY = marginY < kCarriedLift ? marginY : kCarriedLift;
+    const int iconX = x + marginX - liftX;
+    const int iconY = y + marginY - liftY;
+    gui::drawItemIcon(surface, iconX, iconY, fit, sheets, item::ItemId(stack.id));
+    drawWearBar(surface, iconX, iconY, fit, int(stack.damage),
+                int(item::def(item::ItemId(stack.id)).durability));
+    // Lifted with the icon, so the number sits under the stack it belongs to
+    // rather than in the corner of the slot the stack is only passing over.
+    drawCount(surface, x - liftX, y - liftY, w, h, int(stack.count));
 }
 
 bool insideBox(int px_, int py_, int x, int y, int w, int h)
@@ -532,35 +677,45 @@ namespace {
 // previously did not: `itemsCellAt` used to be able to disagree with
 // `drawItemsPage` about where the grid was, and a hit test that is a few pixels
 // out is the kind of bug that is felt as "the touchscreen is bad".
-constexpr int kItemsPanelX = 2;
-constexpr int kItemsPanelW = kScreenWidth - 4;              // 316
-constexpr int kItemsPanelY = kPageTop + 2;                  // 50
-constexpr int kItemsPanelH = kTabTop - kItemsPanelY - 2;    // 164
-
-// The title row, then the two grids under it.
-constexpr int kItemsTitleRow = kItemsPanelY / kCell + 1;
-constexpr int kItemsGridTop = kItemsPanelY + 22;
+constexpr int kItemsPanelX = 1;
+constexpr int kItemsPanelW = kScreenWidth - 2;                       // 318
+constexpr int kItemsGridWidth = kItemsColumns * kItemsSlotPixels;    // 279
+constexpr int kItemsGridX = kScreenWidth - 2 - kItemsGridWidth;      // 39
+constexpr int kItemsGridHeight = kItemsRows * kItemsSlotPixels;      // 93
 
 // The armour column is on the left, where a paper doll would be, and the
 // backpack fills what is left. Four armour slots stand taller than three rows
 // of backpack, so the panel's height is the armour's.
-constexpr int kItemsArmourX = kItemsPanelX + 6;                      // 8
-constexpr int kItemsArmourY = kItemsGridTop;
-constexpr int kItemsGridWidth = kItemsColumns * kItemsSlotPixels;    // 270
-constexpr int kItemsGridX = kScreenWidth - 4 - kItemsGridWidth;      // 46
-constexpr int kItemsGridY = kItemsGridTop;
-constexpr int kItemsGridHeight = kItemsRows * kItemsSlotPixels;      // 90
+constexpr int kItemsArmourX = kItemsPanelX + 4;                      // 5
 
-static_assert(kItemsPanelY + kItemsPanelH <= kTabTop,
-              "the inventory must clear the tab strip");
-static_assert(kItemsPanelY >= kPageTop, "the inventory must clear the banner band");
+// **The vertical half hangs off the page's first row**, as the palette's does.
+struct ItemsLayout {
+    int panelY, panelH;
+    int titleRow;
+    int gridY;      // the backpack, and the armour column beside it
+    int captionRow;
+};
+
+constexpr ItemsLayout itemsLayout(int top)
+{
+    const int gridY = top + 22;
+    return ItemsLayout{top, kTabTop - top - 1, top / kCell + 1, gridY,
+                       (gridY + kItemsGridHeight) / kCell + 2};
+}
+
+constexpr bool itemsFit(int top)
+{
+    const ItemsLayout lay = itemsLayout(top);
+    return lay.panelY >= kBannerHeight && lay.panelY + lay.panelH <= kTabTop
+           && lay.gridY + item::kArmourSlots * kItemsSlotPixels <= lay.panelY + lay.panelH
+           && lay.captionRow * kCell <= lay.panelY + lay.panelH;
+}
+static_assert(itemsFit(kBandedPageTop), "the inventory must fit under a hotbar");
+static_assert(itemsFit(kBarePageTop), "the inventory must fit without one");
 static_assert(kItemsArmourX + kItemsSlotPixels <= kItemsGridX,
               "the armour column must not run into the backpack grid");
 static_assert(kItemsGridX + kItemsGridWidth <= kItemsPanelX + kItemsPanelW,
               "the backpack grid must fit the panel");
-static_assert(kItemsArmourY + item::kArmourSlots * kItemsSlotPixels
-                  <= kItemsPanelY + kItemsPanelH,
-              "the armour column must fit the panel");
 static_assert(kItemsColumns * kItemsRows == item::kBackpackSlots,
               "the grid must hold every slot that is not the hand");
 
@@ -584,12 +739,26 @@ int itemsSlotForCell(int cell)
     return item::kArmourBase + armourIndexForRow(cell - item::kBackpackSlots);
 }
 
-void drawItemsPage(const gui::Surface& surface, const item::Inventory& inventory,
-                   const gui::IconSheets& sheets, int cursor, int held)
+int itemsCellForSlot(int slot)
 {
-    panel(surface, kItemsPanelX, kItemsPanelY, kItemsPanelW, kItemsPanelH);
-    textCentred(kItemsTitleRow, kItemsPanelX, kItemsPanelW, kPanelText, kPanelFace,
-                "Inventory");
+    if (slot >= item::kHotbarSlots && slot < item::kMainSlots) {
+        return slot - item::kHotbarSlots;
+    }
+    // `armourIndexForRow` is its own inverse -- it is `n - 1 - i` -- so the row
+    // a slot is drawn on goes through the same line the slot a row addresses
+    // does, and the two cannot drift apart.
+    if (slot >= item::kArmourBase && slot < item::kArmourBase + item::kArmourSlots) {
+        return item::kBackpackSlots + armourIndexForRow(slot - item::kArmourBase);
+    }
+    return -1;
+}
+
+void drawItemsPage(const gui::Surface& surface, const item::Inventory& inventory,
+                   const gui::IconSheets& sheets, int cursor, int held, int carried)
+{
+    const ItemsLayout lay = itemsLayout(pageTop());
+    panel(surface, kItemsPanelX, lay.panelY, kItemsPanelW, lay.panelH);
+    textCentred(lay.titleRow, kItemsPanelX, kItemsPanelW, kPanelText, kPanelFace, "Inventory");
 
     // The backpack: slots 9..35, three rows of nine.
     for (int row = 0; row < kItemsRows; ++row) {
@@ -598,57 +767,74 @@ void drawItemsPage(const gui::Surface& surface, const item::Inventory& inventory
             const int slotNumber = itemsSlotForCell(cell);
             const item::ItemStack& stack = inventory.at(slotNumber);
             // A stack that has been picked up is drawn as an empty cell with
-            // its outline still on it: it is following the cursor, so leaving
-            // its icon behind would show it in two places at once.
+            // its outline still on it: it is hovering over `carried` below, so
+            // leaving its icon behind would show it in two places at once.
             const bool lifted = slotNumber == held;
             drawCell(surface, kItemsGridX + column * kItemsSlotPixels,
-                     kItemsGridY + row * kItemsSlotPixels, kItemsSlotPixels, sheets,
+                     lay.gridY + row * kItemsSlotPixels, kItemsSlotPixels, sheets,
                      lifted || stack.empty() ? item::ItemId(0) : item::ItemId(stack.id),
-                     lifted ? 0 : int(stack.count), false, cell == cursor);
+                     // No count on the cell the carried stack is hovering over:
+                     // its own number goes there instead. See `drawCarried`.
+                     lifted || cell == carried ? 0 : int(stack.count), int(stack.damage), false,
+                     cell == cursor);
         }
     }
 
-    // **The armour, which had nowhere to be drawn until now.** `Inventory` has
-    // held these four since the item table landed and they round-trip through
-    // `level.dat`; what was missing was somewhere to put them. Nothing in this
-    // build wears armour yet -- there is no damage to reduce -- so a helmet in
-    // slot 103 is carried and saved and does nothing, which is honest and is
-    // still better than a helmet that cannot be put anywhere at all.
+    // **The armour**, slots 100..103, which `Inventory` has held since the item
+    // table landed and which round-trip through `level.dat`. It is worn now:
+    // `player_vitals.cpp`'s `armourValue` reads these four and `damageArmour`
+    // wears them, so a helmet in slot 103 takes a share of every hit. Creative
+    // carries it and is invulnerable, which is the mode rather than the slot.
     for (int row = 0; row < item::kArmourSlots; ++row) {
         const int cell = item::kBackpackSlots + row;
         const int slotNumber = itemsSlotForCell(cell);
         const item::ItemStack& stack = inventory.at(slotNumber);
         const bool lifted = slotNumber == held;
-        drawCell(surface, kItemsArmourX, kItemsArmourY + row * kItemsSlotPixels,
-                 kItemsSlotPixels, sheets,
-                 lifted || stack.empty() ? item::ItemId(0) : item::ItemId(stack.id),
-                 lifted ? 0 : int(stack.count), false, cell == cursor);
+        drawCell(surface, kItemsArmourX, lay.gridY + row * kItemsSlotPixels, kItemsSlotPixels,
+                 sheets, lifted || stack.empty() ? item::ItemId(0) : item::ItemId(stack.id),
+                 lifted || cell == carried ? 0 : int(stack.count), int(stack.damage), false,
+                 cell == cursor);
+    }
+
+    // **Last, over everything.** The stack in hand belongs on top of the grid
+    // rather than in it, and the cell it is over has already been drawn.
+    if (carried >= 0 && held >= 0) {
+        const item::ItemStack& stack = inventory.at(held);
+        if (carried < item::kBackpackSlots) {
+            drawCarried(surface, kItemsGridX + (carried % kItemsColumns) * kItemsSlotPixels,
+                        lay.gridY + (carried / kItemsColumns) * kItemsSlotPixels,
+                        kItemsSlotPixels, kItemsSlotPixels, sheets, stack);
+        } else if (carried < kItemsCells) {
+            drawCarried(surface, kItemsArmourX,
+                        lay.gridY + (carried - item::kBackpackSlots) * kItemsSlotPixels,
+                        kItemsSlotPixels, kItemsSlotPixels, sheets, stack);
+        }
     }
 
     // Inside the panel rather than under it, dimmer than the title, because it
     // is an explanation rather than a heading -- and because a row of text
     // outside the panel would have to guess the backdrop's colour, which is the
     // pack's dirt and not a constant.
-    textCentred((kItemsGridY + kItemsGridHeight) / kCell + 2, kItemsGridX, kItemsGridWidth,
-                kPanelDark, kPanelFace, held >= 0 ? "A to put it down" : "A picks a stack up");
+    textCentred(lay.captionRow, kItemsGridX, kItemsGridWidth, kPanelDark, kPanelFace,
+                held >= 0 ? "A puts it down, X throws it" : "A picks a stack up");
 }
 
 int itemsCellAt(int touchX, int touchY)
 {
-    if (insideBox(touchX, touchY, kItemsGridX, kItemsGridY, kItemsGridWidth,
-                  kItemsGridHeight)) {
-        return ((touchY - kItemsGridY) / kItemsSlotPixels) * kItemsColumns
+    const ItemsLayout lay = itemsLayout(pageTop());
+    if (insideBox(touchX, touchY, kItemsGridX, lay.gridY, kItemsGridWidth, kItemsGridHeight)) {
+        return ((touchY - lay.gridY) / kItemsSlotPixels) * kItemsColumns
                + (touchX - kItemsGridX) / kItemsSlotPixels;
     }
-    if (insideBox(touchX, touchY, kItemsArmourX, kItemsArmourY, kItemsSlotPixels,
+    if (insideBox(touchX, touchY, kItemsArmourX, lay.gridY, kItemsSlotPixels,
                   item::kArmourSlots * kItemsSlotPixels)) {
-        return item::kBackpackSlots + (touchY - kItemsArmourY) / kItemsSlotPixels;
+        return item::kBackpackSlots + (touchY - lay.gridY) / kItemsSlotPixels;
     }
     return -1;
 }
 
 void drawHotbar(const gui::Surface& surface, const item::Inventory& inventory,
-                const gui::IconSheets& sheets, int cursor, int held)
+                const gui::IconSheets& sheets, int cursor, int held, int carried)
 {
     // **The band is repainted flat rather than re-tiled with the pack's dirt.**
     // It is the one part of the screen that redraws without a page change --
@@ -662,13 +848,190 @@ void drawHotbar(const gui::Surface& surface, const item::Inventory& inventory,
         const bool lifted = i == held;
         drawCell(surface, hotbarSlotX(i), kHotbarSlotY, hotbarSlotWidth(i), kHotbarSlotHeight,
                  sheets, lifted || stack.empty() ? item::ItemId(0) : item::ItemId(stack.id),
-                 lifted ? 0 : int(stack.count), i == inventory.selected, i == cursor);
+                 lifted || i == carried ? 0 : int(stack.count), int(stack.damage),
+                 i == inventory.selected, i == cursor);
     }
+
+    // The stack in hand, hovering over the band rather than over the grid --
+    // the two calls are handed the same carried stack and only one of them is
+    // ever told where it is. See `Overlay::carriedPosition`.
+    if (carried >= 0 && carried < kHotbarColumns && held >= 0) {
+        drawCarried(surface, hotbarSlotX(carried), kHotbarSlotY, hotbarSlotWidth(carried),
+                    kHotbarSlotHeight, sheets, inventory.at(held));
+    }
+}
+
+namespace {
+
+static_assert(gui::kLayoutScreenWidth == kScreenWidth && gui::kLayoutHotbarSlotY == kHotbarSlotY
+                  && gui::kLayoutHotbarSlotHeight == kHotbarSlotHeight
+                  && gui::kLayoutPageTop == kBandedPageTop && gui::kLayoutPageBottom == kTabTop,
+              "the container layout must agree with the bands it is laid out in");
+
+constexpr u32 kFlame = 0xFF9A1F;
+constexpr u32 kProgressFill = 0xFFFFFF;
+
+// An arrow pointing right across `r`: a shaft a third of its height, then a
+// head as tall as the box. The first `filled` columns are drawn in `fill` and
+// the rest in `empty`, which is the furnace's cook progress; a crafting arrow
+// is all one colour.
+void drawLayoutArrow(const gui::Surface& surface, const gui::SlotRect& r, int filled, u32 fill,
+                     u32 empty)
+{
+    const int head = r.h / 2 + 1;
+    const int shaft = r.w - head;
+    const int middle = r.y + r.h / 2;
+    const int shaftHalf = r.h / 6;
+    for (int c = 0; c < r.w; ++c) {
+        const gui::Pixel colour = px(c < filled ? fill : empty);
+        int half = shaftHalf;
+        if (c >= shaft) {
+            half = (r.h / 2) * (head - (c - shaft)) / head;
+        }
+        gui::vLine(surface, r.x + c, middle - half, 2 * half + 1, colour);
+    }
+}
+
+void drawFlame(const gui::Surface& surface, const gui::SlotRect& r, int height)
+{
+    gui::fillRect(surface, r.x, r.y, r.w, r.h, px(kPanelFace));
+    gui::frameRect(surface, r.x, r.y, r.w, r.h, px(kSlotFace));
+    if (height > 0) {
+        gui::fillRect(surface, r.x + 2, r.y + r.h - 1 - height, r.w - 4, height, px(kFlame));
+    }
+}
+
+// **The chest's scroll furniture**, which nothing but a chest joined to more
+// than one other ever shows. Two arrow buttons in slot bevels with a triangle
+// in each, and between them a sunken track with a thumb as long a fraction of
+// it as the window is of the chest -- so the bar says both "there is more" and
+// "this much more", which an arrow on its own does not.
+//
+// A triangle rather than a `^` glyph: the character grid is eight pixels and
+// these boxes are sixteen on a four-pixel offset, so a letter could not be
+// centred in one without moving the box off the grid the slots are on.
+void drawScrollArrow(const gui::Surface& surface, const gui::SlotRect& r, bool up, bool live)
+{
+    slot(surface, r.x, r.y, r.w, r.h);
+    const gui::Pixel colour = px(live ? kPanelText : kPanelDark);
+    // Five rows, widening by two a row from the point: 1, 3, 5, 7, 9 pixels in
+    // a sixteen-wide box.
+    constexpr int kRows = 5;
+    const int centre = r.x + r.w / 2;
+    const int top = r.y + (r.h - kRows) / 2;
+    for (int i = 0; i < kRows; ++i) {
+        const int width = 1 + 2 * i;
+        const int y = up ? top + i : top + (kRows - 1 - i);
+        gui::hLine(surface, centre - width / 2, y, width, colour);
+    }
+}
+
+void drawScrollBar(const gui::Surface& surface, const gui::ContainerLayout& layout)
+{
+    if (layout.scrollUp.w <= 0) {
+        return;
+    }
+    drawScrollArrow(surface, layout.scrollUp, true, layout.chestFirstRow > 0);
+    drawScrollArrow(surface, layout.scrollDown, false,
+                    layout.chestFirstRow + layout.chestWindowRows < layout.chestRows);
+    if (layout.scrollTrack.w > 0) {
+        // **A sunken dark track with a raised thumb in it.** The first version
+        // filled the thumb flat in the panel's own face, which is the colour of
+        // the page behind it -- so the thumb read as a hole and the track read
+        // as the bar. The bevel is what says which of the two is the control.
+        const gui::SlotRect& t = layout.scrollTrack;
+        readout(surface, t.x, t.y, t.w, t.h);
+        const gui::SlotRect& thumb = layout.scrollThumb;
+        gui::bevelBox(surface, thumb.x, thumb.y, thumb.w, thumb.h, px(kSlotFace),
+                      px(kPanelFace), px(kSlotDark), true);
+    }
+}
+
+void drawProgress(const gui::Surface& surface, const gui::ContainerLayout& layout,
+                  const item::ContainerSession& session)
+{
+    if (layout.arrow.w > 0) {
+        if (layout.arrowIsProgress) {
+            gui::fillRect(surface, layout.arrow.x, layout.arrow.y, layout.arrow.w,
+                          layout.arrow.h, px(kPanelFace));
+            drawLayoutArrow(surface, layout.arrow, session.furnaceCookScaled(layout.arrow.w),
+                            kProgressFill, kSlotFace);
+        } else {
+            drawLayoutArrow(surface, layout.arrow, 0, kPanelDark, kPanelDark);
+        }
+    }
+    if (layout.flame.w > 0) {
+        // Two pixels of frame off the top and bottom.
+        drawFlame(surface, layout.flame, session.furnaceBurnScaled(layout.flame.h - 2));
+    }
+}
+
+}  // namespace
+
+void drawContainerPage(const gui::Surface& surface, const gui::ContainerLayout& layout,
+                       const item::ContainerSession& session, const item::Inventory& inventory,
+                       const gui::IconSheets& sheets, int cursor, bool showCursor)
+{
+    panel(surface, layout.panel.x, layout.panel.y, layout.panel.w, layout.panel.h);
+    for (int i = 0; i < layout.titles; ++i) {
+        text(layout.titleRow[i], layout.titleColumn[i], int(std::strlen(layout.title[i])),
+             kPanelText, kPanelFace, "%s", layout.title[i]);
+    }
+
+    const item::ItemStack& carried = session.cursor();
+    const int pageSlots = layout.slots - item::kHotbarSlots;
+    for (int i = 0; i < pageSlots; ++i) {
+        const gui::SlotRect& r = layout.rect[i];
+        if (r.w <= 0) {
+            continue;  // a chest row scrolled out of the window
+        }
+        const item::ItemStack& stack = session.slotAt(inventory, i);
+        const bool here = i == cursor;
+        drawCell(surface, r.x, r.y, r.w, r.h, sheets,
+                 stack.empty() ? item::ItemId(0) : item::ItemId(stack.id),
+                 here && !carried.empty() ? 0 : int(stack.count), int(stack.damage), false,
+                 here && showCursor);
+    }
+    drawProgress(surface, layout, session);
+    drawScrollBar(surface, layout);
+
+    if (cursor >= 0 && cursor < pageSlots && !carried.empty()) {
+        const gui::SlotRect& r = layout.rect[cursor];
+        if (r.w > 0) {
+            drawCarried(surface, r.x, r.y, r.w, r.h, sheets, carried);
+        }
+    }
+}
+
+void drawContainerBand(const gui::Surface& surface, const gui::ContainerLayout& layout,
+                       const item::ContainerSession& session, const item::Inventory& inventory,
+                       const gui::IconSheets& sheets, int cursor, bool showCursor)
+{
+    const int first = layout.slots - item::kHotbarSlots;
+    const int hand = cursor >= first && cursor < layout.slots ? cursor - first : -1;
+    const bool carrying = !session.cursor().empty();
+    // `held` -1: nothing is lifted out of a slot on these screens, the cursor
+    // holds its own stack. `carried` still names the cell, so its count gives
+    // way to the one in hand.
+    drawHotbar(surface, inventory, sheets, showCursor ? hand : -1, -1, carrying ? hand : -1);
+    if (carrying && hand >= 0) {
+        drawCarried(surface, hotbarSlotX(hand), kHotbarSlotY, hotbarSlotWidth(hand),
+                    kHotbarSlotHeight, sheets, session.cursor());
+    }
+}
+
+void drawContainerProgress(const gui::Surface& surface, const gui::ContainerLayout& layout,
+                           const item::ContainerSession& session)
+{
+    drawProgress(surface, layout, session);
 }
 
 int hotbarSlotAt(int touchX, int touchY)
 {
-    if (!insideBox(touchX, touchY, 0, kHotbarTop, kScreenWidth, kHotbarHeight)) {
+    // A mode with no hotbar has no band to touch, and the pages start where it
+    // would have been -- so this has to refuse before it measures.
+    if (!hotbarPresent()
+        || !insideBox(touchX, touchY, 0, kHotbarTop, kScreenWidth, kHotbarHeight)) {
         return -1;
     }
     // The whole height of the band, not just the slot's own -- two pixels of
@@ -692,14 +1055,15 @@ int palettePageCount()
 void drawBlocksPage(const gui::Surface& surface, const gui::IconSheets& sheets, int page,
                     int cursor, item::ItemId selected, const char* caption)
 {
-    panel(surface, kPalPanelX, kPalPanelY, kPalPanelW, kPalPanelH);
+    const PaletteLayout lay = paletteLayout(pageTop());
+    panel(surface, kPalPanelX, lay.panelY, kPalPanelW, lay.panelH);
 
     const int pages = palettePageCount();
     const int shown = page < 0 ? 0 : (page >= pages ? pages - 1 : page);
 
     char title[40];
     std::snprintf(title, sizeof title, "Blocks  %d/%d", shown + 1, pages);
-    textCentred(kPalTitleRow, kPalPanelX, kPalPanelW, kPanelText, kPanelFace, title);
+    textCentred(lay.titleRow, kPalPanelX, kPalPanelW, kPanelText, kPanelFace, title);
 
     // The arrows are drawn on every page, including the ones where they do
     // nothing, and dimmed where they do. A control that disappears at the end
@@ -708,8 +1072,8 @@ void drawBlocksPage(const gui::Surface& surface, const gui::IconSheets& sheets, 
     for (int side = 0; side < 2; ++side) {
         const int x = side == 0 ? kArrowLeftX : kArrowRightX;
         const bool live = side == 0 ? shown > 0 : shown + 1 < pages;
-        slot(surface, x, kArrowY, kArrowW, kArrowH);
-        text(kPalTitleRow, arrowColumn(x), 1, live ? kPanelText : kPanelDark, kSlotFace,
+        slot(surface, x, arrowY(lay.panelY), kArrowW, kArrowH);
+        text(lay.titleRow, arrowColumn(x), 1, live ? kPanelText : kPanelDark, kSlotFace,
              side == 0 ? "<" : ">");
     }
 
@@ -721,9 +1085,8 @@ void drawBlocksPage(const gui::Surface& surface, const gui::IconSheets& sheets, 
             // No count on a palette cell: the palette is a catalogue and
             // nothing in it is owned, so a number on one would be a quantity of
             // something nobody has.
-            drawCell(surface, kPalGridX + column * kSlotPixels, kPalGridY + row * kSlotPixels,
-                     kSlotPixels,
-                     sheets, id, 1, id != 0 && id == selected, cell == cursor);
+            drawCell(surface, kPalGridX + column * kSlotPixels, lay.gridY + row * kSlotPixels,
+                     kSlotPixels, sheets, id, 1, 0, id != 0 && id == selected, cell == cursor);
         }
     }
 
@@ -732,18 +1095,19 @@ void drawBlocksPage(const gui::Surface& surface, const gui::IconSheets& sheets, 
     // "which of these two greys is gravel" is a question a picture cannot
     // answer. The caller supplies it, because what it names is whatever the
     // player is pointing at and this file does not know what that is.
-    textCentred(kPalCaptionRow, kPalPanelX, kPalPanelW, kPanelText, kPanelFace,
+    textCentred(lay.captionRow, kPalPanelX, kPalPanelW, kPanelText, kPanelFace,
                 caption != nullptr ? caption : "");
 }
 
 int paletteCellAt(int touchX, int touchY)
 {
-    if (!insideBox(touchX, touchY, kPalGridX, kPalGridY, kPaletteColumns * kSlotPixels,
+    const PaletteLayout lay = paletteLayout(pageTop());
+    if (!insideBox(touchX, touchY, kPalGridX, lay.gridY, kPaletteColumns * kSlotPixels,
                    kPaletteRows * kSlotPixels)) {
         return -1;
     }
     const int column = (touchX - kPalGridX) / kSlotPixels;
-    const int row = (touchY - kPalGridY) / kSlotPixels;
+    const int row = (touchY - lay.gridY) / kSlotPixels;
     return row * kPaletteColumns + column;
 }
 
@@ -752,11 +1116,12 @@ int paletteArrowAt(int touchX, int touchY)
     // Generously larger than what is drawn, in both directions: the box is 16
     // pixels and a fingertip on a resistive screen is not.
     constexpr int kPad = 4;
-    if (insideBox(touchX, touchY, kArrowLeftX - kPad, kArrowY - kPad, kArrowW + kPad * 2,
+    const int y = arrowY(pageTop());
+    if (insideBox(touchX, touchY, kArrowLeftX - kPad, y - kPad, kArrowW + kPad * 2,
                   kArrowH + kPad * 2)) {
         return -1;
     }
-    if (insideBox(touchX, touchY, kArrowRightX - kPad, kArrowY - kPad, kArrowW + kPad * 2,
+    if (insideBox(touchX, touchY, kArrowRightX - kPad, y - kPad, kArrowW + kPad * 2,
                   kArrowH + kPad * 2)) {
         return 1;
     }
@@ -771,35 +1136,73 @@ void drawFocusBanner(const gui::Surface& surface, const char* label)
     // black, so it reads as a shade over the page instead of a hole in it.
     constexpr u32 kBannerFace = 0x101014;
     constexpr u32 kBannerText = 0xFFD24A;
-    gui::fillRect(surface, 0, kBannerTop, kScreenWidth, kFocusBannerLabelHeight, px(kBannerFace));
-    text(kBannerTop / kCell + 1, 1, kColumns, kBannerText, kBannerFace, "%s",
+    const int top = bannerTop();
+    gui::fillRect(surface, 0, top, kScreenWidth, kFocusBannerLabelHeight, px(kBannerFace));
+    text(top / kCell + 1, 1, kColumns, kBannerText, kBannerFace, "%s",
          label != nullptr ? label : "");
+}
 
-    // ...and the fade under it, which is the part that actually says "there is
-    // something over this page". **It darkens what is already there rather than
-    // drawing a colour**, so the map or the palette shows through it -- which is
-    // the difference between a shade and a lid.
-    //
-    // RGB565 unpacked, scaled and repacked per pixel. 320 x 16 is 5,120 of them
-    // and this runs when the page redraws, not every frame; the map's own copy
-    // next door is 34,944 pixels for comparison.
-    const int top = kBannerTop + kFocusBannerLabelHeight;
-    for (int row = 0; row < kFocusBannerFadeHeight; ++row) {
-        // From fully dark at the label's edge to untouched at the bottom, so
-        // the two halves of the banner meet with no seam.
-        const int keep = 256 * (row + 1) / (kFocusBannerFadeHeight + 1);
-        for (int x = 0; x < kScreenWidth; ++x) {
-            gui::Pixel* out = surface.at(x, top + row);
-            if (out == nullptr) {
-                continue;
-            }
-            const int r = (*out >> 11) & 0x1F;
-            const int g = (*out >> 5) & 0x3F;
-            const int b = *out & 0x1F;
-            *out = gui::Pixel((((r * keep) >> 8) << 11) | (((g * keep) >> 8) << 5)
-                              | ((b * keep) >> 8));
+namespace {
+
+// The game-over panel, on the character grid so every line of text lands on a
+// whole cell and the face behind it is one colour.
+constexpr int kGameOverPanelX = 40;
+constexpr int kGameOverPanelW = 240;
+constexpr int kGameOverPanelH = 144;
+constexpr int kGameOverButtonX = 64;
+constexpr int kGameOverButtonW = 192;
+constexpr int kGameOverButtonH = 24;
+
+// Eight pixels into the page, wherever the page starts.
+int gameOverPanelY() { return pageTop() + 8; }
+int gameOverButtonY(int index) { return gameOverPanelY() + (index == 0 ? 64 : 96); }
+
+// The text row a pixel band of `height` starting at `top` is centred on.
+int rowCentredIn(int top, int height)
+{
+    return (top + (height - kCell) / 2) / kCell + 1;
+}
+
+}  // namespace
+
+void drawGameOverPage(const gui::Surface& surface, int score, int cursor)
+{
+    const int panelY = gameOverPanelY();
+    panel(surface, kGameOverPanelX, panelY, kGameOverPanelW, kGameOverPanelH);
+    textCentred((panelY + 16) / kCell + 1, kGameOverPanelX, kGameOverPanelW, kPanelText,
+                kPanelFace, "Game over!");
+
+    // `"Score: &e" + player.getScore()` -- the `&e` is the colour code for
+    // yellow in the original's font, and yellow on a light panel is unreadable,
+    // so the number takes the panel's ink instead.
+    char line[32];
+    std::snprintf(line, sizeof(line), "Score: %d", score);
+    textCentred((panelY + 36) / kCell + 1, kGameOverPanelX, kGameOverPanelW, kPanelText,
+                kPanelFace, line);
+
+    const char* labels[2] = {"Respawn", "Title menu"};
+    for (int i = 0; i < 2; ++i) {
+        const int y = gameOverButtonY(i);
+        slot(surface, kGameOverButtonX, y, kGameOverButtonW, kGameOverButtonH);
+        if (i == cursor) {
+            slotEdge(surface, kGameOverButtonX, y, kGameOverButtonW, kGameOverButtonH,
+                     kCursorEdge);
+        }
+        textCentred(rowCentredIn(y, kGameOverButtonH), kGameOverButtonX, kGameOverButtonW,
+                    kReadoutText, kSlotFace, labels[i]);
+    }
+}
+
+int gameOverButtonAt(int touchX, int touchY)
+{
+    for (int i = 0; i < 2; ++i) {
+        const int y = gameOverButtonY(i);
+        if (touchX >= kGameOverButtonX && touchX < kGameOverButtonX + kGameOverButtonW
+            && touchY >= y && touchY < y + kGameOverButtonH) {
+            return i;
         }
     }
+    return -1;
 }
 
 }  // namespace mc::ctr::hud

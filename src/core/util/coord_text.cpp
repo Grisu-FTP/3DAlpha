@@ -147,8 +147,8 @@ const char* parseCoordinateTriple(const char* text, CoordTriple* out)
         values[2] < -kWorldHorizontalLimit || values[2] > kWorldHorizontalLimit) {
         return "x and z must be within +-32000000";
     }
-    if (values[1] < kCameraMinY || values[1] > kCameraMaxY) {
-        return "y must be between 1 and 254";
+    if (values[1] < -kCameraYLimit || values[1] > kCameraYLimit) {
+        return "y must be within +-32000000";
     }
 
     out->x = values[0];

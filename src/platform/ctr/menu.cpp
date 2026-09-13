@@ -1,9 +1,12 @@
 #include "platform/ctr/menu.hpp"
 
+#include "platform/ctr/hud.hpp"
 #include "platform/ctr/overlay.hpp"
 #include "platform/ctr/renderer.hpp"
 
 #include "core/audio/vorbis_stream.hpp"
+#include "core/gui/settings_list.hpp"
+#include "core/gui/text.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/background.hpp"
 #include "core/texture/jar_import.hpp"
@@ -11,6 +14,7 @@
 #include "core/util/seed_text.hpp"
 #include "core/world/any_storage.hpp"
 #include "core/world/format/converter.hpp"
+#include "core/world/spawn_point.hpp"
 #include "core/world/world_format.hpp"
 
 #include "version_config.hpp"
@@ -18,6 +22,7 @@
 
 #include <3ds.h>
 
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -173,29 +178,51 @@ int clampAutosave(int seconds)
 void autosaveLabel(int seconds, char* out, usize size)
 {
     if (seconds <= 0) {
-        std::snprintf(out, size, "Autosave: Off");
+        std::snprintf(out, size, "Off");
     } else if (seconds < 60) {
-        std::snprintf(out, size, "Autosave: %ds", seconds);
+        std::snprintf(out, size, "%ds", seconds);
     } else if (seconds % 60 == 0) {
-        std::snprintf(out, size, "Autosave: %dm", seconds / 60);
+        std::snprintf(out, size, "%dm", seconds / 60);
     } else {
-        std::snprintf(out, size, "Autosave: %dm %ds", seconds / 60, seconds % 60);
+        std::snprintf(out, size, "%dm %ds", seconds / 60, seconds % 60);
     }
 }
 
 // The order the gamemode row steps through. Spectator first because it is the
-// default, then Creative, which M3 step 3 made real; Survival is last and is
-// still drawn disabled -- see settings::gamemodeImplemented.
+// default, then Creative (M3 step 3), then Survival (step 4). All three are
+// live; the greying below is kept for a mode added later -- see
+// settings::gamemodeImplemented.
 //
-// **The two that work are adjacent on purpose.** Stepping the row is one
-// button, so a disabled mode sitting between the two live ones would make every
-// switch between them pass through a state that refuses.
+// **Live modes stay adjacent.** Stepping the row is one button, so a disabled
+// mode between two live ones would make every switch between them pass through
+// a state that refuses.
 constexpr settings::Gamemode kGamemodeOrder[] = {
     settings::Gamemode::Spectator,
     settings::Gamemode::Creative,
     settings::Gamemode::Survival,
 };
 constexpr int kGamemodeCount = int(sizeof(kGamemodeOrder) / sizeof(kGamemodeOrder[0]));
+
+// The order the difficulty row steps through, which is the game's own: the
+// four are a scale and a player reads left to right.
+constexpr settings::Difficulty kDifficultyOrder[] = {
+    settings::Difficulty::Peaceful,
+    settings::Difficulty::Easy,
+    settings::Difficulty::Normal,
+    settings::Difficulty::Hard,
+};
+constexpr int kDifficultyCount =
+    int(sizeof(kDifficultyOrder) / sizeof(kDifficultyOrder[0]));
+
+int difficultyIndex(settings::Difficulty level)
+{
+    for (int i = 0; i < kDifficultyCount; ++i) {
+        if (kDifficultyOrder[i] == level) {
+            return i;
+        }
+    }
+    return int(settings::Difficulty::Normal);
+}
 
 int gamemodeIndex(settings::Gamemode mode)
 {
@@ -221,28 +248,246 @@ void formatBytes(u64 bytes, char* out, usize size)
     }
 }
 
-// The rows of the World Settings screen. In game there is a world open and
-// streaming behind this, so copying, deleting and converting it are not on
-// offer -- the three of them all mean rewriting files something else holds.
+// **The Options screen's rows, top to bottom, in the groups they are drawn in**:
+// what the world looks like, then the three sound rows, then saving, then Back
+// on its own. Sound used to be a sub-screen, because this was a fixed column
+// pitched to fill 240 pixels and its explanation needed room a value row does
+// not have. The list scrolls now and the explanation is on the bottom screen,
+// so both reasons are gone.
+enum OptionsRow {
+    kOptDistance = 0,
+    kOptPack,
+    kOptSkin,
+    kOptAudio,
+    kOptMusic,
+    kOptSound,
+    kOptAutosave,
+    kOptBack,
+    kOptCount,
+};
+constexpr u8 kOptionsGroups[kOptCount] = {0, 0, 0, 1, 1, 1, 2, 3};
+
+// The rows of the World Settings screen. **World Info is a row that does
+// nothing on the top screen**: it is where everything that is a fact about the
+// world rather than a choice goes, and its explanation on the bottom screen is
+// those facts. In game there is a world open and streaming behind this, so
+// copying, deleting and converting it are not on offer -- the three of them
+// all mean rewriting files something else holds.
 enum WorldSettingsRow {
-    kRowGamemode = 0,
+    kRowInfo = 0,
+    kRowGamemode,
+    kRowDifficulty,
     kRowFormat,
-    kRowSize,
     kRowCopy,
     kRowDelete,
+    kRowExtra,
     kRowBack,
     kRowCount,
 };
-constexpr int kWorldSettingsRowsInGame = 2;  // gamemode, back
+constexpr u8 kWorldSettingsRows[] = {kRowInfo, kRowGamemode, kRowDifficulty, kRowFormat,
+                                     kRowCopy, kRowDelete,   kRowExtra,      kRowBack};
+constexpr u8 kWorldSettingsGroups[] = {0, 1, 1, 2, 2, 2, 3, 4};
+constexpr u8 kWorldSettingsRowsInGame[] = {kRowInfo, kRowGamemode, kRowDifficulty, kRowBack};
+constexpr u8 kWorldSettingsGroupsInGame[] = {0, 1, 1, 3};
 
-int worldSettingsRowFor(int cursor, bool inGame)
+// **The Extra Settings screen's rows, in the order they were asked for.**
+// Nothing on this screen is a1.1.2 and the screen says so in its own tooltip;
+// see core/settings/world_settings.hpp for why the choices live in the world
+// and not in `3ds.ini`.
+//
+// The three groups are what the rows are about rather than what they are made
+// of, which is why the two bug fixes are not together: the first group changes
+// what the ground is made of, the second changes how the world is *shown*, and
+// bedrock is on its own because it is the one fix that is not retroactive at
+// all -- it only touches ground that has not been generated yet.
+enum ExtraRow {
+    kExtraSeed = 0,
+    kExtraOreFix,
+    kExtraSecret,
+    kExtraPack,
+    kExtraPanorama,
+    kExtraBedrockFix,
+    kExtraFencePlacement,
+    kExtraBack,
+    kExtraCount,
+};
+constexpr u8 kExtraGroups[kExtraCount] = {0, 0, 0, 1, 1, 2, 3, 4};
+
+// **The Create World screen's rows.** What a world is called and what it is
+// generated from first, then how it is played, then the three things that are
+// decided once and never again, then the button that does it.
+//
+// The generation group is on this screen and not only on Extra Settings
+// because this is the moment it costs nothing: a fix that changes what a chunk
+// generates cannot touch a chunk that already exists, and at Create there are
+// none. SnowCovered is there too because a1.1.2 itself rolls it exactly here.
+//
+// Format is offered rather than assumed for the same reason Extra Settings
+// exists at all: Packed is right for the hardware and is the default, but a
+// player who is going to carry the save to a PC should not have to make a
+// world and then convert it.
+enum CreateRow {
+    kNewName = 0,
+    kNewSeed,
+    kNewGamemode,
+    kNewDifficulty,
+    kNewFencePlacement,
+    kNewFormat,
+    kNewSecret,
+    kNewOreFix,
+    kNewBedrockFix,
+    kNewCreate,
+    kNewBack,
+    kNewCount,
+};
+constexpr u8 kCreateGroups[kNewCount] = {0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 4};
+
+struct WorldSettingsLayout {
+    const u8* rows;
+    const u8* groups;
+    int count;
+};
+
+WorldSettingsLayout worldSettingsLayout(bool inGame)
 {
-    // In game the cursor only has two positions, and the second of them is
-    // Back -- which is the last row, not the second one.
-    if (!inGame) {
-        return cursor;
+    if (inGame) {
+        return {kWorldSettingsRowsInGame, kWorldSettingsGroupsInGame,
+                int(sizeof(kWorldSettingsRowsInGame))};
     }
-    return cursor == 0 ? kRowGamemode : kRowBack;
+    return {kWorldSettingsRows, kWorldSettingsGroups, int(sizeof(kWorldSettingsRows))};
+}
+
+// **The two settings lists' geometry.** Buttons are 22 pixels with a 27-pixel
+// pitch, so drawButton's two-pixel outline leaves a pixel of backdrop between
+// neighbours, and a group starts 8 pixels further down than a row would. The
+// window runs from under the heading to 234, where the last outline ends two
+// pixels later and six above the bottom edge.
+constexpr float kSettingsWidth = 240.0f;
+constexpr float kSettingsValueX = 118.0f;
+constexpr float kSettingsBottom = 234.0f;
+constexpr float kOptionsTop = 40.0f;
+constexpr float kWorldSettingsTop = 50.0f;
+// The same as World Settings': both draw a world's name under the heading, so
+// both lists start at the same place.
+constexpr float kExtraSettingsTop = 50.0f;
+// Ten rows and no world name under the heading, so this list starts higher and
+// gets one more row on screen for it.
+constexpr float kCreateWorldTop = 40.0f;
+
+gui::ListGeometry settingsGeometry(float top)
+{
+    gui::ListGeometry geometry;
+    geometry.rowHeight = 22;
+    geometry.pitch = 27;
+    geometry.groupGap = 8;
+    geometry.viewHeight = int(kSettingsBottom - top);
+    return geometry;
+}
+
+// **The bottom screen under a settings list**, 320 x 240 and painted rather
+// than printed: the row's name along the top, a tooltip box under it, a message
+// if there is one, and the controls along the bottom. Glyphs are 8 pixels on a
+// 10-pixel line, so fifteen lines fill the box before it turns into pages.
+//
+// The box is the dark face and violet edge of a later version's item tooltip.
+// a1.1.2 has no tooltips at all, so there is no original to copy, and that is
+// the look a player recognises as one.
+constexpr int kBottomWidth = hud::kScreenWidth;
+constexpr int kHeadingY = 8;
+constexpr int kTooltipX = 8;
+constexpr int kTooltipY = 24;
+constexpr int kTooltipWidth = kBottomWidth - 2 * kTooltipX;
+constexpr int kTooltipPad = 6;
+constexpr int kTooltipLineHeight = 10;
+constexpr int kTooltipLinesPerPage = 15;
+constexpr int kMessageY = 200;
+constexpr int kControlsY = 226;
+constexpr u32 kTooltipFace = 0x100010;
+constexpr u32 kTooltipEdge = 0x2C0A5E;
+
+__attribute__((format(printf, 2, 3)))
+void appendf(std::string* out, const char* format, ...)
+{
+    char buffer[512];
+    va_list args;
+    va_start(args, format);
+    const int written = std::vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    if (written > 0) {
+        out->append(buffer, usize(written) < sizeof(buffer) ? usize(written) : sizeof(buffer) - 1);
+    }
+}
+
+const char* optionsTitle(int row)
+{
+    switch (row) {
+    case kOptDistance: return "Render Distance";
+    case kOptPack:     return "Texture Pack";
+    case kOptSkin:     return "Skin";
+    case kOptAudio:    return "Audio";
+    case kOptMusic:    return "Music";
+    case kOptSound:    return "Sound";
+    case kOptAutosave: return "Autosave";
+    default:           return "Back";
+    }
+}
+
+const char* worldSettingsTitle(int row)
+{
+    switch (row) {
+    case kRowInfo:       return "World Info";
+    case kRowGamemode:   return "Gamemode";
+    case kRowDifficulty: return "Difficulty";
+    case kRowFormat:     return "Format";
+    case kRowCopy:       return "Copy";
+    case kRowDelete:     return "Delete";
+    case kRowExtra:      return "Extra Settings";
+    default:             return "Back";
+    }
+}
+
+const char* createWorldTitle(int row)
+{
+    switch (row) {
+    case kNewName:        return "Name";
+    case kNewSeed:        return "Seed";
+    case kNewGamemode:    return "Gamemode";
+    case kNewDifficulty:  return "Difficulty";
+    case kNewFencePlacement: return "Improved Fence Placement";
+    case kNewFormat:      return "Format";
+    case kNewSecret:      return "Secret World";
+    case kNewOreFix:      return "Fix Ore Generation Bug";
+    case kNewBedrockFix:  return "Fix Bedrock Hole Bug";
+    case kNewCreate:      return "Create World";
+    default:              return "Back";
+    }
+}
+
+const char* extraSettingsTitle(int row)
+{
+    switch (row) {
+    case kExtraSeed:        return "Set Seed";
+    case kExtraOreFix:      return "Fix Ore Generation Bug";
+    case kExtraSecret:      return "Secret World";
+    case kExtraPack:        return "World Texture Pack";
+    case kExtraPanorama:    return "Move Panorama";
+    case kExtraBedrockFix:  return "Fix Bedrock Hole Bug";
+    case kExtraFencePlacement: return "Improved Fence Placement";
+    default:                return "Back";
+    }
+}
+
+// On and Off rather than Yes and No for the two fixes, because a fix is a
+// switch and not an answer; Secret World is the other way round and is the one
+// row that reads as a question.
+const char* onOff(bool value)
+{
+    return value ? "On" : "Off";
+}
+
+const char* yesNo(bool value)
+{
+    return value ? "Yes" : "No";
 }
 
 }  // namespace
@@ -374,6 +619,15 @@ bool Menu::init(bool isNew3DS)
     // The left eye only. Nothing here has any depth to it, and the right eye's
     // framebuffer would otherwise hold whatever the last game frame left in it.
     gfxSet3D(false);
+
+    // A menu without its previews is still a menu: the three screens keep the
+    // console if there is no memory for a second render target.
+    preview_.reset(new MenuPreview());
+    if (!preview_->init(isNew3DS)) {
+        preview_.reset();
+    }
+    previewClockMs_ = 0;
+    syncPreview();
     return true;
 }
 
@@ -394,6 +648,14 @@ void Menu::shutdown()
     // which is precisely what `crashlogs/004-loading-a-world-from-the-menu` is.
     // See parkShaderProgram in renderer.hpp.
     parkShaderProgram();
+
+    // After the park, for the same reason citro2d's program waits for it: the
+    // previews own a program too. Their worker is joined in here, before a
+    // world can be opened, and the bottom screen goes back to the console.
+    if (preview_ != nullptr) {
+        preview_->shutdown();
+        preview_.reset();
+    }
 
     // Before C2D_Fini as well, though for a plainer reason than the shader
     // park: these are two textures' worth of linear memory and the renderer is
@@ -423,6 +685,25 @@ void Menu::refreshWorlds()
 
     world::listWorlds(fs_, kSavesDir, &worlds_);
 
+    // **The cursor follows the world, not the row.** `listWorlds` sorts by last
+    // played, so the world you just came out of is now the first one and
+    // everything that was above it has moved down -- an index kept across that
+    // is a different world. A name that is no longer on the card (it was
+    // deleted, or renamed by a copy) falls back to the row, clamped.
+    if (!worldCursorName_.empty()) {
+        bool found = false;
+        for (usize i = 0; i < worlds_.size(); ++i) {
+            if (worlds_[i].name == worldCursorName_) {
+                worldCursor_ = int(i) + 1;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            worldCursorName_.clear();
+        }
+    }
+
     const int rows = rowCount(worlds_.size());
     if (worldCursor_ >= rows) {
         worldCursor_ = rows - 1;
@@ -430,8 +711,16 @@ void Menu::refreshWorlds()
     if (worldCursor_ < 0) {
         worldCursor_ = 0;
     }
+    // Both ends of the window, so a cursor that moved to a row below it is
+    // scrolled to rather than merely clamped at the top.
     if (worldScroll_ > worldCursor_) {
         worldScroll_ = worldCursor_;
+    }
+    if (worldCursor_ >= worldScroll_ + kVisibleRows) {
+        worldScroll_ = worldCursor_ - kVisibleRows + 1;
+    }
+    if (worldScroll_ < 0) {
+        worldScroll_ = 0;
     }
 }
 
@@ -477,6 +766,14 @@ void Menu::refreshPacks()
 
 void Menu::ensureAtlas()
 {
+    if (packOverridden_) {
+        // The world that has just been left was drawn with a pack of its own.
+        // The menu is the console's again, so the live image is thrown away
+        // and rebuilt below from `packName_` -- which applyWorldPack never
+        // touched, precisely so this is a rebuild and not a guess.
+        packOverridden_ = false;
+        atlas_.rgba.clear();
+    }
     if (!atlas_.empty()) {
         loadPackArt(/*force=*/false);
         return;
@@ -577,6 +874,9 @@ void Menu::loadPackArt(bool force)
         // broken -- the pack screen already says how many of the 58 files it
         // carries -- and the drawing falls back on its own.
         texture::buildFont(fs_, path, &fontImage_);
+        // On the same pass and for the same reason: one more root file, read
+        // when the pack changes and never in a frame.
+        texture::buildParticleSheet(fs_, path, &particleSheet_);
         texture::buildBackground(fs_, path, atlas_, &backgroundTile_);
         artPackName_ = packName_;
         artLoaded_ = true;
@@ -741,59 +1041,294 @@ void Menu::saveSettings()
 
 void Menu::setScreen(Screen screen)
 {
+    // The measurement belongs to the screen that shows it. Leaving drops it
+    // rather than leaving a thread walking the card while a world is opened,
+    // which is the one thing on this menu that wants every FS round trip it
+    // can get.
+    // The Extra Settings subtree is part of this screen for the purpose of the
+    // walk: a player who steps into it and back has not left the world, and
+    // starting the stat-per-chunk-file walk again would be a second minute of
+    // card traffic for a number that was already on screen.
+    const auto inWorldSettings = [](Screen s) {
+        return s == Screen::WorldSettings || s == Screen::ExtraSettings
+               || s == Screen::WorldPack || s == Screen::MovePanorama;
+    };
+    if (inWorldSettings(screen_) && !inWorldSettings(screen)) {
+        sizeScan_.cancel();
+    }
     screen_ = screen;
     consoleDirty_ = true;
+    infoPage_ = 0;
+    syncPreview();
 }
 
-// **The four facts that turn "there is no sound" into a diagnosis**, printed
-// where a player is already standing when they notice. Silence has four
-// unrelated causes here -- the DSP never came up, the card has no resources
-// folder, the folder has no `random/click.ogg`, or the volume is at zero -- and
-// every one of them looks identical from the outside. Guessing between them
-// from a console in someone else's hands is not a thing that works, so the
-// console says which.
-void Menu::printSoundDiagnostics()
+// The one thing a silent console most needs to be told, shortest first. The four
+// causes -- no DSP firmware, a DSP something else holds, no resources folder, no
+// click in it -- look identical from outside, so the line says which.
+const char* Menu::soundProblem() const
 {
-    const char* state = "off";
-    if (audioEnabled_ && audioBackend_ != nullptr) {
-        switch (audioBackend_->status()) {
-            case ctr::AudioStatus::Ready:       state = "ready"; break;
-            case ctr::AudioStatus::NoFirmware:  state = "no DSP firmware"; break;
-            case ctr::AudioStatus::Unavailable: state = "DSP would not open"; break;
-            case ctr::AudioStatus::Disabled:    state = "off"; break;
-        }
+    if (!audioEnabled_) {
+        return "Audio is turned off.";
     }
-    std::printf("  audio      \x1b[33m%s\x1b[0m\n", state);
+    if (audioBackend_ == nullptr || sound_ == nullptr) {
+        return "No audio in this build.";
+    }
+    switch (audioBackend_->status()) {
+        case ctr::AudioStatus::NoFirmware:  return "No DSP firmware. Dump it with Rosalina.";
+        case ctr::AudioStatus::Unavailable: return "The sound system could not start.";
+        case ctr::AudioStatus::Disabled:    return "Audio is turned off.";
+        case ctr::AudioStatus::Ready:       break;
+    }
+    if (sound_->resources().sounds.size() == 0 && sound_->resources().music.empty()) {
+        return "No sound files on the SD card.";
+    }
+    if (sound_->loadedSamples() == 0) {
+        return "The menu click sound is missing.";
+    }
+    return nullptr;
+}
 
-    if (sound_ == nullptr) {
-        std::printf("  resources  no audio in this build\n\n");
+void Menu::paintSettingInfo(const char* title, RowKind kind)
+{
+    gui::Surface surface;
+    if (!hud::bottomSurface(&surface)) {
         return;
     }
 
-    std::printf("  resources  %zu music, %zu sounds\n", sound_->resources().music.size(),
-                sound_->resources().sounds.size());
+    if (fontImage_.empty() && consoleFont_.empty()) {
+        const PrintConsole* console = consoleGetDefault();
+        gui::fontFromBitmap(console->font.gfx, console->font.asciiOffset,
+                            console->font.numChars, &consoleFont_);
+    }
+    const texture::FontImage& font = fontImage_.empty() ? consoleFont_ : fontImage_;
 
-    // Loaded, present but unloadable, or absent -- three different problems
-    // with three different fixes, and `loadedSamples() == 0` alone cannot tell
-    // them apart. `countFor` asks the pool without disturbing its Random.
-    const usize onCard = sound_->resources().sounds.countFor("random.click");
-    const char* click = "loaded";
-    if (sound_->loadedSamples() == 0) {
-        if (onCard == 0) {
-            click = "no random/click.ogg on the card";
-        } else if (!audio::vorbisAvailable()) {
-            click = "found, but no decoder in this build";
-        } else {
-            click = "found, but it would not decode";
+    // The same darkened dirt the top screen tiles, and the HUD in game.
+    const bool haveTile = backgroundTile_.size() == texture::kBackgroundBytes
+                          && texture::kBackgroundEdge == hud::kTileEdge;
+    if (haveTile) {
+        const usize texels = usize(hud::kTileEdge) * hud::kTileEdge;
+        bottomTile_.resize(texels);
+        for (usize i = 0; i < texels; ++i) {
+            bottomTile_[i] = gui::rgb565(int(backgroundTile_[i * 4]),
+                                         int(backgroundTile_[i * 4 + 1]),
+                                         int(backgroundTile_[i * 4 + 2]));
         }
     }
-    std::printf("  menu click \x1b[33m%s\x1b[0m\n", click);
+    hud::drawBackdrop(surface, haveTile ? bottomTile_.data() : nullptr);
 
-    if (soundVolume_ == 0) {
-        std::printf("  \x1b[33mSound is OFF -- that alone silences the\n");
-        std::printf("  menus, whatever the rows above say.\x1b[0m\n");
+    const int lineWidth = kTooltipWidth - 2 * kTooltipPad;
+    texture::wrapText(font.widths, infoBody_, lineWidth, &infoLines_);
+    infoPages_ = gui::listPageCount(int(infoLines_.size()), kTooltipLinesPerPage);
+    if (infoPage_ >= infoPages_) {
+        infoPage_ = infoPages_ - 1;
     }
-    std::printf("\n");
+    if (infoPage_ < 0) {
+        infoPage_ = 0;
+    }
+    const bool paged = infoPages_ > 1;
+
+    const u32 white = 0xFFFFFF;
+    const u32 yellow = texture::fontColour(14);
+    const u32 grey = texture::fontColour(7);
+
+    // The row's name, between the arrows the selected button also gets.
+    gui::drawText(surface, (kBottomWidth - texture::textWidth(font.widths, title)) / 2,
+                  kHeadingY, font, title, white, true);
+    if (paged) {
+        gui::drawText(surface, kTooltipX + 2, kHeadingY, font, "<", yellow, true);
+        gui::drawText(surface,
+                      kBottomWidth - kTooltipX - 2 - texture::textWidth(font.widths, ">"),
+                      kHeadingY, font, ">", yellow, true);
+    }
+
+    const int first = infoPage_ * kTooltipLinesPerPage;
+    const int left = int(infoLines_.size()) - first;
+    const int shown = left < kTooltipLinesPerPage ? left : kTooltipLinesPerPage;
+    if (shown > 0) {
+        const int height = shown * kTooltipLineHeight - 2 + 2 * kTooltipPad;
+        gui::fillRect(surface, kTooltipX, kTooltipY, kTooltipWidth, height,
+                      gui::rgb565(kTooltipFace));
+        gui::frameRect(surface, kTooltipX + 1, kTooltipY + 1, kTooltipWidth - 2, height - 2,
+                       gui::rgb565(kTooltipEdge));
+        for (int i = 0; i < shown; ++i) {
+            gui::drawText(surface, kTooltipX + kTooltipPad,
+                          kTooltipY + kTooltipPad + i * kTooltipLineHeight, font,
+                          infoLines_[usize(first + i)], white, true);
+        }
+        if (paged) {
+            char pageText[16];
+            std::snprintf(pageText, sizeof(pageText), "%d/%d", infoPage_ + 1, infoPages_);
+            gui::drawText(surface,
+                          kTooltipX + kTooltipWidth - texture::textWidth(font.widths, pageText),
+                          kTooltipY + height + 3, font, pageText, grey, true);
+        }
+    }
+
+    if (message_ != nullptr) {
+        std::vector<std::string> lines;
+        texture::wrapText(font.widths, message_, kTooltipWidth, &lines);
+        for (usize i = 0; i < lines.size() && i < 2; ++i) {
+            gui::drawText(surface, kTooltipX, kMessageY + int(i) * kTooltipLineHeight, font,
+                          lines[i], texture::fontColour(12), true);
+        }
+    }
+
+    char controls[96];
+    std::snprintf(controls, sizeof(controls), "%s%sB: Back%s",
+                  kind == RowKind::Value ? "Left/Right: Change   " : "",
+                  kind == RowKind::Action ? "A: Select   " : "",
+                  paged ? (kind == RowKind::Value ? "   L/R: Page" : "   Left/Right: Page") : "");
+    gui::drawText(surface, (kBottomWidth - texture::textWidth(font.widths, controls)) / 2,
+                  kControlsY, font, controls, grey, true);
+
+    // The CPU has just written a buffer the LCD reads by DMA.
+    gfxFlushBuffers();
+}
+
+void Menu::buildOptionsInfo(int row)
+{
+    std::string& out = infoBody_;
+    out.clear();
+
+    switch (row) {
+    case kOptDistance:
+        appendf(&out, "How far you can see.\n");
+        appendf(&out, "§7Higher values can lower the frame rate.\n");
+        appendf(&out, "§7Up to %d on this console.", maxDistance_);
+        break;
+    case kOptPack:
+        appendf(&out, "Changes how the game looks.\n");
+        appendf(&out, "§7Current: §f%s\n", packLabel());
+        appendf(&out, "§7Add packs to %s/", texture::kPacksDir);
+        break;
+    case kOptSkin:
+        appendf(&out, "Changes your player skin.\n");
+        appendf(&out, "§7Current: §f%s\n", skinLabel());
+        appendf(&out, "§7Add skins to %s/", texture::kSkinsDir);
+        break;
+    case kOptAudio:
+        appendf(&out, "Turns all game audio on or off.\n");
+        appendf(&out, "§7Takes effect after a restart.");
+        if (audioEnabled_) {
+            if (const char* problem = soundProblem()) {
+                appendf(&out, "\n§c%s", problem);
+            }
+        }
+        break;
+    case kOptMusic:
+        appendf(&out, "Music volume.");
+        if (const char* problem = soundProblem()) {
+            appendf(&out, "\n§c%s", problem);
+        } else if (sound_ != nullptr && sound_->resources().music.empty()) {
+            appendf(&out, "\n§cNo music on the SD card.");
+        }
+        break;
+    case kOptSound:
+        appendf(&out, "Volume of blocks, footsteps and menus.\n");
+        appendf(&out, "§7Press A to test.");
+        if (const char* problem = soundProblem()) {
+            appendf(&out, "\n§c%s", problem);
+        }
+        break;
+    case kOptAutosave:
+        appendf(&out, "How often your world is saved.\n");
+        appendf(&out, "§7It is always saved when you pause or quit.");
+        break;
+    default:
+        appendf(&out, "Return to the %s.", inGame_ ? "game menu" : "title screen");
+        break;
+    }
+}
+
+void Menu::buildWorldSettingsInfo(int row)
+{
+    std::string& out = infoBody_;
+    out.clear();
+
+    switch (row) {
+    case kRowInfo: {
+        appendf(&out, "§e%s\n", selectedWorldName_.c_str());
+        if (selectedLevelKnown_) {
+            appendf(&out, "§7Seed: §f%lld\n", (long long)selectedSeed_);
+            if (!inGame_) {
+                char when[64];
+                formatWhen(selectedLastPlayed_, when, sizeof(when));
+                appendf(&out, "§7Last played: §f%s\n", when);
+            }
+        }
+        appendf(&out, "§7Format: §f%s\n", world::formatName(selectedFormat_));
+        if (!inGame_) {
+            if (selectedSizeKnown_) {
+                char onDisk[24];
+                formatBytes(selectedSize_.onDiskBytes, onDisk, sizeof(onDisk));
+                appendf(&out, "§7Size: §f%s\n", onDisk);
+            } else if (sizeScan_.running()) {
+                // A folder world is a stat per chunk file, so the number
+                // arrives a moment after the screen does. Saying so beats a
+                // row that is missing and then is not.
+                appendf(&out, "§7Size: §7loading...\n");
+            }
+        }
+        appendf(&out, "§7Gamemode: §f%s\n", settings::gamemodeLabel(worldSettings_.gamemode));
+        appendf(&out, "§7Difficulty: §f%s", settings::difficultyLabel(worldSettings_.difficulty));
+        if (inGame_) {
+            appendf(&out, "\n§7Copy, delete, format and the extra options\n");
+            appendf(&out, "§7are on the world list.");
+        }
+        break;
+    }
+    case kRowGamemode:
+        switch (kGamemodeOrder[gamemodeCursor_]) {
+        case settings::Gamemode::Spectator:
+            appendf(&out, "Fly through the world freely.\n");
+            appendf(&out, "§7No collision, no building.");
+            break;
+        case settings::Gamemode::Creative:
+            appendf(&out, "Build with every block.\n");
+            appendf(&out, "§7Break and place blocks freely.");
+            break;
+        case settings::Gamemode::Survival:
+            appendf(&out, "Mine, craft and stay alive.\n");
+            appendf(&out, "§7Blocks take time to break and drop items.");
+            break;
+        }
+        break;
+    case kRowDifficulty:
+        if (kDifficultyOrder[difficultyCursor_] == settings::Difficulty::Peaceful) {
+            appendf(&out, "No monsters.");
+        } else {
+            appendf(&out, "Monsters spawn in the dark.\n");
+            appendf(&out, "§7Harder settings make their hits hurt more.");
+        }
+        break;
+    case kRowFormat:
+        if (selectedFormat_ == world::WorldFormat::Packed) {
+            appendf(&out, "Packed for this console.\n");
+            appendf(&out, "§7Only 3DAlpha can open it.\n");
+            appendf(&out, "§7Press A to unpack it.");
+        } else {
+            appendf(&out, "Standard Minecraft save.\n");
+            appendf(&out, "§7Opens on a PC.\n");
+            appendf(&out, "§7Press A to pack it for this console.");
+        }
+        break;
+    case kRowExtra:
+        appendf(&out, "Some Extra Options that might not be\n");
+        appendf(&out, "fully vanilla or increase/decrease\n");
+        appendf(&out, "parity with \"vanilla\".\n");
+        appendf(&out, "§7Applies only to this World.");
+        break;
+    case kRowCopy:
+        appendf(&out, "Makes a copy of this world.");
+        break;
+    case kRowDelete:
+        appendf(&out, "Deletes this world.\n");
+        appendf(&out, "§cThis cannot be undone.");
+        break;
+    default:
+        appendf(&out, "Return to the %s.", inGame_ ? "game menu" : "world list");
+        break;
+    }
 }
 
 void Menu::printConsoleHelp()
@@ -803,6 +1338,54 @@ void Menu::printConsoleHelp()
     }
     printedScreen_ = screen_;
     consoleDirty_ = false;
+
+    // **The two settings screens paint the whole bottom screen** rather than
+    // printing to it, so the console is neither cleared nor written here. The
+    // next screen that prints clears the paint away with its own \x1b[2J.
+    if (screen_ == Screen::Options) {
+        buildOptionsInfo(optionsCursor_);
+        const RowKind kind = optionsCursor_ == kOptPack || optionsCursor_ == kOptSkin ||
+                                     optionsCursor_ == kOptBack
+                                 ? RowKind::Action
+                                 : RowKind::Value;
+        paintSettingInfo(optionsTitle(optionsCursor_), kind);
+        return;
+    }
+    if (screen_ == Screen::CreateWorld) {
+        buildCreateWorldInfo(createCursor_);
+        const RowKind kind = createCursor_ == kNewName || createCursor_ == kNewSeed ||
+                                     createCursor_ == kNewCreate || createCursor_ == kNewBack
+                                 ? RowKind::Action
+                                 : RowKind::Value;
+        paintSettingInfo(createWorldTitle(createCursor_), kind);
+        return;
+    }
+    if (screen_ == Screen::ExtraSettings) {
+        buildExtraSettingsInfo(extraCursor_);
+        const RowKind kind = extraCursor_ == kExtraSeed || extraCursor_ == kExtraPack ||
+                                     extraCursor_ == kExtraPanorama || extraCursor_ == kExtraBack
+                                 ? RowKind::Action
+                                 : RowKind::Value;
+        paintSettingInfo(extraSettingsTitle(extraCursor_), kind);
+        return;
+    }
+    if (screen_ == Screen::WorldSettings) {
+        const WorldSettingsLayout layout = worldSettingsLayout(inGame_);
+        const int row = layout.rows[worldSettingsCursor_ < layout.count ? worldSettingsCursor_
+                                                                          : 0];
+        buildWorldSettingsInfo(row);
+        const RowKind kind = row == kRowInfo ? RowKind::Info
+                             : row == kRowGamemode || row == kRowDifficulty ? RowKind::Value
+                                                                             : RowKind::Action;
+        paintSettingInfo(worldSettingsTitle(row), kind);
+        return;
+    }
+
+    // **The three preview screens draw the bottom screen on the GPU** on the
+    // main menu, and say what they need to under the picture.
+    if (preview_ != nullptr && preview_->screen() != PreviewScreen::None) {
+        return;
+    }
 
     std::printf("\x1b[2J\x1b[1;1H");
     std::printf("\x1b[32m3DAlpha %s\x1b[0m\n\n", mcver::kDisplay);
@@ -840,29 +1423,23 @@ void Menu::printConsoleHelp()
         }
         break;
     case Screen::WorldSettings:
-        std::printf("Left/Right  change the value\n");
-        std::printf("Up/Down     choose a row\n");
-        std::printf("A           run the row\n");
-        std::printf("B           back\n\n");
-        std::printf("These belong to one world, not to\n");
-        std::printf("the console. They are kept in\n");
-        std::printf("  \x1b[33m<world>/%s\x1b[0m\n", settings::kWorldSettingsName);
-        std::printf("which a real Minecraft client never\n");
-        std::printf("reads, so nothing here changes what\n");
-        std::printf("a PC copy of the world means.\n\n");
-        if (inGame_) {
-            // Said rather than left to be discovered: the rows are simply not
-            // there, and a player who used them from the home screen would
-            // otherwise think they had gone missing.
-            std::printf("Copy, Delete and Format need the\n");
-            std::printf("world closed. Exit the world first.\n");
-        } else {
-            std::printf("\x1b[33mSurvival and Creative are greyed\n");
-            std::printf("out\x1b[0m: there is no player body yet,\n");
-            std::printf("so Spectator is the only mode that\n");
-            std::printf("would tell the truth.\n");
-        }
+    case Screen::ExtraSettings:
+    case Screen::CreateWorld:
+        break;  // painted above, not printed
+    case Screen::WorldPack:
+        std::printf("Up/Down  choose a pack\n");
+        std::printf("A        use it for this world\n");
+        std::printf("B        back\n\n");
+        std::printf("\x1b[33mDefault\x1b[0m is not a pack: it means this\n");
+        std::printf("world follows whatever the console is\n");
+        std::printf("set to on the Options screen, which is\n");
+        std::printf("what every world does until it is told\n");
+        std::printf("otherwise.\n\n");
+        std::printf("The choice is written into this world's\n");
+        std::printf("3dalpha.ini and applies to nothing else.\n");
         break;
+    case Screen::MovePanorama:
+        break;  // the diorama has the bottom screen
     case Screen::ConfirmConvert:
         std::printf("Converting rewrites every file in\n");
         std::printf("the world into the other shape.\n\n");
@@ -895,35 +1472,7 @@ void Menu::printConsoleHelp()
         std::printf("version's.\n");
         break;
     case Screen::Options:
-        std::printf("Left/Right  change the value\n");
-        std::printf("Up/Down     choose a row\n");
-        std::printf("A           open a sub-screen\n");
-        std::printf("B           back\n\n");
-        std::printf("Render distance is what a player is\n");
-        std::printf("offered; the debug page (SELECT+Y in\n");
-        std::printf("game) goes further for measuring.\n");
-        if (inGame_) {
-            std::printf("\nBoth rows apply to the world you\n");
-            std::printf("are standing in, as soon as you\n");
-            std::printf("go back to it.\n");
-        }
-        break;
-    case Screen::Sound:
-        std::printf("Left/Right  change the value\n");
-        std::printf("Up/Down     choose a row\n");
-        std::printf("A           on Sound: play a test click\n");
-        std::printf("B           back\n\n");
-        printSoundDiagnostics();
-        std::printf("Sounds are not in the jar -- a1.1.2\n");
-        std::printf("downloaded them from a server that\n");
-        std::printf("is long gone. Copy a resources/\n");
-        std::printf("folder from an alpha- or beta-era\n");
-        std::printf("install to:\n");
-        std::printf("  \x1b[33m%s/\x1b[0m\n\n", audio::kResourcesDir);
-        std::printf("Audio also needs a DSP firmware you\n");
-        std::printf("dump with Rosalina -> Miscellaneous\n");
-        std::printf("options -> Dump DSP firmware.\n");
-        break;
+        break;  // painted above, not printed
     case Screen::TexturePacks:
         std::printf("Up/Down  choose\n");
         std::printf("A        use it, or extract a jar\n");
@@ -1003,9 +1552,6 @@ MenuChoice Menu::run()
         case Screen::Options:
             handleOptions(down);
             break;
-        case Screen::Sound:
-            handleSound(down);
-            break;
         case Screen::ConfirmDelete:
             handleConfirmDelete(down);
             break;
@@ -1023,6 +1569,18 @@ MenuChoice Menu::run()
             break;
         case Screen::WorldSettings:
             handleWorldSettings(down);
+            break;
+        case Screen::CreateWorld:
+            done = handleCreateWorld(down, &choice);
+            break;
+        case Screen::ExtraSettings:
+            handleExtraSettings(down);
+            break;
+        case Screen::WorldPack:
+            handleWorldPack(down);
+            break;
+        case Screen::MovePanorama:
+            handleMovePanorama(down);
             break;
         case Screen::ConfirmConvert:
             handleConfirmConvert(down);
@@ -1106,9 +1664,6 @@ PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int ren
         case Screen::Options:
             handleOptions(down);
             break;
-        case Screen::Sound:
-            handleSound(down);
-            break;
         case Screen::TexturePacks:
             handleTexturePacks(down);
             break;
@@ -1141,6 +1696,8 @@ PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int ren
     // What the caller applies to the world it still has open. The file was
     // written the moment the row changed; this is the copy in memory.
     choice.gamemode = worldSettings_.gamemode;
+    choice.difficulty = worldSettings_.difficulty;
+    choice.improvedFencePlacement = worldSettings_.improvedFencePlacement;
     // Back to where the main menu was standing when this world was opened, so
     // Exit World returns to the world list rather than to the pause menu.
     setScreen(resumeScreen_);
@@ -1153,6 +1710,8 @@ PauseChoice Menu::runPause(const char* worldName, const char* worldPath, int ren
 
 void Menu::present()
 {
+    pollWorldSize();
+    updatePreview();
     printConsoleHelp();
     drawFrame();
 }
@@ -1299,6 +1858,7 @@ bool Menu::handlePause(u32 down, PauseChoice* choice)
     case 1:
         message_ = nullptr;
         worldSettingsCursor_ = 0;
+        worldSettingsScroll_ = 0;
         // Already pointed at the open world by runPause; nothing to re-read,
         // and nothing here may walk the tree of a world that is streaming.
         setScreen(Screen::WorldSettings);
@@ -1326,6 +1886,12 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
         worldScroll_ = worldCursor_ - kVisibleRows + 1;
     }
 
+    // Remembered by name on every move, so the list can be re-read and
+    // re-sorted underneath it -- which is what playing a world does.
+    worldCursorName_ = worldCursor_ > 0 && usize(worldCursor_ - 1) < worlds_.size()
+                           ? worlds_[usize(worldCursor_ - 1)].name
+                           : std::string();
+
     if (down & KEY_B) {
         message_ = nullptr;
         setScreen(Screen::Title);
@@ -1341,6 +1907,7 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
         const world::WorldEntry& entry = worlds_[usize(worldCursor_ - 1)];
         message_ = nullptr;
         worldSettingsCursor_ = 0;
+        worldSettingsScroll_ = 0;
         playClick();
         openWorldSettings(entry.name, entry.path);
         setScreen(Screen::WorldSettings);
@@ -1353,15 +1920,12 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
     playClick();
 
     if (worldCursor_ == 0) {
-        std::string name;
-        if (!askWorldName(&name)) {
-            return false;
-        }
-        i64 seed = 0;
-        if (!askSeed(&seed)) {
-            return false;
-        }
-        return createWorld(name, seed, choice);
+        // **A screen, not two keyboards.** This used to open askWorldName and
+        // then askSeed back to back, with no way to see the first answer again
+        // and nothing else asked at all.
+        openCreateWorld();
+        setScreen(Screen::CreateWorld);
+        return false;
     }
 
     const world::WorldEntry& entry = worlds_[usize(worldCursor_ - 1)];
@@ -1376,30 +1940,80 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
     settings::WorldSettings worldSettings;
     settings::loadWorldSettings(fs_, entry.path, &worldSettings);
     choice->gamemode = worldSettings.gamemode;
+    choice->difficulty = worldSettings.difficulty;
+
+    // **Its texture pack too, and this is the last moment for it**: the atlas
+    // the caller is handed is `atlas_`, built a moment later, and a world that
+    // names a pack of its own wants that one rather than the console's. The
+    // member is what applyWorldPack reads.
+    worldSettings_ = worldSettings;
+    applyWorldPack();
     return true;
 }
 
+void Menu::turnInfoPage(u32 down, bool arrowsTurn)
+{
+    if (infoPages_ <= 1) {
+        return;
+    }
+    const u32 back = KEY_L | (arrowsTurn ? kLeft : 0u);
+    const u32 forward = KEY_R | (arrowsTurn ? kRight : 0u);
+    int page = infoPage_;
+    if ((down & back) != 0) {
+        page = page == 0 ? infoPages_ - 1 : page - 1;
+    }
+    if ((down & forward) != 0) {
+        page = page + 1 >= infoPages_ ? 0 : page + 1;
+    }
+    if (page != infoPage_) {
+        infoPage_ = page;
+        consoleDirty_ = true;
+        playMoveClick();
+    }
+}
+
+// Volumes apply live, as `of.a()` does in the original: moving Music to OFF
+// stops the track that is playing rather than leaving it running silently, and
+// the engine is told on every change rather than on the way out. The Audio
+// row is the exception -- ndsp is a process-scoped service and bringing it up
+// or down under a playing track is not worth the complication, so it takes
+// effect on the next launch and its explanation says so.
 void Menu::handleOptions(u32 down)
 {
-    constexpr int kRows = 6;  // distance, autosave, texture pack, skin, sound, back
-    optionsCursor_ = step(down, optionsCursor_, kRows);
+    const int before = optionsCursor_;
+    optionsCursor_ = step(down, optionsCursor_, kOptCount);
+    optionsScroll_ = gui::listScrollFor(kOptionsGroups, kOptCount, optionsCursor_,
+                                        optionsScroll_, settingsGeometry(kOptionsTop));
+    if (optionsCursor_ != before) {
+        infoPage_ = 0;
+    }
+    // Any press can change what the explanation says -- a value, a row, the
+    // audio state -- and reprinting forty columns is cheaper than knowing which.
+    if (down != 0) {
+        consoleDirty_ = true;
+    }
 
-    if (optionsCursor_ == 0) {
-        const int before = renderDistance_;
+    // Ten points a press, which is one press per audible step and ten presses
+    // end to end. The original's slider is continuous; a d-pad is not.
+    constexpr int kVolumeStep = 10;
+
+    switch (optionsCursor_) {
+    case kOptDistance: {
+        const int previous = renderDistance_;
         if ((down & kLeft) != 0 && renderDistance_ > 2) {
             --renderDistance_;
         }
         if ((down & kRight) != 0 && renderDistance_ < maxDistance_) {
             ++renderDistance_;
         }
-        if (renderDistance_ != before) {
+        if (renderDistance_ != previous) {
             playClick();
             saveSettings();
         }
+        break;
     }
-
-    if (optionsCursor_ == 1) {
-        const int before = autosaveSeconds_;
+    case kOptAutosave: {
+        const int previous = autosaveSeconds_;
         int index = autosaveIndex(autosaveSeconds_);
         if ((down & kLeft) != 0 && index > 0) {
             --index;
@@ -1408,104 +2022,57 @@ void Menu::handleOptions(u32 down)
             ++index;
         }
         autosaveSeconds_ = kAutosaveSteps[index];
-        if (autosaveSeconds_ != before) {
+        if (autosaveSeconds_ != previous) {
             playClick();
             saveSettings();
         }
+        break;
     }
-
-    if ((down & KEY_A) != 0 && optionsCursor_ == 2) {
-        message_ = nullptr;
-        playClick();
-        refreshPacks();
-        setScreen(Screen::TexturePacks);
-        return;
-    }
-
-    if ((down & KEY_A) != 0 && optionsCursor_ == 3) {
-        message_ = nullptr;
-        playClick();
-        refreshSkins();
-        setScreen(Screen::Skins);
-        return;
-    }
-
-    if ((down & KEY_A) != 0 && optionsCursor_ == 4) {
-        message_ = nullptr;
-        playClick();
-        soundCursor_ = 0;
-        setScreen(Screen::Sound);
-        return;
-    }
-
-    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == 5)) {
-        if ((down & KEY_A) != 0) {
-            playClick();  // the Back button. B is Escape, and Escape is silent.
+    case kOptAudio:
+        if ((down & (kLeft | kRight | KEY_A)) != 0) {
+            audioEnabled_ = !audioEnabled_;
+            // The click still plays when the row is switched to OFF, and that
+            // is right rather than sloppy: the toggle takes effect on the next
+            // launch, so ndsp is still up and a silent press here would say the
+            // setting had already bitten when it has not.
+            playClick();
+            saveSettings();
         }
-        setScreen(inGame_ ? Screen::Pause : Screen::Title);
-    }
-}
-
-// Volumes apply live, as `of.a()` does in the original: moving Music to OFF
-// stops the track that is playing rather than leaving it running silently, and
-// the engine is told on every change rather than on the way out. The `audio`
-// row is the exception -- ndsp is a process-scoped service and bringing it up
-// or down under a playing track is not worth the complication, so it takes
-// effect on the next launch and the screen says so.
-void Menu::handleSound(u32 down)
-{
-    constexpr int kRows = 4;  // audio, music, sound, back
-    soundCursor_ = step(down, soundCursor_, kRows);
-
-    // Ten points a press, which is one press per audible step and ten presses
-    // end to end. The original's slider is continuous; a d-pad is not.
-    constexpr int kStep = 10;
-
-    if (soundCursor_ == 0 && (down & (kLeft | kRight | KEY_A)) != 0) {
-        audioEnabled_ = !audioEnabled_;
-        // The click still plays when the row is switched to OFF, and that is
-        // right rather than sloppy: the toggle takes effect on the next launch,
-        // so ndsp is still up and a silent press here would say the setting had
-        // already bitten when it has not.
-        playClick();
-        saveSettings();
-    }
-
-    if (soundCursor_ == 1) {
-        const int before = musicVolume_;
+        break;
+    case kOptMusic: {
+        const int previous = musicVolume_;
         if ((down & kLeft) != 0) {
-            musicVolume_ = musicVolume_ - kStep < 0 ? 0 : musicVolume_ - kStep;
+            musicVolume_ = musicVolume_ - kVolumeStep < 0 ? 0 : musicVolume_ - kVolumeStep;
         }
         if ((down & kRight) != 0) {
-            musicVolume_ = musicVolume_ + kStep > 100 ? 100 : musicVolume_ + kStep;
+            musicVolume_ = musicVolume_ + kVolumeStep > 100 ? 100 : musicVolume_ + kVolumeStep;
         }
-        if (musicVolume_ != before) {
+        if (musicVolume_ != previous) {
             if (sound_ != nullptr) {
                 sound_->setMusicVolume(float(musicVolume_) / 100.0f);
             }
             playClick();
             saveSettings();
         }
+        break;
     }
-
-    // A on the Sound row is a test press, and it is a1.1.2's behaviour rather
-    // than an addition: `fu` (GuiSlider) is a `fk` (GuiButton), so clicking a
-    // slider in the original plays the click even when the value does not move.
-    // Here it is also the one way to answer "is anything wrong with my card"
-    // without waiting twenty minutes for a music track.
-    if (soundCursor_ == 2 && (down & KEY_A) != 0) {
-        playClick();
-    }
-
-    if (soundCursor_ == 2) {
-        const int before = soundVolume_;
+    case kOptSound: {
+        // A on the Sound row is a test press, and it is a1.1.2's behaviour
+        // rather than an addition: `fu` (GuiSlider) is a `fk` (GuiButton), so
+        // clicking a slider in the original plays the click even when the value
+        // does not move. Here it is also the one way to answer "is anything
+        // wrong with my card" without waiting twenty minutes for a music track.
+        if ((down & KEY_A) != 0) {
+            playClick();
+        }
+        const int previous = soundVolume_;
         if ((down & kLeft) != 0) {
-            soundVolume_ = soundVolume_ - kStep < 0 ? 0 : soundVolume_ - kStep;
+            soundVolume_ = soundVolume_ - kVolumeStep < 0 ? 0 : soundVolume_ - kVolumeStep;
         }
         if ((down & kRight) != 0) {
-            soundVolume_ = soundVolume_ + kStep > 100 ? 100 : soundVolume_ + kStep;
+            soundVolume_ = soundVolume_ + kVolumeStep > 100 ? 100 : soundVolume_ + kVolumeStep;
         }
-        if (soundVolume_ != before) {
+        if (soundVolume_ != previous) {
             // **In that order.** The engine is told first so the click below is
             // played at the volume the row now shows, which is the only way a
             // player can hear what they are setting -- the slider is otherwise
@@ -1518,28 +2085,71 @@ void Menu::handleSound(u32 down)
             playClick();
             saveSettings();
         }
+        break;
+    }
+    case kOptPack:
+        if ((down & KEY_A) != 0) {
+            message_ = nullptr;
+            playClick();
+            refreshPacks();
+            setScreen(Screen::TexturePacks);
+            return;
+        }
+        break;
+    case kOptSkin:
+        if ((down & KEY_A) != 0) {
+            message_ = nullptr;
+            playClick();
+            refreshSkins();
+            setScreen(Screen::Skins);
+            return;
+        }
+        break;
+    default:
+        break;
     }
 
-    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && soundCursor_ == 3)) {
+    // Only on a press that did not also move the cursor: the page count is the
+    // row the cursor has just left.
+    if (optionsCursor_ == before) {
+        const bool valueless =
+            optionsCursor_ == kOptPack || optionsCursor_ == kOptSkin || optionsCursor_ == kOptBack;
+        turnInfoPage(down, valueless);
+    }
+
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && optionsCursor_ == kOptBack)) {
         if ((down & KEY_A) != 0) {
-            playClick();
+            playClick();  // the Back button. B is Escape, and Escape is silent.
         }
-        setScreen(Screen::Options);
+        setScreen(inGame_ ? Screen::Pause : Screen::Title);
     }
 }
 
 // Everything the screen needs off the card, taken once on the way in.
 //
-// **Nothing here happens in a draw.** Reading a settings file is one open, but
-// measuring a folder world is a stat per chunk file across up to 4,096 leaf
-// directories, and doing that per frame would turn a menu into a card
-// benchmark.
+// **Nothing here happens in a draw, and the long one does not happen here
+// either.** Reading a settings file is one open; measuring a folder world is a
+// stat per chunk file across up to 4,096 leaf directories, so that one is
+// started on a thread and picked up in present().
 void Menu::openWorldSettings(const std::string& name, const std::string& path)
 {
     selectedWorldName_ = name;
     selectedWorldPath_ = path;
     selectedSize_ = world::WorldSize();
     selectedSizeKnown_ = false;
+
+    // The list has already read this world's level.dat, and in game it is the
+    // list the world was opened from. Not found -- a world made a moment ago
+    // and not listed since -- leaves the two lines off World Info.
+    selectedLevelKnown_ = false;
+    for (const world::WorldEntry& entry : worlds_) {
+        if (entry.path == path) {
+            selectedSeed_ = entry.seed;
+            selectedLastPlayed_ = entry.lastPlayed;
+            selectedLevelKnown_ = true;
+            break;
+        }
+    }
 
     worldSettings_ = settings::WorldSettings();
     selectedFormat_ = world::WorldFormat::Unknown;
@@ -1553,6 +2163,7 @@ void Menu::openWorldSettings(const std::string& name, const std::string& path)
     // The row starts on the world's own mode, so browsing on one world never
     // shows up on the next.
     gamemodeCursor_ = gamemodeIndex(worldSettings_.gamemode);
+    difficultyCursor_ = difficultyIndex(worldSettings_.difficulty);
 
     // In game the size row is not drawn, and the world is open and being
     // written to, so a total taken now would be stale before it was read.
@@ -1567,16 +2178,32 @@ void Menu::measureSelectedWorld()
         return;
     }
 
-    // One frame saying what is happening, for the same reason extractJar draws
-    // one: a screen that simply stops for a second looks like a crash.
-    std::printf("\x1b[2J\x1b[1;1H");
-    std::printf("Measuring\n  \x1b[33m%s\x1b[0m\n\n", selectedWorldName_.c_str());
-    std::printf("Adding up what it occupies on the\n");
-    std::printf("card. A folder world is one file per\n");
-    std::printf("chunk, so this takes a moment.\n");
-    drawFrame();
+    // **Nothing is waited for here.** This used to be the walk itself, with a
+    // frame drawn first saying what was happening, and on a big folder world
+    // that was a menu that stopped for seconds. Now the thread is started and
+    // the screen carries on; the size row says "loading..." until it answers.
+    selectedSize_ = world::WorldSize();
+    selectedSizeKnown_ = false;
+    sizeScan_.start(fs_, selectedWorldPath_);
+    consoleDirty_ = true;
+}
 
-    selectedSizeKnown_ = world::worldSize(fs_, selectedWorldPath_, &selectedSize_);
+void Menu::pollWorldSize()
+{
+    if (selectedSizeKnown_) {
+        return;
+    }
+    world::WorldSize size;
+    if (!sizeScan_.result(&size)) {
+        // Still walking, or it failed -- and a walk that failed leaves the row
+        // off rather than showing a total nothing stands behind.
+        return;
+    }
+    selectedSize_ = size;
+    selectedSizeKnown_ = true;
+    // The bottom screen is painted from infoBody_, which is only rebuilt when
+    // this is set, so without it the row would say "loading..." until the
+    // cursor moved.
     consoleDirty_ = true;
 }
 
@@ -1597,12 +2224,26 @@ void Menu::saveWorldSettings()
 // The world's own settings, as against the console's.
 void Menu::handleWorldSettings(u32 down)
 {
-    const int rows = inGame_ ? kWorldSettingsRowsInGame : int(kRowCount);
-    worldSettingsCursor_ = step(down, worldSettingsCursor_, rows);
-    const int row = worldSettingsRowFor(worldSettingsCursor_, inGame_);
+    const WorldSettingsLayout layout = worldSettingsLayout(inGame_);
+    if (worldSettingsCursor_ >= layout.count) {
+        worldSettingsCursor_ = 0;
+    }
+    const int before = worldSettingsCursor_;
+    worldSettingsCursor_ = step(down, worldSettingsCursor_, layout.count);
+    worldSettingsScroll_ =
+        gui::listScrollFor(layout.groups, layout.count, worldSettingsCursor_,
+                           worldSettingsScroll_, settingsGeometry(kWorldSettingsTop));
+    if (worldSettingsCursor_ != before) {
+        infoPage_ = 0;
+    }
+    if (down != 0) {
+        consoleDirty_ = true;
+    }
+    const int row = layout.rows[worldSettingsCursor_];
+    const bool moved = worldSettingsCursor_ != before;
 
     if (row == kRowGamemode) {
-        const int before = gamemodeCursor_;
+        const int previous = gamemodeCursor_;
         if ((down & kLeft) != 0 && gamemodeCursor_ > 0) {
             --gamemodeCursor_;
         }
@@ -1611,10 +2252,10 @@ void Menu::handleWorldSettings(u32 down)
         }
         // **The row moves onto a disabled mode; the world does not.** It is the
         // value that is refused, not the movement -- a player can put the row
-        // on Survival, see it greyed out and read why, which is the whole
-        // reason the two unimplemented modes are listed rather than hidden. A
-        // dead arrow key would say nothing at all.
-        if (gamemodeCursor_ != before
+        // on Survival, see it greyed out and read why on the bottom screen,
+        // which is the whole reason the unimplemented mode is listed rather
+        // than hidden. A dead arrow key would say nothing at all.
+        if (gamemodeCursor_ != previous
             && settings::gamemodeImplemented(kGamemodeOrder[gamemodeCursor_])) {
             worldSettings_.gamemode = kGamemodeOrder[gamemodeCursor_];
             playClick();
@@ -1622,7 +2263,25 @@ void Menu::handleWorldSettings(u32 down)
         }
     }
 
-    if ((down & KEY_A) != 0 || (down & (kLeft | kRight)) != 0) {
+    // **Every difficulty is implemented**, unlike gamemode, so there is no
+    // greyed-out value here: Peaceful removes monsters, the other three change
+    // what a hit costs and whether a big slime may spawn.
+    if (row == kRowDifficulty) {
+        const int previous = difficultyCursor_;
+        if ((down & kLeft) != 0 && difficultyCursor_ > 0) {
+            --difficultyCursor_;
+        }
+        if ((down & kRight) != 0 && difficultyCursor_ < kDifficultyCount - 1) {
+            ++difficultyCursor_;
+        }
+        if (difficultyCursor_ != previous) {
+            worldSettings_.difficulty = kDifficultyOrder[difficultyCursor_];
+            playClick();
+            saveWorldSettings();
+        }
+    }
+
+    if (!moved && ((down & KEY_A) != 0 || (down & (kLeft | kRight)) != 0)) {
         switch (row) {
         case kRowFormat:
             // Left, Right and A all mean the same thing here, because there
@@ -1644,9 +2303,31 @@ void Menu::handleWorldSettings(u32 down)
                 return;
             }
             break;
+        case kRowExtra:
+            if ((down & KEY_A) != 0) {
+                playClick();
+                // level.dat is read here rather than on every frame of the
+                // screen: it is a compressed NBT file, and the two rows that
+                // show what is in it want one number each.
+                openExtraSettings();
+                extraCursor_ = 0;
+                extraScroll_ = 0;
+                setScreen(Screen::ExtraSettings);
+                return;
+            }
+            break;
         default:
             break;
         }
+    }
+
+    if (!moved) {
+        // World Info's A turns forward as well: it is the only thing the row
+        // can be pressed for.
+        const u32 turn = row == kRowInfo && (down & KEY_A) != 0 ? down | KEY_R : down;
+        const bool valueless = row == kRowInfo || row == kRowCopy || row == kRowDelete ||
+                               row == kRowExtra || row == kRowBack;
+        turnInfoPage(turn, valueless);
     }
 
     if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && row == kRowBack)) {
@@ -1657,11 +2338,686 @@ void Menu::handleWorldSettings(u32 down)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Extra Settings
+//
+// **The one screen on this menu that is deliberately not a1.1.2.** Everything
+// else here either reproduces a screen the original had or exists because a
+// console needs it; these six rows either undo a bug the original shipped or
+// offer a choice it never had, and each of them belongs to one world rather
+// than to the console. Two are level.dat values, three are `3dalpha.ini` ones
+// and one opens a list; the split is invisible from the screen and is entirely
+// about which file a real Minecraft client would also read.
+// ---------------------------------------------------------------------------
+
+void Menu::openExtraSettings()
+{
+    extraLevelKnown_ = false;
+    extraSeed_ = 0;
+    extraSnowCovered_ = false;
+    if (selectedWorldPath_.empty()) {
+        return;
+    }
+
+    // **readLevel, not open and not peek.** Opening a world writes a lock and
+    // a fresh lastPlayed into it, and merely looking at a value must not touch
+    // the card. Peek is the other trap and is the one this screen fell into:
+    // on a packed world it answers out of the manifest's metadata block, which
+    // carries the seed and nothing else, so `SnowCovered` came back at its
+    // default and every world -- including every winter world -- read as No.
+    // Every world this port makes is packed.
+    world::AnyStorage storage(fs_);
+    world::LevelData level;
+    if (!storage.readLevel(selectedWorldPath_, &level)) {
+        return;
+    }
+    extraLevelKnown_ = true;
+    extraSeed_ = level.randomSeed;
+    extraSnowCovered_ = level.snowCovered;
+
+    panoramaTileX_ = worldSettings_.panoramaTileX;
+    panoramaTileZ_ = worldSettings_.panoramaTileZ;
+}
+
+bool Menu::saveExtraLevel()
+{
+    if (selectedWorldPath_.empty() || !extraLevelKnown_) {
+        message_ = "this world's level.dat could not be read";
+        consoleDirty_ = true;
+        return false;
+    }
+
+    // The diorama may be reading this very world, and the size walk is in the
+    // same position -- the same pair `beginConvert` quiesces, and for the same
+    // reason: what follows claims the world.
+    if (preview_ != nullptr) {
+        preview_->quiesce(selectedWorldPath_);
+    }
+    sizeScan_.cancel();
+
+    const i64 now = nowMillis();
+    world::AnyStorage storage(fs_);
+    if (storage.open(selectedWorldPath_, now) != world::OpenResult::Ok) {
+        message_ = "could not open this world";
+        consoleDirty_ = true;
+        return false;
+    }
+
+    // **Read-modify-write, not write.** `open` has just decoded the whole of
+    // level.dat, unmodelled tags included, and saving it back is what carries
+    // them across -- the same promise core/nbt/preserved.hpp makes everywhere
+    // else. Only the two fields this screen owns are touched.
+    storage.level().randomSeed = extraSeed_;
+    storage.level().snowCovered = extraSnowCovered_;
+    const bool saved = storage.saveLevel();
+    storage.close(now);
+
+    if (!saved) {
+        message_ = "could not write level.dat";
+        consoleDirty_ = true;
+        return false;
+    }
+
+    // The world list caches the seed it showed on the World Info row, and it
+    // has just changed underneath it.
+    for (world::WorldEntry& entry : worlds_) {
+        if (entry.path == selectedWorldPath_) {
+            entry.seed = extraSeed_;
+            break;
+        }
+    }
+    selectedSeed_ = extraSeed_;
+
+    message_ = nullptr;
+    consoleDirty_ = true;
+    return true;
+}
+
+void Menu::askNewSeed()
+{
+    constexpr int kMaxText = 64;
+
+    SwkbdState swkbd;
+    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, kMaxText - 1);
+    swkbdSetHintText(&swkbd, "Seed for chunks not generated yet");
+    swkbdSetFeatures(&swkbd, SWKBD_DARKEN_TOP_SCREEN);
+    swkbdSetValidation(&swkbd, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
+
+    // Pre-filled with the seed the world has, so a player who opens this to
+    // read it and changes their mind can cancel out with the number intact --
+    // and so a small edit is an edit rather than a retype.
+    char initial[kMaxText];
+    std::snprintf(initial, sizeof(initial), "%lld", (long long)extraSeed_);
+    swkbdSetInitialText(&swkbd, initial);
+
+    char text[kMaxText];
+    const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
+
+    consoleInit(GFX_BOTTOM, nullptr);
+    consoleDirty_ = true;
+    C2D_Prepare();
+
+    if (pressed != SWKBD_BUTTON_CONFIRM) {
+        return;
+    }
+
+    i64 seed = 0;
+    if (!seedFromText(text, &seed)) {
+        // Unlike the create screen, blank is not "roll one" here: this row is
+        // reached by a player who came to type a specific number, and rolling
+        // a random one over the world they already have is not what an empty
+        // box asks for.
+        message_ = "that is not a seed";
+        consoleDirty_ = true;
+        return;
+    }
+    if (seed == extraSeed_) {
+        return;
+    }
+
+    const i64 previous = extraSeed_;
+    extraSeed_ = seed;
+    if (!saveExtraLevel()) {
+        extraSeed_ = previous;  // the row goes on showing what is on the card
+    }
+}
+
+int Menu::worldPackRows() const
+{
+    // Default, pinned above the list, then every pack `listPacks` found --
+    // which already has Dev Art first among them.
+    return int(packs_.size()) + 1;
+}
+
+const char* Menu::worldPackLabel() const
+{
+    if (worldSettings_.texturePack.empty()) {
+        return "Default";
+    }
+    if (worldSettings_.texturePack == settings::kWorldPackDevArt) {
+        return "Dev Art";
+    }
+    return worldSettings_.texturePack.c_str();
+}
+
+int Menu::worldPackRow() const
+{
+    if (worldSettings_.texturePack.empty()) {
+        return 0;
+    }
+    for (usize i = 0; i < packs_.size(); ++i) {
+        const texture::PackEntry& pack = packs_[i];
+        const bool match = pack.builtIn
+                               ? worldSettings_.texturePack == settings::kWorldPackDevArt
+                               : worldSettings_.texturePack == pack.name;
+        if (match) {
+            return int(i) + 1;
+        }
+    }
+    // A pack this console does not have. The list cannot show the row, so it
+    // opens on Default -- but the setting is not touched: see the note in
+    // core/settings/world_settings.cpp about a card carried between consoles.
+    return 0;
+}
+
+void Menu::openWorldPack()
+{
+    // The full read of every zip on the card, paid on the way in and nowhere
+    // else -- the same price Options' own pack list pays.
+    refreshPacks();
+    worldPackCursor_ = worldPackRow();
+    worldPackScroll_ = 0;
+    if (worldPackCursor_ >= kVisibleRows) {
+        worldPackScroll_ = worldPackCursor_ - kVisibleRows + 1;
+    }
+}
+
+void Menu::applyWorldPack()
+{
+    if (worldSettings_.texturePack.empty()) {
+        // Follow the console. If a previous world overrode it, the menu's own
+        // atlas has already been put back by the time this runs.
+        return;
+    }
+
+    const std::string path = worldSettings_.texturePack == settings::kWorldPackDevArt
+                                 ? std::string()
+                                 : texture::packPath(texture::kPacksDir,
+                                                     worldSettings_.texturePack);
+
+    // Into a scratch image, exactly as selectPack does and for the same
+    // reason: a world whose pack has been deleted from the card must open with
+    // the console's art rather than with half an atlas.
+    texture::AtlasImage loaded;
+    if (texture::buildAtlas(fs_, path, &loaded) != texture::PackError::Ok) {
+        message_ = "this world's texture pack could not be read";
+        consoleDirty_ = true;
+        return;
+    }
+
+    atlas_ = std::move(loaded);
+    ++packRevision_;
+    applySavedSkin();
+
+    // **The menu's own choice is not written over.** `packName_` and 3ds.ini
+    // still say what the console is set to; only the live image changed, and
+    // this flag is what makes the next visit to the menu build the console's
+    // again. The menu's font and backdrop are deliberately left alone: they
+    // belong to the menu, which the player is leaving.
+    packOverridden_ = true;
+}
+
+void Menu::commitPanorama()
+{
+    worldSettings_.panoramaTileX = panoramaTileX_;
+    worldSettings_.panoramaTileZ = panoramaTileZ_;
+    saveWorldSettings();
+
+    // The file is the only channel between this screen and the worker that
+    // builds the table, so the grid it already has must go before it will read
+    // the new corner. Everything streams in again from there.
+    if (preview_ != nullptr && !selectedWorldPath_.empty()) {
+        preview_->forgetWorld(selectedWorldPath_);
+    }
+}
+
+void Menu::buildExtraSettingsInfo(int row)
+{
+    std::string& out = infoBody_;
+    out.clear();
+
+    switch (row) {
+    case kExtraSeed:
+        if (!extraLevelKnown_) {
+            appendf(&out, "§cThis world's level.dat could not be read.");
+            break;
+        }
+        appendf(&out, "Changes the seed of this world.\n");
+        appendf(&out, "§7Chunks already on the card keep the\n");
+        appendf(&out, "§7shape they were generated with; this is\n");
+        appendf(&out, "§7the seed everything past the edge is\n");
+        appendf(&out, "§7generated from, so the two will not\n");
+        appendf(&out, "§7line up at the seam.\n");
+        appendf(&out, "§7Press A to type one.");
+        break;
+    case kExtraOreFix:
+        appendf(&out, "%s.\n", onOff(worldSettings_.fixOreGeneration));
+        appendf(&out, "§7a1.1.2 rounds an ore vein's bounds\n");
+        appendf(&out, "§7towards zero instead of downwards, so a\n");
+        appendf(&out, "§7vein at negative X or Z loses a slice of\n");
+        appendf(&out, "§7itself and those quadrants come out with\n");
+        appendf(&out, "§7less ore than the positive one.\n");
+        appendf(&out, "§7On rounds downwards everywhere.\n");
+        appendf(&out, "§7Generation only: chunks already on the\n");
+        appendf(&out, "§7card are not changed.");
+        break;
+    case kExtraSecret:
+        if (!extraLevelKnown_) {
+            appendf(&out, "§cThis world's level.dat could not be read.");
+            break;
+        }
+        appendf(&out, "%s.\n", yesNo(extraSnowCovered_));
+        appendf(&out, "§7a1.1.2 rolls a one-in-four chance when a\n");
+        appendf(&out, "§7world is made and never rolls again: the\n");
+        appendf(&out, "§7world it makes freezes its seas and lays\n");
+        appendf(&out, "§7snow. This is that roll, after the fact.\n");
+        appendf(&out, "§7It does change the world you have -- ice\n");
+        appendf(&out, "§7and snow spread over ground that is\n");
+        appendf(&out, "§7already there as it is ticked -- but it\n");
+        appendf(&out, "§7does not take them away again.");
+        break;
+    case kExtraPack:
+        appendf(&out, "%s.\n", worldPackLabel());
+        appendf(&out, "§7The pack this world is drawn with.\n");
+        appendf(&out, "§7Default follows the console's own choice,\n");
+        appendf(&out, "§7which is what every world does until it is\n");
+        appendf(&out, "§7told otherwise.\n");
+        appendf(&out, "§7Press A to choose one.");
+        break;
+    case kExtraPanorama:
+        appendf(&out, "X %ld, Z %ld.\n", (long)worldSettings_.panoramaTileX,
+                (long)worldSettings_.panoramaTileZ);
+        appendf(&out, "§7Where the little world on the world list\n");
+        appendf(&out, "§7is taken from. It stands on the 128-block\n");
+        appendf(&out, "§7grid the map draws in red, three squares\n");
+        appendf(&out, "§7across, and this moves it one square at a\n");
+        appendf(&out, "§7time.\n");
+        appendf(&out, "§7Press A to move it.");
+        break;
+    case kExtraBedrockFix:
+        appendf(&out, "%s.\n", onOff(worldSettings_.fixBedrockHole));
+        appendf(&out, "§7a1.1.2 rolls for bedrock at every height\n");
+        appendf(&out, "§7of every column, and one column in six\n");
+        appendf(&out, "§7comes back with nothing at all at the\n");
+        appendf(&out, "§7bottom -- a hole out of the world.\n");
+        appendf(&out, "§7On lays bedrock at the lowest level\n");
+        appendf(&out, "§7whatever the roll said.\n");
+        appendf(&out, "§cGeneration only: it does not fill in a\n");
+        appendf(&out, "§chole that is already on the card.");
+        break;
+    case kExtraFencePlacement:
+        appendf(&out, "%s.\n", onOff(worldSettings_.improvedFencePlacement));
+        appendf(&out, "§7a1.1.2 only lets a fence stand on solid\n");
+        appendf(&out, "§7ground: never on another fence and never\n");
+        appendf(&out, "§7in the air.\n");
+        appendf(&out, "§7On lets a fence go anywhere a block can.\n");
+        appendf(&out, "§7Fences already built are not changed.");
+        break;
+    default:
+        appendf(&out, "Return to World Settings.");
+        break;
+    }
+}
+
+void Menu::handleExtraSettings(u32 down)
+{
+    const int before = extraCursor_;
+    extraCursor_ = step(down, extraCursor_, kExtraCount);
+    extraScroll_ = gui::listScrollFor(kExtraGroups, kExtraCount, extraCursor_, extraScroll_,
+                                      settingsGeometry(kExtraSettingsTop));
+    if (extraCursor_ != before) {
+        infoPage_ = 0;
+    }
+    if (down != 0) {
+        consoleDirty_ = true;
+    }
+    const bool moved = extraCursor_ != before;
+    const bool pressed = !moved && (down & (KEY_A | kLeft | kRight)) != 0;
+
+    if (pressed) {
+        switch (extraCursor_) {
+        case kExtraSeed:
+            // A only. Left and Right have nothing to step through -- there is
+            // no next seed -- so they turn the explanation's page instead.
+            if ((down & KEY_A) != 0 && extraLevelKnown_) {
+                playClick();
+                askNewSeed();
+                return;
+            }
+            break;
+        case kExtraOreFix:
+            // **Both arrows and A do the same thing, because there are two
+            // states.** A row with two values and a Left that means "the other
+            // one" and a Right that means "the other one" is what every other
+            // two-state row on this menu does.
+            playClick();
+            worldSettings_.fixOreGeneration = !worldSettings_.fixOreGeneration;
+            saveWorldSettings();
+            return;
+        case kExtraSecret:
+            if (extraLevelKnown_) {
+                playClick();
+                extraSnowCovered_ = !extraSnowCovered_;
+                if (!saveExtraLevel()) {
+                    extraSnowCovered_ = !extraSnowCovered_;
+                }
+            }
+            return;
+        case kExtraPack:
+            if ((down & KEY_A) != 0) {
+                playClick();
+                openWorldPack();
+                setScreen(Screen::WorldPack);
+                return;
+            }
+            break;
+        case kExtraPanorama:
+            if ((down & KEY_A) != 0) {
+                playClick();
+                panoramaTileX_ = worldSettings_.panoramaTileX;
+                panoramaTileZ_ = worldSettings_.panoramaTileZ;
+                panoramaUndoX_ = panoramaTileX_;
+                panoramaUndoZ_ = panoramaTileZ_;
+                setScreen(Screen::MovePanorama);
+                return;
+            }
+            break;
+        case kExtraBedrockFix:
+            playClick();
+            worldSettings_.fixBedrockHole = !worldSettings_.fixBedrockHole;
+            saveWorldSettings();
+            return;
+        case kExtraFencePlacement:
+            playClick();
+            worldSettings_.improvedFencePlacement = !worldSettings_.improvedFencePlacement;
+            saveWorldSettings();
+            return;
+        default:
+            break;
+        }
+    }
+
+    if (!moved) {
+        // The two rows an arrow cannot change, plus Back: on those the arrows
+        // turn the explanation instead, which is what `turnInfoPage` means by
+        // `arrowsTurn`.
+        const bool valueless = extraCursor_ == kExtraSeed || extraCursor_ == kExtraPack ||
+                               extraCursor_ == kExtraPanorama || extraCursor_ == kExtraBack;
+        turnInfoPage(down, valueless);
+    }
+
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && extraCursor_ == kExtraBack)) {
+        if ((down & KEY_A) != 0) {
+            playClick();
+        }
+        setScreen(Screen::WorldSettings);
+    }
+}
+
+void Menu::handleWorldPack(u32 down)
+{
+    const int rows = worldPackRows();
+    worldPackCursor_ = step(down, worldPackCursor_, rows);
+
+    if (worldPackCursor_ < worldPackScroll_) {
+        worldPackScroll_ = worldPackCursor_;
+    }
+    if (worldPackCursor_ >= worldPackScroll_ + kVisibleRows) {
+        worldPackScroll_ = worldPackCursor_ - kVisibleRows + 1;
+    }
+
+    if ((down & KEY_B) != 0) {
+        message_ = nullptr;
+        setScreen(Screen::ExtraSettings);
+        return;
+    }
+    if ((down & KEY_A) == 0) {
+        return;
+    }
+    playClick();
+
+    if (worldPackCursor_ == 0) {
+        worldSettings_.texturePack.clear();
+    } else {
+        const texture::PackEntry& pack = packs_[usize(worldPackCursor_ - 1)];
+        // Dev Art has no file name, so it gets a token of its own -- empty
+        // already means "follow the console" here. See world_settings.hpp.
+        worldSettings_.texturePack = pack.builtIn ? std::string(settings::kWorldPackDevArt)
+                                                  : pack.name;
+    }
+    saveWorldSettings();
+    message_ = nullptr;
+    consoleDirty_ = true;
+}
+
+void Menu::handleMovePanorama(u32 down)
+{
+    // One map tile a press, which is a third of the table's width -- the step
+    // the red grid on the bottom map is drawn at, and the step the diorama's
+    // own tiles are read in.
+    i32 dx = 0;
+    i32 dz = 0;
+    if ((down & kLeft) != 0) {
+        dx = -1;
+    }
+    if ((down & kRight) != 0) {
+        dx = 1;
+    }
+    if ((down & kUp) != 0) {
+        dz = -1;
+    }
+    if ((down & kDown) != 0) {
+        dz = 1;
+    }
+
+    if (dx != 0 || dz != 0) {
+        panoramaTileX_ += dx;
+        panoramaTileZ_ += dz;
+        playMoveClick();
+        // **Written on every step rather than on the way out**, because the
+        // picture under the player's thumb is built by a worker that reads the
+        // file -- so the file is how the picture is asked to move. Saving is
+        // one small atomic write to a file beside the world.
+        commitPanorama();
+        consoleDirty_ = true;
+    }
+
+    if ((down & (KEY_A | KEY_START)) != 0) {
+        playClick();
+        commitPanorama();
+        setScreen(Screen::ExtraSettings);
+        return;
+    }
+
+    if ((down & KEY_B) != 0) {
+        // B puts the world back where it was found, and puts it back the same
+        // way every other step did -- through the file, so the picture on the
+        // way out is the picture that was there on the way in.
+        if (panoramaTileX_ != panoramaUndoX_ || panoramaTileZ_ != panoramaUndoZ_) {
+            panoramaTileX_ = panoramaUndoX_;
+            panoramaTileZ_ = panoramaUndoZ_;
+            commitPanorama();
+        }
+        setScreen(Screen::ExtraSettings);
+    }
+}
+
+void Menu::drawExtraSettings()
+{
+    drawLabelCentered("Extra Settings", kScreenWidth * 0.5f, 10.0f, 0.7f, kInk, true);
+    drawLabelClipped(selectedWorldName_.c_str(), 40.0f, 28.0f, 0.5f, kInkDim,
+                     kScreenWidth - 80.0f);
+
+    char seed[32];
+    char panorama[32];
+    if (extraLevelKnown_) {
+        std::snprintf(seed, sizeof(seed), "%lld", (long long)extraSeed_);
+    } else {
+        std::snprintf(seed, sizeof(seed), "unreadable");
+    }
+    std::snprintf(panorama, sizeof(panorama), "%ld, %ld", (long)worldSettings_.panoramaTileX,
+                  (long)worldSettings_.panoramaTileZ);
+
+    SettingRowView rows[kExtraCount];
+    for (int i = 0; i < kExtraCount; ++i) {
+        SettingRowView& view = rows[i];
+        switch (i) {
+        case kExtraSeed:
+            view.name = "Seed:";
+            view.value = seed;
+            // A seed that could not be read is not a choice the row is
+            // offering, so it is dimmed for the same reason an unimplemented
+            // gamemode is: the row still works and says why on the bottom.
+            view.dimValue = !extraLevelKnown_;
+            break;
+        case kExtraOreFix:
+            view.name = "Fix Ore Gen:";
+            view.value = onOff(worldSettings_.fixOreGeneration);
+            view.dimValue = !worldSettings_.fixOreGeneration;
+            break;
+        case kExtraSecret:
+            view.name = "Secret World:";
+            view.value = extraLevelKnown_ ? yesNo(extraSnowCovered_) : "unreadable";
+            view.dimValue = !extraLevelKnown_ || !extraSnowCovered_;
+            break;
+        case kExtraPack:
+            view.name = "Texture Pack:";
+            view.value = worldPackLabel();
+            view.dimValue = worldSettings_.texturePack.empty();
+            break;
+        case kExtraPanorama:
+            view.name = "Panorama:";
+            view.value = panorama;
+            break;
+        case kExtraBedrockFix:
+            view.name = "Fix Bedrock:";
+            view.value = onOff(worldSettings_.fixBedrockHole);
+            view.dimValue = !worldSettings_.fixBedrockHole;
+            break;
+        case kExtraFencePlacement:
+            view.name = "Fences:";
+            view.value = worldSettings_.improvedFencePlacement ? "Improved" : "a1.1.2";
+            view.dimValue = !worldSettings_.improvedFencePlacement;
+            break;
+        default:
+            view.name = "Back";
+            break;
+        }
+    }
+
+    drawSettingsRows(rows, kExtraGroups, kExtraCount, extraCursor_, extraScroll_,
+                     kExtraSettingsTop);
+}
+
+void Menu::drawWorldPack()
+{
+    drawLabelCentered("World Texture Pack", kScreenWidth * 0.5f, 16.0f, 0.7f, kInk, true);
+
+    const int rows = worldPackRows();
+    const float rowX = 20.0f;
+    const float rowWidth = kScreenWidth - 2.0f * rowX;
+    const int chosen = worldPackRow();
+
+    const int visible = drawListChrome(rows, worldPackScroll_);
+    for (int i = 0; i < visible; ++i) {
+        const int index = worldPackScroll_ + i;
+        const Rect rect{rowX, kRowsTop + float(i) * (kRowHeight + kRowGap), rowWidth,
+                        kRowHeight};
+        const bool selected = index == worldPackCursor_;
+
+        drawButton(rect, "", selected, true);
+        // Which one the world is set to, as a mark on the row: "selected" here
+        // means the cursor, and both have to be visible at once.
+        if (index == chosen) {
+            drawLabel("*", rect.x + 8.0f, rect.y + 5.0f, 0.55f, kInkWarn, C2D_AlignLeft, true);
+        }
+
+        const char* name = nullptr;
+        char detail[32];
+        if (index == 0) {
+            name = "Default";
+            std::snprintf(detail, sizeof(detail), "%s",
+                          packName_.empty() ? "Dev Art" : packName_.c_str());
+        } else {
+            const texture::PackEntry& pack = packs_[usize(index - 1)];
+            name = pack.builtIn ? "Dev Art" : pack.name.c_str();
+            if (pack.builtIn) {
+                std::snprintf(detail, sizeof(detail), "built in");
+            } else {
+                std::snprintf(detail, sizeof(detail), "%d/%d files", pack.textureCount,
+                              texture::kA112FileCount);
+            }
+        }
+
+        constexpr float kDetailWidth = 84.0f;
+        drawLabelClipped(name, rect.x + 22.0f, rect.y + 3.0f, 0.55f, kInk,
+                         rect.w - 32.0f - kDetailWidth);
+        drawLabel(detail, rect.x + rect.w - 10.0f, rect.y + 6.0f, 0.4f, kInkDim,
+                  C2D_AlignRight, true);
+    }
+}
+
+void Menu::drawMovePanorama()
+{
+    drawLabelCentered("Move Panorama", kScreenWidth * 0.5f, 16.0f, 0.7f, kInk, true);
+    drawLabelClipped(selectedWorldName_.c_str(), 40.0f, 40.0f, 0.5f, kInkDim,
+                     kScreenWidth - 80.0f);
+
+    // **The table's own corner, in blocks**, rather than the tile numbers the
+    // d-pad steps: a player looking for a particular place in their world
+    // knows where it is in blocks and has never heard of a tile.
+    i32 blockX = 0;
+    i32 blockZ = 0;
+    preview::dioramaOrigin(&blockX, &blockZ, panoramaTileX_, panoramaTileZ_);
+
+    char line[96];
+    std::snprintf(line, sizeof(line), "tile %ld, %ld", (long)panoramaTileX_,
+                  (long)panoramaTileZ_);
+    drawLabelCentered(line, kScreenWidth * 0.5f, 72.0f, 0.6f, kInk, true);
+
+    std::snprintf(line, sizeof(line), "blocks %ld..%ld  x  %ld..%ld", (long)blockX,
+                  (long)(blockX + preview::kDioramaBlocks - 1), (long)blockZ,
+                  (long)(blockZ + preview::kDioramaBlocks - 1));
+    drawLabelCentered(line, kScreenWidth * 0.5f, 96.0f, 0.42f, kInkDim, true);
+
+    drawLabelCentered("Each step is one square of the map's", kScreenWidth * 0.5f, 126.0f,
+                      0.42f, kInkDim, true);
+    drawLabelCentered("red 128-block grid.", kScreenWidth * 0.5f, 142.0f, 0.42f, kInkDim,
+                      true);
+
+    if (message_ != nullptr) {
+        drawLabelCentered(message_, kScreenWidth * 0.5f, 166.0f, 0.45f, kInkWarn, true);
+    }
+
+    const float half = kButtonWidth * 0.5f;
+    drawButton(Rect{kScreenWidth * 0.5f - half - 8.0f, 192.0f, half, kButtonHeight},
+               "A/START Save", true, true);
+    drawButton(Rect{kScreenWidth * 0.5f + 8.0f, 192.0f, half, kButtonHeight}, "B Cancel",
+               false, true);
+}
+
 bool Menu::beginConvert()
 {
     if (inGame_ || selectedWorldPath_.empty()) {
         return false;
     }
+    // The diorama may be reading this very world; a conversion rewrites it.
+    // The size walk is in the same position, and a total taken across a
+    // conversion would be about neither shape.
+    if (preview_ != nullptr) {
+        preview_->quiesce(selectedWorldPath_);
+    }
+    sizeScan_.cancel();
     convertTarget_ = selectedFormat_ == world::WorldFormat::Packed ? world::WorldFormat::Folder
                                                                   : world::WorldFormat::Packed;
 
@@ -1763,6 +3119,13 @@ void Menu::copySelectedWorld()
         return;
     }
 
+    if (preview_ != nullptr) {
+        preview_->quiesce(selectedWorldPath_);
+    }
+    // A copy reads every file this would stat; the card serves one of them
+    // faster than both.
+    sizeScan_.cancel();
+
     std::string name;
     if (!askCopyName(selectedWorldName_, &name)) {
         return;
@@ -1799,6 +3162,9 @@ void Menu::handleConfirmDelete(u32 down)
     // on, held by path rather than by list index: the list is re-read on every
     // refresh, and an index would be pointing at a different row.
     if (!selectedWorldPath_.empty()) {
+        if (preview_ != nullptr) {
+            preview_->quiesce(selectedWorldPath_);
+        }
         message_ = world::deleteWorld(fs_, selectedWorldPath_) ? nullptr
                                                                : "could not delete that world";
     }
@@ -1898,13 +3264,20 @@ void Menu::handleConfirmDeleteJar(u32 down)
     setScreen(Screen::TexturePacks);
 }
 
-bool Menu::askWorldName(std::string* out)
+bool Menu::askWorldName(std::string_view current, std::string* out)
 {
     constexpr int kMaxText = 64;
 
+    // **What the row is already holding**, so a name typed once and opened
+    // again to fix a letter is there to fix. Empty falls back to the first free
+    // "World<n>", which is what the screen itself opens with.
     char initial[kMaxText];
-    const std::string suggestion = world::defaultWorldName(worlds_);
-    std::snprintf(initial, sizeof(initial), "%s", suggestion.c_str());
+    if (current.empty()) {
+        const std::string suggestion = world::defaultWorldName(worlds_);
+        std::snprintf(initial, sizeof(initial), "%s", suggestion.c_str());
+    } else {
+        std::snprintf(initial, sizeof(initial), "%.*s", int(current.size()), current.data());
+    }
 
     SwkbdState swkbd;
     swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, kMaxText - 1);
@@ -1976,7 +3349,16 @@ bool Menu::askCopyName(std::string_view sourceName, std::string* out)
     return world::sanitizeWorldName(text, out);
 }
 
-bool Menu::askSeed(i64* out)
+// False means the player backed out and neither output is touched. True means
+// they confirmed: `*chosen` is false for a blank box, which is the Random the
+// screen draws and which `createWorld` rolls for, and true with `*out` filled
+// in otherwise.
+//
+// **The roll is not done here**, which it used to be. A keyboard that rolled
+// its own seed could not tell "random" from "the number I typed", so the row
+// had to show a number the player never chose -- and the two states are the
+// whole of what the row is for.
+bool Menu::askSeed(bool* chosen, i64* out)
 {
     constexpr int kMaxText = 64;
 
@@ -1987,6 +3369,17 @@ bool Menu::askSeed(i64* out)
     // No validation: **blank is a valid answer here** and means "roll one",
     // which is what a1.1.2 does every time because it never asks at all.
     swkbdSetValidation(&swkbd, SWKBD_ANYTHING, 0, 0);
+
+    // Whatever the row already holds, so opening this to look at a seed and
+    // backing out of it costs nothing. A blank box for Random, which is also
+    // how it is cleared again.
+    char initial[kMaxText];
+    if (*chosen) {
+        std::snprintf(initial, sizeof(initial), "%lld", (long long)*out);
+    } else {
+        initial[0] = '\0';
+    }
+    swkbdSetInitialText(&swkbd, initial);
 
     char text[kMaxText];
     const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
@@ -1999,51 +3392,479 @@ bool Menu::askSeed(i64* out)
         return false;
     }
 
-    if (!seedFromText(text, out)) {
-        // a1.1.2's own answer: `new World(File, String)` seeds itself with
-        // `new Random().nextLong()`. Java's no-argument Random draws from a
-        // process-wide uniquifier mixed with nanoTime, which is not something a
-        // console can reproduce and not something worth reproducing -- what
-        // matters is that it is a nextLong off a clock-seeded LCG.
-        JavaRandom random(clockSeed());
-        *out = random.nextLong();
+    i64 seed = 0;
+    // `seedFromText` returns false only for a blank box: a word is hashed the
+    // way later Minecraft hashes one, and a typed 0 is 0.
+    *chosen = seedFromText(text, &seed);
+    if (*chosen) {
+        *out = seed;
     }
     return true;
 }
 
-bool Menu::createWorld(const std::string& name, i64 seed, MenuChoice* choice)
+// ---------------------------------------------------------------------------
+// Create World
+//
+// **The screen that replaced two keyboards opening back to back.** Making a
+// world used to be `askWorldName` and then `askSeed`, with no way to see the
+// first answer again, no way to change anything else, and nothing between
+// pressing A on the world list and a world existing on the card.
+//
+// It is laid out like World Settings because it is the same set of questions
+// asked one moment earlier -- and three of them can *only* be asked here.
+// Gamemode and difficulty can be changed at any time; a seed, a format and the
+// two generation fixes are about ground that has not been made yet, and the
+// screen is the last moment at which that is true of the whole world.
+//
+// **Nothing is written until Create.** Every row edits `newWorld_`, so B
+// leaves having made nothing, and a failed Create leaves the screen exactly as
+// the player filled it in.
+// ---------------------------------------------------------------------------
+
+void Menu::openCreateWorld()
 {
+    newWorld_ = NewWorld();
+    // The first free "World<n>" -- which is what a1.1.2's five fixed slots are
+    // called, and so what a player expects to be offered.
+    newWorld_.name = world::defaultWorldName(worlds_);
+
+    // **The two shared cursors are pointed at this world, not left where the
+    // last screen put them.** They belong to the menu rather than to a screen
+    // -- World Settings uses the same pair -- so without this a world created
+    // after browsing another world's settings would draw that world's gamemode
+    // beside a `NewWorld` that is still holding the default.
+    gamemodeCursor_ = gamemodeIndex(newWorld_.settings.gamemode);
+    difficultyCursor_ = difficultyIndex(newWorld_.settings.difficulty);
+
+    createCursor_ = 0;
+    createScroll_ = 0;
+    message_ = nullptr;
+}
+
+void Menu::buildCreateWorldInfo(int row)
+{
+    std::string& out = infoBody_;
+    out.clear();
+
+    switch (row) {
+    case kNewName:
+        appendf(&out, "§e%s\n", newWorld_.name.c_str());
+        appendf(&out, "§7The folder this world gets on the card,\n");
+        appendf(&out, "§7and what the world list shows.\n");
+        appendf(&out, "§7Press A to type one.");
+        break;
+    case kNewSeed:
+        if (newWorld_.seedChosen) {
+            appendf(&out, "§e%lld\n", (long long)newWorld_.seed);
+            appendf(&out, "§7The same seed makes the same world.\n");
+        } else {
+            appendf(&out, "Random.\n");
+            appendf(&out, "§7One is drawn from the clock when the\n");
+            appendf(&out, "§7world is made, which is what a1.1.2\n");
+            appendf(&out, "§7does every time -- it never asks.\n");
+        }
+        appendf(&out, "§7Press A to type one, blank for random.");
+        break;
+    case kNewGamemode:
+        switch (kGamemodeOrder[gamemodeCursor_]) {
+        case settings::Gamemode::Spectator:
+            appendf(&out, "Fly through the world freely.\n");
+            appendf(&out, "§7No collision, no building.");
+            break;
+        case settings::Gamemode::Creative:
+            appendf(&out, "Build with every block.\n");
+            appendf(&out, "§7Break and place blocks freely.");
+            break;
+        case settings::Gamemode::Survival:
+            appendf(&out, "Mine, craft and stay alive.\n");
+            appendf(&out, "§7Blocks take time to break and drop items.");
+            break;
+        }
+        break;
+    case kNewDifficulty:
+        if (kDifficultyOrder[difficultyCursor_] == settings::Difficulty::Peaceful) {
+            appendf(&out, "No monsters.");
+        } else {
+            appendf(&out, "Monsters spawn in the dark.\n");
+            appendf(&out, "§7Harder settings make their hits hurt more.");
+        }
+        break;
+    case kNewFormat:
+        if (newWorld_.format == world::WorldFormat::Packed) {
+            appendf(&out, "Packed for this console.\n");
+            appendf(&out, "§7One file per region instead of one per\n");
+            appendf(&out, "§7chunk, which is what suits a card whose\n");
+            appendf(&out, "§7clusters are 16 KB.\n");
+            appendf(&out, "§7Only 3DAlpha can open it.");
+        } else {
+            appendf(&out, "Standard Minecraft save.\n");
+            appendf(&out, "§7A level.dat and the base36 chunk\n");
+            appendf(&out, "§7folders, so it opens on a PC.\n");
+            appendf(&out, "§7Slower on this hardware.");
+        }
+        appendf(&out, "\n§7Either can be converted afterwards.");
+        break;
+    case kNewSecret:
+        switch (newWorld_.secret) {
+        case NewWorld::Secret::Roll:
+            appendf(&out, "Roll for it -- one chance in four.\n");
+            appendf(&out, "§7Which is what a1.1.2 does: it flips\n");
+            appendf(&out, "§7this once when a world is made and\n");
+            appendf(&out, "§7never again.");
+            break;
+        case NewWorld::Secret::Yes:
+            appendf(&out, "A winter world.\n");
+            appendf(&out, "§7Every sea is frozen at the waterline\n");
+            appendf(&out, "§7and snow lies on the ground.");
+            break;
+        case NewWorld::Secret::No:
+            appendf(&out, "Never.\n");
+            appendf(&out, "§7No ice, no snow.");
+            break;
+        }
+        break;
+    case kNewOreFix:
+        appendf(&out, "%s.\n", onOff(newWorld_.settings.fixOreGeneration));
+        appendf(&out, "§7a1.1.2 rounds an ore vein's bounds\n");
+        appendf(&out, "§7towards zero instead of downwards, so a\n");
+        appendf(&out, "§7vein at negative X or Z loses a slice of\n");
+        appendf(&out, "§7itself and those quadrants come out with\n");
+        appendf(&out, "§7less ore than the positive one.\n");
+        appendf(&out, "§7On rounds downwards everywhere.");
+        break;
+    case kNewFencePlacement:
+        appendf(&out, "%s.\n", onOff(newWorld_.settings.improvedFencePlacement));
+        appendf(&out, "§7a1.1.2 only lets a fence stand on solid\n");
+        appendf(&out, "§7ground: never on another fence and never\n");
+        appendf(&out, "§7in the air.\n");
+        appendf(&out, "§7On lets a fence go anywhere a block can.\n");
+        appendf(&out, "§7Fences already built are not changed.");
+        break;
+    case kNewBedrockFix:
+        appendf(&out, "%s.\n", onOff(newWorld_.settings.fixBedrockHole));
+        appendf(&out, "§7a1.1.2 rolls for bedrock at every height\n");
+        appendf(&out, "§7of every column, and one column in six\n");
+        appendf(&out, "§7comes back with nothing at all at the\n");
+        appendf(&out, "§7bottom -- a hole out of the world.\n");
+        appendf(&out, "§7On lays bedrock at the lowest level\n");
+        appendf(&out, "§7whatever the roll said.");
+        break;
+    case kNewCreate:
+        appendf(&out, "Makes the world and opens it.\n");
+        appendf(&out, "§7Nothing above is written to the card\n");
+        appendf(&out, "§7until this is pressed.\n");
+        appendf(&out, "§7More options are on World Settings once\n");
+        appendf(&out, "§7the world exists.");
+        break;
+    default:
+        appendf(&out, "Return to the world list.\n");
+        appendf(&out, "§7Nothing is made.");
+        break;
+    }
+}
+
+bool Menu::handleCreateWorld(u32 down, MenuChoice* choice)
+{
+    const int before = createCursor_;
+    createCursor_ = step(down, createCursor_, kNewCount);
+    createScroll_ = gui::listScrollFor(kCreateGroups, kNewCount, createCursor_, createScroll_,
+                                       settingsGeometry(kCreateWorldTop));
+    if (createCursor_ != before) {
+        infoPage_ = 0;
+    }
+    if (down != 0) {
+        consoleDirty_ = true;
+    }
+    const bool moved = createCursor_ != before;
+
+    // The two value rows share their cursors with World Settings, so that a
+    // gamemode browsed on one screen is the gamemode shown on the other. They
+    // are pointed at this world on the way in, by openCreateWorld through
+    // NewWorld's defaults.
+    if (!moved && createCursor_ == kNewGamemode) {
+        const int previous = gamemodeCursor_;
+        if ((down & kLeft) != 0 && gamemodeCursor_ > 0) {
+            --gamemodeCursor_;
+        }
+        if ((down & kRight) != 0 && gamemodeCursor_ < kGamemodeCount - 1) {
+            ++gamemodeCursor_;
+        }
+        // The row moves onto a disabled mode; the world does not -- the same
+        // bargain the World Settings row takes, and for the same reason.
+        if (gamemodeCursor_ != previous
+            && settings::gamemodeImplemented(kGamemodeOrder[gamemodeCursor_])) {
+            newWorld_.settings.gamemode = kGamemodeOrder[gamemodeCursor_];
+            playClick();
+        }
+    }
+
+    if (!moved && createCursor_ == kNewDifficulty) {
+        const int previous = difficultyCursor_;
+        if ((down & kLeft) != 0 && difficultyCursor_ > 0) {
+            --difficultyCursor_;
+        }
+        if ((down & kRight) != 0 && difficultyCursor_ < kDifficultyCount - 1) {
+            ++difficultyCursor_;
+        }
+        if (difficultyCursor_ != previous) {
+            newWorld_.settings.difficulty = kDifficultyOrder[difficultyCursor_];
+            playClick();
+        }
+    }
+
+    const bool pressed = !moved && (down & (KEY_A | kLeft | kRight)) != 0;
+    if (pressed) {
+        switch (createCursor_) {
+        case kNewName:
+            if ((down & KEY_A) != 0) {
+                playClick();
+                std::string name;
+                if (askWorldName(newWorld_.name, &name)) {
+                    newWorld_.name = std::move(name);
+                    message_ = nullptr;
+                }
+            }
+            return false;
+        case kNewSeed:
+            if ((down & KEY_A) != 0) {
+                playClick();
+                // **Blank is an answer here, not a cancel** -- it means Random,
+                // and askSeed reports the two apart so the row can show which
+                // one it got. `seedFromText` returns false only for a blank
+                // box; a word is hashed the way later Minecraft hashes one.
+                if (askSeed(&newWorld_.seedChosen, &newWorld_.seed)) {
+                    message_ = nullptr;
+                }
+            }
+            return false;
+        case kNewFormat:
+            // Two formats, so Left, Right and A all mean the other one -- the
+            // same as the World Settings Format row.
+            playClick();
+            newWorld_.format = newWorld_.format == world::WorldFormat::Packed
+                                   ? world::WorldFormat::Folder
+                                   : world::WorldFormat::Packed;
+            return false;
+        case kNewSecret: {
+            // Three states, so the arrows step rather than toggle and A goes
+            // forward: Roll, Yes, No.
+            playClick();
+            int index = int(newWorld_.secret);
+            if ((down & kLeft) != 0) {
+                index = index == 0 ? 2 : index - 1;
+            } else {
+                index = index == 2 ? 0 : index + 1;
+            }
+            newWorld_.secret = NewWorld::Secret(index);
+            return false;
+        }
+        case kNewOreFix:
+            playClick();
+            newWorld_.settings.fixOreGeneration = !newWorld_.settings.fixOreGeneration;
+            return false;
+        case kNewBedrockFix:
+            playClick();
+            newWorld_.settings.fixBedrockHole = !newWorld_.settings.fixBedrockHole;
+            return false;
+        case kNewFencePlacement:
+            playClick();
+            newWorld_.settings.improvedFencePlacement =
+                !newWorld_.settings.improvedFencePlacement;
+            return false;
+        case kNewCreate:
+            if ((down & KEY_A) != 0) {
+                playClick();
+                return createWorld(choice);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!moved) {
+        const bool valueless = createCursor_ == kNewName || createCursor_ == kNewSeed ||
+                               createCursor_ == kNewCreate || createCursor_ == kNewBack;
+        turnInfoPage(down, valueless);
+    }
+
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && createCursor_ == kNewBack)) {
+        if ((down & KEY_A) != 0) {
+            playClick();
+        }
+        message_ = nullptr;
+        setScreen(Screen::Worlds);
+    }
+    return false;
+}
+
+void Menu::drawCreateWorld()
+{
+    drawLabelCentered("Create World", kScreenWidth * 0.5f, 12.0f, 0.7f, kInk, true);
+
+    char seed[32];
+    if (newWorld_.seedChosen) {
+        std::snprintf(seed, sizeof(seed), "%lld", (long long)newWorld_.seed);
+    } else {
+        std::snprintf(seed, sizeof(seed), "Random");
+    }
+
+    const settings::Gamemode mode = kGamemodeOrder[gamemodeCursor_];
+
+    SettingRowView rows[kNewCount];
+    for (int i = 0; i < kNewCount; ++i) {
+        SettingRowView& view = rows[i];
+        switch (i) {
+        case kNewName:
+            view.name = "Name:";
+            view.value = newWorld_.name.c_str();
+            break;
+        case kNewSeed:
+            view.name = "Seed:";
+            view.value = seed;
+            // Random is a real answer and not a missing one, but it is not a
+            // number the player chose, so it is drawn as the quieter of the
+            // two states.
+            view.dimValue = !newWorld_.seedChosen;
+            break;
+        case kNewGamemode:
+            view.name = "Gamemode:";
+            view.value = settings::gamemodeLabel(mode);
+            view.dimValue = !settings::gamemodeImplemented(mode);
+            break;
+        case kNewDifficulty:
+            view.name = "Difficulty:";
+            view.value = settings::difficultyLabel(kDifficultyOrder[difficultyCursor_]);
+            break;
+        case kNewFormat:
+            view.name = "Format:";
+            view.value = world::formatName(newWorld_.format);
+            break;
+        case kNewSecret:
+            view.name = "Secret World:";
+            view.value = newWorld_.secret == NewWorld::Secret::Roll  ? "Roll (1 in 4)"
+                         : newWorld_.secret == NewWorld::Secret::Yes ? "Yes"
+                                                                     : "No";
+            view.dimValue = newWorld_.secret == NewWorld::Secret::Roll;
+            break;
+        case kNewOreFix:
+            view.name = "Fix Ore Gen:";
+            view.value = onOff(newWorld_.settings.fixOreGeneration);
+            view.dimValue = !newWorld_.settings.fixOreGeneration;
+            break;
+        case kNewBedrockFix:
+            view.name = "Fix Bedrock:";
+            view.value = onOff(newWorld_.settings.fixBedrockHole);
+            view.dimValue = !newWorld_.settings.fixBedrockHole;
+            break;
+        case kNewFencePlacement:
+            view.name = "Fences:";
+            view.value = newWorld_.settings.improvedFencePlacement ? "Improved" : "a1.1.2";
+            view.dimValue = !newWorld_.settings.improvedFencePlacement;
+            break;
+        case kNewCreate:
+            view.name = "Create";
+            break;
+        default:
+            view.name = "Back";
+            break;
+        }
+    }
+
+    drawSettingsRows(rows, kCreateGroups, kNewCount, createCursor_, createScroll_,
+                     kCreateWorldTop);
+}
+
+bool Menu::createWorld(MenuChoice* choice)
+{
+    // **Everything that can be refused is refused before anything is written.**
+    // The name arrives from a keyboard that already validated it, but the row
+    // can also still be holding the suggestion this screen opened with, and
+    // the world list can have changed underneath it.
+    std::string name;
+    if (!world::sanitizeWorldName(newWorld_.name, &name)) {
+        message_ = "that name has nothing a card can store";
+        consoleDirty_ = true;
+        return false;
+    }
+    for (const world::WorldEntry& entry : worlds_) {
+        if (entry.name == name) {
+            message_ = "there is already a world with that name";
+            consoleDirty_ = true;
+            return false;
+        }
+    }
+
     if (!fs_.makeDirectories(kSavesDir)) {
         message_ = "could not make the saves folder on the card";
         consoleDirty_ = true;
         return false;
     }
 
+    // **One clock-seeded stream for both draws.** Two `JavaRandom`s built from
+    // `clockSeed()` in the same call would be built from the same clock and
+    // would agree with each other, which is not what "roll twice" means. The
+    // order below is fixed rather than conditional for the same reason it is
+    // written down at all: neither draw is reproducible, so the only property
+    // worth having is that one call cannot make them correlate.
+    JavaRandom random(clockSeed());
+
+    // a1.1.2's own answer for a seed nobody typed: `new World(File, String)`
+    // seeds itself with `new Random().nextLong()`. Java's no-argument Random
+    // draws from a process-wide uniquifier mixed with nanoTime, which a console
+    // cannot reproduce and which is not worth reproducing -- what matters is
+    // that it is a nextLong off a clock-seeded LCG.
+    const i64 seed = newWorld_.seedChosen ? newWorld_.seed : random.nextLong();
+
+    // **SnowCovered is decided here because a1.1.2 decides it here.** In `cn`'s
+    // constructor, the branch taken when there is no level.dat reads
+    // `this.snowCovered = this.rand.nextInt(4) == 0`, and `rand` is the World's
+    // **unseeded** `new Random()` -- a one-in-four coin flip at creation, not a
+    // function of the seed, then persisted and never rolled again. The
+    // generator reads it: it puts ice at sea level - 1 across every ocean.
+    // Storage::create cannot do this itself because core has no clock, and the
+    // harnesses want it off and deterministic.
+    //
+    // Roll is that flip and is the default. Yes and No are the screen's
+    // deviation, and are the same value the Extra Settings row edits later.
+    const bool roll = random.nextInt(4) == 0;
+    const bool snowCovered = newWorld_.secret == NewWorld::Secret::Roll
+                                 ? roll
+                                 : newWorld_.secret == NewWorld::Secret::Yes;
+
     const std::string path = world::worldPath(kSavesDir, name);
     const i64 now = nowMillis();
 
-    // **New worlds are packed.** It is the format that suits the hardware --
-    // one file per region instead of one per chunk, on a card whose clusters
-    // are 16 KB and whose file operations are IPC round trips -- and a world
-    // made here has no PC client waiting for it. A player who wants one goes
-    // to World Settings and converts, which is lossless in both directions.
+    // **Packed is the default and not the only choice.** It is the format that
+    // suits the hardware -- one file per region instead of one per chunk, on a
+    // card whose clusters are 16 KB and whose file operations are IPC round
+    // trips. A player who wants a save a PC can open picks Folder on the row
+    // above; either can be converted afterwards, losslessly, both ways.
     world::AnyStorage storage(fs_);
-    if (storage.create(path, seed, now, world::WorldFormat::Packed) != world::OpenResult::Ok) {
+    if (storage.create(path, seed, now, newWorld_.format) != world::OpenResult::Ok) {
         message_ = "could not create the world -- is the card full or locked?";
         consoleDirty_ = true;
         return false;
     }
 
-    // **SnowCovered is rolled here because a1.1.2 rolls it here.** In `cn`'s
-    // constructor, the branch taken when there is no level.dat reads
-    // `this.snowCovered = this.rand.nextInt(4) == 0`, and `rand` is the World's
-    // **unseeded** `new Random()` -- so it is a one-in-four coin flip at
-    // creation, not a function of the seed, and it is then persisted and never
-    // rolled again. The generator reads it: it puts ice at sea level - 1 across
-    // every ocean. Storage::create cannot do this itself because core has no
-    // clock, and the harnesses want it off and deterministic.
-    JavaRandom random(clockSeed());
-    storage.level().snowCovered = random.nextInt(4) == 0;
+    storage.level().snowCovered = snowCovered;
+
+    // **Where the world starts the player**, which `cn`'s constructor decides
+    // on this same branch -- the one taken when there is no level.dat -- by
+    // walking away from (0, 0) until the top of a column is sand. It is the
+    // reason an Alpha world begins on a beach, and without it every world
+    // begins at x = 0, z = 0 with `spawnY` at 64 whatever the ground there is
+    // doing, which in Survival is as likely to be the inside of a hill as the
+    // top of one. The same `random` the snow flip came off, because the
+    // original walks on the World's own unseeded `Random` too.
+    //
+    // **This generates terrain, here, now**, a column at a time until the walk
+    // accepts one -- a median of about twenty and a tail into the low hundreds.
+    // It is the one place in the shell that makes a player wait for the
+    // generator on the main thread, and it is paid once in a world's life. See
+    // core/world/spawn_point.hpp.
+    world::chooseFreshSpawn(seed, snowCovered, random, &storage.level());
+
     const bool saved = storage.saveLevel();
     storage.close(now);
     if (!saved) {
@@ -2053,18 +3874,28 @@ bool Menu::createWorld(const std::string& name, i64 seed, MenuChoice* choice)
     }
 
     // The one place a world comes into existence, so the one place its
-    // settings file starts out. Written rather than left absent so a player who
-    // opens the folder on a PC finds it and can see what it holds; a world that
-    // predates this, or one copied in from a PC, still reads as defaults.
-    settings::WorldSettings worldSettings;
-    settings::saveWorldSettings(fs_, path, worldSettings);
+    // settings file starts out -- and now the one place the generation fixes
+    // can be set before they mean anything, since they only touch chunks that
+    // do not exist yet and at this moment none do. Written rather than left
+    // absent so a player who opens the folder on a PC finds it and can see
+    // what it holds.
+    settings::saveWorldSettings(fs_, path, newWorld_.settings);
 
     message_ = nullptr;
+    // **Where the menu is standing when this world opens**, which is where
+    // `runPause` puts it back on the way out. The Create screen is not a place
+    // to come back to -- its rows are about a world that now exists -- so the
+    // world list is, with the new world under the cursor.
+    worldCursorName_ = name;
+    setScreen(Screen::Worlds);
+
     choice->action = MenuChoice::Action::Play;
     choice->worldPath = path;
     choice->worldName = name;
     choice->created = true;
-    choice->gamemode = worldSettings.gamemode;
+    choice->gamemode = newWorld_.settings.gamemode;
+    choice->difficulty = newWorld_.settings.difficulty;
+    worldSettings_ = newWorld_.settings;
     return true;
 }
 
@@ -2110,6 +3941,7 @@ void Menu::drawFrame()
     C2D_TargetClear(target_, C2D_Color32(0x18, 0x14, 0x10, 0xFF));
     C2D_SceneBegin(target_);
     drawScreen();
+    drawPreviewScreen();
     C3D_FrameEnd(0);
 }
 
@@ -2183,14 +4015,23 @@ void Menu::drawScreen()
     case Screen::WorldSettings:
         drawWorldSettings();
         break;
+    case Screen::CreateWorld:
+        drawCreateWorld();
+        break;
+    case Screen::ExtraSettings:
+        drawExtraSettings();
+        break;
+    case Screen::WorldPack:
+        drawWorldPack();
+        break;
+    case Screen::MovePanorama:
+        drawMovePanorama();
+        break;
     case Screen::ConfirmConvert:
         drawConfirmConvert();
         break;
     case Screen::Options:
         drawOptions();
-        break;
-    case Screen::Sound:
-        drawSound();
         break;
     case Screen::ConfirmDelete:
         drawConfirmDelete();
@@ -2313,111 +4154,63 @@ void Menu::drawPause()
 
 void Menu::drawWorldSettings()
 {
-    drawLabelCentered("World Settings", kScreenWidth * 0.5f, 8.0f, 0.7f, kInk, true);
+    drawLabelCentered("World Settings", kScreenWidth * 0.5f, 10.0f, 0.7f, kInk, true);
     // Clipped rather than centred, for the same reason every other name here
     // is: it came off a card and can be anything a PC let somebody type.
     drawLabelClipped(selectedWorldName_.c_str(), 40.0f, 28.0f, 0.5f, kInkDim,
                      kScreenWidth - 80.0f);
 
-    const float x = (kScreenWidth - kButtonWidth) * 0.5f;
-    const int rows = inGame_ ? kWorldSettingsRowsInGame : int(kRowCount);
+    const WorldSettingsLayout layout = worldSettingsLayout(inGame_);
 
-    // **Six rows and two lines of note in 240 pixels**, which is what sets
-    // these numbers rather than taste. The buttons are shorter than
-    // kButtonHeight and the pitch is five pixels wider than they are, so
-    // drawButton's two-pixel outline does not overlap the row below: 42 + 6 x
-    // 28 puts the last outline's bottom edge at 207, and the note fits under
-    // it.
-    const float top = 42.0f;
-    const float pitch = 28.0f;
-    const float height = 23.0f;
+    char gamemode[32];
+    char difficulty[32];
+    char format[32];
+    const settings::Gamemode mode = kGamemodeOrder[gamemodeCursor_];
+    std::snprintf(gamemode, sizeof(gamemode), "%s", settings::gamemodeLabel(mode));
+    std::snprintf(difficulty, sizeof(difficulty), "%s",
+                  settings::difficultyLabel(kDifficultyOrder[difficultyCursor_]));
+    std::snprintf(format, sizeof(format), "%s", world::formatName(selectedFormat_));
 
-    // A row's value sits to the right of its name on the same button, so six
-    // rows fit in 240 pixels without a second column of labels.
-    constexpr float kValueX = 96.0f;
-
-    for (int i = 0; i < rows; ++i) {
-        const int row = worldSettingsRowFor(i, inGame_);
-        const Rect rect{x, top + float(i) * pitch, kButtonWidth, height};
-        const bool selected = worldSettingsCursor_ == i;
-
-        if (row == kRowBack) {
-            drawButton(rect, "Back", selected, true);
-            continue;
-        }
-        if (row == kRowCopy || row == kRowDelete) {
-            drawButton(rect, row == kRowCopy ? "Copy..." : "Delete...", selected, true);
-            continue;
-        }
-
-        drawButton(rect, "", selected, true);
-        const char* name = row == kRowGamemode ? "Gamemode:"
-                                               : (row == kRowFormat ? "Format:" : "Size:");
-        drawLabel(name, rect.x + 8.0f, rect.y + 6.0f, 0.5f, kInkDim, C2D_AlignLeft, true);
-
-        char value[64];
-        u32 colour = kInk;
-        if (row == kRowGamemode) {
-            const settings::Gamemode mode = kGamemodeOrder[gamemodeCursor_];
-            std::snprintf(value, sizeof(value), "%s", settings::gamemodeLabel(mode));
+    SettingRowView rows[kRowCount];
+    for (int i = 0; i < layout.count; ++i) {
+        SettingRowView& view = rows[i];
+        switch (layout.rows[i]) {
+        case kRowInfo:
+            view.name = "World Info";
+            break;
+        case kRowGamemode:
+            view.name = "Gamemode:";
+            view.value = gamemode;
             // The value, not the button, is what says a mode is unavailable:
             // the row itself still works, and greying the whole button would
             // read as "this row is broken".
-            colour = settings::gamemodeImplemented(mode) ? kInk : kInkDim;
-        } else if (row == kRowFormat) {
-            std::snprintf(value, sizeof(value), "%s",
-                          world::formatName(selectedFormat_));
-        } else if (!selectedSizeKnown_) {
-            std::snprintf(value, sizeof(value), "--");
-            colour = kInkDim;
-        } else {
-            // On-disk first, because that is what the card actually gives up
-            // and the number a player checking free space needs. The chunk
-            // count comes with it so the two formats can be compared.
-            char onDisk[24];
-            formatBytes(selectedSize_.onDiskBytes, onDisk, sizeof(onDisk));
-            std::snprintf(value, sizeof(value), "%s  (%lu files)", onDisk,
-                          (unsigned long)selectedSize_.fileCount);
+            view.dimValue = !settings::gamemodeImplemented(mode);
+            break;
+        case kRowDifficulty:
+            view.name = "Difficulty:";
+            view.value = difficulty;
+            break;
+        case kRowFormat:
+            view.name = "Format:";
+            view.value = format;
+            break;
+        case kRowExtra:
+            view.name = "Extra Settings...";
+            break;
+        case kRowCopy:
+            view.name = "Copy...";
+            break;
+        case kRowDelete:
+            view.name = "Delete...";
+            break;
+        default:
+            view.name = "Back";
+            break;
         }
-        drawLabelClipped(value, rect.x + kValueX, rect.y + 5.0f, 0.5f, colour,
-                         rect.w - kValueX - 8.0f);
     }
 
-    // A line under the rows, saying whichever thing this screen most needs to
-    // say. Not on the console alone: a row that can be moved onto and refuses
-    // to change is otherwise indistinguishable from one that is broken.
-    const int row = worldSettingsRowFor(worldSettingsCursor_, inGame_);
-    const float noteY = top + float(rows) * pitch + 2.0f;
-    if (row == kRowGamemode && !settings::gamemodeImplemented(kGamemodeOrder[gamemodeCursor_])) {
-        drawLabelCentered("Not implemented yet -- damage, hardness and", kScreenWidth * 0.5f,
-                          noteY, 0.42f, kInkWarn, true);
-        drawLabelCentered("drops do not exist. Creative does.", kScreenWidth * 0.5f,
-                          noteY + 13.0f, 0.42f, kInkDim, true);
-    } else if (row == kRowFormat && !inGame_) {
-        drawLabelCentered(selectedFormat_ == world::WorldFormat::Packed
-                              ? "Packed: fast on this console, but only"
-                              : "Folder: what a PC Minecraft client opens.",
-                          kScreenWidth * 0.5f, noteY, 0.42f, kInkDim, true);
-        drawLabelCentered(selectedFormat_ == world::WorldFormat::Packed
-                              ? "3DAlpha opens it. A/Left/Right converts."
-                              : "A/Left/Right packs it for this console.",
-                          kScreenWidth * 0.5f, noteY + 13.0f, 0.42f, kInkDim, true);
-    } else if (row == kRowSize && selectedSizeKnown_) {
-        char content[24];
-        char onDisk[24];
-        formatBytes(selectedSize_.contentBytes, content, sizeof(content));
-        formatBytes(selectedSize_.onDiskBytes, onDisk, sizeof(onDisk));
-        char line[96];
-        // Both numbers, because the gap between them *is* the argument for
-        // packing: a 2,917-byte chunk in a 16 KB cluster costs 16 KB.
-        std::snprintf(line, sizeof(line), "%s of data, %s of card", content, onDisk);
-        drawLabelCentered(line, kScreenWidth * 0.5f, noteY, 0.42f, kInkDim, true);
-    } else if (inGame_) {
-        drawLabelCentered("Copy, Delete and Format need the world", kScreenWidth * 0.5f,
-                          noteY, 0.42f, kInkDim, true);
-        drawLabelCentered("closed. They are on the world list's X.",
-                          kScreenWidth * 0.5f, noteY + 13.0f, 0.42f, kInkDim, true);
-    }
+    drawSettingsRows(rows, layout.groups, layout.count, worldSettingsCursor_,
+                     worldSettingsScroll_, kWorldSettingsTop);
 }
 
 void Menu::drawConfirmConvert()
@@ -2524,158 +4317,85 @@ int Menu::drawListChrome(int rows, int scroll)
     return left < kVisibleRows ? (left < 0 ? 0 : left) : kVisibleRows;
 }
 
+void Menu::drawSettingsRows(const SettingRowView* rows, const u8* groups, int count, int cursor,
+                            int scroll, float top)
+{
+    const gui::ListGeometry geometry = settingsGeometry(top);
+    const float x = (kScreenWidth - kSettingsWidth) * 0.5f;
+    const int visible = gui::listVisibleCount(groups, count, scroll, geometry);
+    const int origin = gui::listRowOffset(groups, scroll, geometry);
+
+    for (int k = 0; k < visible; ++k) {
+        const int i = scroll + k;
+        const SettingRowView& row = rows[i];
+        const float y = top + float(gui::listRowOffset(groups, i, geometry) - origin);
+        const Rect rect{x, y, kSettingsWidth, float(geometry.rowHeight)};
+        const bool selected = i == cursor;
+
+        if (row.value == nullptr) {
+            drawButton(rect, row.name, selected, true);
+        } else {
+            // A name off a card can be as long as FAT allows, so the value is
+            // clipped to the button rather than allowed to run off its edge.
+            drawButton(rect, "", selected, true);
+            drawLabel(row.name, rect.x + 14.0f, rect.y + 4.0f, 0.5f, kInkDim, C2D_AlignLeft,
+                      true);
+            drawLabelClipped(row.value, rect.x + kSettingsValueX, rect.y + 4.0f, 0.5f,
+                             row.dimValue ? kInkDim : kInk,
+                             rect.w - kSettingsValueX - 14.0f);
+        }
+
+        // The bottom screen has more than a page about this row: arrows either
+        // side of it, the same pair its name sits between down there.
+        if (selected && infoPages_ > 1) {
+            drawLabel("<", rect.x + 4.0f, rect.y + 4.0f, 0.5f, kInkWarn, C2D_AlignLeft, true);
+            drawLabel(">", rect.x + rect.w - 4.0f, rect.y + 4.0f, 0.5f, kInkWarn,
+                      C2D_AlignRight, true);
+        }
+    }
+
+    // Which way there is more list, beside it rather than above and below: the
+    // heading is where "above" would be.
+    const float caretX = x + kSettingsWidth + 14.0f;
+    if (scroll > 0) {
+        drawLabelCentered("^", caretX, top + 11.0f, 0.5f, kInkDim, true);
+    }
+    if (scroll + visible < count) {
+        drawLabelCentered("v", caretX, top + float(geometry.viewHeight) - 11.0f, 0.5f, kInkDim,
+                          true);
+    }
+}
+
 void Menu::drawOptions()
 {
     drawLabelCentered("Options", kScreenWidth * 0.5f, 16.0f, 0.8f, kInk, true);
 
-    char distance[48];
-    std::snprintf(distance, sizeof(distance), "Render distance: %d  (max %d)", renderDistance_,
-                  maxDistance_);
+    char distance[32];
+    std::snprintf(distance, sizeof(distance), "%d  (max %d)", renderDistance_, maxDistance_);
 
-    char autosave[48];
+    char autosave[24];
     autosaveLabel(autosaveSeconds_, autosave, sizeof(autosave));
 
-    // A pack name comes off a card and can be as long as FAT allows, so the row
-    // is a button with a clipped label on it rather than a centred one that
-    // would draw off both edges of the screen.
-    //
-    // **Six rows now, and that is what the pitch pays for.** 240 pixels still
-    // does not stretch: six 26-pixel buttons from y=42 at a 30-pixel pitch end
-    // at 218, which leaves the console label four pixels and no more. The
-    // alternative -- a scrolling options screen -- would be a second list idiom
-    // for the sake of one row. Skin and Sound are sub-screens for the same
-    // reason Texture Pack is: their rows come off a card, or they have a
-    // sentence to say as well as a value to show.
-    constexpr float kRowTop = 42.0f;
-    constexpr float kRowPitch = 30.0f;
-    const float x = (kScreenWidth - kButtonWidth) * 0.5f;
-    const auto rowY = [](int row) { return kRowTop + float(row) * kRowPitch; };
+    // a1.1.2's own labels for a volume: a percentage, or the word OFF. Worth
+    // copying exactly -- "0%" and "OFF" are the same number and different
+    // sentences.
+    char music[16];
+    char effects[16];
+    std::snprintf(music, sizeof(music), musicVolume_ > 0 ? "%d%%" : "OFF", musicVolume_);
+    std::snprintf(effects, sizeof(effects), soundVolume_ > 0 ? "%d%%" : "OFF", soundVolume_);
 
-    drawButton(Rect{x, rowY(0), kButtonWidth, kButtonHeight}, distance, optionsCursor_ == 0,
-               true);
-    drawButton(Rect{x, rowY(1), kButtonWidth, kButtonHeight}, autosave, optionsCursor_ == 1,
-               true);
+    SettingRowView rows[kOptCount];
+    rows[kOptDistance] = {"Render distance:", distance, false};
+    rows[kOptPack] = {"Texture Pack:", packLabel(), false};
+    rows[kOptSkin] = {"Skin:", skinLabel(), false};
+    rows[kOptAudio] = {"Audio:", audioEnabled_ ? "On" : "Off", !audioEnabled_};
+    rows[kOptMusic] = {"Music:", music, false};
+    rows[kOptSound] = {"Sound:", effects, false};
+    rows[kOptAutosave] = {"Autosave:", autosave, false};
+    rows[kOptBack] = {"Back", nullptr, false};
 
-    const Rect packRow{x, rowY(2), kButtonWidth, kButtonHeight};
-    drawButton(packRow, "", optionsCursor_ == 2, true);
-    drawLabel("Texture Pack:", packRow.x + 8.0f, packRow.y + 6.0f, 0.5f, kInkDim,
-              C2D_AlignLeft, true);
-    drawLabelClipped(packLabel(), packRow.x + 96.0f, packRow.y + 5.0f, 0.5f, kInk,
-                     packRow.w - 104.0f);
-
-    // The same shape as the pack row above, and for the same reason: a skin's
-    // name is a file name off a card.
-    const Rect skinRow{x, rowY(3), kButtonWidth, kButtonHeight};
-    drawButton(skinRow, "", optionsCursor_ == 3, true);
-    drawLabel("Skin:", skinRow.x + 8.0f, skinRow.y + 6.0f, 0.5f, kInkDim, C2D_AlignLeft, true);
-    drawLabelClipped(skinLabel(), skinRow.x + 96.0f, skinRow.y + 5.0f, 0.5f, kInk,
-                     skinRow.w - 104.0f);
-
-    // The row says what the screen behind it is set to, so the common case --
-    // "is the music on?" -- is answered without opening it.
-    char soundRow[48];
-    if (!audioEnabled_) {
-        std::snprintf(soundRow, sizeof(soundRow), "Sound...  OFF");
-    } else {
-        std::snprintf(soundRow, sizeof(soundRow), "Sound...  music %d%%", musicVolume_);
-    }
-    drawButton(Rect{x, rowY(4), kButtonWidth, kButtonHeight}, soundRow, optionsCursor_ == 4,
-               true);
-
-    drawButton(Rect{x, rowY(5), kButtonWidth, kButtonHeight}, "Back", optionsCursor_ == 5,
-               true);
-
-    drawLabelCentered(isNew3DS_ ? "New 3DS" : "Old 3DS", kScreenWidth * 0.5f, 224.0f, 0.45f,
-                      kInkDim, true);
-}
-
-// Why this console is silent, in one line, which docs/assets.md has asked for
-// since before anything called ndsp.
-//
-// The distinction between the first two cases is the whole point of having a
-// line at all: a player who has already dumped their DSP firmware and is being
-// told to dump it again will conclude the game is broken. So the backend
-// reports *which* failure it had and this reads it, rather than assuming the
-// common one.
-const char* Menu::soundStatus() const
-{
-    if (!audioEnabled_) {
-        return "Audio is off. The DSP is never started.";
-    }
-    if (audioBackend_ == nullptr) {
-        return "No audio in this build.";
-    }
-
-    switch (audioBackend_->status()) {
-        case ctr::AudioStatus::NoFirmware:
-            return "No DSP firmware. Dump it from Rosalina:\n"
-                   "Miscellaneous options -> Dump DSP firmware.";
-        case ctr::AudioStatus::Unavailable:
-            return "The DSP could not be opened -- something else\n"
-                   "on the console is holding it.";
-        case ctr::AudioStatus::Disabled:
-            return "Audio is off. The DSP is never started.";
-        case ctr::AudioStatus::Ready:
-            break;
-    }
-
-    if (sound_ == nullptr || sound_->resources().music.empty()) {
-        return "No music on the card. Copy a resources/ folder\n"
-               "to sdmc:/3dalpha/ -- see the README.";
-    }
-    return nullptr;
-}
-
-void Menu::drawSound()
-{
-    drawLabelCentered("Sound", kScreenWidth * 0.5f, 16.0f, 0.8f, kInk, true);
-
-    char audioRow[48];
-    std::snprintf(audioRow, sizeof(audioRow), "Audio: %s%s", audioEnabled_ ? "On" : "Off",
-                  audioEnabled_ ? "" : "  (takes effect on restart)");
-
-    // a1.1.2's own label: a percentage, or the word OFF. Worth copying exactly
-    // -- "0%" and "OFF" are the same number and different sentences.
-    char musicRow[48];
-    if (musicVolume_ > 0) {
-        std::snprintf(musicRow, sizeof(musicRow), "Music: %d%%", musicVolume_);
-    } else {
-        std::snprintf(musicRow, sizeof(musicRow), "Music: OFF");
-    }
-
-    char effectRow[48];
-    if (soundVolume_ > 0) {
-        std::snprintf(effectRow, sizeof(effectRow), "Sound: %d%%", soundVolume_);
-    } else {
-        std::snprintf(effectRow, sizeof(effectRow), "Sound: OFF");
-    }
-
-    const float x = (kScreenWidth - kButtonWidth) * 0.5f;
-    drawButton(Rect{x, 48.0f, kButtonWidth, kButtonHeight}, audioRow, soundCursor_ == 0, true);
-    drawButton(Rect{x, 84.0f, kButtonWidth, kButtonHeight}, musicRow, soundCursor_ == 1, true);
-    drawButton(Rect{x, 120.0f, kButtonWidth, kButtonHeight}, effectRow, soundCursor_ == 2,
-               true);
-    drawButton(Rect{x, 156.0f, kButtonWidth, kButtonHeight}, "Back", soundCursor_ == 3, true);
-
-    // Either the explanation, or what was found. Both are one line and both are
-    // more use than an empty strip.
-    if (const char* status = soundStatus()) {
-        drawLabelCentered(status, kScreenWidth * 0.5f, 196.0f, 0.42f, kInkDim, true);
-    } else if (sound_ != nullptr) {
-        char found[64];
-        std::snprintf(found, sizeof(found), "%zu music tracks, %zu sounds on the card",
-                      sound_->resources().music.size(), sound_->resources().sounds.size());
-        drawLabelCentered(found, kScreenWidth * 0.5f, 194.0f, 0.42f, kInkDim, true);
-
-        // `random.click` is the only effect this port loads, and a resources
-        // folder without it gives silent menus with nothing on screen to say
-        // why -- which is the one failure here a player cannot diagnose by
-        // listening. So it is said, in the place they are already standing.
-        if (sound_->loadedSamples() == 0) {
-            drawLabelCentered("no random/click.ogg found -- the menus are silent",
-                              kScreenWidth * 0.5f, 208.0f, 0.42f, kInkWarn, true);
-        }
-    }
+    drawSettingsRows(rows, kOptionsGroups, kOptCount, optionsCursor_, optionsScroll_,
+                     kOptionsTop);
 }
 
 const char* Menu::packLabel() const
@@ -3109,6 +4829,178 @@ void Menu::drawLabelCentered(const char* text, float cx, float cy, float scale, 
                      scale, scale, kShadow);
     }
     C2D_DrawText(&parsed, C2D_WithColor | C2D_AlignCenter, cx, y, 0.5f, scale, scale, color);
+}
+
+// ---------------------------------------------------------------------------
+// The bottom-screen previews
+// ---------------------------------------------------------------------------
+
+PreviewScreen Menu::previewScreenFor(Screen screen) const
+{
+    if (inGame_) {
+        return PreviewScreen::None;
+    }
+    switch (screen) {
+    case Screen::Skins:
+        return PreviewScreen::Skins;
+    case Screen::TexturePacks:
+        return PreviewScreen::Packs;
+    case Screen::Worlds:
+    // **The same preview, pointed at the same world.** Move Panorama is
+    // reached from World Settings, which is reached from the world list, so
+    // `worldCursor_` is already on the world being moved -- and the picture the
+    // player is aiming is then literally the picture the world list will show.
+    case Screen::MovePanorama:
+        return PreviewScreen::Worlds;
+    default:
+        return PreviewScreen::None;
+    }
+}
+
+void Menu::syncPreview()
+{
+    if (preview_ == nullptr) {
+        return;
+    }
+    const PreviewScreen screen = previewScreenFor(screen_);
+    if (screen != PreviewScreen::None) {
+        preview_->setActivePack(atlas_, packRevision_);
+    }
+    // The lists are handed over on the way into their screen, which is where
+    // each of them is read -- never per frame.
+    switch (screen) {
+    case PreviewScreen::Skins:
+        preview_->setSkinList(skins_);
+        break;
+    case PreviewScreen::Packs:
+        preview_->setPackList(packs_);
+        break;
+    case PreviewScreen::Worlds:
+        preview_->setWorldList(worlds_);
+        break;
+    case PreviewScreen::None:
+        break;
+    }
+    preview_->setScreen(screen);
+    if (preview_->screen() == PreviewScreen::None) {
+        consoleDirty_ = true;
+    }
+}
+
+void Menu::updatePreview()
+{
+    if (preview_ == nullptr || preview_->screen() == PreviewScreen::None) {
+        previewClockMs_ = 0;
+        return;
+    }
+    const u64 now = osGetTime();
+    float seconds = previewClockMs_ == 0 ? 0.0f : float(now - previewClockMs_) / 1000.0f;
+    if (seconds > 0.1f) {
+        seconds = 0.1f;  // a stall is not a reason to jump the animation
+    }
+    previewClockMs_ = now;
+
+    // A pack chosen on this screen changes the atlas under the table and the
+    // Default skin; cheap when it has not.
+    preview_->setActivePack(atlas_, packRevision_);
+    preview_->setSkinCursor(skinCursor_);
+    preview_->setPackCursor(packCursor_);
+    preview_->setWorldCursor(worldCursor_);
+    preview_->update(seconds);
+}
+
+void Menu::drawPreviewScreen()
+{
+    if (preview_ == nullptr || preview_->screen() == PreviewScreen::None
+        || preview_->target() == nullptr) {
+        return;
+    }
+    C3D_RenderTarget* bottom = preview_->target();
+
+    // The top screen's batch goes first: from here on the bottom one is drawn.
+    C2D_Flush();
+    C2D_TargetClear(bottom, C2D_Color32(0x18, 0x14, 0x10, 0xFF));
+    C2D_SceneBegin(bottom);
+    // The backdrop writes colour and no depth, so every fragment of the
+    // preview in front of it passes.
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    if (background_.ready()) {
+        background_.draw(320.0f, 240.0f, 0.0f);
+    }
+    C2D_Flush();
+
+    preview_->draw();
+
+    // citro2d's state back over the preview's, for the labels and for the next
+    // frame's top screen.
+    prepare2D();
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    C2D_SceneBegin(bottom);
+    drawPreviewLabels();
+    C2D_Flush();
+}
+
+void Menu::drawPreviewLabels()
+{
+    constexpr float kCentre = 160.0f;
+    const char* name = nullptr;
+    const char* note = nullptr;
+    const char* hint = "A: Select   B: Back";
+    char panoramaNote[32];
+
+    switch (screen_) {
+    case Screen::Skins:
+        if (usize(skinCursor_) < skins_.size()) {
+            const texture::SkinEntry& skin = skins_[usize(skinCursor_)];
+            name = skin.name.c_str();
+            note = skin.key == skinKey_ ? "In use" : nullptr;
+        }
+        hint = "A: Use   B: Back";
+        break;
+    case Screen::TexturePacks:
+        if (packCursor_ == 0) {
+            name = "Extract from a jar";
+        } else if (usize(packCursor_ - 1) < packs_.size()) {
+            const texture::PackEntry& pack = packs_[usize(packCursor_ - 1)];
+            name = pack.builtIn ? "Dev Art" : pack.name.c_str();
+            const bool active = pack.builtIn ? packName_.empty() : pack.name == packName_;
+            note = active ? "In use" : nullptr;
+        }
+        hint = "A: Use   B: Back";
+        break;
+    case Screen::Worlds:
+        if (worldCursor_ == 0) {
+            name = "New World";
+        } else if (usize(worldCursor_ - 1) < worlds_.size()) {
+            name = worlds_[usize(worldCursor_ - 1)].name.c_str();
+        }
+        hint = worldCursor_ == 0 ? "A: Create   B: Back" : "A: Play   X: Settings   B: Back";
+        break;
+    case Screen::MovePanorama:
+        name = selectedWorldName_.c_str();
+        // The tiles stream in again from the new corner after every step, so
+        // the table is often half table for a moment. Saying which square it
+        // is standing on is what makes that read as moving rather than as
+        // broken.
+        std::snprintf(panoramaNote, sizeof(panoramaNote), "tile %ld, %ld",
+                      (long)panoramaTileX_, (long)panoramaTileZ_);
+        note = panoramaNote;
+        hint = "D-Pad: Move   A/START: Save   B: Cancel";
+        break;
+    default:
+        return;
+    }
+
+    if (name != nullptr) {
+        drawLabelCentered(name, kCentre, 12.0f, 0.6f, kInk, true);
+    }
+    if (note != nullptr) {
+        drawLabelCentered(note, kCentre, 28.0f, 0.45f, kInkDim, true);
+    }
+    if (message_ != nullptr) {
+        drawLabelCentered(message_, kCentre, 204.0f, 0.45f, kInkWarn, true);
+    }
+    drawLabelCentered(hint, kCentre, 226.0f, 0.45f, kInkDim, true);
 }
 
 }  // namespace mc::ctr

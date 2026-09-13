@@ -57,6 +57,23 @@ bool AnyStorage::peekLevel(std::string_view worldDir, LevelData* out)
     return false;
 }
 
+bool AnyStorage::readLevel(std::string_view worldDir, LevelData* out)
+{
+    switch (detectFormat(fs_, worldDir)) {
+    case WorldFormat::Packed:
+        return packed().readLevel(worldDir, out);
+    case WorldFormat::Folder:
+        // The folder backend's peek already reads and gunzips the whole file
+        // -- there is no cheaper answer for it -- so the two are the same
+        // call. Named separately anyway, because which fields a caller may
+        // trust is the difference and it must not depend on the format.
+        return folder_.peekLevel(worldDir, out);
+    case WorldFormat::Unknown:
+        break;
+    }
+    return false;
+}
+
 bool AnyStorage::close(i64 nowMillis)
 {
     const bool ok = format_ == WorldFormat::Packed ? packed().close(nowMillis)

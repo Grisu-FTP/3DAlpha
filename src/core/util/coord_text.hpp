@@ -25,13 +25,15 @@ namespace mc {
 // Not a rounder number of our choosing: it is what the original refuses past.
 inline constexpr double kWorldHorizontalLimit = 32000000.0;
 
-// The vertical range the free-flight camera holds itself to. The world is only
-// 128 blocks tall, but the camera is allowed above it to look down at terrain,
-// and this matches the clamp in moveCamera exactly -- so a teleport cannot put
-// the camera somewhere the next frame of movement would immediately drag it
-// out of.
-inline constexpr double kCameraMinY = 1.0;
-inline constexpr double kCameraMaxY = 254.0;
+// **Not a height limit.** The world is 128 blocks tall, but a teleport may go
+// anywhere above or below it -- every block lookup in TickWorld already answers
+// for heights outside the column, and the visibility walk clamps its starting
+// section itself. The bound exists only so the readouts
+// that print `int(camera.y)` stay defined, and it is the horizontal one reused
+// because there is no reason for the two to differ. Free flight clamps to the
+// same value, so a teleport cannot put the camera somewhere the next frame of
+// movement would drag it out of.
+inline constexpr double kCameraYLimit = kWorldHorizontalLimit;
 
 struct CoordTriple {
     double x = 0.0;

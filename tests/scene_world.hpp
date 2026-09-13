@@ -52,6 +52,30 @@ public:
         world_->setBlockAndDataRaw(x, y, z, id, metadata);
     }
 
+    // **Sky light, which nothing here computes.** A scene starts pitch dark
+    // because no lighting pass has run over it, and that is invisible until
+    // something reads the light: a mushroom that will not stay, an animal that
+    // will not spawn. Tests that care put the light where they want it.
+    void setSkyLight(i32 x, int y, i32 z, u8 level)
+    {
+        world::ChunkColumn* column = columnAt(this, x >> 4, z >> 4);
+        if (column != nullptr && y >= 0 && y < world::ChunkColumn::kHeight) {
+            column->setSkyLight(int(x & 15), y, int(z & 15), level);
+        }
+    }
+
+    // Daylight over a rectangle: every cell from `y` up is lit.
+    void lightColumnsFrom(i32 x0, i32 x1, i32 z0, i32 z1, int y)
+    {
+        for (i32 x = x0; x <= x1; ++x) {
+            for (i32 z = z0; z <= z1; ++z) {
+                for (int cy = y; cy < world::ChunkColumn::kHeight; ++cy) {
+                    setSkyLight(x, cy, z, 15);
+                }
+            }
+        }
+    }
+
 private:
     static world::ChunkColumn* columnAt(void* ctx, i32 cx, i32 cz)
     {

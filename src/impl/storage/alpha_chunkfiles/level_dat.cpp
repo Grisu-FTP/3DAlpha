@@ -1,4 +1,6 @@
 #include "impl/storage/alpha_chunkfiles/level_dat.hpp"
+
+#include "impl/storage/alpha_chunkfiles/item_nbt.hpp"
 #include "core/entity/persistence.hpp"
 #include "core/entity/player_body.hpp"
 
@@ -46,31 +48,6 @@ bool readFloatList(nbt::Reader& r, float* dst, i32 expected)
     }
     for (i32 i = 0; i < expected; ++i) {
         dst[i] = r.floatValue();
-    }
-    return r.ok();
-}
-
-bool decodeItemStack(nbt::Reader& r, ItemStack* stack)
-{
-    nbt::TagType type;
-    std::string_view name;
-
-    while (r.nextField(&type, &name)) {
-        if (name == "Slot") {
-            if (!nbt::expectType(r, type, nbt::TagType::Byte)) return false;
-            stack->slot = r.byteValue();
-        } else if (name == "id") {
-            if (!nbt::expectType(r, type, nbt::TagType::Short)) return false;
-            stack->id = r.shortValue();
-        } else if (name == "Count") {
-            if (!nbt::expectType(r, type, nbt::TagType::Byte)) return false;
-            stack->count = r.byteValue();
-        } else if (name == "Damage") {
-            if (!nbt::expectType(r, type, nbt::TagType::Short)) return false;
-            stack->damage = r.shortValue();
-        } else if (!stack->preserved.capture(r, name, type)) {
-            return false;
-        }
     }
     return r.ok();
 }
@@ -272,11 +249,7 @@ void encodePlayer(nbt::Writer& w, const PlayerData& player)
     w.beginList("Inventory", nbt::TagType::Compound);
     for (const ItemStack& stack : player.inventory) {
         w.beginListElementCompound();
-        w.writeByte("Slot", stack.slot);
-        w.writeShort("id", stack.id);
-        w.writeByte("Count", stack.count);
-        w.writeShort("Damage", stack.damage);
-        stack.preserved.writeTo(w);
+        encodeItemStack(w, stack);
         w.endCompound();
     }
     w.endList();

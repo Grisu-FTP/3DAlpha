@@ -8,6 +8,24 @@
 #include "core/util/math_helper.hpp"
 
 namespace mc::entity {
+namespace {
+
+// The sink `clipAxis` hands `forEachSolidBox`, and the one number it carries
+// back. A free function and a struct rather than a capturing lambda, because
+// the seam is a plain function pointer -- see core/tick/tick_world.hpp.
+struct Fold {
+    const AABB* mover;
+    int axis;
+    double delta;
+};
+
+void foldSolidBox(void* ctx, const AABB& box)
+{
+    Fold* fold = static_cast<Fold*>(ctx);
+    fold->delta = calculateOffset(box, *fold->mover, fold->axis, fold->delta);
+}
+
+}  // namespace
 
 BlockRange sweepRange(const AABB& swept)
 {
@@ -18,6 +36,7 @@ BlockRange sweepRange(const AABB& swept)
     r.y1 = MathHelper::floorDouble(swept.maxY + 1.0);
     r.z0 = MathHelper::floorDouble(swept.minZ);
     r.z1 = MathHelper::floorDouble(swept.maxZ + 1.0);
+    r.swept = swept;
     return r;
 }
 
@@ -69,7 +88,7 @@ double calculateOffset(const AABB& blockBox, const AABB& mover, int axis, double
 // player's swept volume, which can be a hundred and forty boxes, off a 32 KB
 // stack that the 3DS build caps at 8 KB a frame.
 double clipAxis(const tick::TickWorld& world, const BlockRange& range,
-                const AABB& mover, int axis, double delta)
+                const AABB& mover, int axis, double delta, const Mover& who)
 {
     AABB boxes[block::kMaxCollisionBoxes];
     for (i32 bx = range.x0; bx < range.x1; ++bx) {
@@ -95,7 +114,22 @@ double clipAxis(const tick::TickWorld& world, const BlockRange& range,
             }
         }
     }
-    return delta;
+
+    // **The rest of the same list**: a boat and a minecart hand
+    // `getCollidingBoundingBoxes` their own bounding box, so they are folded in
+    // here exactly as a block's box is -- same function, same clamps, same
+    // indifference to order. This is the whole of standing on a minecart. When
+    // the mover is itself a boat or a cart the list also holds every other
+    // entity near it, which is `getCollisionBox`; see `Mover`.
+    //
+    // The mover's box is the one this axis is being asked about, not the one
+    // the move started from, which is why the fold is here rather than gathered
+    // once by the caller: the original walks its list three times for the same
+    // reason.
+    Fold fold{&mover, axis, delta};
+    world.forEachSolidBox(range.swept, who.self, who.collidesWithEntities, &foldSolidBox,
+                          &fold);
+    return fold.delta;
 }
 
 }  // namespace mc::entity

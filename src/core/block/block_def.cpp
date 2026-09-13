@@ -41,6 +41,27 @@ const char* shapeName(Shape shape)
     return "unknown";
 }
 
+const char* contactName(Contact contact)
+{
+    switch (contact) {
+    case Contact::Hurt:          return "hurt";
+    case Contact::PressurePlate: return "pressure_plate";
+    case Contact::None:          return "none";
+    case Contact::Count:         break;
+    }
+    return "unknown";
+}
+
+const char* worldTextureName(WorldTexture texture)
+{
+    switch (texture) {
+    case WorldTexture::None:  return "none";
+    case WorldTexture::Chest: return "chest";
+    case WorldTexture::Count: break;
+    }
+    return "unknown";
+}
+
 const char* tickBehaviourName(TickBehaviour behaviour)
 {
     switch (behaviour) {
@@ -79,9 +100,26 @@ const char* tickBehaviourName(TickBehaviour behaviour)
     case TickBehaviour::Stairs:        return "stairs";
     case TickBehaviour::Slab:          return "slab";
     case TickBehaviour::Furnace:       return "furnace";
+    case TickBehaviour::MobSpawner:    return "mob_spawner";
+    case TickBehaviour::Chest:         return "chest";
+    case TickBehaviour::Workbench:     return "workbench";
     case TickBehaviour::Count:         break;
     }
     return "unknown";
+}
+
+bool tileEntityBearing(TickBehaviour behaviour)
+{
+    switch (behaviour) {
+    case TickBehaviour::Chest:
+    case TickBehaviour::Furnace:
+    case TickBehaviour::SignPost:
+    case TickBehaviour::SignWall:
+    case TickBehaviour::MobSpawner:
+        return true;
+    default:
+        return false;
+    }
 }
 
 }  // namespace mc::block

@@ -24,11 +24,23 @@ bool isWaterMaterial(u8 id)
     return block::def(id).material == block::def(kWater).material;
 }
 
+// The original's `(int)` cast, or a floor. See OreBounds in the header: at a
+// non-negative value the two are the same function, so a world with the fix on
+// differs from a1.1.2 only where a1.1.2 was already asymmetric.
+i32 veinBound(double value, OreBounds bounds)
+{
+    if (bounds == OreBounds::FloorBounds) {
+        const i32 truncated = i32(value);
+        return (double(truncated) > value) ? truncated - 1 : truncated;
+    }
+    return i32(value);
+}
+
 // The body shared by WorldGenMinable and WorldGenClay. In the original these
 // are two classes with the same code; here the only differences are which
 // block is replaced and which is placed.
 bool growVein(PopulationView& view, JavaRandom& random, u8 replaceId, u8 placeId, i32 veinSize,
-              i32 x, i32 y, i32 z)
+              i32 x, i32 y, i32 z, OreBounds bounds)
 {
     const float angle = random.nextFloat() * kPi;
 
@@ -67,12 +79,15 @@ bool growVein(PopulationView& view, JavaRandom& random, u8 replaceId, u8 placeId
         const double radiusXZ = spread;
         const double radiusY = spread;
 
-        const i32 minX = i32(px - radiusXZ / 2.0);
-        const i32 maxX = i32(px + radiusXZ / 2.0);
-        const i32 minY = i32(py - radiusY / 2.0);
-        const i32 maxY = i32(py + radiusY / 2.0);
-        const i32 minZ = i32(pz - radiusXZ / 2.0);
-        const i32 maxZ = i32(pz + radiusXZ / 2.0);
+        // **Where the negative-quadrant bug lives.** Six `(int)` casts, all
+        // of which truncate toward zero; `veinBound` is the one place that
+        // changes, and only when the world asked for it.
+        const i32 minX = veinBound(px - radiusXZ / 2.0, bounds);
+        const i32 maxX = veinBound(px + radiusXZ / 2.0, bounds);
+        const i32 minY = veinBound(py - radiusY / 2.0, bounds);
+        const i32 maxY = veinBound(py + radiusY / 2.0, bounds);
+        const i32 minZ = veinBound(pz - radiusXZ / 2.0, bounds);
+        const i32 maxZ = veinBound(pz + radiusXZ / 2.0, bounds);
 
         for (i32 bx = minX; bx <= maxX; ++bx) {
             const double nx = (double(bx) + 0.5 - px) / (radiusXZ / 2.0);
@@ -94,13 +109,13 @@ bool growVein(PopulationView& view, JavaRandom& random, u8 replaceId, u8 placeId
 }  // namespace
 
 bool generateOreVein(PopulationView& view, JavaRandom& random, u8 blockId, i32 veinSize, i32 x,
-                     i32 y, i32 z)
+                     i32 y, i32 z, OreBounds bounds)
 {
-    return growVein(view, random, kStone, blockId, veinSize, x, y, z);
+    return growVein(view, random, kStone, blockId, veinSize, x, y, z, bounds);
 }
 
 bool generateClayPatch(PopulationView& view, JavaRandom& random, i32 patchSize, i32 x, i32 y,
-                       i32 z)
+                       i32 z, OreBounds bounds)
 {
     // **The guard runs before any random draw.** A rejected patch consumes
     // nothing from the stream, so ten tries over dry land leave the sequence
@@ -109,7 +124,7 @@ bool generateClayPatch(PopulationView& view, JavaRandom& random, i32 patchSize, 
     if (!isWaterMaterial(view.blockAt(x, y, z))) {
         return false;
     }
-    return growVein(view, random, kSand, kClay, patchSize, x, y, z);
+    return growVein(view, random, kSand, kClay, patchSize, x, y, z, bounds);
 }
 
 }  // namespace mc::worldgen

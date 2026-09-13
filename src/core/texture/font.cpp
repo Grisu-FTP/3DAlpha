@@ -190,6 +190,96 @@ int textWidth(const u8* widths, std::string_view text)
     return width;
 }
 
+void wrapText(const u8* widths, std::string_view text, int maxWidth,
+              std::vector<std::string>* lines)
+{
+    lines->clear();
+
+    std::string line;
+    std::string colour;
+    std::string colourAtSpace;
+    int width = 0;
+    int widthAtSpace = 0;
+    usize spaceAt = std::string::npos;
+    bool drewText = false;
+
+    const auto start = [&](const std::string& carried) {
+        line = carried;
+        width = 0;
+        drewText = false;
+        spaceAt = std::string::npos;
+    };
+    const auto finish = [&]() {
+        while (!line.empty() && line.back() == ' ') {
+            line.pop_back();
+        }
+        lines->push_back(line);
+    };
+
+    usize i = 0;
+    while (i < text.size()) {
+        const usize begin = i;
+        const u32 codepoint = nextCodepoint(text, &i);
+
+        if (codepoint == '\n') {
+            finish();
+            colour.clear();
+            start(colour);
+            continue;
+        }
+        if (codepoint == kSectionSign) {
+            if (i < text.size()) {
+                nextCodepoint(text, &i);
+            }
+            colour.assign(text.substr(begin, i - begin));
+            line.append(text.substr(begin, i - begin));
+            continue;
+        }
+
+        const int glyph = fontGlyph(codepoint);
+        const int advance = glyph >= 0 ? widths[glyph] : 0;
+        if (drewText && width + advance > maxWidth) {
+            if (codepoint == ' ') {
+                // The edge landed on a space: the break is free.
+                finish();
+                start(colour);
+                continue;
+            }
+            if (spaceAt != std::string::npos) {
+                const std::string rest = line.substr(spaceAt + 1);
+                const int restWidth = width - widthAtSpace;
+                line.resize(spaceAt);
+                finish();
+                start(colourAtSpace);
+                line += rest;
+                width = restWidth;
+                drewText = restWidth > 0;
+            }
+            if (drewText && width + advance > maxWidth) {
+                // One word wider than the line: cut it here.
+                finish();
+                start(colour);
+            }
+        }
+
+        line.append(text.substr(begin, i - begin));
+        width += advance;
+        // A space is a break only once something is drawn before it, so an
+        // indented line never breaks inside its own indentation.
+        if (codepoint != ' ') {
+            drewText = true;
+        } else if (drewText) {
+            spaceAt = line.size() - 1;
+            widthAtSpace = width;
+            colourAtSpace = colour;
+        }
+    }
+
+    if (text.empty() || text.back() != '\n') {
+        finish();
+    }
+}
+
 usize fitBytes(const u8* widths, std::string_view text, int maxWidth)
 {
     int width = 0;

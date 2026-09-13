@@ -117,6 +117,46 @@ bool Atlas::init(const texture::AtlasImage& image)
         return false;
     }
 
+    // **A second staging buffer, and it is the whole of the rail fix.**
+    //
+    // This function used to hand `tiled` to the ordinary atlas's upload and
+    // then, on the very next line, hand the same buffer to `initCube` to be
+    // overwritten with cube-atlas bands. When the atlas is in VRAM that upload
+    // is not a memcpy: `C3D_TexUpload` -> `C3D_TexLoadImage` range-checks the
+    // destination against [0x1F000000, +0x600000) and routes VRAM through
+    // `C3D_SyncTextureCopy`, which enqueues a GPU texture copy. So the CPU went
+    // back to writing the buffer the copy engine was still reading out of.
+    //
+    // **The symptom was rails, and the arithmetic says it had to be.** Band 0
+    // writes `staging[tiledOffsetFlipped(x, y, 512, 512) - base]` for the
+    // 64 image rows at the top of the cube atlas. Worked back through the
+    // *ordinary* atlas's own tiled-and-flipped map, the first words it touches
+    // are x = 0..15 of image row 136 -- which is atlas row 8, column 0, which
+    // is **tile 128, the rail**. The tiles after it, in order, are 129, 130,
+    // 131 and up: the rail is not one of the casualties, it is the first one.
+    //
+    // What arrives in those words is cube-atlas slot row 0, and the layout
+    // hands slots out in ascending tile order, so slot 0 is tile 0 (grass top,
+    // 97,161,55) and slot 4 is tile 4 (planks, 188,152,98) -- bright green and
+    // bright brown, which is exactly how this was reported. And because it is a
+    // race between the CPU's stores and the copy engine's reads, *which* texels
+    // lose changes from load to load; it moved when the world was rejoined.
+    //
+    // The fix is to never let `initCube` write a buffer that may still be in
+    // flight. Band 0 -- the dangerous one, the one that lands on the rail --
+    // goes into a buffer the ordinary upload never touched, and the bands
+    // alternate from there so a band's copy always has a full band of CPU work
+    // behind it before its buffer comes round again. One band, not a second
+    // full atlas: 128 KB, which matters because `Renderer::setAtlas` re-enters
+    // this on a texture-pack change with the chunk pool already full.
+    u32* spare = static_cast<u32*>(linearAlloc(kCubeBandBytes));
+    if (spare == nullptr) {
+        linearFree(tiled);
+        C3D_TexDelete(&tex_);
+        C3D_TexDelete(&cube_);
+        return false;
+    }
+
     // **The byte order changes here, and only here.** core/texture/ hands over
     // R,G,B,A in memory -- PNG's own order, which is what makes a decoded pack
     // and the generated Dev Art interchangeable. GPU_RGBA8 reads A,B,G,R in
@@ -143,9 +183,10 @@ bool Atlas::init(const texture::AtlasImage& image)
 
     uploadTiled(tiled, &tex_, size);
 
-    // The same buffer again, for the cube atlas, now that the ordinary one has
-    // been copied out of it.
-    const bool cubeOk = initCube(image, tiled);
+    // The cube atlas next. `spare` first so band 0 cannot land on the upload
+    // above while it is still draining; see the note on the allocation.
+    const bool cubeOk = initCube(image, spare, tiled);
+    linearFree(spare);
     linearFree(tiled);
     if (!cubeOk) {
         C3D_TexDelete(&tex_);
@@ -166,12 +207,22 @@ bool Atlas::init(const texture::AtlasImage& image)
     return true;
 }
 
-bool Atlas::initCube(const texture::AtlasImage& image, u32* staging)
+bool Atlas::initCube(const texture::AtlasImage& image, u32* spare, u32* shared)
 {
     const u8* src = image.rgba.data();
     u32* dst = static_cast<u32*>(cube_.data);
 
     for (u32 band = 0; band < kCubeEdge / kCubeBandRows; ++band) {
+        // **Alternate, and start on `spare`.** Two separate races are closed by
+        // the same line. The first is band 0 against the ordinary atlas's own
+        // upload, which is still draining out of `shared` when this is reached
+        // -- that is the one that ate the rail tile, and it is why band 0 must
+        // not be `shared`. The second is band N's copy against band N+1's
+        // stores, which the old single-buffer loop had just as squarely: the
+        // copy below is enqueued, not finished, when the next iteration starts
+        // refilling the buffer underneath it. See the note in `init`.
+        u32* staging = (band & 1) == 0 ? spare : shared;
+
         // Image rows [top, top + 64) are memory rows [kCubeEdge - 64 - top,
         // kCubeEdge - top) once flipped -- which run the band's words start at.
         const u32 top = band * kCubeBandRows;
@@ -194,7 +245,19 @@ bool Atlas::initCube(const texture::AtlasImage& image, u32* staging)
         if (cubeInVram_) {
             // The raw copy updateTileOf uses, on 128 KB rather than 512 bytes:
             // no tiling, no conversion, nothing with an orientation to get
-            // wrong. Synchronous, so the next band can refill the buffer.
+            // wrong.
+            //
+            // **The name promises more than the function delivers, which is
+            // why the buffers alternate above.** Read out of `libcitro3d.a`:
+            // it branches on citro3d's in-frame flag, and with a frame open it
+            // splits the frame and tail-calls `GX_TextureCopy` with no wait at
+            // all. With no frame open it does reach `gspWaitForEvent`, but on
+            // `GSPGPU_EVENT_PPF` with `nextEvent = false` -- which libctru
+            // documents as returning immediately when an unconsumed event of
+            // that kind is already pending. A PPF left over from any earlier
+            // transfer therefore satisfies the wait without this copy having
+            // moved a byte. Neither path is a guarantee the buffer is free, so
+            // this does not lean on one.
             C3D_SyncTextureCopy(staging, 0, dst + base, 0, u32(kCubeBandBytes), 8);
         } else {
             std::memcpy(dst + base, staging, kCubeBandBytes);
@@ -296,6 +359,20 @@ bool Atlas::uploadSheet(C3D_Tex* tex, const u8* pixels, int width, int height)
     return true;
 }
 
+bool Atlas::initIcons(const texture::AtlasImage& image)
+{
+    if (iconsReady_) {
+        C3D_TexDelete(&icons_);
+        iconsReady_ = false;
+    }
+    if (!image.hasIcons()) {
+        return false;
+    }
+    constexpr int kIconEdge = 256;
+    iconsReady_ = uploadSheet(&icons_, image.iconsRgba.data(), kIconEdge, kIconEdge);
+    return iconsReady_;
+}
+
 bool Atlas::initEntitySheets(const texture::AtlasImage& image)
 {
     if (entityReady_) {
@@ -333,6 +410,20 @@ bool Atlas::initFont(const texture::FontImage& font)
     fontReady_ = uploadSheet(&font_, font.rgba.data(), texture::kFontEdge,
                              texture::kFontEdge);
     return fontReady_;
+}
+
+bool Atlas::initParticles(const std::vector<u8>& sheet)
+{
+    if (particlesReady_) {
+        C3D_TexDelete(&particles_);
+        particlesReady_ = false;
+    }
+    if (sheet.size() != texture::kParticleSheetBytes) {
+        return false;
+    }
+    particlesReady_ = uploadSheet(&particles_, sheet.data(), texture::kParticleSheetEdge,
+                                  texture::kParticleSheetEdge);
+    return particlesReady_;
 }
 
 bool Atlas::ensureWireframe()
@@ -429,9 +520,9 @@ bool Atlas::ensureWireframe()
     return true;
 }
 
-bool Atlas::updateTile(int tile, const u8* texels)
+bool Atlas::updateTile(int tile, const u8* texels, int across)
 {
-    if (!updateTileOf(&tex_, ready_, inVram_, tile, texels)) {
+    if (!updateTileOf(&tex_, ready_, inVram_, tile, texels, across)) {
         return false;
     }
 
@@ -446,29 +537,35 @@ bool Atlas::updateTile(int tile, const u8* texels)
     // moves, and the gutters repeat the tile's edge texels and have to follow
     // it too. Each block is assembled from the tile through the same mapping
     // the full upload uses.
-    const int slot = tile >= 0 && tile < mesh::kAtlasTileCount
-                         ? int(mesh::kCubeAtlas.slotOfTile[tile])
-                         : int(mesh::kNoCubeSlot);
-    if (!cubeReady_ || slot == int(mesh::kNoCubeSlot)) {
+    if (!cubeReady_) {
         return true;
     }
-    constexpr int kBlocksPerSlot = mesh::kCubeSlotPixels / mesh::kCubeTilePixels;
-    const u32 column0 = u32(slot % mesh::kCubeSlotsPerEdge) * u32(kBlocksPerSlot);
-    const u32 row0 = u32(slot / mesh::kCubeSlotsPerEdge) * u32(kBlocksPerSlot);
-    u8 block[kAtlasTilePixels * kAtlasTilePixels * 4];
-    for (int by = 0; by < kBlocksPerSlot; ++by) {
-        for (int bx = 0; bx < kBlocksPerSlot; ++bx) {
-            for (int y = 0; y < kAtlasTilePixels; ++y) {
-                const int ty = mesh::cubeSlotTexel(by * kAtlasTilePixels + y);
-                for (int x = 0; x < kAtlasTilePixels; ++x) {
-                    const int tx = mesh::cubeSlotTexel(bx * kAtlasTilePixels + x);
-                    std::memcpy(block + (y * kAtlasTilePixels + x) * 4,
-                                texels + (ty * kAtlasTilePixels + tx) * 4, 4);
+    for (int n = 0; n < across; ++n) {
+        const int one = tile + n;
+        const int slot = one >= 0 && one < mesh::kAtlasTileCount
+                             ? int(mesh::kCubeAtlas.slotOfTile[one])
+                             : int(mesh::kNoCubeSlot);
+        if (slot == int(mesh::kNoCubeSlot)) {
+            continue;
+        }
+        constexpr int kBlocksPerSlot = mesh::kCubeSlotPixels / mesh::kCubeTilePixels;
+        const u32 column0 = u32(slot % mesh::kCubeSlotsPerEdge) * u32(kBlocksPerSlot);
+        const u32 row0 = u32(slot / mesh::kCubeSlotsPerEdge) * u32(kBlocksPerSlot);
+        u8 block[kAtlasTilePixels * kAtlasTilePixels * 4];
+        for (int by = 0; by < kBlocksPerSlot; ++by) {
+            for (int bx = 0; bx < kBlocksPerSlot; ++bx) {
+                for (int y = 0; y < kAtlasTilePixels; ++y) {
+                    const int ty = mesh::cubeSlotTexel(by * kAtlasTilePixels + y);
+                    for (int x = 0; x < kAtlasTilePixels; ++x) {
+                        const int tx = mesh::cubeSlotTexel(bx * kAtlasTilePixels + x);
+                        std::memcpy(block + (y * kAtlasTilePixels + x) * 4,
+                                    texels + (ty * kAtlasTilePixels + tx) * 4, 4);
+                    }
                 }
-            }
-            if (!writeTile(&cube_, cubeInVram_, column0 + u32(bx), row0 + u32(by), kCubeEdge,
-                           block)) {
-                return false;
+                if (!writeTile(&cube_, cubeInVram_, column0 + u32(bx), row0 + u32(by), kCubeEdge,
+                               block)) {
+                    return false;
+                }
             }
         }
     }
@@ -481,58 +578,102 @@ bool Atlas::updateItemsTile(int tile, const u8* texels)
     // declaration of `items_`. The flag is passed anyway rather than hard-coded
     // false, so that moving the sheet into VRAM one day is a one-line change
     // and not a silent corruption.
-    return updateTileOf(&items_, itemsReady_, false, tile, texels);
+    return updateTileOf(&items_, itemsReady_, false, tile, texels, 1);
 }
 
-bool Atlas::updateTileOf(C3D_Tex* target, bool live, bool vram, int tile, const u8* texels)
+bool Atlas::updateTileOf(C3D_Tex* target, bool live, bool vram, int tile, const u8* texels,
+                         int across)
 {
     constexpr int kTilesTotal = kAtlasTilesPerEdge * kAtlasTilesPerEdge;
     if (!live || texels == nullptr || tile < 0 || tile >= kTilesTotal) {
         return false;
     }
-    return writeTile(target, vram, u32(tile % kAtlasTilesPerEdge),
-                     u32(tile / kAtlasTilesPerEdge), u32(kAtlasEdge), texels);
+    // A run has to stay inside one row of the atlas: the tiles of a run are
+    // adjacent in memory only because they are adjacent columns, and a run that
+    // wrapped past the last column would write the next row's first tile at an
+    // offset that is not its own.
+    const int column = tile % kAtlasTilesPerEdge;
+    if (across < 1 || across > kMaxTileRun || column + across > kAtlasTilesPerEdge) {
+        return false;
+    }
+    return writeTile(target, vram, u32(column), u32(tile / kAtlasTilesPerEdge), u32(kAtlasEdge),
+                     texels, u32(across));
 }
 
 bool Atlas::writeTile(C3D_Tex* target, bool vram, u32 column, u32 row, u32 edge,
-                      const u8* texels)
+                      const u8* texels, u32 across)
 {
+    if (across < 1 || across > u32(kMaxTileRun)) {
+        return false;
+    }
     if (tileStaging_ == nullptr) {
-        tileStaging_ = static_cast<u32*>(linearAlloc(texture::kTileWords * sizeof(u32)));
+        tileStaging_ = static_cast<u32*>(
+            linearAlloc(texture::kTileWords * kTileStagingTiles * sizeof(u32)));
         if (tileStaging_ == nullptr) {
             return false;
         }
     }
+    // **Fresh words for every push**, never the last push's: its copy may still
+    // be reading them. See `tileStagingUsed_`.
+    if (tileStagingUsed_ + int(across) > kTileStagingTiles) {
+        return false;
+    }
+    u32* staging = tileStaging_ + u32(tileStagingUsed_) * texture::kTileWords;
+    tileStagingUsed_ += int(across);
 
     const texture::TileRuns runs = texture::tileRunsFlipped(column, row, edge);
 
+    // The layout of what is staged: the first half of every tile in the run,
+    // then the second half of every tile in the run. That is the order the
+    // two destination runs hold them in.
+    constexpr u32 kHalf = texture::kTileRunWords;
+    u32* const firstHalves = staging;
+    u32* const secondHalves = staging + kHalf * across;
+
     // Same byte-order reversal and same flip as the whole-atlas upload, over
     // 256 texels instead of 65,536. `tileRunIndex` is what folds the flip and
-    // the Morton order into an index into the two runs laid end to end.
+    // the Morton order into an index into the two runs laid end to end -- and
+    // it lands the first tile of the run straight in place.
     for (u32 y = 0; y < u32(kAtlasTilePixels); ++y) {
         for (u32 x = 0; x < u32(kAtlasTilePixels); ++x) {
             const u8* src = texels + (usize(y) * kAtlasTilePixels + usize(x)) * 4;
-            tileStaging_[texture::tileRunIndex(runs, column, row, x, y, edge)] =
-                rgba(src[0], src[1], src[2], src[3]);
+            const u32 at = texture::tileRunIndex(runs, column, row, x, y, edge);
+            const u32 word = rgba(src[0], src[1], src[2], src[3]);
+            if (at < kHalf) {
+                firstHalves[at] = word;
+            } else {
+                secondHalves[at - kHalf] = word;
+            }
         }
     }
 
-    constexpr u32 kRunBytes = texture::kTileRunWords * sizeof(u32);
-    GSPGPU_FlushDataCache(tileStaging_, texture::kTileWords * sizeof(u32));
+    // **The layout inside a run does not depend on which column the tile is
+    // in**: subtracting the run's own base cancels the column term out of
+    // `tiledOffset` entirely, leaving the Morton index and the half of the tile
+    // the texel is in. So the rest of the run is the first tile's halves
+    // repeated -- and the destination is still two copies, because tile
+    // n + 1's runs start exactly where tile n's end.
+    for (u32 n = 1; n < across; ++n) {
+        std::memcpy(firstHalves + n * kHalf, firstHalves, kHalf * sizeof(u32));
+        std::memcpy(secondHalves + n * kHalf, secondHalves, kHalf * sizeof(u32));
+    }
+
+    const u32 runBytes = kHalf * across * sizeof(u32);
+    GSPGPU_FlushDataCache(staging, runBytes * 2);
 
     u32* dst = static_cast<u32*>(target->data);
     if (vram) {
         // **The CPU cannot store into VRAM**, so the move is the same texture
         // copy `C3D_TexUpload` routes a VRAM destination through -- twice, on
-        // 512 bytes each. Flag 8 is the raw copy: no tiling, no format
-        // conversion, nothing with an orientation left to get wrong, which is
-        // the lesson the whole-atlas upload above was rewritten for.
-        C3D_SyncTextureCopy(tileStaging_, 0, dst + runs.first, 0, kRunBytes, 8);
-        C3D_SyncTextureCopy(tileStaging_ + texture::kTileRunWords, 0, dst + runs.second, 0,
-                            kRunBytes, 8);
+        // 512 bytes per tile in the run each. Flag 8 is the raw copy: no
+        // tiling, no format conversion, nothing with an orientation left to get
+        // wrong, which is the lesson the whole-atlas upload above was rewritten
+        // for.
+        C3D_SyncTextureCopy(firstHalves, 0, dst + runs.first, 0, runBytes, 8);
+        C3D_SyncTextureCopy(secondHalves, 0, dst + runs.second, 0, runBytes, 8);
     } else {
-        std::memcpy(dst + runs.first, tileStaging_, kRunBytes);
-        std::memcpy(dst + runs.second, tileStaging_ + texture::kTileRunWords, kRunBytes);
+        std::memcpy(dst + runs.first, firstHalves, runBytes);
+        std::memcpy(dst + runs.second, secondHalves, runBytes);
         C3D_TexFlush(target);
     }
     return true;
@@ -552,6 +693,10 @@ void Atlas::shutdown()
         C3D_TexDelete(&items_);
         itemsReady_ = false;
     }
+    if (iconsReady_) {
+        C3D_TexDelete(&icons_);
+        iconsReady_ = false;
+    }
     if (entityReady_) {
         C3D_TexDelete(&entity_);
         entityReady_ = false;
@@ -563,6 +708,10 @@ void Atlas::shutdown()
     if (fontReady_) {
         C3D_TexDelete(&font_);
         fontReady_ = false;
+    }
+    if (particlesReady_) {
+        C3D_TexDelete(&particles_);
+        particlesReady_ = false;
     }
     if (wireReady_) {
         C3D_TexDelete(&wire_);

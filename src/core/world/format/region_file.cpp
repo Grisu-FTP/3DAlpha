@@ -2,6 +2,7 @@
 
 #include "core/util/crc32.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -392,6 +393,107 @@ bool RegionFile::read(i32 chunkX, i32 chunkZ, std::vector<u8>* out)
                        ByteSpan(out->data() + base, entry.byteLength))) {
         out->resize(base);
         return false;
+    }
+    return true;
+}
+
+bool RegionFile::readMany(const i32* chunkXs, const i32* chunkZs, usize count,
+                          std::vector<u8>* scratch, void* context, BatchVisitor visit)
+{
+    if (!isOpen() || scratch == nullptr || visit == nullptr) {
+        return false;
+    }
+
+    // Slots rather than coordinates from here on. The directory is what says
+    // where the bytes are, and a slot is also what makes a repeated request
+    // collapse into one read instead of two.
+    batch_.clear();
+    for (usize i = 0; i < count; ++i) {
+        // Refused rather than masked. `regionSlot` would happily fold a chunk
+        // from the next region onto one of ours and read the wrong terrain --
+        // silently, and into a picture nobody would think to distrust.
+        if (regionCoord(chunkXs[i]) != regionX_ || regionCoord(chunkZs[i]) != regionZ_) {
+            return false;
+        }
+        const u32 slot = regionSlot(chunkXs[i], chunkZs[i]);
+        const Entry& entry = dir_[slot];
+        // Sector 0 is the header's, never a payload's, so it doubles as "this
+        // region does not hold that chunk" -- and sorts every absent answer to
+        // the front, which is where a caller wants them.
+        batch_.push_back(BatchSlot{
+            entry.present() && entry.byteLength != 0 ? entry.sectorOffset : 0u, slot});
+    }
+    if (batch_.empty()) {
+        return true;
+    }
+
+    std::sort(batch_.begin(), batch_.end(),
+              [](const BatchSlot& a, const BatchSlot& b) { return a.sector < b.sector; });
+    batch_.erase(std::unique(batch_.begin(), batch_.end(),
+                             [](const BatchSlot& a, const BatchSlot& b) {
+                                 return a.slot == b.slot;
+                             }),
+                 batch_.end());
+
+    usize first = 0;
+
+    // Absent first, and before one byte is read: they cost no I/O at all, so a
+    // caller counting a group down can finish one that is wholly unexplored
+    // without waiting on the card for it.
+    while (first < batch_.size() && batch_[first].sector == 0) {
+        if (!visit(context, chunkXOf(batch_[first].slot), chunkZOf(batch_[first].slot),
+                   ConstByteSpan())) {
+            return true;
+        }
+        ++first;
+    }
+
+    while (first < batch_.size()) {
+        // How far one operation reaches: everything that starts within the gap
+        // of what has been taken so far and still fits the scratch. The first
+        // entry is always taken, so a single payload over the cap is read on
+        // its own rather than refused.
+        const u32 startSector = batch_[first].sector;
+        usize last = first;
+        u32 endSector = startSector + dir_[batch_[first].slot].sectorCount;
+        for (usize i = first + 1; i < batch_.size(); ++i) {
+            const Entry& entry = dir_[batch_[i].slot];
+            if (entry.sectorOffset > endSector + kBatchGapSectors) {
+                break;
+            }
+            const u32 reach = entry.sectorOffset + entry.sectorCount;
+            if (u64(reach - startSector) * kSectorBytes > kBatchReadBytes) {
+                break;
+            }
+            endSector = reach;
+            last = i;
+        }
+
+        // **Not the whole of the last sector.** `write` stores a payload's
+        // exact length and pads nothing, so the final sector of the file is
+        // partial and reading it whole would run off the end and fail the
+        // batch. The last run's recorded length is where the bytes provably
+        // stop -- and it is the last, because runs do not overlap, so a higher
+        // offset also means a higher end.
+        const Entry& tail = dir_[batch_[last].slot];
+        const u64 offset = u64(startSector) * kSectorBytes;
+        const usize length =
+            usize(u64(tail.sectorOffset) * kSectorBytes + tail.byteLength - offset);
+        scratch->resize(length);
+        if (!file_->readAt(offset, ByteSpan(scratch->data(), length))) {
+            return false;
+        }
+
+        for (usize i = first; i <= last; ++i) {
+            const Entry& entry = dir_[batch_[i].slot];
+            const usize at = usize(u64(entry.sectorOffset) * kSectorBytes - offset);
+            const i32 x = chunkXOf(batch_[i].slot);
+            const i32 z = chunkZOf(batch_[i].slot);
+            if (!visit(context, x, z, ConstByteSpan(scratch->data() + at, entry.byteLength))) {
+                return true;  // the caller stopped it, which is not a failure
+            }
+        }
+        first = last + 1;
     }
     return true;
 }

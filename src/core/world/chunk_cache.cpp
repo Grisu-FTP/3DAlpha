@@ -575,6 +575,14 @@ void ChunkCache::applyPlayerState(const PlayerState& player)
     if (player.hasInventory) {
         level.player.inventory = player.inventory;
     }
+    if (player.hasVitals) {
+        level.player.health = player.health;
+        level.player.hurtTime = player.hurtTime;
+        level.player.deathTime = player.deathTime;
+        level.player.attackTime = player.attackTime;
+        level.player.air = player.air;
+        level.player.fire = player.fire;
+    }
     // A world a server made has no Player compound, and now somebody has stood
     // in it. Writing one is what the original client does the first time you
     // play such a world; what must not happen is inventing one for a world

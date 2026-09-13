@@ -44,43 +44,63 @@ constexpr float kMarkerLength = 6.5f;
 // The panel beside the map, and the three readouts in it. It runs the full
 // height of the map's frame, flush to the left edge of the screen, because
 // every pixel it does not use is one the map does.
+//
+// **All of it hangs off the map's own top**, which moves with the hotbar band:
+// the three boxes are pitched 40 apart from the top of the panel and the
+// wordmark is anchored to its bottom, so a taller panel grows in the middle
+// rather than pushing the wordmark off the end. The panel's bottom edge is the
+// same pixel in both shapes of the screen -- the tab strip does not move -- so
+// the wordmark does not move either.
 constexpr int kPanelX = 0;
-constexpr int kPanelY = kMapTop - 2;
 constexpr int kPanelW = 96;
-constexpr int kPanelH = kMapHeight + 4;
-
 constexpr int kFieldX = kPanelX + 4;
 constexpr int kFieldW = kPanelW - 8;
 constexpr int kFieldH = 24;
-// Evenly spaced down the panel with the wordmark under them, which is what
-// keeps three numbers from reading as a column that ran out of things to say.
-//
-// **The pitch went from 56 to 40 as the screen grew its two bands.** The panel
-// is as tall as the map's frame and the map lost 42 pixels between the hotbar
-// and the focus banner, so everything in this column moved rather than the
-// wordmark being dropped -- see hud.hpp. The boxes are unchanged at 24 tall;
-// only the gaps between them are smaller.
-constexpr int kFieldY[3] = {48, 88, 128};
-// The console row each one's text sits on: the middle of its box, which is
-// `y / 8 + 2` for a box that starts on a cell boundary.
-constexpr int kFieldRow[3] = {8, 13, 18};
-// The two d-pad settings, directly under the z box (which ends at pixel 152, so
-// row 20). Plain text on the panel rather than boxed readouts: they are what
-// the map is showing itself as, not measurements of the world, and a bevelled
-// slot around each would have made the column read as six numbers instead of
-// three.
-constexpr int kZoomRow = 20;
-constexpr int kGridRow = 21;
-// Row 22 is left blank, which is what separates what the map is showing from
-// what the program is.
-constexpr int kWordmarkRow = 23;
+constexpr int kFieldPitch = 40;
 
-// **Everything in the panel has to stop inside it**, and the panel is now the
-// map's height rather than the screen's. Checked here because the wordmark used
-// to sit at row 27 -- pixel 208 -- which is where the hotbar starts.
-static_assert(kFieldY[2] + kFieldH <= kPanelY + kPanelH, "the z box must fit the panel");
-static_assert((kWordmarkRow + 1) * hud::kCell <= kPanelY + kPanelH,
-              "the wordmark must fit the panel");
+struct Column {
+    int panelY, panelH;
+    int fieldY[3];
+    int fieldRow[3];
+    // The two d-pad settings, directly under the z box. Plain text on the panel
+    // rather than boxed readouts: they are what the map is showing itself as,
+    // not measurements of the world, and a bevelled slot around each would have
+    // made the column read as six numbers instead of three.
+    int zoomRow, gridRow;
+    int wordmarkRow;
+};
+
+// The console row a box of `kFieldH` starting at `y` has its text on: the
+// middle of the box, and rows are 1-based.
+constexpr int rowCentredIn(int y) { return (y + (kFieldH - hud::kCell) / 2) / hud::kCell + 1; }
+
+constexpr Column columnFor(int pageTop)
+{
+    const int panelY = mapTopFor(pageTop) - 2;
+    const int panelH = mapHeightFor(pageTop) + 4;
+    const int z = panelY + 2 * kFieldPitch;
+    // Two rows of wordmark against the bottom edge, and a blank row above them
+    // separating what the map is showing from what the program is.
+    const int wordmark = (panelY + panelH) / hud::kCell - 1;
+    return Column{panelY,
+                  panelH,
+                  {panelY, panelY + kFieldPitch, z},
+                  {rowCentredIn(panelY), rowCentredIn(panelY + kFieldPitch), rowCentredIn(z)},
+                  (z + kFieldH + 2) / hud::kCell + 1,
+                  (z + kFieldH + 2) / hud::kCell + 2,
+                  wordmark};
+}
+
+// **Everything in the panel has to stop inside it**, at both of the screen's
+// two shapes, and the settings rows have to stay clear of the wordmark.
+constexpr bool columnFits(int pageTop)
+{
+    const Column c = columnFor(pageTop);
+    return c.fieldY[2] + kFieldH <= c.panelY + c.panelH && c.gridRow < c.wordmarkRow
+           && (c.wordmarkRow + 1) * hud::kCell <= c.panelY + c.panelH;
+}
+static_assert(columnFits(hud::kBandedPageTop), "the map's column must fit under a hotbar");
+static_assert(columnFits(hud::kBarePageTop), "the map's column must fit without one");
 
 // The axis letter, as pixels. **It is five wide where a character cell is
 // eight**, and that is the whole reason the column fits in 96 pixels: a Far
@@ -102,10 +122,32 @@ constexpr int kSettingColumns = 10;
 
 void MapScreen::configure(bool isNew3DS)
 {
-    store_.setCapacity(isNew3DS ? 1536 : 768);
-    sampleBudget_ = isNew3DS ? 16 : 8;
-    // A new world, so the store knows nothing about it: burst until the window
-    // has caught up with what the streamer can give. See kPrimeBudget.
+    // **Sized for the widest window in the tallest shape of the screen**, which
+    // is Spectator's: 212 by 202 pixels at zoom -1 is 424 by 404 blocks, and a
+    // patch is a chunk, so the window touches 28 by 27 of them -- 756. Sizing
+    // for the banded window instead (28 by 21, 588) would have meant a store
+    // that thrashes the moment a player switches mode, and thrashing is the one
+    // failure this store degrades into rather than out of: the ring scan
+    // touches the centre first, so the least-recently-used entry is the ground
+    // under the player.
+    //
+    // Both numbers therefore went up with the window, keeping the headroom they
+    // had: 1,024 on an old 3DS (1.5 MB) and 2,048 on a New one (3 MB), against
+    // the 36 MB and 75 MB of newlib heap those consoles get -- 4% of each.
+    store_.setCapacity(isNew3DS ? 2048 : 1024);
+    sampleMicros_ = isNew3DS ? 800 : 400;
+
+    // **As long as the widest window is wide**, which is the 756 above, with
+    // room left for the changed columns arriving beside them. A queue that
+    // could not hold one cold window would overflow on the first frame of every
+    // world and send the map straight to the fallback pass it is there to
+    // avoid.
+    pending_.setCapacity(1024);
+    resync_ = false;
+    offloadCount_ = 0;
+
+    // A new world, so the store knows nothing about it: burst until the map has
+    // caught up with what the streamer can give. See kPrimeMicros.
     primed_ = false;
     shown_ = Signature{};
     refreshed_ = Refreshed{};
@@ -158,6 +200,10 @@ const char* MapScreen::zoomName() const
 void MapScreen::reset()
 {
     store_.clear();
+    pending_.clear();
+    resync_ = false;
+    offloadCount_ = 0;
+    primed_ = false;
     shown_ = Signature{};
     refreshed_ = Refreshed{};
     clearPan();
@@ -194,14 +240,15 @@ map::MapWindow MapScreen::windowFor(const Camera& camera) const
 {
     map::MapWindow window;
     window.width = kMapWidth;
-    window.height = kMapHeight;
+    window.height = mapHeight();
     window.zoom = zoom_;
 
     // How much ground the picture covers, which is what the centring is in
-    // terms of -- 208 by 200 blocks at 1:1, a quarter of that magnified twice,
-    // four times it shrunk once.
+    // terms of -- 212 by 162 blocks at 1:1 under a hotbar and 212 by 202
+    // without one, a quarter of that magnified twice, four times it shrunk
+    // once.
     const i32 blocksWide = map::mapWindowBlocks(kMapWidth, zoom_);
-    const i32 blocksHigh = map::mapWindowBlocks(kMapHeight, zoom_);
+    const i32 blocksHigh = map::mapWindowBlocks(window.height, zoom_);
 
     // Centred on the block the player is standing in, so the marker sits in the
     // middle and the ground scrolls under it. The origin is a whole block,
@@ -226,8 +273,101 @@ map::MapWindow MapScreen::windowFor(const Camera& camera) const
     return window;
 }
 
-void MapScreen::update(const render::WorldStreamer& world, const Camera& camera)
+namespace {
+
+// Microseconds since a system tick was taken. The same conversion the redraw
+// timer uses; see `lastDrawMicros`.
+u32 microsSince(u64 began)
 {
+    return u32(millisFromTicks(svcGetSystemTick() - began) * 1000.0f);
+}
+
+}  // namespace
+
+void MapScreen::sampleOnWorker(void* ctx, int index, const world::ChunkColumn& column)
+{
+    // **The generation worker's thread, and the only line of this class that
+    // runs there.** It reads the column and writes one slot of `offloadSample_`
+    // and touches nothing else -- in particular not the store, which is the
+    // main thread's. See the note on `offloadSample_`.
+    auto* self = static_cast<MapScreen*>(ctx);
+    map::sampleChunk(column, &self->offloadSample_[index]);
+}
+
+bool MapScreen::sampleOne(const render::WorldStreamer& world, i32 chunkX, i32 chunkZ,
+                          map::MapChunkSample* scratch)
+{
+    // **The column's serial, which is what "this sample is out of date" means.**
+    // Zero is a column the streamer does not hold, and a held sample of ground
+    // that is no longer resident stays exactly as it was -- it is the last true
+    // thing anyone knew about that chunk, and there is nothing to replace it
+    // with. The map never asks the card for anything.
+    const u32 serial = world.columnBlockSerial(chunkX, chunkZ);
+    if (serial == 0) {
+        return false;
+    }
+    if (store_.find(chunkX, chunkZ) != nullptr && serial == store_.sampleSerial(chunkX, chunkZ)) {
+        return false;
+    }
+    const world::ChunkColumn* column = world.residentColumn(chunkX, chunkZ);
+    if (column == nullptr) {
+        return false;
+    }
+    map::sampleChunk(*column, scratch);
+    store_.store(chunkX, chunkZ, *scratch, serial);
+    return true;
+}
+
+void MapScreen::collectOffload(render::WorldStreamer& world)
+{
+    int done = 0;
+    if (!world.takeColumnWork(&done)) {
+        // Either nothing was offered or it is still out there, which on the
+        // console cannot happen -- `WorldStreamer::update` runs earlier in the
+        // frame and withdraws it. Whatever was offered stays recorded and
+        // `postOffload` will not offer again until it comes back.
+        return;
+    }
+    for (int i = 0; i < done && i < offloadCount_; ++i) {
+        store_.store(offloadX_[i], offloadZ_[i], offloadSample_[i], offloadSerial_[i]);
+    }
+    // **What the worker did not reach goes back on the queue**, at the end
+    // rather than the front: it is a chunk the world was too busy to look at,
+    // and the ones queued behind it have been waiting just as long.
+    for (int i = done; i < offloadCount_; ++i) {
+        pending_.push(offloadX_[i], offloadZ_[i]);
+    }
+    offloadCount_ = 0;
+}
+
+void MapScreen::postOffload(render::WorldStreamer& world)
+{
+    if (offloadCount_ != 0 || pending_.empty()) {
+        return;
+    }
+    if (!world.columnWorkAvailable()) {
+        return;
+    }
+
+    int wanted = 0;
+    while (wanted < kOffload && pending_.pop(&offloadX_[wanted], &offloadZ_[wanted])) {
+        ++wanted;
+    }
+    // Coordinates whose column is not resident are dropped by the offer, and
+    // the rest are compacted to the front -- the same answer `sampleOne` gives
+    // them, reached without a second lookup here.
+    const int taken =
+        world.offerColumnWork(offloadX_, offloadZ_, wanted, &MapScreen::sampleOnWorker, this);
+    for (int i = 0; i < taken; ++i) {
+        offloadSerial_[i] = world.columnBlockSerial(offloadX_[i], offloadZ_[i]);
+    }
+    offloadCount_ = taken;
+}
+
+void MapScreen::update(render::WorldStreamer& world, const Camera& camera)
+{
+    const u64 began = svcGetSystemTick();
+
     const map::MapWindow window = windowFor(camera);
 
     i32 minChunkX = 0;
@@ -246,78 +386,132 @@ void MapScreen::update(const render::WorldStreamer& world, const Camera& camera)
     touchedOriginZ_ = window.originBlockZ;
     touched_ = true;
 
-    // Hoisted: it is a kilobyte, and constructing one per chunk would zero it
-    // before sampleChunk overwrote every byte anyway.
-    map::MapChunkSample sample;
+    // **First, whatever core 2 sampled while this thread was drawing.** Before
+    // anything else touches the queue, so a chunk it finished is not also
+    // sitting on the queue to be done again.
+    collectOffload(world);
 
+    // **Then the world's own list of what it wrote into.** This is the whole of
+    // "the map follows the world", and it is a pop per *changed chunk* rather
+    // than a lookup per *visible chunk*: a lake draining for a minute puts two
+    // coordinates here, where the pass this replaced re-asked six hundred
+    // chunks on every frame of that minute to find the same two.
+    //
+    // A chunk that is neither held nor in the window is dropped: the map draws
+    // what it remembers and what is on screen, and ground that is neither is
+    // ground it has never had a reason to sample.
+    resync_ = resync_ || world.changedColumnsOverflowed();
+    i32 changedX = 0;
+    i32 changedZ = 0;
+    while (world.takeChangedColumn(&changedX, &changedZ)) {
+        const bool inWindow = changedX >= minChunkX && changedX <= maxChunkX
+                              && changedZ >= minChunkZ && changedZ <= maxChunkZ;
+        if (inWindow || store_.find(changedX, changedZ) != nullptr) {
+            pending_.push(changedX, changedZ);
+        }
+    }
+
+    // **And the ground the map has never had**, which the change list cannot
+    // say anything about after the fact -- a column adopted before this screen
+    // existed, or one whose coordinate was lost to an overflow.
+    //
     // **Nearest the player first, in square rings**, and the order is the whole
     // difference between a map that fills in and a map that looks broken. The
     // scan used to run in raster order from the north-west corner, so with a
     // budget smaller than the window the ground under the marker -- the only
     // part the player is looking at -- was sampled about halfway through, and
     // everything before that was picture arriving in a corner. Rings put it
-    // under the marker first and grow outward, which is also the order the
-    // streamer brings the columns in, so the budget is rarely spent on a chunk
-    // that is not there yet.
+    // under the marker first and grow outward, and the queue is FIFO, so that
+    // order survives all the way to the sampling.
     //
     // The centre is derived from the window rather than from the camera a
     // second time, so the rings are centred on exactly the block the marker is
     // drawn on however far from the origin the player is. See windowFor.
-    const i32 centreChunkX = floorDiv(
-        window.originBlockX + map::mapWindowBlocks(kMapWidth, window.zoom) / 2, map::kChunkPixels);
-    const i32 centreChunkZ = floorDiv(
-        window.originBlockZ + map::mapWindowBlocks(kMapHeight, window.zoom) / 2, map::kChunkPixels);
-    const i32 reach = std::max(std::max(centreChunkX - minChunkX, maxChunkX - centreChunkX),
-                               std::max(centreChunkZ - minChunkZ, maxChunkZ - centreChunkZ));
+    if (moved || resync_) {
+        const i32 centreChunkX =
+            floorDiv(window.originBlockX + map::mapWindowBlocks(window.width, window.zoom) / 2,
+                     map::kChunkPixels);
+        const i32 centreChunkZ =
+            floorDiv(window.originBlockZ + map::mapWindowBlocks(window.height, window.zoom) / 2,
+                     map::kChunkPixels);
+        const i32 reach = std::max(std::max(centreChunkX - minChunkX, maxChunkX - centreChunkX),
+                                   std::max(centreChunkZ - minChunkZ, maxChunkZ - centreChunkZ));
 
-    int budget = primed_ ? sampleBudget_ : kPrimeBudget;
-    bool tookAny = false;
-
-    for (i32 ring = 0; ring <= reach; ++ring) {
-        for (i32 chunkZ = centreChunkZ - ring; chunkZ <= centreChunkZ + ring; ++chunkZ) {
-            if (chunkZ < minChunkZ || chunkZ > maxChunkZ) {
-                continue;
-            }
-            const bool edgeRow = chunkZ == centreChunkZ - ring || chunkZ == centreChunkZ + ring;
-            for (i32 chunkX = centreChunkX - ring; chunkX <= centreChunkX + ring; ++chunkX) {
-                // Only the ring itself: every chunk inside it was visited by a
-                // smaller `ring`, and revisiting them would make this quartic.
-                if (!edgeRow && chunkX != centreChunkX - ring && chunkX != centreChunkX + ring) {
+        for (i32 ring = 0; ring <= reach; ++ring) {
+            for (i32 chunkZ = centreChunkZ - ring; chunkZ <= centreChunkZ + ring; ++chunkZ) {
+                if (chunkZ < minChunkZ || chunkZ > maxChunkZ) {
                     continue;
                 }
-                if (chunkX < minChunkX || chunkX > maxChunkX) {
-                    continue;
-                }
-                if (store_.find(chunkX, chunkZ) != nullptr) {
+                const bool edgeRow =
+                    chunkZ == centreChunkZ - ring || chunkZ == centreChunkZ + ring;
+                for (i32 chunkX = centreChunkX - ring; chunkX <= centreChunkX + ring; ++chunkX) {
+                    // Only the ring itself: every chunk inside it was visited by
+                    // a smaller `ring`, and revisiting them would make this
+                    // quartic.
+                    if (!edgeRow && chunkX != centreChunkX - ring
+                        && chunkX != centreChunkX + ring) {
+                        continue;
+                    }
+                    if (chunkX < minChunkX || chunkX > maxChunkX) {
+                        continue;
+                    }
+                    const bool held = store_.find(chunkX, chunkZ) != nullptr;
+                    if (!held) {
+                        pending_.push(chunkX, chunkZ);
+                        continue;
+                    }
                     if (moved) {
                         store_.touch(chunkX, chunkZ);
                     }
-                    continue;
+                    // **The fallback, and only ever the fallback.** Asking the
+                    // streamer about a chunk the map already holds is the pass
+                    // the change list exists to make unnecessary; it runs when
+                    // that list overflowed and there is no other way to find out
+                    // what was on it.
+                    if (resync_ && world.columnBlockSerial(chunkX, chunkZ)
+                                       != store_.sampleSerial(chunkX, chunkZ)) {
+                        pending_.push(chunkX, chunkZ);
+                    }
                 }
-                if (budget <= 0) {
-                    continue;
-                }
-                // **Only what the game already has in memory.** The map never
-                // asks the card for anything: a chunk that is not resident is
-                // one the player has not been near yet, and it is sampled the
-                // moment the streamer brings it in.
-                const world::ChunkColumn* column = world.residentColumn(chunkX, chunkZ);
-                if (column == nullptr) {
-                    continue;
-                }
-                map::sampleChunk(*column, &sample);
-                store_.store(chunkX, chunkZ, sample);
-                tookAny = true;
-                --budget;
             }
         }
     }
 
-    // **The cold start ends when a whole pass finds nothing to take.** Not when
-    // the window is full: the map reaches further than the render distance can
-    // at the smaller settings, so waiting for every chunk would leave the burst
-    // budget on for ever. A pass that takes nothing has caught up with whatever
-    // the streamer is able to give it, which is the same thing.
+    // **Cleared by the walk it asked for, and asked for again if the queue
+    // itself lost something.** The queue holds a whole cold window with room to
+    // spare, so the second half of this is a guard rather than a path -- but a
+    // dropped coordinate is a chunk of the map that would otherwise never be
+    // redrawn, and the recovery costs one pass.
+    resync_ = pending_.overflowed();
+
+    // **The batch for core 2, offered before this thread starts its own**, so
+    // the worker has the whole of the rest of the frame to do it in. Refused
+    // outright on a console with no spare core and on a frame where a batch is
+    // already out; generation is never waiting on it either way -- see
+    // `WorldStreamer::offerColumnWork`.
+    postOffload(world);
+
+    // **And whatever is left, on this thread, for as long as the frame can
+    // spare.** The clock is read after each chunk rather than before, so a
+    // frame always samples at least one however little of its allowance is
+    // left: the queue can fall behind, but it cannot stall.
+    const u32 allowance = primed_ ? sampleMicros_ : kPrimeMicros;
+    map::MapChunkSample scratch;
+    bool tookAny = false;
+    i32 chunkX = 0;
+    i32 chunkZ = 0;
+    while (pending_.pop(&chunkX, &chunkZ)) {
+        tookAny = sampleOne(world, chunkX, chunkZ, &scratch) || tookAny;
+        if (microsSince(began) >= allowance) {
+            break;
+        }
+    }
+
+    // **The cold start ends when a frame finds nothing to take.** Not when the
+    // window is full: the map reaches further than the render distance can at
+    // the smaller settings, so waiting for every chunk would leave the burst
+    // allowance on for ever. A frame that samples nothing has caught up with
+    // whatever the streamer is able to give it, which is the same thing.
     if (!tookAny) {
         primed_ = true;
     }
@@ -358,23 +552,25 @@ bool MapScreen::draw(const gui::Surface& surface, const Camera& camera, bool for
 
 void MapScreen::drawFurniture(const gui::Surface& surface)
 {
-    hud::panel(surface, kPanelX, kPanelY, kPanelW, kPanelH);
+    const Column col = columnFor(hud::pageTop());
+    hud::panel(surface, kPanelX, col.panelY, kPanelW, col.panelH);
     for (int i = 0; i < 3; ++i) {
-        hud::readout(surface, kFieldX, kFieldY[i], kFieldW, kFieldH);
+        hud::readout(surface, kFieldX, col.fieldY[i], kFieldW, kFieldH);
         // The letter is furniture, not text: it never changes, so it is drawn
         // with the box rather than reprinted every time the number moves. One
         // pixel down, which centres seven rows of glyph in an eight-pixel
         // character row.
-        hud::drawLetter(surface, kLetterX, kFieldY[i] + hud::kCell + 1, kFieldLetter[i],
+        hud::drawLetter(surface, kLetterX, col.fieldY[i] + hud::kCell + 1, kFieldLetter[i],
                         hud::kReadoutLabel);
     }
     // The frame, two pixels of it, cut into the panel colour the way a slot is
     // -- so the map reads as something set into the screen rather than pasted
     // onto it.
-    hud::readout(surface, kMapLeft - 2, kMapTop - 2, kMapWidth + 4, kMapHeight + 4);
+    hud::readout(surface, kMapLeft - 2, mapTop() - 2, kMapWidth + 4, mapHeight() + 4);
 
-    hud::textCentred(kWordmarkRow, kPanelX, kPanelW, hud::kPanelText, hud::kPanelFace, "3DAlpha");
-    hud::textCentred(kWordmarkRow + 1, kPanelX, kPanelW, hud::kPanelDark, hud::kPanelFace,
+    hud::textCentred(col.wordmarkRow, kPanelX, kPanelW, hud::kPanelText, hud::kPanelFace,
+                     "3DAlpha");
+    hud::textCentred(col.wordmarkRow + 1, kPanelX, kPanelW, hud::kPanelDark, hud::kPanelFace,
                      mcver::kDisplay);
 }
 
@@ -390,11 +586,12 @@ void MapScreen::drawText(const Camera& camera, const map::MapWindow& window)
     // looking at". They are derived from the window rather than from the pan
     // offset, so the number and the pixel under the cross can never disagree.
     // `y` stays the player's: a point on a map has no height.
+    const Column col = columnFor(hud::pageTop());
     const bool scrolled = panned();
     const long centreX =
-        (long)(window.originBlockX + map::mapWindowBlocks(kMapWidth, window.zoom) / 2);
+        (long)(window.originBlockX + map::mapWindowBlocks(window.width, window.zoom) / 2);
     const long centreZ =
-        (long)(window.originBlockZ + map::mapWindowBlocks(kMapHeight, window.zoom) / 2);
+        (long)(window.originBlockZ + map::mapWindowBlocks(window.height, window.zoom) / 2);
     const long values[3] = {scrolled ? centreX : (long)i32(std::floor(camera.x)),
                             (long)i32(std::floor(camera.y)),
                             scrolled ? centreZ : (long)i32(std::floor(camera.z))};
@@ -404,7 +601,7 @@ void MapScreen::drawText(const Camera& camera, const map::MapWindow& window)
         // the same colour the focus cursor is, and for the same reason: it is
         // where you are pointing, not where you are.
         const bool mapsOwn = scrolled && i != 1;
-        hud::text(kFieldRow[i], kValueColumn, kValueColumns,
+        hud::text(col.fieldRow[i], kValueColumn, kValueColumns,
                   mapsOwn ? kPannedText : hud::kReadoutText, hud::kReadoutFace, "%*ld",
                   kValueColumns, values[i]);
     }
@@ -419,9 +616,9 @@ void MapScreen::drawText(const Camera& camera, const map::MapWindow& window)
     // edge. It is also the whole reason the widest state prints as `grid16/128`
     // with no gap -- four cells of label and six of value is exactly what there
     // is, and losing the space is better than losing a digit.
-    hud::text(kZoomRow, kSettingColumn, kSettingColumns, hud::kPanelText, hud::kPanelFace,
+    hud::text(col.zoomRow, kSettingColumn, kSettingColumns, hud::kPanelText, hud::kPanelFace,
               "%-4s%6s", "zoom", zoomName());
-    hud::text(kGridRow, kSettingColumn, kSettingColumns, hud::kPanelText, hud::kPanelFace,
+    hud::text(col.gridRow, kSettingColumn, kSettingColumns, hud::kPanelText, hud::kPanelFace,
               "%-4s%6s", "grid", gridName());
 }
 
@@ -433,7 +630,7 @@ void MapScreen::drawPixels(const gui::Surface& surface, const Camera& camera,
     // signed strides instead of a width, and it is what keeps the copy below on
     // its `memcpy` path.
     map::MapSurface target;
-    target.pixels = surface.pixels + kMapLeft * surface.strideX + kMapTop * surface.strideY;
+    target.pixels = surface.pixels + kMapLeft * surface.strideX + mapTop() * surface.strideY;
     target.strideX = surface.strideX;
     target.strideZ = surface.strideY;
 

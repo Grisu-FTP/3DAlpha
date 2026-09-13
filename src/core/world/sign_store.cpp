@@ -2,6 +2,10 @@
 
 #include "core/world/sign_store.hpp"
 
+#include "core/block/registry.hpp"
+#include "core/world/chunk.hpp"
+#include "core/world/tile_entity.hpp"
+
 #include <cstring>
 
 namespace mc::world {
@@ -57,6 +61,21 @@ void SignStore::erase(i32 x, int y, i32 z)
     signs_.trim();
 }
 
+void SignStore::eraseColumn(i32 chunkX, i32 chunkZ)
+{
+    const i32 minX = chunkX * ChunkColumn::kWidth;
+    const i32 minZ = chunkZ * ChunkColumn::kWidth;
+    for (int i = signs_.size() - 1; i >= 0; --i) {
+        const SignText& s = signs_[i];
+        if (s.x < minX || s.x >= minX + ChunkColumn::kWidth || s.z < minZ ||
+            s.z >= minZ + ChunkColumn::kWidth) {
+            continue;
+        }
+        signs_.swapRemove(i);
+    }
+    signs_.trim();
+}
+
 void SignStore::setLine(int index, int line, std::string_view text)
 {
     if (index < 0 || index >= signs_.size() || line < 0 || line >= kSignLines) {
@@ -71,8 +90,75 @@ void SignStore::setLine(int index, int line, std::string_view text)
     if (n > usize(kSignLineLength)) {
         n = usize(kSignLineLength);
     }
-    std::memcpy(dst, text.data(), n);
+    // `memcpy` with a null source is undefined even for zero bytes, and a
+    // default-constructed `string_view` has one.
+    if (n > 0) {
+        std::memcpy(dst, text.data(), n);
+    }
     dst[n] = '\0';
+}
+
+int readSigns(const ChunkColumn& column, SignStore& store)
+{
+    int taken = 0;
+    for (const TileEntity& tile : column.tileEntities) {
+        if (tile.kind != TileEntityKind::Sign) {
+            continue;
+        }
+        const int lx = int(tile.x - column.x * ChunkColumn::kWidth);
+        const int lz = int(tile.z - column.z * ChunkColumn::kWidth);
+        if (lx < 0 || lx >= ChunkColumn::kWidth || lz < 0 || lz >= ChunkColumn::kWidth ||
+            tile.y < 0 || tile.y >= ChunkColumn::kHeight) {
+            continue;
+        }
+        const block::TickBehaviour behaviour =
+            block::def(column.block(lx, tile.y, lz)).tick;
+        if (behaviour != block::TickBehaviour::SignPost &&
+            behaviour != block::TickBehaviour::SignWall) {
+            continue;
+        }
+        const int index =
+            store.put(tile.x, tile.y, tile.z, behaviour == block::TickBehaviour::SignWall,
+                      column.blockData(lx, tile.y, lz));
+        if (index < 0) {
+            continue;  // the heap refused it; counted by SignStore::refused()
+        }
+        for (int line = 0; line < kSignLines; ++line) {
+            store.setLine(index, line, tile.lines[line]);
+        }
+        ++taken;
+    }
+    // **Taken, not claimed**: `justPlaced_` is the seam that puts a keyboard
+    // up, and a column arriving must not open one.
+    store.takeJustPlaced();
+    return taken;
+}
+
+int writeSigns(const SignStore& store, ChunkColumn& column)
+{
+    const i32 minX = column.x * ChunkColumn::kWidth;
+    const i32 minZ = column.z * ChunkColumn::kWidth;
+
+    int written = 0;
+    for (int i = 0; i < store.count(); ++i) {
+        const SignText& s = store[i];
+        if (!s.used) {
+            continue;
+        }
+        if (s.x < minX || s.x >= minX + ChunkColumn::kWidth || s.z < minZ ||
+            s.z >= minZ + ChunkColumn::kWidth) {
+            continue;
+        }
+        TileEntity* tile = findTileEntity(column.tileEntities, s.x, s.y, s.z);
+        if (tile == nullptr || tile->kind != TileEntityKind::Sign) {
+            tile = &putTileEntity(column.tileEntities, s.x, s.y, s.z, TileEntityKind::Sign);
+        }
+        for (int line = 0; line < kSignLines; ++line) {
+            setTileSignLine(*tile, line, s.lines[line]);
+        }
+        ++written;
+    }
+    return written;
 }
 
 }  // namespace mc::world

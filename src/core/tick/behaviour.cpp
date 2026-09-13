@@ -8,6 +8,7 @@
 #include "core/tick/redstone.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/math_helper.hpp"
+#include "core/world/tile_entity.hpp"
 
 namespace mc::tick {
 
@@ -165,21 +166,36 @@ void grassTick(TickWorld& world, i32 x, int y, i32 z, JavaRandom& rand)
 
 // ---- ice, snow --------------------------------------------------------
 
+// **All three melts read stored *block* light, not sky light.**
+//
+// a field of another original class, a field of another original class and a field of another original class all begin `getstatic by.b` followed by
+// `World`'s method, and `by`'s static initialiser names its two constants in
+// order: a field of another original class is "Sky" with a default of 15, a field of another original class is "Block" with a
+// default of 0. Read out of the jar rather than remembered, because reading it
+// as sky light is a bug that hides in plain sight: outdoors the sky light is
+// 15, which is above every threshold here, so **every exposed block of ice and
+// snow melts on its first random tick** -- and then `TickWorld::snowAndIce`,
+// which does check block light, puts it straight back. A winter world spent
+// its entire life thawing and refreezing.
+//
+// Block light is 0 outdoors whatever the hour, so in a1.1.2 nothing melts
+// until a player brings a light source near it. That is the whole mechanic.
+
 // a method of another original class -- BlockIce.updateTick. The threshold is `11 - lightOpacity[ice]`
-// and ice's opacity is 3, so ice melts at a stored sky light above 8.
+// and ice's opacity is 3, so ice melts at a block light above 8.
 void iceTick(TickWorld& world, i32 x, int y, i32 z)
 {
     const int threshold = 11 - int(block::def(id(mcver::Block::Ice)).opacity);
-    if (int(world.skyLightAt(x, y, z)) <= threshold) return;
+    if (int(world.blockLightAt(x, y, z)) <= threshold) return;
     dropBlockAsItem(world, x, y, z, id(mcver::Block::Ice), world.dataAt(x, y, z));
     world.setBlockWithNotify(x, y, z, id(mcver::Block::Water));
 }
 
-// a method of another original class and a method of another original class -- both melt above stored sky light 11, and both
-// leave nothing behind.
+// a method of another original class and a method of another original class -- both melt above block light 11, and both leave
+// nothing behind.
 void snowTick(TickWorld& world, i32 x, int y, i32 z, BlockId self)
 {
-    if (int(world.skyLightAt(x, y, z)) <= 11) return;
+    if (int(world.blockLightAt(x, y, z)) <= 11) return;
     dropBlockAsItem(world, x, y, z, self, world.dataAt(x, y, z));
     world.setBlockWithNotify(x, y, z, kAir);
 }
@@ -375,6 +391,28 @@ void farmlandTick(TickWorld& world, i32 x, int y, i32 z, JavaRandom& rand)
     world.setBlockWithNotify(x, y, z, id(mcver::Block::Dirt));
 }
 
+// `BlockFarmland`'s method -- BlockFarmland.onEntityWalking, and the whole of it
+// is one roll in four:
+//
+//     if (world.rand.nextInt(4) == 0) {
+//         world.setBlockWithNotify(i, j, k, Block.dirt.blockID);
+//     }
+//
+// **Nothing else is in it in a1.1.2.** No fall-distance test -- the version
+// where a jump is what ruins a field, and a walk never does, is Beta's -- no
+// crop test, and no check on what is standing there. So a field is trampled by
+// being *walked over*, one roll per footstep, and running or jumping across it
+// costs exactly what walking does: `moveEntity` pays out one footstep per
+// block of ground covered however fast the ground is covered.
+//
+// **The draw is `World.rand`**, not the random-tick generator -- this happens
+// inside an entity's move, not in a block tick.
+void farmlandTrampled(TickWorld& world, i32 x, int y, i32 z)
+{
+    if (world.random().nextInt(4) != 0) return;
+    world.setBlockWithNotify(x, y, z, id(mcver::Block::Dirt));
+}
+
 // ---- sand and gravel --------------------------------------------------
 
 // `BlockSand`'s method -- BlockSand.canFallBelow: air, fire, water or lava.
@@ -562,6 +600,50 @@ void cropsTick(TickWorld& world, i32 x, int y, i32 z, BlockId self, JavaRandom& 
     world.setDataRaw(x, y, z, u8(age + 1));
 }
 
+// `BlockChest`'s method -- BlockChest.isThereANeighborChest, which is a question
+// about a *neighbour's* neighbours: is the cell a chest that is already half of
+// a pair? `chest` is the id being asked about rather than a constant, so a
+// version whose chest is not 54 needs no edit here.
+bool chestHasNeighbour(const TickWorld& world, BlockId chest, i32 x, int y, i32 z)
+{
+    if (world.blockAt(x, y, z) != chest) {
+        return false;
+    }
+    return world.blockAt(x - 1, y, z) == chest || world.blockAt(x + 1, y, z) == chest
+           || world.blockAt(x, y, z - 1) == chest || world.blockAt(x, y, z + 1) == chest;
+}
+
+// `BlockChest`'s method -- **BlockChest.canPlaceBlockAt**, the only override in
+// a1.1.2 that asks about its own kind rather than about the ground:
+//
+// A chest can be placed only when at most one of its four horizontal neighbours is already a chest, and none of those neighbouring chests already has a chest of its own beside it.
+//
+// So one chest may join one chest, and never one that is already joined: a
+// double chest is the largest thing that can be *placed*. Note what is missing
+// -- the override never calls `super`, and therefore never asks whether the
+// cell is free. That is invisible through the placement path, because
+// `World.canBlockBePlacedAt` has already asked; it is transcribed as it stands
+// rather than tidied, and the base test above is the one that answers.
+bool chestCanPlaceAt(const TickWorld& world, BlockId chest, i32 x, int y, i32 z)
+{
+    constexpr int kSides[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    int neighbours = 0;
+    for (const auto& side : kSides) {
+        if (world.blockAt(x + side[0], y, z + side[1]) == chest) {
+            ++neighbours;
+        }
+    }
+    if (neighbours > 1) {
+        return false;
+    }
+    for (const auto& side : kSides) {
+        if (chestHasNeighbour(world, chest, x + side[0], y, z + side[1])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool solidOrLiquid(BlockId b)
@@ -589,6 +671,14 @@ bool canPlaceAt(const TickWorld& world, BlockId self, i32 x, int y, i32 z)
         return false;
     }
 
+    if (self == id(mcver::Block::Fence) && !world.improvedFencePlacement()) {
+        // a method of another original class: not on another fence, and not over a material that
+        // is not solid (`Material`'s method, the `solid` column) -- so never in the air.
+        // `fh` has no `canBlockStay`, which is why this is placement only.
+        const BlockId below = world.blockAt(x, y - 1, z);
+        return below != self && block::def(below).solid;
+    }
+
     switch (block::def(self).tick) {
     case TickBehaviour::Plant:
     case TickBehaviour::Sapling:
@@ -601,6 +691,16 @@ bool canPlaceAt(const TickWorld& world, BlockId self, i32 x, int y, i32 z)
         return mushroomGround(world.blockAt(x, y - 1, z));
     case TickBehaviour::Crops:
         return world.blockAt(x, y - 1, z) == id(mcver::Block::Farmland);
+
+    case TickBehaviour::Chest:
+        // **At most one chest beside it, and that one not already paired.**
+        // The bigger clusters a chest screen can join -- `chestInventoryParts`
+        // builds up to five -- are not placeable through this, which is the
+        // original's own arrangement: they are reached through the hole in
+        // `World.canBlockBePlacedAt`, which takes a cell holding water, lava,
+        // fire or a snow layer without ever asking the block. See
+        // core/item/use.cpp.
+        return chestCanPlaceAt(world, self, x, y, z);
 
     case TickBehaviour::Cactus:
         // `BlockCactus`'s method calls `canBlockStay` outright, so this is the whole
@@ -656,6 +756,70 @@ bool canPlaceAt(const TickWorld& world, BlockId self, i32 x, int y, i32 z)
         // Everything else takes the base answer, sand and gravel included --
         // they fall rather than refuse.
         return true;
+    }
+}
+
+u8 attachedPlacementMetadata(const TickWorld& world, BlockId placed, i32 x, int y, i32 z,
+                             u8 metadata)
+{
+    const TickBehaviour behaviour = block::def(placed).tick;
+    const int orientation = metadata & 7;
+    const auto opaque = [&](int dx, int dy, int dz) {
+        return world.opaqueAt(x + dx, y + dy, z + dz);
+    };
+
+    switch (behaviour) {
+    case TickBehaviour::Torch:
+    case TickBehaviour::RedstoneTorch:
+    case TickBehaviour::Lever:
+    case TickBehaviour::Button: {
+        // 1 to 4 hang on the -x, +x, -z and +z walls; 5, and a floor lever's
+        // other roll 6, stand on the block below.
+        bool held = false;
+        switch (orientation) {
+        case 1: held = opaque(-1, 0, 0); break;
+        case 2: held = opaque(1, 0, 0); break;
+        case 3: held = opaque(0, 0, -1); break;
+        case 4: held = opaque(0, 0, 1); break;
+        case 5:
+        case 6: held = opaque(0, -1, 0); break;
+        default: break;
+        }
+        if (held) {
+            return metadata;
+        }
+        // Bit 3 is a lever's "on" and a button's "pressed"; `onBlockPlaced`
+        // carries it across. Both are clear on anything put down by hand.
+        const u8 kept = u8(metadata & 8);
+        if (behaviour == TickBehaviour::Lever) {
+            return kept;  // `leverPlaced` walks the chain; see the header
+        }
+        // `BlockTorch`'s field and a field of another original class -- onBlockAdded's chain. The button's stops at the
+        // walls.
+        if (opaque(-1, 0, 0)) return u8(kept | 1);
+        if (opaque(1, 0, 0)) return u8(kept | 2);
+        if (opaque(0, 0, -1)) return u8(kept | 3);
+        if (opaque(0, 0, 1)) return u8(kept | 4);
+        if (behaviour != TickBehaviour::Button && opaque(0, -1, 0)) return u8(kept | 5);
+        return kept;
+    }
+    case TickBehaviour::Ladder: {
+        // `BlockLadder`'s field -- 2 hangs on +z, 3 on -z, 4 on +x, 5 on -x.
+        const bool held = (orientation == 2 && opaque(0, 0, 1))
+                          || (orientation == 3 && opaque(0, 0, -1))
+                          || (orientation == 4 && opaque(1, 0, 0))
+                          || (orientation == 5 && opaque(-1, 0, 0));
+        if (held) {
+            return metadata;
+        }
+        if (opaque(0, 0, 1)) return 2;
+        if (opaque(0, 0, -1)) return 3;
+        if (opaque(1, 0, 0)) return 4;
+        if (opaque(-1, 0, 0)) return 5;
+        return 0;
+    }
+    default:
+        return metadata;
     }
 }
 
@@ -746,6 +910,11 @@ void updateTick(TickWorld& world, i32 x, int y, i32 z, BlockId self, JavaRandom&
     // A lever and a door only ever change because someone touches them, and
     // are dispatched on the *neighbour* path below -- the half that works
     // without a player.
+    //
+    // **TNT is in this list because it does nothing here and not because it is
+    // missing.** `q` has no `updateTick` at all: the four things that light it
+    // are a break, a fire, a blast and a neighbour going live, and all four are
+    // ported. See core/entity/primed_tnt.hpp.
     case TickBehaviour::Lever:
     case TickBehaviour::Door:
     case TickBehaviour::RedstoneWire:
@@ -957,6 +1126,13 @@ void blockAdded(TickWorld& world, i32 x, int y, i32 z, BlockId self)
     case TickBehaviour::Furnace:
         furnacePlaced(world, x, y, z);
         break;
+    case TickBehaviour::MobSpawner:
+        // `bj` has no `onBlockAdded` of its own; this is `BlockContainer`'s field -- the
+        // BlockContainer one -- building a `TileEntityMobSpawner` and handing it to the world.
+        // A spawner put down by hand is `"Pig"` on a twenty-tick delay, and
+        // a1.1.2 gives the player no way to change either.
+        world.addTileEntity(x, y, z);
+        break;
     case TickBehaviour::Stairs:
         // `BlockStairs`'s method -- onNeighborBlockChange(0), then the model
         // block's onBlockAdded, which for planks and cobblestone is empty.
@@ -966,6 +1142,70 @@ void blockAdded(TickWorld& world, i32 x, int y, i32 z, BlockId self)
         // `Block`'s method is empty, and so is this for everything else.
         break;
     }
+}
+
+namespace {
+
+bool isChest(const TickWorld& world, i32 x, int y, i32 z)
+{
+    return block::def(world.blockAt(x, y, z)).tick == TickBehaviour::Chest;
+}
+
+// `BlockChest`'s method -- **BlockChest.blockActivated**. A chest with an opaque
+// block on it does not open, and neither does one beside a chest that has one;
+// the click is taken either way. Otherwise the screen opens on this chest, and
+// `chestInventoryParts` is what it joins to.
+bool chestActivated(TickWorld& world, i32 x, int y, i32 z)
+{
+    if (world.opaqueAt(x, y + 1, z)) {
+        return true;
+    }
+    constexpr int kSides[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    for (const auto& side : kSides) {
+        const i32 nx = x + side[0];
+        const i32 nz = z + side[1];
+        if (isChest(world, nx, y, nz) && world.opaqueAt(nx, y + 1, nz)) {
+            return true;
+        }
+    }
+    world.openContainer(TickWorld::ContainerKind::Chest, x, y, z);
+    return true;
+}
+
+}  // namespace
+
+int chestInventoryParts(const TickWorld& world, i32 x, int y, i32 z,
+                        ChestPart out[kMaxChestParts])
+{
+    // `hs` nests: the -x and -z neighbours are put *before* what has been built
+    // so far, the +x and +z ones after, in that order of asking.
+    ChestPart parts[kMaxChestParts];
+    int count = 0;
+    parts[count++] = ChestPart{x, y, z};
+    const auto prepend = [&](i32 px, i32 pz) {
+        for (int i = count; i > 0; --i) {
+            parts[i] = parts[i - 1];
+        }
+        parts[0] = ChestPart{px, y, pz};
+        ++count;
+    };
+    const auto append = [&](i32 px, i32 pz) { parts[count++] = ChestPart{px, y, pz}; };
+    if (isChest(world, x - 1, y, z)) {
+        prepend(x - 1, z);
+    }
+    if (isChest(world, x + 1, y, z)) {
+        append(x + 1, z);
+    }
+    if (isChest(world, x, y, z - 1)) {
+        prepend(x, z - 1);
+    }
+    if (isChest(world, x, y, z + 1)) {
+        append(x, z + 1);
+    }
+    for (int i = 0; i < count; ++i) {
+        out[i] = parts[i];
+    }
+    return count;
 }
 
 bool blockActivated(TickWorld& world, i32 x, int y, i32 z)
@@ -988,6 +1228,17 @@ bool blockActivated(TickWorld& world, i32 x, int y, i32 z)
     case TickBehaviour::RedstoneOre:
         redstoneOreActivated(world, x, y, z, self);
         return false;  // and that `false` is the original's -- see the header
+    case TickBehaviour::Chest:
+        return chestActivated(world, x, y, z);
+    case TickBehaviour::Workbench:
+        // a method of another original class -- opening the workbench screen and reporting
+        // the click as used
+        world.openContainer(TickWorld::ContainerKind::Workbench, x, y, z);
+        return true;
+    case TickBehaviour::Furnace:
+        // `BlockFurnace`'s method -- the screen on this furnace's tile entity.
+        world.openContainer(TickWorld::ContainerKind::Furnace, x, y, z);
+        return true;
     default:
         // `Block`'s method returns false, and so does a staircase, which
         // forwards to the block it is modelled on.
@@ -1021,6 +1272,53 @@ void spongeRemoved(TickWorld& world, i32 x, int y, i32 z)
     }
 }
 
+// `BlockChest`'s method -- **BlockChest.onBlockRemoval**: every stack comes out, in
+// slot order, from one random point inside the cell per stack and in clumps of
+// 10 to 30, each clump thrown on a small Gaussian with a lift of 0.2 -- and then
+// `BlockContainer`'s field forgets the tile entity.
+//
+// **The draws come off a generator of the chest's own**, because the original's
+// does: `b` holds a an unseeded random generator and never touches
+// `World.rand`, so a spill
+// must not move the block-tick stream. It also stands in for the new entity's
+// own generator, which the Gaussians come from there.
+void chestRemoved(TickWorld& world, i32 x, int y, i32 z)
+{
+    std::vector<world::TileEntity>* list = world.tileEntitiesAt(x, z);
+    if (list == nullptr) {
+        return;
+    }
+    const world::TileEntity* tile = world::findTileEntity(*list, x, y, z);
+    if (tile != nullptr && tile->kind == world::TileEntityKind::Chest) {
+        static JavaRandom spill(0x6368657374LL);
+        for (int slot = 0; slot < world::kChestSlots; ++slot) {
+            for (const item::ItemStack& stack : tile->items) {
+                if (stack.slot != slot || stack.empty()) {
+                    continue;
+                }
+                const float fx = spill.nextFloat() * 0.8f + 0.1f;
+                const float fy = spill.nextFloat() * 0.8f + 0.1f;
+                const float fz = spill.nextFloat() * 0.8f + 0.1f;
+                int left = stack.count;
+                while (left > 0) {
+                    int clump = spill.nextInt(21) + 10;
+                    if (clump > left) {
+                        clump = left;
+                    }
+                    left -= clump;
+                    const double mx = double(float(spill.nextGaussian()) * 0.05f);
+                    const double my = double(float(spill.nextGaussian()) * 0.05f + 0.2f);
+                    const double mz = double(float(spill.nextGaussian()) * 0.05f);
+                    world.spawnItemStack(double(float(x) + fx), double(float(y) + fy),
+                                         double(float(z) + fz), u16(stack.id), clump,
+                                         stack.damage, mx, my, mz);
+                }
+            }
+        }
+    }
+    world::eraseTileEntity(*list, x, y, z);
+}
+
 }  // namespace
 
 void blockRemoved(TickWorld& world, i32 x, int y, i32 z, BlockId old)
@@ -1037,16 +1335,28 @@ void blockRemoved(TickWorld& world, i32 x, int y, i32 z, BlockId old)
         break;
     case TickBehaviour::SignPost:
     case TickBehaviour::SignWall:
-        // `lr` inherits `BlockContainer`'s field -- BlockContainer.onBlockRemoval -- which is
-        // `super.b` (empty) and then `world.removeBlockTileEntity`. Here, and
-        // not in the break path, so that a sign whose support goes forgets its
-        // text the same way a sign the player breaks does.
+    case TickBehaviour::MobSpawner:
+        // `lr` and `bj` both inherit `BlockContainer`'s field -- BlockContainer.onBlockRemoval --
+        // which is `super.b` (empty) and then `world.removeBlockTileEntity`.
+        // Here, and not in the break path, so that a sign whose support goes
+        // forgets its text the same way a sign the player breaks does, and a
+        // spawner blown up by a creeper forgets its mob.
         world.removeTileEntity(x, y, z);
         break;
+    case TickBehaviour::Chest:
+        chestRemoved(world, x, y, z);
+        break;
+    case TickBehaviour::Furnace:
+        // `BlockFurnace` has no `onBlockRemoval` of its own: `BlockContainer`'s field forgets the entry and
+        // **nothing in it is spilled** -- a1.1.2 loses a broken furnace's
+        // contents. The lit/unlit swap goes through here too and puts the entry
+        // back itself; see core/tick/furnace.cpp.
+        if (std::vector<world::TileEntity>* list = world.tileEntitiesAt(x, z)) {
+            world::eraseTileEntity(*list, x, y, z);
+        }
+        break;
     default:
-        // `Block`'s method is empty, and so is this for everything else. The
-        // remaining overrides -- a chest spilling its contents -- belong to
-        // behaviours that are not ported.
+        // `Block`'s method is empty, and so is this for everything else.
         break;
     }
 }
@@ -1142,6 +1452,11 @@ void neighbourChanged(TickWorld& world, i32 x, int y, i32 z, BlockId fromId)
             redstoneTorchNeighbourChanged(world, x, y, z, self);
         }
         break;
+    case TickBehaviour::Tnt:
+        // `BlockTNT`'s method: powered TNT lights itself. The fourth and last of
+        // a1.1.2's four ignition paths -- see core/tick/redstone.hpp.
+        tntNeighbourChanged(world, x, y, z, fromId);
+        break;
     default:
         break;
     }
@@ -1191,6 +1506,34 @@ void entityCollidedWithBlocks(TickWorld& world, const AABB& box)
                 entityCollidedWithBlock(world, x, y, z, self);
             }
         }
+    }
+}
+
+void entityWalkedOnBlock(TickWorld& world, i32 x, int y, i32 z)
+{
+    // `if (l > 0)` guards the call in `moveEntity` and the cell is read again
+    // here, one step later than the mover read it: the same re-read
+    // `entityCollidedWithBlocks` does, and for the same reason -- the block
+    // may have gone in between, and a behaviour must not be dispatched off a
+    // stale id.
+    const block::BlockId self = world.blockAt(x, y, z);
+    if (self == block::kAir) return;
+
+    switch (block::def(self).tick) {
+    case TickBehaviour::Farmland:
+        farmlandTrampled(world, x, y, z);
+        break;
+    case TickBehaviour::RedstoneOre:
+        // a method of another original class is `glow()` and then the base class, which is
+        // the same `glow()` a right-click runs -- and it is already written,
+        // including the "only the unlit one" test inside it.
+        redstoneOreActivated(world, x, y, z, self);
+        break;
+    default:
+        // Everything else inherits `Block`'s empty override. A staircase forwards
+        // to the block it is modelled on -- planks and cobblestone, both of
+        // which inherit it too -- so it is no exception either.
+        break;
     }
 }
 

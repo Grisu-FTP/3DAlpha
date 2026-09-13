@@ -141,6 +141,39 @@ bool PackedStorage::peekLevel(std::string_view worldDir, LevelData* out)
     return true;
 }
 
+bool PackedStorage::readLevel(std::string_view worldDir, LevelData* out)
+{
+    // Into a local manifest and a local buffer, so this object's open world --
+    // if it has one -- is untouched, the same promise peekLevel makes.
+    std::string path(worldDir);
+    if (!path.empty() && path.back() != '/') {
+        path += '/';
+    }
+    path += kManifestName;
+
+    Manifest manifest;
+    if (!manifest.load(fs_, path.c_str())) {
+        return false;
+    }
+    ConstByteSpan stored;
+    if (!manifest.file(kLevelBlobPath, &stored)) {
+        return false;
+    }
+
+    std::vector<u8> plain;
+    if (!zip::decompress(stored, plain, mcver::LevelCodec::kWrapper,
+                         mcver::LevelCodec::kMaxDecodedBytes)) {
+        return false;
+    }
+
+    LevelData level;
+    if (!mcver::LevelCodec::decode(plain, &level)) {
+        return false;
+    }
+    *out = std::move(level);
+    return true;
+}
+
 bool PackedStorage::saveLevel()
 {
     if (!open_) {

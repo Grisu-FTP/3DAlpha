@@ -114,6 +114,12 @@ void populateChunk(ChunkProvider& provider, PopulationView& view, i32 chunkX, i3
         }
     }
 
+    // Read once, above both vein passes: the clay patch is the same generator
+    // with a different block, so the fix has to reach it too or a world would
+    // be symmetric in its ore and asymmetric in its clay.
+    const OreBounds bounds = provider.options().fixOreVeinBounds ? OreBounds::FloorBounds
+                                                                 : OreBounds::TruncateBounds;
+
     // ---- clay -----------------------------------------------------------
     // **No +8 offset**, unlike the dungeons above it. Clay and the seven ore
     // passes below all address the chunk's own corner -- confirmed in the
@@ -130,7 +136,7 @@ void populateChunk(ChunkProvider& provider, PopulationView& view, i32 chunkX, i3
         const i32 x = blockX + random.nextInt(16);
         const i32 y = random.nextInt(128);
         const i32 z = blockZ + random.nextInt(16);
-        generateClayPatch(view, random, 32, x, y, z);
+        generateClayPatch(view, random, 32, x, y, z, bounds);
     }
 
     // ---- ores -----------------------------------------------------------
@@ -139,7 +145,7 @@ void populateChunk(ChunkProvider& provider, PopulationView& view, i32 chunkX, i3
             const i32 x = blockX + random.nextInt(16);
             const i32 y = random.nextInt(pass.yBound);
             const i32 z = blockZ + random.nextInt(16);
-            generateOreVein(view, random, pass.blockId, pass.veinSize, x, y, z);
+            generateOreVein(view, random, pass.blockId, pass.veinSize, x, y, z, bounds);
         }
     }
 

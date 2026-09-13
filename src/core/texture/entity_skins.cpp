@@ -29,6 +29,26 @@ constexpr Slot kSlots[kEntitySkinCount] = {
     {0, 32, kSkinPageWidth, kSkinPageHeight, "item/sign.png"},
     {64, 32, 32, 32, "item/arrows.png"},
     {128, 0, kSkinPageWidth, kSkinPageHeight, kSkinFile},
+    // The animals, on the two rows the sheet grew downwards to make. Every page
+    // above this line kept its origin.
+    {0, 64, kSkinPageWidth, kSkinPageHeight, "mob/pig.png"},
+    {64, 64, kSkinPageWidth, kSkinPageHeight, "mob/saddle.png"},
+    {128, 64, kSkinPageWidth, kSkinPageHeight, "mob/cow.png"},
+    {192, 64, kSkinPageWidth, kSkinPageHeight, "mob/sheep.png"},
+    {0, 96, kSkinPageWidth, kSkinPageHeight, "mob/sheep_fur.png"},
+    {64, 96, kSkinPageWidth, kSkinPageHeight, "mob/chicken.png"},
+    // The monsters, on the two rows the sheet grew downwards to make when it
+    // went from 128 to 256 tall. Every page above this line kept its origin.
+    {128, 96, kSkinPageWidth, kSkinPageHeight, "mob/zombie.png"},
+    {192, 96, kSkinPageWidth, kSkinPageHeight, "mob/skeleton.png"},
+    {0, 128, kSkinPageWidth, kSkinPageHeight, "mob/creeper.png"},
+    {64, 128, kSkinPageWidth, kSkinPageHeight, "mob/spider.png"},
+    {128, 128, kSkinPageWidth, kSkinPageHeight, "mob/spider_eyes.png"},
+    {192, 128, kSkinPageWidth, kSkinPageHeight, "mob/slime.png"},
+    // The sky's two, in the row the sign and the arrow left half empty. 32 x 32
+    // each and a slot apart, so the sheet's one page pitch still describes it.
+    {128, 32, kCelestialPagePixels, kCelestialPagePixels, "terrain/sun.png"},
+    {192, 32, kCelestialPagePixels, kCelestialPagePixels, "terrain/moon.png"},
 };
 
 const Slot& slotOf(EntitySkin skin)
@@ -206,6 +226,36 @@ void blackPage(std::vector<u8>* out, int outWidth, const Slot& slot)
     }
 }
 
+// The spider's eye overlay: **clear, with two red dots where the eyes are.**
+//
+// The head box of `jy` is at (32, 4) in a 64 x 32 page and is 8 x 8 x 8, so its
+// front face -- the one the eyes are on -- occupies texels (40, 12) to (47,
+// 19). The dots go in that square. Everything else stays at alpha zero, which
+// the detail pass's alpha test cuts away for free.
+void eyePage(std::vector<u8>* out, int outWidth, const Slot& slot)
+{
+    for (int y = 0; y < slot.height; ++y) {
+        for (int x = 0; x < slot.width; ++x) {
+            u8* dst = texel(out, outWidth, slot.x + x, slot.y + y);
+            dst[0] = dst[1] = dst[2] = dst[3] = 0;
+        }
+    }
+    constexpr int kEyeRows[2] = {14, 14};
+    constexpr int kEyeCols[2] = {41, 45};
+    for (int e = 0; e < 2; ++e) {
+        for (int dy = 0; dy < 2; ++dy) {
+            for (int dx = 0; dx < 2; ++dx) {
+                u8* dst = texel(out, outWidth, slot.x + kEyeCols[e] + dx,
+                                slot.y + kEyeRows[e] + dy);
+                dst[0] = 230;
+                dst[1] = 40;
+                dst[2] = 40;
+                dst[3] = 255;
+            }
+        }
+    }
+}
+
 }  // namespace
 
 void skinOrigin(EntitySkin skin, int* x, int* y)
@@ -228,6 +278,35 @@ void buildDevArtSkins(std::vector<u8>* out)
     devArtPage(out, kEntitySheetWidth, kSlots[1], 120, 125, 135);
     devArtPage(out, kEntitySheetWidth, kSlots[2], 165, 140, 95);
     devArtPage(out, kEntitySheetWidth, kSlots[3], 190, 190, 200);
+    // The animals, each in roughly its own colour so a model drawn from the
+    // wrong page is obvious at a glance: pork pink, saddle leather, cowhide
+    // brown, fleece white, wool cream, chicken white-yellow.
+    // **Each red is its own**, which `each_page_has_its_own_colour` holds them
+    // to: a page is identified by that channel alone, so two animals that look
+    // alike on a phone still differ where the test reads.
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Pig)], 235, 145, 150);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Saddle)], 145, 90, 45);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Cow)], 95, 70, 55);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Sheep)], 225, 215, 205);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::SheepFur)], 240, 235, 225);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Chicken)], 205, 230, 180);
+    // The monsters. Same rule -- **each red is its own** -- and each roughly the
+    // colour the mob is: rotted green, bone white, creeper green, spider
+    // charcoal, and slime green. The eye page is the exception: it is an
+    // overlay, so it is **transparent everywhere but two red dots**, which is
+    // what the file it stands in for is and is the only stand-in here that is
+    // not a full page.
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Zombie)], 80, 130, 90);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Skeleton)], 200, 200, 190);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Creeper)], 110, 190, 100);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Spider)], 60, 45, 40);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Slime)], 130, 220, 120);
+    eyePage(out, kEntitySheetWidth, kSlots[int(EntitySkin::SpiderEyes)]);
+    // The sky's two. Warm for the sun and pale for the moon, so a stand-in sky
+    // still reads as a sky -- and a grid rather than a disc, because these are
+    // placeholders and the grid is what shows a flipped UV.
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Sun)], 250, 225, 120);
+    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Moon)], 170, 180, 200);
     // **The player's page is black and not a grid**, which is the header's
     // argument: the only thing that reads it is the arm of an empty hand, and a
     // silhouette is an honest answer where an orange grid would read as a bug.
@@ -276,13 +355,12 @@ void buildEntitySkins(io::FileSystem& fs, std::string_view packPath, std::vector
     }
 }
 
-bool applyPlayerSkin(io::FileSystem& fs, std::string_view path, bool fromPack,
-                     std::vector<u8>* sheet)
-{
-    if (sheet == nullptr || sheet->size() != kEntitySheetBytes || path.empty()) {
-        return false;
-    }
+namespace {
 
+// A skin file or a pack's `char.png`, read and decoded. The half both callers
+// below share.
+bool readSkinImage(io::FileSystem& fs, std::string_view path, bool fromPack, Image* out)
+{
     std::vector<u8> png;
     if (fromPack) {
         if (readPackFile(fs, path, kSkinFile, &png) != PackError::Ok) {
@@ -291,15 +369,47 @@ bool applyPlayerSkin(io::FileSystem& fs, std::string_view path, bool fromPack,
     } else if (!fs.readFile(std::string(path).c_str(), &png, kMaxPackBytes)) {
         return false;
     }
+    return decodePng(png, out, kMaxTerrainPixels) == PngError::Ok;
+}
+
+}  // namespace
+
+bool applyPlayerSkin(io::FileSystem& fs, std::string_view path, bool fromPack,
+                     std::vector<u8>* sheet)
+{
+    if (sheet == nullptr || sheet->size() != kEntitySheetBytes || path.empty()) {
+        return false;
+    }
 
     Image image;
-    if (decodePng(png, &image, kMaxTerrainPixels) != PngError::Ok) {
+    if (!readSkinImage(fs, path, fromPack, &image)) {
         return false;
     }
 
     const Slot& slot = slotOf(EntitySkin::Player);
     Image cropped;
     blitScaled(classicHalf(image, &cropped) ? cropped : image, sheet, kEntitySheetWidth, slot);
+    return true;
+}
+
+bool decodePlayerSkinPage(io::FileSystem& fs, std::string_view path, bool fromPack,
+                          std::vector<u8>* page)
+{
+    if (page == nullptr || path.empty()) {
+        return false;
+    }
+
+    Image image;
+    if (!readSkinImage(fs, path, fromPack, &image)) {
+        return false;
+    }
+
+    // The player's page, moved to the origin of a buffer that is only that
+    // page: the same scale and the same crop the sheet gets.
+    const Slot whole{0, 0, kSkinPageWidth, kSkinPageHeight, kSkinFile};
+    page->assign(usize(kSkinPageWidth) * kSkinPageHeight * 4, 0);
+    Image cropped;
+    blitScaled(classicHalf(image, &cropped) ? cropped : image, page, kSkinPageWidth, whole);
     return true;
 }
 

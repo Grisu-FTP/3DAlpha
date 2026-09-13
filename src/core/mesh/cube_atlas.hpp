@@ -57,6 +57,7 @@
 // no merge in return: nothing but cubes is ever merged.
 
 #include "core/block/registry.hpp"
+#include "core/block/world_texture.hpp"
 #include "core/mesh/vertex.hpp"
 #include "core/util/types.hpp"
 
@@ -129,8 +130,10 @@ constexpr void wantTile(bool* wanted, int tile)
 //
 // That is the six faces of every block whose render type is a cube -- known or
 // not, because an unknown id is drawn as a cube on purpose -- the in-world rows
-// of the metadata face table for those blocks (a furnace's mouth), the unknown
-// block itself, and tile 0 for a texture index outside the atlas. Bounded cubes
+// of the metadata face table for those blocks (a furnace's mouth), **every tile
+// a world-texture rule can produce** (a chest's front, and the four halves of a
+// double chest's picture, which appear in no block's `faces` row at all), the
+// unknown block itself, and tile 0 for a texture index outside the atlas. Bounded cubes
 // (slabs) are in the list although they draw through the detail stream: the
 // question is what a cube-type block *could* send, and asking it any narrower
 // would make the answer depend on the mesher's dispatch staying exactly as it
@@ -155,6 +158,15 @@ constexpr CubeAtlasLayout buildCubeAtlasLayout()
         for (int face = 0; face < kFaceCount; ++face) {
             detail::wantTile(wanted, def.faces[face]);
         }
+        // A block whose faces are a rule rather than a row shows tiles its
+        // `faces` never names -- without these four, a double chest samples
+        // tile 0 and wears grass down its side.
+        u16 ruleTiles[block::kMaxWorldTextureTiles] = {};
+        const int ruleCount = block::worldTextureTiles(def.worldTexture, def.texture, ruleTiles);
+        for (int i = 0; i < ruleCount; ++i) {
+            detail::wantTile(wanted, ruleTiles[i]);
+        }
+
         const int row = mcver::kMetadataFaceRow[id];
         if (row == 0) {
             continue;

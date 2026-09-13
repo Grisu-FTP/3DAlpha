@@ -96,6 +96,26 @@ inline constexpr u32 kDirectorySectors =
     (kRegionArea * kDirectoryEntryBytes + kSectorBytes - 1) / kSectorBytes;
 inline constexpr u32 kFirstDataSector = 2 + 2 * kDirectorySectors;
 
+// **What `readMany` will swallow to save an operation.** An operation is the
+// IPC round trip to the FS sysmodule, modelled at ~4 ms across this codebase
+// (`MC_IO_LATENCY_US`); 16 KB of sectors nobody asked for is far less than
+// that, so a gap that small is cheaper to read than to skip.
+//
+// Measured over the diorama's 24x24 window on a real packed world -- 576
+// chunks, 1.52 MB of payload, four regions -- against one read per chunk:
+//
+//     gap   scratch    reads   transferred
+//       -         -      576       1.52 MB
+//       4     64 KB      122       2.14 MB
+//      16     64 KB       63       2.84 MB
+//      16    128 KB       41       2.89 MB
+//      64    256 KB       19       3.26 MB
+//
+// 64 KB is where the curve stops being steep for what an Old 3DS can spare;
+// the next 64 KB of scratch buys 22 reads, the 128 KB after that buys 22 more.
+inline constexpr u32 kBatchGapSectors = 16;
+inline constexpr u32 kBatchReadBytes = 64 * 1024;
+
 // Floor division by 32, which is what turns a chunk coordinate into the region
 // holding it. A named function with its own test because `>> 5` on a negative
 // signed value was implementation-defined before C++20 and half of a world's
@@ -139,6 +159,39 @@ public:
     // file that ends before the payload does.
     bool read(i32 chunkX, i32 chunkZ, std::vector<u8>* out);
 
+    // One chunk out of a batch read: a span into the batch's scratch buffer,
+    // valid only until the call returns, and **empty for a chunk this region
+    // does not hold**. False stops the batch.
+    using BatchVisitor = bool (*)(void* context, i32 chunkX, i32 chunkZ, ConstByteSpan payload);
+
+    // **Many chunks of this region in as few operations as its sector layout
+    // allows.** The entries are sorted by sector offset, runs within
+    // `kBatchGapSectors` of each other are merged while they fit
+    // `kBatchReadBytes`, and each merged run is one `readAt`. What that is
+    // worth is the table above those constants: on the diorama's window, 576
+    // reads become 63.
+    //
+    // **Every chunk asked for is visited exactly once**, so a caller can count
+    // a group of them down to nothing. The ones this region does not hold come
+    // first, with an empty payload and before one byte is read -- they cost no
+    // I/O, so a group made entirely of them finishes without touching the card.
+    // The rest follow **in sector order, not the order asked for**: the whole
+    // point is that the caller's order is not the card's. Asking twice for one
+    // chunk reads and visits it once.
+    //
+    // `scratch` is the caller's, not a member, because only a caller that
+    // batches should pay 64 KB for one: `PackedStorage` keeps four regions
+    // open and never calls this. It is resized as runs need it and is reusable
+    // across calls; one payload larger than `kBatchReadBytes` grows it past
+    // the cap rather than failing, since the cap bounds merging and not a
+    // chunk.
+    //
+    // False means the read failed, or a chunk was asked for that this region
+    // does not cover. **A batch the visitor stopped is not a failure** -- the
+    // visitor knows it stopped, so the return value keeps one meaning.
+    bool readMany(const i32* chunkXs, const i32* chunkZs, usize count, std::vector<u8>* scratch,
+                  void* context, BatchVisitor visit);
+
     // Stages a payload. The bytes reach the card immediately; what waits for
     // `commit()` is the directory entry that makes them findable.
     bool write(i32 chunkX, i32 chunkZ, ConstByteSpan payload);
@@ -179,6 +232,16 @@ private:
         }
     };
 
+    // Where a directory slot sits in the world.
+    i32 chunkXOf(u32 slot) const
+    {
+        return regionX_ * kRegionChunks + i32(slot % u32(kRegionChunks));
+    }
+    i32 chunkZOf(u32 slot) const
+    {
+        return regionZ_ * kRegionChunks + i32(slot / u32(kRegionChunks));
+    }
+
     bool readHeader(u32 sector, u64* generation, u32* dirSlot, u32* sectorCount);
     bool writeHeader();
     bool readDirectory(u32 slot);
@@ -216,6 +279,16 @@ private:
         u32 count = 0;
     };
     std::vector<Run> held_;
+
+    // One requested chunk of a batch, as the card sees it. Sorted by `sector`,
+    // which is a total order: allocated runs never overlap.
+    struct BatchSlot {
+        u32 sector = 0;
+        u32 slot = 0;
+    };
+    // Only ever allocated by readMany, so a region the game opens for play
+    // carries an empty vector and nothing else.
+    std::vector<BatchSlot> batch_;
 
     std::vector<u8> scratch_;
 

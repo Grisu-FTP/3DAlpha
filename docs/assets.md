@@ -14,9 +14,11 @@ extract or convert game data, and no feature is gated behind having a jar.
 | Asset | Bundled? | If the player supplies nothing |
 |---|---|---|
 | Block textures | **Generated** — "Dev Art", `core/texture/dev_art.cpp` | Everything renders, in the placeholder's style |
+| Fire, water and lava tiles | **Always generated, even from a pack** — the six `TextureFX` the client registers against `terrain.png` overwrite what the pack holds there, which is what the original does (`core/texture/texture_fx.cpp`, `core/texture/fluid_fx.cpp`) | Same picture either way |
 | Font | Not bundled. A pack's `default.png` is the menu's font when it has one | The menu draws with the 3DS system font |
 | Menu backdrop | Not bundled. A pack's `dirt.png`, tiled and darkened as `GuiScreen` does it | The dirt tile of whatever `terrain.png` is live, Dev Art's included |
 | GUI widgets | Not bundled and not read yet | Buttons are drawn rectangles |
+| Particle sprites | Not bundled. A pack's root `particles.png`, scaled to 128×128 | **Generated** — white discs on the tiles a1.1.2 names, tinted by the quad as the real sheet is (`core/texture/particle_sheet.cpp`) |
 | Sounds | No — a1.1.2 never shipped them | Game runs silently |
 | DSP firmware (`dspfirm.cdc`) | Cannot be — Nintendo copyright | Audio disabled, one line in the options screen |
 | Block/item/recipe data, worldgen | **Compiled into the binary** | Not applicable — always present |
@@ -139,10 +141,14 @@ filtered into another file on the player's own card.
 
 ## What a pack actually changes today
 
-**`terrain.png`, `default.png` and `dirt.png`.** The first is the block atlas; the other two are the
-menu — the font it draws every label with, and the backdrop behind them. A pack's `gui/`, `mob/`,
-`char.png` and the rest are still copied, counted and left alone: there is no GUI sheet consumer and
-there are no mobs, so there is nothing to point them at yet.
+**`terrain.png`, `default.png` and `dirt.png`** were the whole of it once: the block atlas, the font
+the menu draws every label with, and the backdrop behind them. They are no longer alone. As each
+thing that draws from a file landed, that file started being read — `gui/items.png` for icons and
+dropped stacks, `particles.png`, `art/kz.png`, `char.png` and the arm, the five `item/` sheets, the
+twelve `mob/` ones, and now **`terrain/sun.png` and `terrain/moon.png`**, which are two more pages
+of the entity sheet (`core/texture/entity_skins.hpp`). What is still copied, counted and left alone
+is the rest of `gui/`, `armor/`, `misc/`, `title/` and the root's water and weather sheets: there is
+no consumer for them yet.
 
 **None of the three is required and none of them fails loudly.** A pack with no `default.png` leaves
 the menu on the 3DS system font, which is what it drew with before any of this existed. A pack with

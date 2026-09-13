@@ -3,6 +3,7 @@
 #include "core/block/block_def.hpp"
 #include "core/block/registry.hpp"
 #include "core/texture/atlas_image.hpp"
+#include "core/texture/fluid_fx.hpp"
 
 #include <cstring>
 
@@ -179,6 +180,12 @@ void applyAnimatedTiles(std::vector<u8>* atlasRgba)
     if (atlasRgba == nullptr || atlasRgba->size() != kAtlasBytes) {
         return;
     }
+
+    // **Water and lava first**, because they are the same kind of thing and
+    // there are four more of them: see core/texture/fluid_fx.hpp. A pack's own
+    // water tile is overwritten for the same stated reason its fire tile is --
+    // the original registers the FX whatever terrain.png holds.
+    applyFluidTiles(atlasRgba->data());
 
     for (int which = 0; which < kFlameCount; ++which) {
         const int tile = flameTile(which);

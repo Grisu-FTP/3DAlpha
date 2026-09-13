@@ -114,8 +114,17 @@ struct AtlasImage {
     // never empty; the stand-in is a grid of framed cells.
     std::vector<u8> artRgba;
 
+    // **`gui/icons.png`**, 256 x 256, the sheet the hearts, the armour row and
+    // the air bubbles are cut from -- see core/texture/icon_sheet.hpp. Never
+    // empty for a built atlas: Dev Art, and a pack that has no such file or one
+    // that will not decode, get the generated stand-in.
+    std::vector<u8> iconsRgba;
+
     bool empty() const { return rgba.size() != kAtlasBytes; }
     bool hasItems() const { return itemsRgba.size() == kAtlasBytes; }
+    // 256 x 256 RGBA -- `texture::kIconSheetBytes`, stated here rather than
+    // included so this header does not pull the icon layout in with it.
+    bool hasIcons() const { return iconsRgba.size() == usize(256) * 256 * 4; }
 };
 
 // Rescales a square source into an `edge` x `edge` RGBA buffer.
@@ -154,5 +163,12 @@ PackError readPackFile(io::FileSystem& fs, std::string_view packPath, std::strin
 // are accepted because a card is mounted on a PC as often as on a console, and
 // a player who unzipped a pack in place has not done anything wrong.
 PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* out);
+
+// **Only the block atlas**: terrain.png, scaled, with the generated tiles
+// stamped in, and none of the other four sheets. For the main menu's Texture
+// Pack preview, which decodes packs the player has not chosen -- the ones either
+// side of the cursor -- on a background thread, and draws nothing but blocks.
+// Dev Art when `packPath` is empty. Fails exactly as `buildAtlas` would.
+PackError buildTerrainAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* out);
 
 }  // namespace mc::texture

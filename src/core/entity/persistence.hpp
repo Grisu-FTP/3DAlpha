@@ -14,8 +14,10 @@
 #include "core/entity/arrow.hpp"
 #include "core/entity/boat.hpp"
 #include "core/entity/minecart.hpp"
+#include "core/entity/mob.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/entity/falling_block.hpp"
+#include "core/entity/primed_tnt.hpp"
 #include "core/nbt/nbt.hpp"
 #include "core/nbt/writer.hpp"
 
@@ -30,6 +32,20 @@ struct EntityPools {
     MinecartSystem* minecarts = nullptr;
     ItemEntitySystem* items = nullptr;
     FallingBlockSystem* fallingBlocks = nullptr;
+
+    // **What is counting down.** Held with the rest rather than in a chunk's
+    // `Entities` for the same reason they are -- see the note on `mobs` below.
+    // A world saved with TNT in the air reloads with the fuse where it was.
+    PrimedTntSystem* primedTnt = nullptr;
+
+    // **The animals**, which are the first entities here that a1.1.2 itself
+    // would have written into a chunk's `Entities` list rather than into
+    // level.dat. They go where the other six go for the same reason -- the
+    // `entitydata` slot is still `none` and native chunk entities stay
+    // preserved verbatim -- so a world carried back to the real client keeps
+    // its animals only as long as this port is the thing opening it. See
+    // docs/current-work.md, *Compatibility limit*.
+    MobSystem* mobs = nullptr;
 };
 
 template <class T> class SavedPool {
@@ -62,6 +78,8 @@ struct PersistentEntities {
     SavedPool<Minecart> minecarts;
     SavedPool<ItemEntity> items;
     SavedPool<FallingBlock> fallingBlocks;
+    SavedPool<PrimedTnt> primedTnt;
+    SavedPool<Mob> mobs;
 
     // False when the heap could not hold the copy. The caller keeps the
     // snapshot it had rather than writing a partial one.

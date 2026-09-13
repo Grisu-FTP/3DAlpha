@@ -321,7 +321,13 @@ void ChunkProvider::replaceBlocksForBiome(i32 chunkX, i32 chunkZ, u8* blocks)
                 // underside. Hoisting it out of the loop or guarding it with a
                 // `y < 5` test would be the obvious optimisation and would
                 // desynchronise every column after the first.
-                if (y <= random_.nextInt(6) - 1) {
+                const bool bedrockRoll = y <= random_.nextInt(6) - 1;
+                // **The draw above is unconditional and stays unconditional.**
+                // `fixBedrockHole` only widens what counts as bedrock, at
+                // y = 0 and nowhere else: the roll comes back 0 one time in
+                // six, and on those columns the original leaves the bottom of
+                // the world as stone -- a hole a player can fall out of.
+                if (bedrockRoll || (options_.fixBedrockHole && y == 0)) {
                     blocks[usize(index)] = kBedrock;
                     continue;
                 }

@@ -76,27 +76,49 @@ inline constexpr int kEffectVoices = 4;
 
 // How many distinct effects the backend will hold.
 //
-// **48, and the number is the block table's rather than a guess.** Footsteps
-// and breaking arrived, and they are the whole of a1.1.2's effect set: nine
-// StepSound singletons name six distinct keys -- `step.stone`, `step.wood`,
-// `step.gravel`, `step.grass`, `step.cloth`, `step.sand` -- plus
-// `random.glass` and the menu's `random.click`. Each key covers however many
-// numbered variants the player supplied, and Mojang's own set is six of the
-// biggest ones: 34 files, 35 with the click.
+// **80, and it is measured rather than reasoned about.** It was 48, chosen off
+// the block table alone: nine StepSound singletons name six distinct keys --
+// `step.stone`, `step.wood`, `step.gravel`, `step.grass`, `step.cloth`,
+// `step.sand` -- plus `random.glass` and the menu's `random.click`, which came
+// to 35 files against Mojang's own a1.1.2-era set.
 //
-// **Partial loading is not an option, which is why the cap had to move rather
-// than the loader.** `playSoundFX` draws its variant *before* it knows whether
-// that file is resident -- the original draws there and moving it would make
-// the sequence depend on what happens to be in memory -- so a key with three
-// of its six variants loaded is a footstep that is silent half the time. All
-// or nothing per key, and 48 is what "all" costs here.
+// That was already a fiction by the time the animals landed, in two ways. The
+// four of them name eight `mob.*` keys, and `Entity` itself names `random.
+// splash`, `random.drr` and `random.bow`, none of which any table knows about
+// -- see core/audio/effect_preload.hpp, which is now the one list. And a
+// player does not copy the a1.1.2-era folder, because that server has been
+// gone for years; they copy whatever resources tree they have, and a modern
+// one carries **eight** variants of `step.grass` where the old one carried six.
 //
-// The memory is real but small and is only spent on files the player actually
-// has: a step sound is about a third of a second of 44.1 kHz mono, ~31 KB
-// decoded, so a full set is ~1.1 MB of linear memory against the 32 MB the
-// mesh pool leaves free. a1.1.2 ships no sounds at all, so the common case is
-// zero. See core/audio/block_sound.hpp.
-inline constexpr int kMaxSamples = 48;
+// `--audio-list <resources>` decodes the whole boot set on the host exactly as
+// this backend decodes it at boot and prints what it cost. Against the real
+// tree on this machine, measured twice:
+//
+//     72 samples, 1,780,061 frames, 3,500.8 KB   -- the animals
+//     108 samples, 3,386,798 frames, 6,638.9 KB  -- and the monsters
+//
+// **The monsters cost half as much again as everything before them put
+// together**, which is not a surprise once the keys are counted: five kinds
+// name eleven distinct `getSound` keys between them, and `mob.zombie`,
+// `mob.zombiehurt` and their kin ship with two or three variants each, plus
+// `random.fuse`, `random.explode`, `mob.slimeattack` and `random.hurt`.
+//
+// So 108 is the floor for a full modern folder and **128** is that plus room
+// for a pack with a few more variants. At the measured 61.5 KB a sample the cap
+// is ~7.9 MB of linear memory, against the 16 MB `__system_allocateHeaps`
+// reserves for everything that is not the mesh pool (docs/3ds-performance.md
+// -- the linear/heap split). That is now half the reserve rather than a
+// quarter of it, and it is the number to re-measure before anything else large
+// goes in. a1.1.2 ships no sounds at all, so the common case is still zero.
+//
+// **Partial loading remains the thing to avoid, and the cap is not a loader.**
+// `playSoundFX` draws its variant *before* it knows whether that file is
+// resident -- the original draws there, and moving the test in front of it
+// would make the sequence depend on what happens to be in memory -- so a key
+// with four of its eight variants loaded is a footstep that is silent half the
+// time. Raising the cap past the measurement is what keeps that from
+// happening; it is not enforced per key.
+inline constexpr int kMaxSamples = 128;
 
 // Why ndsp did not come up. The distinction matters to the player: someone who
 // has already dumped their firmware must not be told to dump it again.

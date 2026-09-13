@@ -171,6 +171,10 @@ struct Minecart {
     bool onRail = false;
     bool ridden = false;
 
+    // `Entity`'s field -- the fire counter. A cart pushed into a flame chars like
+    // anything else that moves; see core/entity/fire_entry.hpp.
+    i16 fire = 0;
+
     u8 light = 0;
     bool alive = false;
 
@@ -211,7 +215,9 @@ public:
     // Only a plain cart can be ridden -- `interact` mounts for type 0 and does
     // something else for the other two. See the header.
     bool mount(int index);
-    void dismount();
+    // Returns where the rider lands -- the cart's roof, which is
+    // `mountEntity`'s own answer. Invalid when nothing was aboard.
+    RiderSeat dismount();
 
     // `EntityMinecart`'s method -- **attackEntityFrom**, shared by the arrow and the hand.
     // The cart flips its `forwardDirection`, `timeSinceHit` goes to 10 and the

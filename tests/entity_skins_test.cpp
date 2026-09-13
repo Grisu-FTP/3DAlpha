@@ -41,11 +41,42 @@ TEST(the_stand_in_sheet_is_the_right_size_and_wholly_opaque)
     // Every page is filled. A transparent texel inside a page would be a hole
     // in a boat, and the placeholder exists precisely so that nothing is a
     // hole.
+    //
+    // **The spider's eye page is the exception and has to be**, because the
+    // file it stands in for is an *overlay*: `mob/spider_eyes.png` is clear
+    // everywhere but the eyes, and the detail pass's alpha test is what makes
+    // the rest of the head show through. A filled eye page would draw a solid
+    // box over the spider's face.
     for (int i = 0; i < texture::kEntitySkinCount; ++i) {
+        if (EntitySkin(i) == EntitySkin::SpiderEyes) {
+            continue;
+        }
         int ox = 0, oy = 0;
         texture::skinOrigin(EntitySkin(i), &ox, &oy);
         CHECK_EQ(int(texelAt(sheet, ox + 1, oy + 1)[3]), 255);
     }
+}
+
+TEST(the_spider_eye_page_is_clear_except_for_two_dots)
+{
+    // The pair of the exemption above: the page is not merely allowed to be
+    // transparent, it is **required** to be -- and to have something on it, or
+    // a spider in the dark has no eyes at all.
+    std::vector<u8> sheet;
+    texture::buildDevArtSkins(&sheet);
+    int ox = 0, oy = 0;
+    texture::skinOrigin(EntitySkin::SpiderEyes, &ox, &oy);
+
+    int opaque = 0;
+    for (int y = 0; y < texture::kSkinPageHeight; ++y) {
+        for (int x = 0; x < texture::kSkinPageWidth; ++x) {
+            if (texelAt(sheet, ox + x, oy + y)[3] != 0) {
+                ++opaque;
+            }
+        }
+    }
+    // Two 2 x 2 dots and nothing else.
+    CHECK_EQ(opaque, 8);
 }
 
 TEST(each_page_has_its_own_colour)
@@ -55,6 +86,9 @@ TEST(each_page_has_its_own_colour)
 
     // Sampled away from the grid lines and away from the corner mark, so this
     // is the page's body colour and not its decoration.
+    // **The eye page has no body colour to be its own** -- it is an overlay and
+    // is clear except for two dots -- so it is left out of the comparison
+    // rather than given a colour it must not have.
     u8 red[texture::kEntitySkinCount];
     for (int i = 0; i < texture::kEntitySkinCount; ++i) {
         int ox = 0, oy = 0;
@@ -62,7 +96,13 @@ TEST(each_page_has_its_own_colour)
         red[i] = texelAt(sheet, ox + 5, oy + 5)[0];
     }
     for (int a = 0; a < texture::kEntitySkinCount; ++a) {
+        if (EntitySkin(a) == EntitySkin::SpiderEyes) {
+            continue;
+        }
         for (int b = a + 1; b < texture::kEntitySkinCount; ++b) {
+            if (EntitySkin(b) == EntitySkin::SpiderEyes) {
+                continue;
+            }
             CHECK(red[a] != red[b]);
         }
     }
@@ -77,6 +117,10 @@ TEST(every_placeholder_page_carries_a_corner_mark_so_up_is_visible)
     for (int i = 0; i < texture::kEntitySkinCount; ++i) {
         if (EntitySkin(i) == EntitySkin::Player) {
             continue;  // A silhouette, not a placeholder. See below.
+        }
+        if (EntitySkin(i) == EntitySkin::SpiderEyes) {
+            continue;  // An overlay, and a corner mark on one would be a dot
+                       // floating beside the spider's head.
         }
         int ox = 0, oy = 0;
         texture::skinOrigin(EntitySkin(i), &ox, &oy);

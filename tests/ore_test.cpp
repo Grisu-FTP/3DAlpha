@@ -145,3 +145,129 @@ TEST(veins_at_the_world_edges_are_clipped_not_wrapped)
         }
     }
 }
+
+// **The negative-quadrant bug, measured rather than asserted.**
+//
+// The claim behind the Extra Settings row is that a1.1.2 generates less ore at
+// negative x and z than at positive ones out of the same random stream, and
+// that the cause is the `(int)` casts in WorldGenMinable's bounding box. This
+// mirrors the same vein into all four quadrants -- same seed, same size, same
+// offset inside the chunk -- and counts what lands.
+//
+// **It has to be a total over many seeds and not one vein.** The loss is one
+// row of blocks off the low edge of the box, and only on the roughly half of
+// the steps whose fractional part falls the wrong way; a single vein can lose
+// nothing at all, which is what the first version of this test discovered the
+// hard way. Over 12 seeds it is already unmissable at every vein size.
+//
+// Measured over 400 seeds at vein sizes 8, 16 and 32, against the positive
+// quadrant: negative x costs 14.5%, 3.5% and 1.9% of the ore, negative z costs
+// 14.8%, 5.2% and 3.1%, and both together cost 24.8%, 12.6% and 5.5%. Small
+// veins suffer most, which is what a per-step edge row predicts -- diamond and
+// redstone are size 7.
+//
+// Under `FloorBounds` all four quadrants must place *exactly* the same number
+// of blocks, because the vein's shape does not depend on where its origin is.
+// That half is what makes this a derivation and not a guess: if the asymmetry
+// had any other cause, flooring the box would not remove it.
+TEST(ore_veins_lose_blocks_in_the_negative_quadrants)
+{
+    // Far enough out that a whole vein is inside one quadrant, and on the same
+    // offset within a chunk in all four so the only difference is the sign.
+    constexpr i32 kAway = 4096;
+    constexpr int kSeeds = 12;
+    const i32 signs[4][2] = {{1, 1}, {-1, 1}, {1, -1}, {-1, -1}};
+
+    for (int size : {8, 16, 32}) {
+        long truncated[4] = {};
+        long floored[4] = {};
+
+        for (i64 seed = 1; seed <= kSeeds; ++seed) {
+            for (int q = 0; q < 4; ++q) {
+                const i32 x = signs[q][0] * kAway;
+                const i32 z = signs[q][1] * kAway;
+
+                for (worldgen::OreBounds bounds :
+                     {worldgen::OreBounds::TruncateBounds, worldgen::OreBounds::FloorBounds}) {
+                    Scene scene;
+                    scene.build(x, 40, z, u8(1));
+
+                    JavaRandom random(seed);
+                    worldgen::generateOreVein(scene.view, random, u8(16), size, x, 40, z,
+                                              bounds);
+
+                    int placed = 0;
+                    for (i32 bx = x - kOreBox; bx <= x + kOreBox; ++bx) {
+                        for (i32 by = 40 - kOreBox; by <= 40 + kOreBox; ++by) {
+                            for (i32 bz = z - kOreBox; bz <= z + kOreBox; ++bz) {
+                                if (scene.view.blockAt(bx, by, bz) == u8(16)) {
+                                    ++placed;
+                                }
+                            }
+                        }
+                    }
+                    CHECK_EQ(scene.view.refusedOutOfWindow(), 0u);
+                    if (bounds == worldgen::OreBounds::TruncateBounds) {
+                        truncated[q] += placed;
+                    } else {
+                        floored[q] += placed;
+                    }
+                }
+            }
+        }
+
+        // The fix makes the four quadrants identical, which is the whole claim.
+        CHECK(floored[0] > 0);
+        CHECK_EQ(floored[1], floored[0]);
+        CHECK_EQ(floored[2], floored[0]);
+        CHECK_EQ(floored[3], floored[0]);
+
+        // a1.1.2 does not: the positive quadrant keeps the whole vein, each
+        // negative axis costs it blocks, and both together cost the most.
+        CHECK_EQ(truncated[0], floored[0]);
+        CHECK(truncated[1] < truncated[0]);
+        CHECK(truncated[2] < truncated[0]);
+        CHECK(truncated[3] < truncated[1]);
+        CHECK(truncated[3] < truncated[2]);
+    }
+}
+
+// The fix must not move a vein that never sees a negative coordinate: at
+// non-negative bounds truncation and flooring are the same function, so a
+// world with the row turned on has to be block-for-block identical to a1.1.2
+// everywhere in the positive quadrant. Run over the same fixture cases the
+// jar-derived test uses, skipping any that reach below zero.
+TEST(ore_bounds_fix_changes_nothing_at_positive_coordinates)
+{
+    for (int c = 0; c < kOreCaseCount; ++c) {
+        const auto& want = kOreCases[c];
+        if (want.blockId < 0 || want.x - kOreBox < 0 || want.z - kOreBox < 0) {
+            continue;
+        }
+
+        std::map<std::vector<i32>, int> results[2];
+        int which = 0;
+        for (worldgen::OreBounds bounds :
+             {worldgen::OreBounds::TruncateBounds, worldgen::OreBounds::FloorBounds}) {
+            Scene scene;
+            scene.build(want.x, want.y, want.z, u8(1));
+            JavaRandom random(want.rngSeed);
+            worldgen::generateOreVein(scene.view, random, u8(want.blockId), want.veinSize,
+                                      want.x, want.y, want.z, bounds);
+
+            for (i32 bx = want.x - kOreBox; bx <= want.x + kOreBox; ++bx) {
+                for (i32 by = (want.y - kOreBox < 0 ? 0 : want.y - kOreBox);
+                     by <= (want.y + kOreBox > 127 ? 127 : want.y + kOreBox); ++by) {
+                    for (i32 bz = want.z - kOreBox; bz <= want.z + kOreBox; ++bz) {
+                        const u8 id = scene.view.blockAt(bx, by, bz);
+                        if (id != u8(1)) {
+                            results[which][{bx, by, bz}] = int(id);
+                        }
+                    }
+                }
+            }
+            ++which;
+        }
+        CHECK(results[0] == results[1]);
+    }
+}

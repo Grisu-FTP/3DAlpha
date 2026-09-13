@@ -13,6 +13,7 @@
 
 #include "core/block/registry.hpp"
 #include "core/texture/atlas_image.hpp"
+#include "core/texture/fluid_fx.hpp"
 #include "core/texture/texture_fx.hpp"
 #include "framework.hpp"
 
@@ -135,7 +136,7 @@ TEST(the_same_seed_gives_the_same_flame)
     CHECK(!(settledFlame(42, 60) == settledFlame(43, 60)));
 }
 
-TEST(applying_the_generated_tiles_replaces_the_fire_tile)
+TEST(applying_the_generated_tiles_replaces_the_fire_and_fluid_tiles)
 {
     // The fire block's own texture column, asked of the render type rather than
     // named -- the same way applyAnimatedTiles finds it.
@@ -168,9 +169,21 @@ TEST(applying_the_generated_tiles_replaces_the_fire_tile)
                 }
             }
         }
-        // Exactly the two the client registers a TextureFlamesFX for, one row
-        // of the atlas apart, and nothing else in the sheet touched.
-        const bool expected = tile == fireTile || tile == fireTile + tiles;
+        // Exactly the twelve the client registers a TextureFX for: the two
+        // flames, one row of the atlas apart, and each fluid's still tile plus
+        // the 2 x 2 block its flowing one claims. Nothing else in the sheet is
+        // touched. The fluid half is pinned in detail in fluid_fx_test.cpp;
+        // what this says is that `applyAnimatedTiles` runs both.
+        bool expected = tile == fireTile || tile == fireTile + tiles;
+        for (const bool hot : {false, true}) {
+            const texture::FluidTiles fluid = texture::fluidTiles(hot);
+            expected = expected || tile == fluid.still;
+            expected = expected
+                       || (fluid.flowing >= 0
+                           && (tile == fluid.flowing || tile == fluid.flowing + 1
+                               || tile == fluid.flowing + tiles
+                               || tile == fluid.flowing + tiles + 1));
+        }
         CHECK_EQ(changed, expected);
     }
 }

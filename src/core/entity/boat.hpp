@@ -46,6 +46,7 @@
 //     the same split `EntityArrow`'s bubbles take.
 
 #include "core/entity/rider.hpp"
+#include "core/entity/water_entry.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/segmented_pool.hpp"
@@ -144,6 +145,14 @@ struct Boat {
     bool hitWall = false;
     bool ridden = false;
 
+    // `Entity`'s `aV` and `c`. Not saved: a boat reloaded afloat is already in the
+    // water it was saved in and has no entry to make.
+    WaterEntry water{};
+
+    // `Entity`'s field -- the fire counter, which a boat carries like anything else that
+    // moves. See core/entity/fire_entry.hpp.
+    i16 fire = 0;
+
     u8 light = 0;
     bool alive = false;
 
@@ -182,7 +191,9 @@ public:
     // Climbing in and out. `mount` refuses a boat that is already occupied,
     // which is `EntityBoat.interact`'s only rule.
     bool mount(int index);
-    void dismount();
+    // Returns where the rider lands -- the boat's roof, which is
+    // `mountEntity`'s own answer. Invalid when nothing was aboard.
+    RiderSeat dismount();
 
     // `EntityBoat`'s method -- **attackEntityFrom**, and it is the whole of what
     // damages a boat: the hull flips its `forwardDirection`, `timeSinceHit`

@@ -38,6 +38,7 @@
 #include "core/texture/png.hpp"
 #include "core/util/types.hpp"
 
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -110,6 +111,20 @@ u32 shadowColour(u32 argb);
 // keeps the 256 widths and gives the pixels to the GPU -- see
 // platform/ctr/gui_art.hpp.
 int textWidth(const u8* widths, std::string_view text);
+
+// Word-wraps `text` into `lines` (cleared first), none wider than `maxWidth` GUI
+// pixels as textWidth measures them -- the tooltips on the bottom screen.
+//
+//   * `\n` ends a line, and the next one starts in the default colour, the
+//     way every separate drawString in the original does.
+//   * A line breaks at its last space, which is dropped. A word wider than the
+//     whole line is cut at the edge. Leading spaces are kept.
+//   * **A colour code carries across a break it did not end at**: a paragraph
+//     wrapped onto a second line starts that line with the code that was in
+//     effect, so a sentence stays one colour.
+//   * A trailing `\n` does not add an empty line.
+void wrapText(const u8* widths, std::string_view text, int maxWidth,
+              std::vector<std::string>* lines);
 
 // How much of `text` fits in `maxWidth` GUI pixels, as a byte count. Never
 // splits a UTF-8 sequence. Used to clip a name that came off a card.

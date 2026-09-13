@@ -2,6 +2,7 @@
 
 #include "core/render/chunk_renderer.hpp"
 #include "core/render/world_streamer.hpp"
+#include "core/settings/world_settings.hpp"
 #include "core/util/frustum.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
@@ -827,4 +828,89 @@ TEST(no_budget_changes_nothing)
     CHECK_EQ(streamer.stats().admitRadius, streamer.loadRadius());
 
     streamer.close(kNow);
+}
+
+// **The Extra Settings switches are read off the world, not handed in.**
+//
+// `WorldStreamer::open` loads `<world>/3dalpha.ini` and fills the two
+// generator options from it, so a world carries its own answer wherever the
+// card goes and the menu, the harness and a test cannot disagree about it.
+// What this covers is that wiring: the same seed, the same chunks, one world
+// with the bedrock fix written into its settings file and one without.
+//
+// Bedrock rather than ore because the floor is countable without a fixture --
+// a1.1.2 leaves about a sixth of its columns open at y = 0, and the fix leaves
+// none.
+TEST(the_generator_reads_the_worlds_own_extra_settings)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+
+    // CHECK returns from the enclosing function, so this counts into an
+    // out-parameter rather than returning: a lambda that returned int could
+    // not use the framework's macros.
+    auto holesIn = [&](const char* name, bool fixBedrock, int* out) {
+        *out = -1;
+        const std::string dir = temp.world(name);
+        io::PosixFileSystem fs;
+        {
+            mcver::Storage storage(fs);
+            CHECK(storage.create(dir.c_str(), 4242LL, kNow) == world::OpenResult::Ok);
+            CHECK(storage.close(kNow));
+        }
+
+        settings::WorldSettings worldSettings;
+        worldSettings.fixBedrockHole = fixBedrock;
+        CHECK(settings::saveWorldSettings(fs, dir, worldSettings));
+
+        TestAllocator allocator;
+        ChunkRenderer renderer;
+        ChunkRendererConfig config;
+        config.meshDistance = 2;
+        config.budget = {0, 4 * 1024 * 1024};
+        config.meshBudgetPerFrame = 8;
+        renderer.reset(&allocator, config);
+
+        WorldStreamer streamer;
+        streamer.setGenerateMissing(true);
+        CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+        WorldStreamer::Budget budget;
+        budget.columnsPerFrame = 1;
+        budget.generatedPerFrame = 1;
+        budget.meshesPerFrame = 8;
+        const int frames = runUntilSettled(streamer, renderer, 0, 0, budget, 20000);
+        CHECK(frames < 20000);
+
+        int holes = 0;
+        for (i32 cx = -1; cx <= 1; ++cx) {
+            for (i32 cz = -1; cz <= 1; ++cz) {
+                const world::ChunkColumn* column = streamer.residentColumn(cx, cz);
+                CHECK(column != nullptr);
+                if (column == nullptr) {
+                    continue;
+                }
+                for (int x = 0; x < 16; ++x) {
+                    for (int z = 0; z < 16; ++z) {
+                        if (column->block(x, 0, z) != block::BlockId(mcver::Block::Bedrock)) {
+                            ++holes;
+                        }
+                    }
+                }
+            }
+        }
+        streamer.close(kNow);
+        *out = holes;
+    };
+
+    // Nine chunks is 2,304 columns; a sixth of them is around 380.
+    int vanilla = -1;
+    holesIn("Vanilla", false, &vanilla);
+    CHECK(vanilla > 0);
+
+    // And with the switch written into the world's own settings file, the same
+    // seed over the same chunks leaves none.
+    int fixed = -1;
+    holesIn("Fixed", true, &fixed);
+    CHECK_EQ(fixed, 0);
 }

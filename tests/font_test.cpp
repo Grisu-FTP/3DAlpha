@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 using namespace mc;
 using mc::test::makeRgbaPng;
@@ -371,4 +372,69 @@ TEST(font_refuses_a_sheet_that_is_not_a_grid)
     std::vector<u8> odd(usize(130) * 130 * 4, 0);
     CHECK(fs.writeFileAtomic(dir.at("default.png").c_str(), makeRgbaPng(130, 130, odd)));
     CHECK_EQ(int(texture::buildFont(fs, dir.path, &font)), int(PackError::NotTileGrid));
+}
+
+namespace {
+
+// Every glyph one pixel wide, so a test about wrapping counts characters.
+std::vector<std::string> wrapped(const char* text, int maxWidth)
+{
+    u8 widths[256];
+    for (u8& width : widths) {
+        width = 1;
+    }
+    std::vector<std::string> lines;
+    texture::wrapText(widths, text, maxWidth, &lines);
+    return lines;
+}
+
+}  // namespace
+
+TEST(font_wrap_breaks_at_the_last_space_and_drops_it)
+{
+    const std::vector<std::string> lines = wrapped("the quick brown fox", 10);
+    CHECK_EQ(lines.size(), usize(2));
+    CHECK_EQ(lines[0], std::string("the quick"));
+    CHECK_EQ(lines[1], std::string("brown fox"));
+}
+
+TEST(font_wrap_cuts_a_word_wider_than_the_line)
+{
+    const std::vector<std::string> lines = wrapped("abcdefghij", 4);
+    CHECK_EQ(lines.size(), usize(3));
+    CHECK_EQ(lines[0], std::string("abcd"));
+    CHECK_EQ(lines[1], std::string("efgh"));
+    CHECK_EQ(lines[2], std::string("ij"));
+}
+
+TEST(font_wrap_counts_colour_codes_as_nothing_and_carries_them_across_a_break)
+{
+    const std::vector<std::string> lines = wrapped("§eyellow words here", 7);
+    CHECK_EQ(lines.size(), usize(3));
+    CHECK_EQ(lines[0], std::string("§eyellow"));
+    CHECK_EQ(lines[1], std::string("§ewords"));
+    CHECK_EQ(lines[2], std::string("§ehere"));
+}
+
+TEST(font_wrap_starts_each_new_line_in_the_default_colour)
+{
+    const std::vector<std::string> lines = wrapped("§eab\ncd\n\nef\n", 40);
+    CHECK_EQ(lines.size(), usize(4));
+    CHECK_EQ(lines[0], std::string("§eab"));
+    CHECK_EQ(lines[1], std::string("cd"));
+    CHECK_EQ(lines[2], std::string(""));
+    CHECK_EQ(lines[3], std::string("ef"));
+}
+
+TEST(font_wrap_uses_the_widths_it_is_given)
+{
+    u8 widths[256] = {};
+    widths[texture::fontGlyph('i')] = 2;
+    widths[texture::fontGlyph('m')] = 6;
+    widths[texture::fontGlyph(' ')] = 4;
+    std::vector<std::string> lines;
+    texture::wrapText(widths, "iii mm", 12, &lines);
+    CHECK_EQ(lines.size(), usize(2));
+    CHECK_EQ(lines[0], std::string("iii"));
+    CHECK_EQ(lines[1], std::string("mm"));
 }

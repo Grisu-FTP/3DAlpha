@@ -45,7 +45,7 @@
 ;
 ; This is here rather than in the PICA's own fog unit because that unit reads a
 ; 128-entry LUT indexed by **window depth**, and window depth is 1/d. With a
-; 0.2-block near plane and a 176-block far plane the entire 40-to-160-block fog
+; 0.05-block near plane and a 176-block far plane the entire 40-to-160-block fog
 ; ramp lands inside the first of those 128 entries, so the hardware fog was a
 ; single linear interpolation from "clear at 20 blocks" to "solid at the far
 ; plane" -- far thicker than a1.1.2's, and thicker the further you can see.

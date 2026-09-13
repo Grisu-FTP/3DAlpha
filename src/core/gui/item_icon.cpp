@@ -169,121 +169,165 @@ void drawFlat(const Surface& surface, int x, int y, int size, const u8* sheet, i
     }
 }
 
-// One box of a block's shape, as three parallelograms.
+// One visible face of one box, as a parallelogram.
 //
-// Each face is inverse-mapped: a destination pixel is asked which point of the
-// face it is, and a point outside 0..1 in either direction is not on it. That
-// is one divide per face set up once and two multiplies per pixel, which at
-// sixteen pixels square is nothing and needs no clipping code.
-void drawBox(const Surface& surface, int x, int y, int size, const u8* sheet,
-             const block::BlockDef& def, const AABB& box)
+// It is inverse-mapped: a destination pixel is asked which point of the face it
+// is, and a point outside 0..1 in either direction is not on it. That is one
+// divide set up once and two multiplies per pixel, which at sixteen pixels
+// square is nothing and needs no clipping code.
+void drawFace(const Surface& surface, int x, int y, int size, const u8* sheet,
+              const block::BlockDef& def, const AABB& box, const IconFace& face)
 {
     const float edge = float(size);
-    for (const IconFace& face : kVisibleFaces) {
-        const Screen origin = projectCorner(box, face.originX, face.originY, face.originZ);
+    const Screen origin = projectCorner(box, face.originX, face.originY, face.originZ);
 
-        // The two screen-space edges, found by moving the origin corner along
-        // each texture axis to the other end of the box.
-        int px[3] = {face.originX, face.originY, face.originZ};
-        px[face.uAxis] = face.uTowards;
-        const Screen alongU = projectCorner(box, px[0], px[1], px[2]);
-        int qx[3] = {face.originX, face.originY, face.originZ};
-        qx[face.vAxis] = face.vTowards;
-        const Screen alongV = projectCorner(box, qx[0], qx[1], qx[2]);
+    // The two screen-space edges, found by moving the origin corner along
+    // each texture axis to the other end of the box.
+    int px[3] = {face.originX, face.originY, face.originZ};
+    px[face.uAxis] = face.uTowards;
+    const Screen alongU = projectCorner(box, px[0], px[1], px[2]);
+    int qx[3] = {face.originX, face.originY, face.originZ};
+    qx[face.vAxis] = face.vTowards;
+    const Screen alongV = projectCorner(box, qx[0], qx[1], qx[2]);
 
-        const float ux = alongU.x - origin.x;
-        const float uy = alongU.y - origin.y;
-        const float vx = alongV.x - origin.x;
-        const float vy = alongV.y - origin.y;
+    const float ux = alongU.x - origin.x;
+    const float uy = alongU.y - origin.y;
+    const float vx = alongV.x - origin.x;
+    const float vy = alongV.y - origin.y;
 
-        const float determinant = ux * vy - uy * vx;
-        if (determinant == 0.0f) {
-            // A box with no thickness along one of this face's axes -- a flat
-            // plate seen edge on. Nothing to draw and nothing to divide by.
-            continue;
-        }
-        const float inv = 1.0f / determinant;
+    const float determinant = ux * vy - uy * vx;
+    if (determinant == 0.0f) {
+        // A box with no thickness along one of this face's axes -- a flat
+        // plate seen edge on. Nothing to draw and nothing to divide by.
+        return;
+    }
+    const float inv = 1.0f / determinant;
 
-        // **The tile is sampled over the box's own extent**, which is the
-        // same rule core/mesh/box.hpp follows in the world: a slab's side shows
-        // half its tile and a fence post shows the quarter of the plank texture
-        // it covers.
-        //
-        // It comes out as one line per axis, and pleasantly so. Each face's
-        // parameter runs from the origin corner towards the other end, and the
-        // faces whose origin is at the *high* end are exactly the faces whose
-        // texture axis runs backwards -- the two cancel, so the texel is just
-        // the box's low bound plus the parameter across its extent, whichever
-        // face it is.
-        const float uMin = boxAxis(box, face.uAxis, 0);
-        const float uSpan = boxAxis(box, face.uAxis, 1) - uMin;
-        const float vMin = boxAxis(box, face.vAxis, 0);
-        const float vSpan = boxAxis(box, face.vAxis, 1) - vMin;
+    // **The tile is sampled over the box's own extent**, which is the
+    // same rule core/mesh/box.hpp follows in the world: a slab's side shows
+    // half its tile and a fence post shows the quarter of the plank texture
+    // it covers.
+    //
+    // It comes out as one line per axis, and pleasantly so. Each face's
+    // parameter runs from the origin corner towards the other end, and the
+    // faces whose origin is at the *high* end are exactly the faces whose
+    // texture axis runs backwards -- the two cancel, so the texel is just
+    // the box's low bound plus the parameter across its extent, whichever
+    // face it is.
+    const float uMin = boxAxis(box, face.uAxis, 0);
+    const float uSpan = boxAxis(box, face.uAxis, 1) - uMin;
+    const float vMin = boxAxis(box, face.vAxis, 0);
+    const float vSpan = boxAxis(box, face.vAxis, 1) - vMin;
 
-        const float shadeFactor = mesh::kFaceShadeFloat[face.meshFace];
-        const int tileIndex = int(def.faces[face.meshFace]);
-        const float tile = float(kTilePixels);
+    const float shadeFactor = mesh::kFaceShadeFloat[face.meshFace];
+    const int tileIndex = int(def.faces[face.meshFace]);
+    const float tile = float(kTilePixels);
 
-        for (int py = 0; py < size; ++py) {
-            for (int pxi = 0; pxi < size; ++pxi) {
-                // Pixel centres, so a face's edge falls between two pixels
-                // rather than on one and the three faces tile without a seam.
-                const float dx = (float(pxi) + 0.5f) / edge - origin.x;
-                const float dy = (float(py) + 0.5f) / edge - origin.y;
-                const float a = (dx * vy - dy * vx) * inv;
-                const float b = (dy * ux - dx * uy) * inv;
-                if (a < 0.0f || a >= 1.0f || b < 0.0f || b >= 1.0f) {
-                    continue;
-                }
+    for (int py = 0; py < size; ++py) {
+        for (int pxi = 0; pxi < size; ++pxi) {
+            // Pixel centres, so a face's edge falls between two pixels
+            // rather than on one and the three faces tile without a seam.
+            const float dx = (float(pxi) + 0.5f) / edge - origin.x;
+            const float dy = (float(py) + 0.5f) / edge - origin.y;
+            const float a = (dx * vy - dy * vx) * inv;
+            const float b = (dy * ux - dx * uy) * inv;
+            if (a < 0.0f || a >= 1.0f || b < 0.0f || b >= 1.0f) {
+                continue;
+            }
 
-                const float uTexel = uMin + a * uSpan;
-                const float vTexel = vMin + b * vSpan;
+            const float uTexel = uMin + a * uSpan;
+            const float vTexel = vMin + b * vSpan;
 
-                u8 r, g, bl;
-                if (!sampleTile(sheet, tileIndex, int(uTexel * tile), int(vTexel * tile), &r, &g,
-                                &bl)) {
-                    continue;
-                }
-                Pixel* out = surface.at(x + pxi, y + py);
-                if (out != nullptr) {
-                    *out = rgb565(int(shade(r, shadeFactor)), int(shade(g, shadeFactor)),
-                                  int(shade(bl, shadeFactor)));
-                }
+            u8 r, g, bl;
+            if (!sampleTile(sheet, tileIndex, int(uTexel * tile), int(vTexel * tile), &r, &g,
+                            &bl)) {
+                continue;
+            }
+            Pixel* out = surface.at(x + pxi, y + py);
+            if (out != nullptr) {
+                *out = rgb565(int(shade(r, shadeFactor)), int(shade(g, shadeFactor)),
+                              int(shade(bl, shadeFactor)));
             }
         }
     }
 }
 
-// Every box of the block, drawn back to front.
+// **Nearness, for the painter's order below.** The projection above leaves one
+// direction unrepresented, and it is the cross product of its two screen axes:
+// (0.5, 0, 0.5) x (0.25, -0.5, -0.25) is (0.25, 0.25, -0.25), so a point is
+// nearer the eye the larger `x + y - z`. That is the viewer being above, to the
+// +X side and on the -Z side, written as one number.
+double nearness(const AABB& box, const IconFace& face)
+{
+    // The face's own centre: its two spanning axes at their middle and its
+    // normal axis pinned to the end the face sits on.
+    const double mid[3] = {(box.minX + box.maxX) * 0.5, (box.minY + box.maxY) * 0.5,
+                           (box.minZ + box.maxZ) * 0.5};
+    double point[3] = {mid[0], mid[1], mid[2]};
+    switch (face.meshFace) {
+        case mesh::kFacePosY: point[1] = box.maxY; break;
+        case mesh::kFaceNegZ: point[2] = box.minZ; break;
+        default:              point[0] = box.maxX; break;  // +X
+    }
+    return point[0] + point[1] - point[2];
+}
+
+// Every visible face of every box of the block, drawn back to front.
 //
-// **Painter's order, and it is one comparison.** The viewer is towards +X and
-// -Z, so a box is nearer the eye the larger its x and the smaller its z; drawing
-// in increasing `x - z` puts the far ones down first and lets the near ones
-// cover them. A fence's post and its rails are the case that needs it.
+// **The order is over faces and not over boxes**, which matters as soon as two
+// boxes share a cell: a cactus is drawn as its cell's cap and two pairs of
+// sides pushed in a sixteenth, and the cap's top face is *in front of* the side
+// faces it overlaps even though the boxes it belongs to are no nearer. Sorting
+// whole boxes put a sliver of the side tile over the front edge of the top.
+// A fence's post and rails, the case this started as, come out unchanged:
+// their faces are disjoint on screen and sort the same way either way.
 void drawShape(const Surface& surface, int x, int y, int size, const u8* sheet,
                const block::BlockDef& def, block::BlockId id)
 {
     AABB boxes[block::kMaxRenderBoxes];
+    int faceMask[block::kMaxRenderBoxes];
     // No neighbours: an icon is a block on its own, so a fence is a bare post.
-    const int count = block::renderBoxes(id, 0, 0, boxes, block::kMaxRenderBoxes);
+    // **The item form**, so a button in a slot is a button and not the stone
+    // cube its metadata-0 world bounds are -- see core/block/model.hpp.
+    const int count = block::itemRenderBoxes(id, boxes, block::kMaxRenderBoxes, faceMask);
 
-    int order[block::kMaxRenderBoxes];
-    for (int i = 0; i < count; ++i) {
-        order[i] = i;
+    constexpr int kVisible = int(sizeof(kVisibleFaces) / sizeof(kVisibleFaces[0]));
+    int boxOf[block::kMaxRenderBoxes * kVisible];
+    int faceOf[block::kMaxRenderBoxes * kVisible];
+    double depth[block::kMaxRenderBoxes * kVisible];
+    int drawn = 0;
+    for (int b = 0; b < count; ++b) {
+        for (int f = 0; f < kVisible; ++f) {
+            if ((faceMask[b] & (1 << kVisibleFaces[f].meshFace)) == 0) {
+                continue;
+            }
+            boxOf[drawn] = b;
+            faceOf[drawn] = f;
+            depth[drawn] = nearness(boxes[b], kVisibleFaces[f]);
+            ++drawn;
+        }
     }
-    for (int i = 1; i < count; ++i) {
-        const int held = order[i];
-        const double key = boxes[held].minX - boxes[held].maxZ;
+
+    // Insertion sort, far first. At most 27 entries and usually three.
+    for (int i = 1; i < drawn; ++i) {
+        const int heldBox = boxOf[i];
+        const int heldFace = faceOf[i];
+        const double key = depth[i];
         int j = i - 1;
-        while (j >= 0 && (boxes[order[j]].minX - boxes[order[j]].maxZ) > key) {
-            order[j + 1] = order[j];
+        while (j >= 0 && depth[j] > key) {
+            boxOf[j + 1] = boxOf[j];
+            faceOf[j + 1] = faceOf[j];
+            depth[j + 1] = depth[j];
             --j;
         }
-        order[j + 1] = held;
+        boxOf[j + 1] = heldBox;
+        faceOf[j + 1] = heldFace;
+        depth[j + 1] = key;
     }
 
-    for (int i = 0; i < count; ++i) {
-        drawBox(surface, x, y, size, sheet, def, boxes[order[i]]);
+    for (int i = 0; i < drawn; ++i) {
+        drawFace(surface, x, y, size, sheet, def, boxes[boxOf[i]],
+                 kVisibleFaces[faceOf[i]]);
     }
 }
 

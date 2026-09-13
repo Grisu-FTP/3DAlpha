@@ -89,6 +89,7 @@ real file.
 | Ground acceleration | `0.1f` | `EntityLiving`'s method |
 | Air acceleration | `0.02f` | `EntityLiving`'s method |
 | Sneak probe step | `0.05d` | `Entity`'s method |
+| Sneak input scale | `0.3d` | `MovementInputFromOptions`'s method — `MovementInput`, **not** the entity; see below |
 | `ySize` decay | `0.4f` per move | end of `Entity`'s method |
 | Pi, for heading | `3.1415927f` | `Entity`'s method — the float literal, not a double pi |
 | Block slipperiness | `0.6f`, and `0.98f` for ice alone | `Block` ctor; `he` (id 79) |
@@ -155,6 +156,49 @@ Last, the smoothing offset is multiplied by 0.4, unconditionally.
 Note that the collision list is gathered **once**, from the box swept along all three axes at once,
 and then reused for each axis in turn. Re-querying per axis would be a different game.
 
+### `collidingBoxes` has an entity half — `World`'s method
+
+The list is not only blocks, and missing that is what made a minecart here something to walk
+through. The method is:
+
+The world's shared list is cleared and reused. The box is floored on each axis, with the upper
+bound taken from the maximum plus one. For every x and z column in range that is loaded at
+height 64, each cell from one below the box's bottom to its top adds the block's own colliding
+boxes; the extra row below is there for the 1.5-tall fence. Entities within the box grown by 0.25
+(excluding the mover) then contribute: each one's own box is added if it overlaps, and the box
+that **the mover** reports for that entity, asked of the mover rather than the other entity, is
+added too if it overlaps. The list is returned.
+
+Two facts fall out of it, and both were checked against every class in the jar:
+
+- **Exactly two classes override `f_()` (getBoundingBox) with a box**: `EntityBoat` (EntityBoat) and `EntityMinecart`
+  (EntityMinecart), each `return this.boundingBox`. `Entity`'s own is `return null`, and nothing else
+  overrides it — no mob, item, arrow, painting, TNT, falling block or particle. So the whole of
+  "which entities are solid" in a1.1.2 is *boat and minecart*, and it is why you can stand on a
+  cart and walk through a cow.
+- **`b_(kh)` (getCollisionBox) is called on the moving entity**, not on the neighbour, and the boat
+  and the cart both answer with the *argument's* box — `return e.boundingBox`, one instruction, with
+  no null, liveness or `canBeCollidedWith` test in front of it. A moving boat or cart therefore
+  collides with **everything near it**, not only with the other boats and carts; a moving player,
+  mob, item or falling block reaches only the first branch, because `Entity`'s field is null.
+
+`getEntitiesWithinAABBExcludingEntity` (`World`'s method into a method of another original class) excludes **only the
+entity itself** — not its rider and not its vehicle, and a method of another original class filters on nothing else:
+`e != excluded && e.boundingBox.intersectsWith(box)` is the whole of it. That costs nothing for a
+rider on either side. The rider does not move — `updateRidden` assigns the position and `moveEntity`
+never runs while mounted — and the vehicle is not stopped by the rider it carries, because
+`EntityMinecart`'s method and `EntityBoat`'s method (getMountedYOffset) are both `height * 0.0 - 0.3`, which puts the rider's box
+*overlapping* the vehicle's on all three axes, and `calculateOffset` clips only against a box that
+is ahead and clear.
+
+What the list holds is a1.1.2's **world** entity list, so one thing this port has is deliberately
+absent from it: `EntityFX` (EntityFX) never enters that list. `EffectRenderer`'s method is
+`lists[particle.getFXLayer()].add(particle)` and nothing else, so a cart is not stopped by smoke.
+
+See `core/tick/tick_world.hpp` (`forEachSolidBox`), `core/entity/entity_boxes.hpp` and
+`core/entity/sweep.cpp` (`Mover`) for how this half is carried here, and
+`tests/entity_boxes_test.cpp` for what it is checked against.
+
 ## `EntityLiving.moveEntityWithHeading` — `EntityLiving`'s method
 
 Three branches. Water and lava first, land last:
@@ -185,6 +229,43 @@ forward times sine on x, and forward times cosine plus strafe times sine on z.
 
 `rotationYaw` is degrees. Note the input magnitude is clamped **up** to 1, so pushing a stick half
 way gives half speed but pushing two axes fully does not give √2.
+
+## Sneaking scales the stick — `MovementInputFromOptions`'s method
+
+The crouch in a1.1.2 is split across two classes and only one half of it works. `Entity.isSneaking`
+is a hardcoded `false` (see *What the oracle does not cover*), which kills the stance, the ledge
+walk-back and the silent footstep. The **slowdown is alive**, because it never asks the entity
+anything — it is the tail of `MovementInputFromOptions.updatePlayerMoveState`, reading the sneak key
+out of its own array:
+
+The input step zeroes strafe and forward, then adds 1 to forward for the Forward key (index 0),
+subtracts 1 for Back (1), adds 1 to strafe for Left (2) and subtracts 1 for Right (3). Index 4 is
+Jump and index 5 is Sneak. While sneaking, both axes are multiplied by 0.3, computed in double
+and narrowed back to float.
+
+`MovementInputFromOptions`'s method is what fills that array, and it fills it by comparing the pressed key against
+`GameSettings`' bindings in a fixed order — so the indices above are read off the jar, not guessed:
+a field of another original class "Forward" is 0, a field of another original class "Back" is 1, a field of another original class "Left" is 2, a field of another original class "Right" is 3, a field of another original class "Jump" is
+4 and a field of another original class "Sneak" (LWJGL 42, left shift) is 5. Note in passing that **Left is the one that adds**
+to `moveStrafe`, which is the other end of the strafe negation in `readBodyInput`.
+
+Three things this settles:
+
+- **It is period.** b1.6.2, b1.8.1 (a method of another original class) and 1.8.9 all disassemble to the same guarded pair
+  of `f2d; 0.3d; dmul; d2f` multiplications, differing only in which obfuscated names they wear, so
+  unlike the camera drop this number needs no era label — it was always here.
+- **It scales the input, not the speed.** The 0.3 lands before `moveFlying`, so what it divides is
+  the *acceleration* a tick adds, not a cap on velocity. Because `moveFlying` clamps the magnitude
+  **up** to 1 and never normalises an input inside the unit circle back up, the tick stays linear in
+  the stick: a third of the push really does settle at a third of the speed. Scaling the ground
+  acceleration or the resulting motion instead would be wrong, and wrong differently.
+- **The double round trip is not decoration.** `f2d; ldc2_w 0.3d; dmul; d2f` is a different float
+  from `x * 0.3f` for plenty of inputs — 0.7 comes out `0.20999999344348907` one way and
+  `0.21000001` the other.
+
+Ported as `applySneakSlowdown` in `core/entity/player_body.hpp`, called from the input reader rather
+than from `PlayerBody`, which is where the jar puts it: the oracle drives `moveEntityWithHeading`
+directly, so a body that scaled its own input would disagree with its own fixture.
 
 ## `EntityLiving.jump` — `EntityLiving`'s method
 
@@ -329,6 +410,10 @@ caught on a specific tick by `tests/player_body_vectors.hpp`. They are the argum
   overrides it, so an `EntityPlayer` cannot be made to sneak from outside the game. The ledge
   walk-back is tested by hand in `tests/player_body_test.cpp` against the invariant it exists to
   hold, rather than against a captured number.
+
+  The **input scaling** above is a separate matter and is not missing from the game, only from the
+  oracle: it happens in `MovementInput` before `moveEntityWithHeading` is called at all, so no
+  capture of that method could contain it either way. It is tested by hand too.
 - **The fluid current.** `World.handleMaterialAcceleration` is fully ported now -- both its answer
   ("is the body in this material, with the surface reaching the top of the probe") and its side
   effect, which is asking each fluid cell for a flow vector, normalising the sum and adding
@@ -780,9 +865,229 @@ Because `moveEntity` is a swept AABB rather than a ray, even the sprint speed's 
 cannot pass through a one-block wall. `tests/creative_flight_test.cpp` checks exactly that, at both
 speeds and again across the negative axis.
 
+## Survival — health, breaking, wear, and the four screens
+
+Everything above this line is the body. This is what a1.1.2 lays on top of it, transcribed the same
+way: a name from the class file next to every rule.
+
+The classes: `EntityPlayer` EntityPlayer, `EntityLiving` EntityLiving, `Entity` Entity, `nj` PlayerControllerSP, `hq` its
+base, `InventoryPlayer` InventoryPlayer, `ItemStack` ItemStack, `di` Item, `bs` ItemTool, `ItemArmor` ItemArmor, `oj` ItemFood,
+`Block` Block, `CraftingManager` CraftingManager, `bv` ShapedRecipes, `TileEntityFurnace` TileEntityFurnace, `fe` TileEntityChest,
+`ar` Container, `ee` GuiContainer, `GuiIngame` GuiIngame, `au` GuiGameOver.
+
+### Taking a hit — `EntityPlayer`'s method, then `EntityLiving`'s method
+
+**The invulnerability window is checked in `EntityPlayer`, before `EntityLiving` ever sees the hit**, and so is death:
+
+    if (E <= 0) return false;                  // already dead
+    if (aI > 10) return false;                 // hurtResistantTime; kPlayerHurtResistantTime is 20
+
+**Difficulty scales the damage and only for two sources.** The test is on the *attacker's* class —
+`EntityMob` (a monster) or `EntityArrow` (an arrow) — so a fall, lava, a cactus, a blast and drowning are the same
+on every setting:
+
+| `World`'s field | what happens to the damage |
+|---|---|
+| 0 Peaceful | 0 — the hit lands and costs nothing |
+| 1 Easy | `dmg / 3 + 1` |
+| 2 Normal | unchanged |
+| 3 Hard | `dmg * 3 / 2` |
+
+**Armour absorbs in twenty-fifths and wears on the way**, carrying the remainder between hits:
+
+    total = dmg * (25 - eu.f()) + carry;       // f() is armourValue
+    eu.e(dmg);                                 // damageArmour: every worn piece takes dmg
+    dmg   = total / 25;
+    carry = total % 25;
+
+`InventoryPlayer`'s method is `(points - 1) * remaining / total + 1` per worn piece, so a nearly-broken helmet is
+worth about as much as none. This is why `armourCarry` is saved nowhere: a1.1.2 does not save it
+either.
+
+What `EntityLiving`'s field then does: `prevHealth = health`, the window goes to 20, `health -= dmg`, `hurtTime` to
+10, `random.hurt` plays, and the knockback pushes away from the attacker — or, with no attacker,
+`attackedAtYaw = (int)(random * 2) * 180`, which is what makes drowning and fire flash the screen
+from a direction at all.
+
+### Per-tick harm — `Entity`'s method and `EntityLiving`'s method, in this order
+
+| what | rule |
+|---|---|
+| Fall | `ceil(distance - 3)`, so three blocks are free; the landing also plays the step sound at 0.5 volume and 0.75 pitch |
+| Fire | 1 every 20 ticks while the fire counter runs |
+| Lava | 10, and the fire counter is set to 600 |
+| Void | `posY < -64` → 4 a tick |
+| Suffocation | 1 while the cell at `floor(posY + 0.12)` is opaque |
+| Drowning | the eye in water drains `air` from 300; at **−20** it is 2 damage and `air` goes back to 0. The fire counter is zeroed under water |
+| Peaceful | `ticksExisted % 20 == 0` and below full health heals 1 (`EntityPlayer`'s method) |
+
+`heal` caps at 20 and sets the window to 10, which is why a healed player cannot be hit again for
+half a second.
+
+**Death** is `EntityPlayer`'s method: the box shrinks to 0.2, `motionY = 0.1`, **the whole inventory is
+scattered** — each stack at `posY - 0.3 + 0.12` with a 40-tick pickup delay, a random speed
+`rand * 0.5` at a random angle and `motionY = 0.2` — and the eye height drops to 0.1. `deathTime`
+counts 20 ticks. `au` (GuiGameOver) is opened the moment health reaches zero with no other screen
+up; it does **not** pause the world (a method of another original class is false).
+
+Respawn is `Minecraft.o()`: `World`'s method first (below), then the old player is removed, a brand-new one
+is built at `spawnX + 0.5, spawnY + 1, spawnZ + 0.5`, a method of another original class lifts it clear of the ground and
+a method of another original class turns it to face yaw −180.
+
+**A corpse picks nothing up.** `EntityPlayer`'s method wraps the whole nearby-entity sweep — the
+`boundingBox.expand(1, 0, 1)` list and the `onCollideWithPlayer` call on each of them — in
+`if (health > 0)`. It has to: death scatters the inventory at the player's own feet with a 40-tick
+pickup delay, and the game-over screen stands there for far longer than forty ticks. Without the
+guard the body vacuums its own grave back up while the player is still reading "Game over!", and
+respawns holding everything it just dropped.
+
+### Where a world starts you — `World`'s constructor, `World`'s method and `Entity`'s method
+
+Four methods, and between them they say something surprising: **y is never searched for.**
+
+    cn.g(int,int)   int y = 63; while (getBlockId(x, y + 1, z) != 0) y++; return getBlockId(x, y, z);
+    cn.f(int,int)   g(x, z) == Block.sand.blockID
+    cn.a()          if (spawnY <= 0) spawnY = 64;
+                    while (g(spawnX, spawnZ) == 0) { spawnX += r(8) - r(8); spawnZ += r(8) - r(8); }
+    kh.q()          while (posY > 0) { setPosition(...); if (no colliding boxes) break; posY++; }
+                    motionX = motionY = motionZ = 0; rotationPitch = 0;
+
+- `g` **only ever climbs**. It starts at 63 — one below sea level, not at it — and reports whatever
+  it stopped on, so a column whose ground is under 63 reports what 63 holds, which over an ocean is
+  water and not the sea bed.
+- The constructor, on the branch it takes when there is no `level.dat`, sets `(0, 64, 0)` and then
+  walks by `nextInt(64) - nextInt(64)` on both axes **until `f` accepts**, with no bound. That one
+  test — the top block has to be *sand* — is why every Alpha world begins on a beach. The draws come
+  off the World's own unseeded `Random`, the same one that has just flipped `SnowCovered`.
+- `World`'s method runs again on every load and every respawn, and is the weaker test: it only walks off a
+  column of pure air, by `nextInt(8) - nextInt(8)`.
+- **`spawnY` stays 64** through all of it. What puts the player on top of the ground instead of
+  inside it is `Entity`'s method, run from a method of another original class when the body is built, and nothing else.
+
+Two consequences worth writing down. `q()` runs **before** `World`'s method reads `Player` out of
+`level.dat`, so a *saved* player is placed exactly where the file says and is never lifted, however
+buried. And a *fresh* player is lifted, which is the only reason `spawnY = 64` is a survivable
+number to start at.
+
+The port does all four, with one deviation each way. The walk is bounded — see
+`core/world/spawn_point.hpp` — because on this console every step of it is a column generated on the
+main thread while the player waits at the menu, a median of about twenty and a tail into the low
+hundreds. And the lift is **owed rather than made**: columns stream in behind the player here, so a
+lift at the moment the body is built would find air, decide there was nothing to climb out of, and
+leave the player to be buried by the terrain arriving underneath them. It is paid on the first tick
+the body's own column is resident, and until then the body is held still — which is what
+`respawnPending` in `platform/ctr/main.cpp` already did for a respawn.
+
+### The save tags
+
+`Health` → `E`, `HurtTime` → `G`, `DeathTime` → `J`, `AttackTime` → `K`, `Fire` → `aT`,
+`Air` → `aX`. **A file with no `Health` reads as 10, not 20** — that is the field's initialiser in
+the read path, and it is what a world saved by another tool will give you.
+
+### Breaking a block — `nj`
+
+    a(IIII)  clickBlock       // also runs onBlockClicked, and breaks at once if hardness >= 1
+    c(IIII)  damageBlock      // once a tick while the button is held
+    a()      resetBlockRemoving
+
+- A click on a **new** cell only records it that tick; the progress starts on the next.
+- After a break there is a **five-tick delay** before anything can be hit again.
+- Progress accumulates `Block`'s method — the *relative* hardness — and the block goes at 1.0.
+- The step sound plays every fourth tick, at volume `(b + 1) / 8` and pitch `c * 0.5`.
+- `reset()` clears the progress and the delay **only if something was being hit**.
+- `World`'s field puts out a fire on the struck face, which is why a click on a burning block does that
+  first and breaks nothing.
+
+**Relative hardness**, which is the whole of how long a block takes:
+
+    hardness < 0            -> 0            // bedrock: never
+    !dm.b(ly)               -> 1 / h / 100  // cannot harvest it: 100 ticks a point
+    otherwise               -> s / h / 30   // s is dm.a(ly), the tool's speed
+
+and `EntityPlayer`'s method divides `s` by 5 with the eye in water and by 5 again off the ground — so mining
+while swimming and jumping is 25 times slower.
+
+**Harvest order matters and is not the order it reads as.** `b(III)` destroys the block, *then*
+wears the held item, *then* asks `canHarvestBlock`, *then* drops. A pickaxe on its last point of
+durability breaks the stone and drops nothing, because by the time the question is asked the hand
+is empty.
+
+### Wearing things out — `ItemStack`'s method
+
+Past `getMaxDamage` the stack loses one and the damage goes back to zero, which is how a stack of
+tools works. A hit on a mob costs **2** on a tool and **1** on a sword; breaking a block costs
+**1** on a tool and **2** on a sword — the sword is the expensive way to dig on purpose.
+
+Using something up: every `ItemBlock` placement, a door, reeds, seeds, redstone, a sign, a
+painting, a boat, a minecart and a saddle spend one on success; a hoe and flint and steel take a
+point of damage; food spends one and heals; the bow needs an arrow and takes it from the first
+slot that has one (`InventoryPlayer`'s method).
+
+### The HUD — `GuiIngame`'s method
+
+Hearts at `x = w/2 - 91 + i*8`, `y = h - 32`. The container tile is `(16 + flash*9, 0)`, where the
+flash is on while `(aW/3) % 2 == 1 && aW >= 10`; while it flashes the **previous** health is
+outlined with `(70,0)`/`(79,0)` behind the current `(52,0)`/`(61,0)`. At four health or less every
+heart jitters by `new Random(h*312871).nextInt(2)` pixels. Armour runs the other way from
+`x = w/2 + 91 - i*8 - 9` with `(16,9)`, `(25,9)`, `(34,9)`; bubbles sit a row above the hearts,
+`(16,18)` whole and `(25,18)` popping.
+
+**Ported to the top screen, and moved on it**, which is the one deliberate departure in this
+section. The row positions above are all measured from a hotbar that is not there: a1.1.2 centres
+the hearts on the hotbar at the bottom of the same screen, and this port's hotbar is on the other
+screen. So the hearts go to the top **left**, the armour to the top **right**, the bubbles to the
+row **below** the hearts rather than above them — above is now the screen edge — and every cell is
+drawn at `kHudTexelUnits` (30 sixteenths of a pixel, so 1.875) times its texel size, which is what
+makes a 9-pixel heart legible on a 400 x 240 panel. It was a flat 2 and came down 6.25 % later;
+see `status.md` 48. The arithmetic inside a row is untouched: same halves, same flash, same one-pixel
+jitter (scaled with the rest), same bubble count. See `docs/3ds-performance.md` §11.
+
+### The container screens — a method of another original class
+
+One cursor stack, and the rules a click follows:
+
+- **Pick up**: the whole stack with the left button, half rounded up with the right. A result slot
+  always gives the whole thing.
+- **Put down**: all with the left, one with the right, capped at the slot's limit, and only if the
+  slot accepts it.
+- **A different item** swaps, but only when the cursor holds no more than the slot's limit.
+- **The same id** merges, clamped by the limit and the stack size.
+- **A slot that refuses** a stack it already holds more than one of, when the cursor's would fit,
+  takes the lot onto the cursor and runs `onPickupFromSlot`.
+- **Outside the window**: the left button throws the whole cursor, the right throws one.
+
+Closing drops the cursor (a method of another original class) and, on the two crafting screens, whatever is in the grid.
+A chest's and a furnace's contents stay where they are.
+
+**Crafting is shaped only in a1.1.2** — there is no shapeless recipe class. `CraftingManager` walks its list in
+order and the first match wins; a recipe is tried at every offset that fits, **mirrored first and
+then straight**, and every cell of the 3×3 has to agree (−1 meaning blank). The 2×2 grid is
+matched as the top-left corner of the 3×3. Taking the result spends one from every cell that had
+anything in it.
+
+Slot order, which is what a click's index means: the result, the grid, the armour (helmet first,
+held in `armorInventory[3 - i]`), then the backpack (slots 9..35) and then the hand (0..8) — the
+last two in that order in all four constructors.
+
+### The furnace — `TileEntityFurnace`'s method
+
+    burn--
+    if (burn == 0 && canSmelt) { burn = currentBurn = fuelValue(slot 1); consume one fuel }
+    if (burning && canSmelt)   { if (++cook == 200) smelt() } else cook = 0
+
+Fuel: any wood-material block 300, a stick 100, coal 1600, a lava bucket 20000. Seven things smelt.
+The lit/unlit swap (`BlockFurnace`'s field) keeps the metadata **and the tile entity** — writing the block without
+putting the entity back is how a furnace forgets what it was cooking. Breaking a furnace spills
+nothing; breaking a chest spills everything, each stack at `rand * 0.8 + 0.1` inside the cell, in
+clumps of `nextInt(21) + 10`, with `gaussian * 0.05` motion and `+0.2` upward.
+
+A chest refuses to open with an opaque block on it — or on the chest next to it. A double chest
+nests −x/−z first and +x/+z last (`hs`), which is why the left half is slots 0..26.
+
 ## What is not derived yet
 
-- Fall damage, and everything else that belongs to Survival rather than to the body.
+- ~~Fall damage, and everything else that belongs to Survival rather than to the body.~~ —
+  **derived**, and it is the section above.
 - ~~`isOnLadder`, `isInWater` and `isInLava`~~ — **all three are written**, and the ladder is the
   last of them. See *Ladders* below.
 - ~~`Block.onBlockPlaced`~~ — **derived**, as a generated table: `tools/genref.java --place` sweeps
@@ -791,4 +1096,5 @@ speeds and again across the negative axis.
   `(id, face)` table cannot hold is the floor lever's `5 + rand.nextInt(2)`, and that is rolled in
   `tick::leverPlaced` instead. See *Which way a placed block faces* above.
 - The replaceable-material test. Placement goes into air only; a1.1.2 also replaces water, lava and
-  snow, and answering that properly is a Survival-shaped question.
+  snow. Survival landed without it -- it is a placement question rather than a Survival one, and
+  nothing above depends on the answer.

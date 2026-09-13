@@ -254,3 +254,77 @@ TEST(writing_a_tile_through_its_runs_matches_writing_it_texel_by_texel)
     CHECK(byRun == byTexel);
 }
 
+
+TEST(a_run_of_tiles_is_the_same_two_copies_made_longer)
+{
+    // **The claim `Atlas::updateTile`'s `across` rests on.** A fluid's flowing
+    // texture covers a 2x2 block of the atlas holding one picture, and pushing
+    // a row of that block as one pair of copies instead of two needs both
+    // halves of this: tile n + 1's runs start exactly where tile n's end, so
+    // the destination is contiguous; and where a texel lands *inside* a run
+    // does not depend on which column the tile is in, so the source is one
+    // tile's words repeated. The second is the surprising one -- it holds
+    // because subtracting the run's own base cancels the column term out of
+    // tiledOffset entirely.
+    for (u32 row = 0; row < 16; ++row) {
+        for (u32 column = 0; column + 1 < 16; ++column) {
+            const TileRuns a = tileRunsFlipped(column, row, u32(kAtlasEdge));
+            const TileRuns b = tileRunsFlipped(column + 1, row, u32(kAtlasEdge));
+            CHECK_EQ(b.first, a.first + kTileRunWords);
+            CHECK_EQ(b.second, a.second + kTileRunWords);
+
+            for (u32 y = 0; y < 16; ++y) {
+                for (u32 x = 0; x < 16; ++x) {
+                    CHECK_EQ(tileRunIndex(a, column, row, x, y, u32(kAtlasEdge)),
+                             tileRunIndex(b, column + 1, row, x, y, u32(kAtlasEdge)));
+                }
+            }
+        }
+    }
+}
+
+TEST(writing_two_tiles_as_one_run_matches_writing_them_separately)
+{
+    // The same end-to-end check the single tile gets, on the pair: build the
+    // two doubled runs the way platform/ctr/textures.cpp does for across = 2,
+    // splice them in, and compare against the same picture written into both
+    // tiles through the general map.
+    const usize count = usize(kAtlasEdge) * kAtlasEdge;
+    std::vector<u32> byTexel(count, 0u);
+    std::vector<u32> byRun(count, 0u);
+
+    const u32 column = 14;  // a flowing fluid's own column, in this version
+    const u32 row = 12;
+    const auto value = [](u32 x, u32 y) { return (y << 16) | x | 0x80000000u; };
+
+    for (u32 n = 0; n < 2; ++n) {
+        for (u32 y = 0; y < 16; ++y) {
+            for (u32 x = 0; x < 16; ++x) {
+                byTexel[tiledOffsetFlipped((column + n) * 16 + x, row * 16 + y, kAtlasEdge,
+                                           kAtlasEdge)] = value(x, y);
+            }
+        }
+    }
+
+    const TileRuns runs = tileRunsFlipped(column, row, u32(kAtlasEdge));
+    u32 one[kTileWords] = {};
+    for (u32 y = 0; y < 16; ++y) {
+        for (u32 x = 0; x < 16; ++x) {
+            one[tileRunIndex(runs, column, row, x, y, u32(kAtlasEdge))] = value(x, y);
+        }
+    }
+
+    u32 staging[kTileWords * 2] = {};
+    for (u32 n = 0; n < 2; ++n) {
+        for (u32 i = 0; i < kTileRunWords; ++i) {
+            staging[n * kTileRunWords + i] = one[i];
+            staging[(2 + n) * kTileRunWords + i] = one[kTileRunWords + i];
+        }
+    }
+    for (u32 i = 0; i < kTileRunWords * 2; ++i) {
+        byRun[runs.first + i] = staging[i];
+        byRun[runs.second + i] = staging[kTileRunWords * 2 + i];
+    }
+
+    CHECK(byRun == byTexel);
+}

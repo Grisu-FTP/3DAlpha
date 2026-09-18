@@ -391,14 +391,17 @@ says so instead.
 | Content | Rule |
 |---|---|
 | Mojang textures, sounds, fonts | **Never bundled.** User-supplied only, via jar/pack import. |
-| Bundled fallback pack | There is none. The built-in pack is **generated** by our own code from our own colours, so there is nothing to license or attribute. A CC-licensed art pack in RomFS remains an option and would need attribution in `romfs/licenses.txt`. |
+| Bundled fallback pack | There is none. The built-in pack is **generated** by our own code from our own colours, so there is nothing to license or attribute. A CC-licensed art pack remains an option and would need an entry in `src/core/util/about.cpp` — see [licences.md](licences.md). |
 | A pack imported from a jar | Written to the player's own card from the player's own file, never redistributed and never checked in. See [Choosing and importing a pack](#choosing-and-importing-a-pack-from-the-console). |
-| craftus_reloaded code | MIT — reusable with attribution in `romfs/licenses.txt`. |
+| craftus_reloaded code | MIT — reusable with attribution. Credited on the Options → Info row; see [licences.md](licences.md). |
 | ViaLegacy | GPLv3 — **documentation only**. Protocol IDs and wire sizes are facts; its code is not copied. |
 | Data recovered from a client jar | Facts only — ids, hardness, light levels. Recovered by a maintainer, checked in, shipped compiled. Never code, never assets, never redistributed. See below. |
-| Third-party libs | zlib, and — optionally, for audio — Xiph's Tremor (`libvorbisidec`) with libogg on the console and `libvorbisfile` on the host. A build without a decoder produces a silent binary, not no binary. **miniz and lodepng were not needed** — see [What the import pipeline turned out to be](#what-the-import-pipeline-turned-out-to-be). Notices are in [licences.md](licences.md), which also records the open question of where they live in a shipped `.3dsx`. |
+| Third-party libs | zlib, and — optionally, for audio — Xiph's Tremor (`libvorbisidec`) with libogg on the console and `libvorbisfile` on the host. A build without a decoder produces a silent binary, not no binary. **miniz and lodepng were not needed** — see [What the import pipeline turned out to be](#what-the-import-pipeline-turned-out-to-be). Notices are in [licences.md](licences.md) and, since 2026-09-18, in the binary itself — `src/core/util/about.cpp`, read on the Options → Info row. The one entry still open there is libctru and citro3d, whose licence text devkitPro does not install. |
 
-`romfs/licenses.txt` is shipped in the build and viewable from the in-game about screen.
+There is no `romfs/licenses.txt`; nothing ships inside the title. The notices are a `const char[]`
+in `.rodata`, paged onto the bottom screen by the **Options → Info** row, which also gives the
+client version, the Minecraft version it implements, and the statement that this is not Mojang's.
+See [licences.md](licences.md#where-the-notice-lives-in-a-shipped-binary--decided).
 
 ### Provenance of the generated tables
 

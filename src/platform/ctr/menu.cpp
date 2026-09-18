@@ -13,6 +13,7 @@
 #include "core/settings/world_settings.hpp"
 #include "core/texture/background.hpp"
 #include "core/texture/jar_import.hpp"
+#include "core/util/about.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/seed_text.hpp"
 #include "core/world/any_storage.hpp"
@@ -285,10 +286,17 @@ enum OptionsRow {
     kOptMusic,
     kOptSound,
     kOptAutosave,
+    // **A row with nothing to change**, like World Info on the settings screen
+    // next door and for the same reason: what belongs on it is a fact about
+    // this build rather than a choice about it, so the row is a handle and its
+    // explanation is the whole of it. It sits above Back because it is the last
+    // thing on the screen a player would want and Back is not a thing they want
+    // at all. See core/util/about.hpp for why the notices are in the binary.
+    kOptInfo,
     kOptBack,
     kOptCount,
 };
-constexpr u8 kOptionsGroups[kOptCount] = {0, 0, 0, 0, 1, 1, 1, 2, 3};
+constexpr u8 kOptionsGroups[kOptCount] = {0, 0, 0, 0, 1, 1, 1, 2, 3, 4};
 
 // The rows of the World Settings screen. **World Info is a row that does
 // nothing on the top screen**: it is where everything that is a fact about the
@@ -478,6 +486,7 @@ const char* optionsTitle(int row)
     case kOptMusic:    return "Music";
     case kOptSound:    return "Sound";
     case kOptAutosave: return "Autosave";
+    case kOptInfo:     return "About 3DAlpha";
     default:           return "Back";
     }
 }
@@ -1327,6 +1336,57 @@ void Menu::buildOptionsInfo(int row)
         appendf(&out, "How often your world is saved.\n");
         appendf(&out, "§7It is always saved when you pause or quit.");
         break;
+    case kOptInfo: {
+        // **The whole row, not a description of it.** Everything below is read
+        // here and nowhere else, so it is written as pages rather than as a
+        // tooltip: what this build is, who is owed a mention, and then the
+        // notices in full. `paintSettingInfo` splits it into pages by line
+        // count once it knows the pack's font, and the arrows turn them.
+        //
+        // **`appendf` is not used for the long strings below.** It formats
+        // through a 512-byte stack buffer and truncates silently past it, which
+        // is fine for a tooltip and is exactly wrong for a licence: the Xiph
+        // notice is some 1,400 characters and would lose its warranty
+        // disclaimer -- the part that is there to protect Xiph -- with nothing
+        // to show that it had. Anything whose length is not obviously small
+        // goes straight onto the string.
+        appendf(&out, "§e3DAlpha §f%s\n", about::kVersion);
+        appendf(&out, "§7Minecraft §f%s§7, protocol §f%d\n", mcver::kDisplay, mcver::kProtocol);
+        out.append("\n§7");
+        out.append(about::kDisclaimer);
+        out.append("\n");
+
+        out.append("\n§eWith thanks to\n");
+        for (const about::Credit& credit : about::credits()) {
+            out.append("§f");
+            out.append(credit.who);
+            out.append("\n§7");
+            out.append(credit.what);
+            out.append(".");
+            // The licence is named on the line rather than in a column: a
+            // player wants to know whose work it is, and anyone checking that
+            // the notice is here wants to know which notice to look for.
+            if (credit.licence != nullptr) {
+                out.append(" §7(");
+                out.append(credit.licence);
+                out.append(")");
+            }
+            out.append("\n");
+        }
+
+        // **The notices are left in the default colour on purpose.**
+        // `texture::wrapText` clears the active colour at every newline, and
+        // these are the only multi-paragraph blocks here -- a §7 in front of
+        // one would grey its first paragraph and leave the rest white. Plain
+        // white is also the more readable of the two for a wall of licence
+        // text on a 240-line screen, so nothing is lost by it.
+        out.append("\n§eNotices\n");
+        for (const char* notice : about::notices()) {
+            out.append(notice);
+            out.append("\n\n");
+        }
+        break;
+    }
     default:
         appendf(&out, "Return to the %s.", inGame_ ? "game menu" : "title screen");
         break;
@@ -1457,8 +1517,9 @@ void Menu::printConsoleHelp()
     // next screen that prints clears the paint away with its own \x1b[2J.
     if (screen_ == Screen::Options) {
         buildOptionsInfo(optionsCursor_);
-        const RowKind kind = optionsCursor_ == kOptPack || optionsCursor_ == kOptSkin ||
-                                     optionsCursor_ == kOptBack
+        const RowKind kind = optionsCursor_ == kOptInfo ? RowKind::Info
+                             : optionsCursor_ == kOptPack || optionsCursor_ == kOptSkin ||
+                                             optionsCursor_ == kOptBack
                                  ? RowKind::Action
                                  : RowKind::Value;
         paintSettingInfo(optionsTitle(optionsCursor_), kind);
@@ -2447,8 +2508,8 @@ void Menu::handleOptions(u32 down)
     // Only on a press that did not also move the cursor: the page count is the
     // row the cursor has just left.
     if (optionsCursor_ == before) {
-        const bool valueless =
-            optionsCursor_ == kOptPack || optionsCursor_ == kOptSkin || optionsCursor_ == kOptBack;
+        const bool valueless = optionsCursor_ == kOptPack || optionsCursor_ == kOptSkin ||
+                               optionsCursor_ == kOptInfo || optionsCursor_ == kOptBack;
         turnInfoPage(down, valueless);
     }
 
@@ -4896,6 +4957,7 @@ void Menu::drawOptions()
     rows[kOptMusic] = {"Music:", music, false};
     rows[kOptSound] = {"Sound:", effects, false};
     rows[kOptAutosave] = {"Autosave:", autosave, false};
+    rows[kOptInfo] = {"Info", nullptr, false};
     rows[kOptBack] = {"Back", nullptr, false};
 
     drawSettingsRows(rows, kOptionsGroups, kOptCount, optionsCursor_, optionsScroll_,

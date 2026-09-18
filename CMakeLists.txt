@@ -152,7 +152,12 @@ add_library(3dalpha_core STATIC ${CORE_SOURCES} ${SLOT_SOURCES})
 target_include_directories(3dalpha_core PUBLIC "${GEN_DIR}" "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(3dalpha_core PUBLIC ZLIB::ZLIB)
 
+# MC_APP_VERSION is the client's own version, which `project()` above is the
+# one place that records. It is PUBLIC because the Info screen reads it through
+# core and the tests check it through core, and it is a string rather than three
+# numbers because nothing does arithmetic on it.
 target_compile_definitions(3dalpha_core PUBLIC
+	MC_APP_VERSION="${PROJECT_VERSION}"
 	MC_HAVE_VORBIS=${MC_HAVE_VORBIS}
 	MC_VORBIS_TREMOR=${MC_VORBIS_TREMOR})
 if(MC_HAVE_VORBIS)

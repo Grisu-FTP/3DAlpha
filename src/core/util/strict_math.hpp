@@ -28,8 +28,11 @@
 // digit fails the build rather than quietly bending the terrain.
 //
 // fdlibm is Copyright (C) 1993 by Sun Microsystems, Inc., developed at SunSoft,
-// and is freely distributable provided the notice is preserved. Attribution
-// belongs in romfs/licenses.txt -- see docs/assets.md.
+// and is freely distributable provided the notice is preserved. **This is the
+// one third-party work whose code is in this tree**, so that condition binds a
+// source release as much as a binary one. The notice is carried in
+// core/util/about.cpp, shown on the Options -> Info row, and written out in
+// docs/licences.md.
 
 #include "core/util/types.hpp"
 

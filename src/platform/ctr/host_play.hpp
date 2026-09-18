@@ -38,9 +38,11 @@
 #include "core/settings/world_settings.hpp"
 #include "core/render/world_streamer.hpp"
 #include "platform/ctr/local_link.hpp"
+#include "platform/ctr/session_link.hpp"
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace mc::ctr {
 
@@ -64,6 +66,55 @@ public:
     bool open(const std::string& worldName, const std::string& hostName,
               const net::link::GeneratorId& world, std::string* error);
 
+    // **The same session, served over the internet.** `link` is a connection
+    // the rendezvous server has already introduced this console through, so
+    // there is no radio to bring up and no beacon to put on the air -- the
+    // directory on the server is what a joiner finds this world in. Everything
+    // else is identical: the same handshake, the same world server, the same
+    // terrain coming back from the guests. See platform/ctr/online.hpp.
+    void openOnline(SessionLink& link, const std::string& worldName,
+                    const std::string& hostName, const net::link::GeneratorId& world);
+
+    // **The session before the world, which is what an internet host's lobby
+    // is.** The handshake, the player list and the chat run over the link the
+    // rendezvous server introduced; the world server does not exist yet,
+    // because the world has not been opened and there is nothing to serve.
+    //
+    // A guest that arrives here is welcomed and listed, and sits on its own
+    // lobby screen waiting for the Login the world server sends. `open` below
+    // is what sends it: called once the world is up, it adopts this session
+    // rather than replacing it, so nobody who joined while the code was on
+    // screen has to join again. See `Menu::handleOnlineHost`.
+    void openLobby(SessionLink& link, const std::string& worldName,
+                   const std::string& hostName, const net::link::GeneratorId& world);
+
+    // Once a frame while the lobby is up. **The link is not serviced here**:
+    // the menu is pumping the login on the same socket, and a second service
+    // in the same frame would take the events before it saw them. In game it
+    // is the other way round -- there is no menu, and `pump` does both.
+    void pumpLobby();
+
+    // Whether `openLobby` ran and `open` has not yet: a session with guests in
+    // it and no world behind it.
+    bool inLobby() const { return lobby_; }
+
+    // **Nobody is going to answer for about this long.** The same warning an
+    // applet gets -- see `net::link::Msg::Away` -- for the other gap in which
+    // this console stops pumping: opening the world, between the lobby's last
+    // frame and the game loop's first. Without it a guest who joined the lobby
+    // would be counting a card read against `kTimeoutMs`.
+    void announceAway(u32 expectedMs);
+
+    // The names in the session, host first, for a screen that lists them.
+    void players(std::vector<net::link::Player>* out) const;
+
+    // **Armed before the world opens, used when it does.** `open` is called
+    // from inside `runGame`, once level.dat has been read and the seed is
+    // known, and by then there is nowhere left to ask which kind of session
+    // this is. So the caller says so beforehand and `open` takes the online
+    // road instead of starting the radio. Null is the ordinary local case.
+    void serveOnline(SessionLink* link) { pending_ = link; }
+
     // What the streamer installs so the generator can find terrain a guest
     // made. Valid for the life of this object.
     render::WorldStreamer::TerrainSource terrainSource();
@@ -75,7 +126,7 @@ public:
     // Tells whoever is still connected why, then takes the network down.
     void close(const std::string& reason);
 
-    bool active() const { return link_.active(); }
+    bool active() const { return link_ != nullptr && link_->active(); }
 
     // Whether the session ever came up. Distinguishes "the world was hosted
     // and is now closed" from "local wireless never started", which are the
@@ -151,6 +202,15 @@ public:
     void say(const std::string& text);
 
 private:
+    // The session over a link that is already up: the handshake, the player
+    // list and the chat, and nothing that needs a world.
+    void beginSession(SessionLink& link, const std::string& worldName,
+                      const std::string& hostName, const net::link::GeneratorId& world);
+
+    // The world server, once there is a world: opened, and handed everybody
+    // the lobby already let in. Both roads through `open` end here.
+    void startWorld(const net::link::GeneratorId& world);
+
     void onPlayerJoined(u8 playerId, const std::string& name) override;
     void onPlayerLeft(u8 playerId, const std::string& reason) override;
     void onPose(const net::link::Pose& pose) override;
@@ -208,12 +268,18 @@ private:
     net::RemoteEntities entities_;
     net::IncomingHit hit_;
 
-    LocalLink link_;
+    // The radio, when the guests are in the room, and the thing every line
+    // below talks through, whichever it is.
+    LocalLink local_;
+    SessionLink* link_ = nullptr;
+    SessionLink* pending_ = nullptr;
     net::link::HostSession session_;
     net::link::TerrainPool pool_;
     net::WorldServer server_;
     std::string hostName_;
     bool everOpened_ = false;
+    // A session with a player list and no world behind it yet. See `openLobby`.
+    bool lobby_ = false;
     int advertised_ = -1;
     u16 tick_ = 0;
     u32 posedAtMs_ = 0;

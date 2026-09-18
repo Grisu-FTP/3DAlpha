@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <cmath>
+#include <cstdio>
 
 namespace mc::ctr {
 
@@ -42,27 +43,125 @@ HostPlay::~HostPlay()
 bool HostPlay::open(const std::string& worldName, const std::string& hostName,
                     const net::link::GeneratorId& world, std::string* error)
 {
+    // **The lobby's session, kept.** An internet host opened one before the
+    // world was chosen to be loaded, and the guests in it have been welcomed
+    // into this world by name. Opening a second session here would drop every
+    // one of them and hand out player ids that are already spoken for.
+    if (lobby_) {
+        startWorld(world);
+        return true;
+    }
+    // Armed by the caller when this is an internet session: the link is
+    // already up and already registered with the server, so there is no radio
+    // to start and nothing here that can fail.
+    if (pending_ != nullptr) {
+        openOnline(*pending_, worldName, hostName, world);
+        pending_ = nullptr;
+        return true;
+    }
     if (!startLocalWireless(error)) {
         return false;
     }
-    if (!link_.host(worldName, hostName, LocalKind::Session, error)) {
+    if (!local_.host(worldName, hostName, LocalKind::Session, error)) {
         return false;
     }
-    session_.open(worldName, hostName, world, u32(osGetTime()), this);
-    hostName_ = hostName;
-    server_.open(this, &HostPlay::sendToGuest, this, hostName);
+    beginSession(local_, worldName, hostName, world);
+    startWorld(world);
+    return true;
+}
+
+// **Everything that needs a world**, which is everything the lobby does not
+// have. Reached from both roads into `open`: the one that has just brought a
+// session up, and the one that adopted the lobby's.
+void HostPlay::startWorld(const net::link::GeneratorId& world)
+{
+    const bool fromLobby = lobby_;
+    lobby_ = false;
+    if (fromLobby && !session_.world().matches(world)) {
+        // The lobby's id was read out of level.dat before the world was
+        // opened; this one comes from the open world. They are the same
+        // arithmetic over the same file, so a difference is a bug rather than
+        // a state to handle -- and the guests already here were told the
+        // first, so it is said rather than silently swapped under them.
+        std::printf("\x1b[33msession: the lobby and the world disagree about the "
+                    "generator\x1b[0m\n");
+    }
+    server_.open(this, &HostPlay::sendToGuest, this, hostName_);
     // **Nothing in the session describes a guest to this console except this.**
     // See `WorldServer::setLocalSink`. Left unbound to any item or mob pool on
     // purpose: those are already this world's own, and a second copy of each
     // would be drawn on top of the first.
     entities_.clear();
     server_.setLocalSink(&HostPlay::applyLocally, this);
+
+    if (!fromLobby) {
+        return;
+    }
+    // **Whoever was already waiting, now that there is somewhere to put
+    // them.** `onPlayerJoined` did nothing for these while the world server
+    // had no world: a player added then would have been stood at 0, 64, 0,
+    // because the spawn point is read off a streamer that did not exist.
+    std::vector<net::link::Player> here;
+    session_.players(&here);
+    for (const net::link::Player& player : here) {
+        if (player.playerId != net::link::kHostPlayerId) {
+            server_.addPlayer(player.playerId, player.name);
+        }
+    }
+}
+
+// The session itself, over a link somebody else brought up. Both internet
+// roads run this: the one that opens the world straight away, and the lobby,
+// which opens it when the host says so.
+void HostPlay::beginSession(SessionLink& link, const std::string& worldName,
+                            const std::string& hostName, const net::link::GeneratorId& world)
+{
+    link_ = &link;
+    session_.open(worldName, hostName, world, u32(osGetTime()), this);
+    hostName_ = hostName;
     // See `ctr::linkPausing`: every keyboard in the build tells the session
     // before it hands the console to an applet.
     setLinkPauseHook(&HostPlay::linkPaused, this);
     advertised_ = -1;
     everOpened_ = true;
-    return true;
+}
+
+// Nothing to bring up: the link is already there, and a world on the internet
+// is advertised by the server's directory rather than by a beacon in the room.
+void HostPlay::openOnline(SessionLink& link, const std::string& worldName,
+                          const std::string& hostName, const net::link::GeneratorId& world)
+{
+    beginSession(link, worldName, hostName, world);
+    startWorld(world);
+}
+
+// The same session, with no world behind it yet: the handshake and the player
+// list, which is all a lobby is. See the header.
+void HostPlay::openLobby(SessionLink& link, const std::string& worldName,
+                         const std::string& hostName, const net::link::GeneratorId& world)
+{
+    beginSession(link, worldName, hostName, world);
+    lobby_ = true;
+}
+
+void HostPlay::announceAway(u32 expectedMs)
+{
+    if (link_ != nullptr && link_->active()) {
+        session_.announceAway(expectedMs, u32(osGetTime()), *link_);
+    }
+}
+
+void HostPlay::pumpLobby()
+{
+    if (link_ == nullptr || !link_->active()) {
+        return;
+    }
+    session_.pump(u32(osGetTime()), *link_);
+}
+
+void HostPlay::players(std::vector<net::link::Player>* out) const
+{
+    session_.players(out);
 }
 
 void HostPlay::blockWatcher(void* context, i32 x, int y, i32 z)
@@ -79,8 +178,8 @@ bool HostPlay::sendToGuest(void* context, u8 playerId, const u8* data, usize siz
 void HostPlay::linkPaused(void* context, u32 expectedMs)
 {
     auto* self = static_cast<HostPlay*>(context);
-    if (self->link_.active()) {
-        self->session_.announceAway(expectedMs, u32(osGetTime()), self->link_);
+    if (self->link_ != nullptr && self->link_->active()) {
+        self->session_.announceAway(expectedMs, u32(osGetTime()), *self->link_);
     }
 }
 
@@ -103,11 +202,12 @@ render::WorldStreamer::TerrainSource HostPlay::terrainSource()
 
 void HostPlay::close(const std::string& reason)
 {
-    if (!link_.active()) {
+    if (link_ == nullptr || !link_->active()) {
         return;
     }
-    session_.close(reason, u32(osGetTime()), link_);
-    link_.leave();
+    session_.close(reason, u32(osGetTime()), *link_);
+    link_->leave();
+    link_ = nullptr;
     entities_.clear();
     setLinkPauseHook(nullptr, nullptr);
     // **After the link, not before.** `close` on the session puts a Bye on the
@@ -121,7 +221,14 @@ void HostPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                     const item::Effects& effects, entity::ItemEntitySystem& drops,
                     gui::ChatLog& chat, const u8* fontWidths)
 {
-    if (!link_.active()) {
+    if (link_ == nullptr) {
+        return;
+    }
+    // The link's own frame first: an internet session has a socket to read, a
+    // keep-alive to send and possibly a punch still in flight, and none of that
+    // happens by itself. Local wireless does nothing here.
+    link_->service(u32(osGetTime()));
+    if (!link_->active()) {
         return;
     }
     chat_ = &chat;
@@ -134,7 +241,7 @@ void HostPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // **Reading the radio comes first**, because everything below is an answer
     // to it: a guest's move decides which columns it is owed, and a guest's
     // dig is a block this frame has to write before anything draws.
-    session_.pump(u32(osGetTime()), link_);
+    session_.pump(u32(osGetTime()), *link_);
 
     // **And then the world is told where everybody is.** Between this and
     // `server_.pump` below, the streamer is holding the ground under every
@@ -232,13 +339,13 @@ void HostPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     const int guests = session_.guestCount();
     if (guests != advertised_) {
         advertised_ = guests;
-        link_.advertise(guests);
+        link_->advertise(guests);
     }
 }
 
 void HostPlay::reportPose(const entity::PlayerBody& body, const Camera& camera)
 {
-    if (!link_.active()) {
+    if (link_ == nullptr || !link_->active()) {
         return;
     }
 
@@ -277,7 +384,7 @@ void HostPlay::reportPose(const entity::PlayerBody& body, const Camera& camera)
 
 void HostPlay::say(const std::string& text)
 {
-    if (link_.active()) {
+    if (link_ != nullptr && link_->active()) {
         // **Both roads, because the guests are on two different ones.** A
         // console still in the lobby only reads the session's own chat; one
         // that is playing reads the protocol-2 stream. Sending on both is two

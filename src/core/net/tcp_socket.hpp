@@ -58,4 +58,19 @@ private:
     int fd_ = -1;
 };
 
+// **A host name into an IPv4 address, through everything this console has.**
+// `*address` comes back in host byte order.
+//
+// Shared with core/net/udp_socket.hpp rather than written twice: the four-step
+// cascade below it -- numeric, `getaddrinfo`, `gethostbyname`, then a DNS query
+// of our own to the console's own name servers -- exists because the first
+// hardware report of multiplayer past the loopback was that a numeric address
+// connected and a name never did. A second copy of that would be a second thing
+// to get wrong.
+//
+// **It blocks**, for as long as a name lookup takes, which on a console with a
+// slow router is seconds. No frame loop may call it; the callers that need a
+// name put this on a worker. See platform/ctr/online.hpp.
+bool resolveHostAddress(const char* host, u32* address, std::string* error);
+
 }  // namespace mc::net

@@ -16,6 +16,7 @@
 // derives from the available memory itself. See docs/3ds-performance.md.
 
 #include "platform/ctr/heap.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include <3ds.h>
 #include <fcntl.h>
@@ -267,10 +268,10 @@ void reportOutOfMemory()
                   snapshot.quadFormat != 0 ? "geoshader" : "4-vertex");
 
     // Rows 28-31 of the bottom screen, wrapping past the overlay's footer,
-    // and flushed the way geoTrace flushes: single-buffered, so it is on the
-    // glass before the next instruction runs.
+    // and flushed the way geoTrace flushes: `bottom::flush` copies it across
+    // synchronously, so it is on the glass before the next instruction runs.
     std::printf("\x1b[28;1H\x1b[2K\x1b[31m%s\x1b[0m", g_oomLine);
-    gfxFlushBuffers();
+    bottom::flush();
 
     writeReportToCard(g_oomLine, std::strlen(g_oomLine));
 

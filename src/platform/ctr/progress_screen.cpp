@@ -1,4 +1,5 @@
 #include "platform/ctr/progress_screen.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include "platform/ctr/hud.hpp"
 
@@ -410,8 +411,8 @@ void ProgressScreen::drawBottom()
         hud::text(hud::kRows - 1, 1, hud::kColumns, 0x9A9A9Au, hud::kBackdrop, "%s", note_);
     }
 
-    // The CPU has just written a buffer the LCD reads by DMA.
-    gfxFlushBuffers();
+    // The paint is finished: one copy puts all of it on the glass.
+    bottom::flush();
 }
 
 }  // namespace mc::ctr

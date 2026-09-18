@@ -1,4 +1,5 @@
 #include "platform/ctr/menu_preview.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include "core/entity/player_body.hpp"
 #include "core/mesh/mesher.hpp"
@@ -384,10 +385,11 @@ void MenuPreview::setScreen(PreviewScreen screen)
             C3D_RenderTargetSetOutput(nullptr, GFX_BOTTOM, GFX_LEFT, 0);
             C3D_RenderTargetDelete(target_);
             target_ = nullptr;
+            bottom::setGpuOwned(false);
             // The console's framebuffer, cached at consoleInit, is the one the
             // screen shows again -- and whatever the target last transferred
             // into it is cleared by the re-init.
-            consoleInit(GFX_BOTTOM, nullptr);
+            bottom::initConsole();
         }
     } else if (target_ == nullptr) {
         target_ = C3D_RenderTargetCreate(kBottomHeight, kBottomWidth, GPU_RB_RGBA8,
@@ -395,6 +397,9 @@ void MenuPreview::setScreen(PreviewScreen screen)
         if (target_ == nullptr) {
             screen_ = PreviewScreen::None;
         } else {
+            // Nothing the console prints is copied over the GPU's picture
+            // while this target owns the screen. See bottom_screen.hpp.
+            bottom::setGpuOwned(true);
             // **The output format has to be the framebuffer's, and citro3d
             // does not look it up.** It hands these flags to GX_DisplayTransfer
             // as they are, and an OUT_FORMAT of 0 is RGBA8 -- four bytes a
@@ -1365,6 +1370,7 @@ void MenuPreview::draw()
     case PreviewScreen::Worlds:
         drawWorlds();
         break;
+    case PreviewScreen::Plain:
     case PreviewScreen::None:
         break;
     }

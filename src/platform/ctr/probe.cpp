@@ -28,6 +28,7 @@
 // Bottom screen: the probe report.
 
 #include "platform/ctr/probe.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include <3ds.h>
 #include <citro3d.h>
@@ -893,6 +894,7 @@ int runProbe(bool isNew3DS)
             }
         }
         C3D_FrameEnd(0);
+        bottom::presentIfChanged();
 
         drawAccum += C3D_GetDrawingTime();
         procAccum += C3D_GetProcessingTime();

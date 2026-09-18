@@ -322,6 +322,22 @@ std::unique_ptr<VorbisStream> VorbisStream::create(io::FileSystem&, std::string)
     return nullptr;
 }
 
+// `createMus` and `open` need stubs of their own, not just `create`. Callers
+// reach the decoder through all three -- `SoundEngine::playRecord` opens a disc
+// by extension -- and each one that is declared but left undefined here is a
+// link error rather than a silent build. `isMus` is deliberately not in this
+// branch: it reads a file name and needs no decoder, so it is defined once,
+// outside the guard, and answers the same either way.
+std::unique_ptr<VorbisStream> VorbisStream::createMus(io::FileSystem&, std::string)
+{
+    return nullptr;
+}
+
+std::unique_ptr<VorbisStream> VorbisStream::open(io::FileSystem&, std::string)
+{
+    return nullptr;
+}
+
 bool VorbisStream::prepare()
 {
     return false;

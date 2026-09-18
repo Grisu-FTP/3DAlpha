@@ -318,6 +318,43 @@ a single test and would report one line either way, where the binary names the f
 
 Still to add: a Debug configuration for the *3DS* target alongside Release.
 
+## Releases, and installing from one without a PC
+
+A push to `main` that gets past the tests and the builds publishes a release tagged **`R<n>`**,
+holding every version's `.cia` and `.3dsx` at once. Branch pushes still build and test; they just do
+not publish, because a release is a public, permanent tag.
+
+One release per push is deliberate. A version whose code did not change still gets a build in it, so
+"`R47` is `R47` everywhere" holds and *am I up to date?* is answerable without knowing which
+Minecraft version someone runs. The duplicate builds cost runner minutes and nothing else.
+
+Each version also gets a **QR code encoding its `.cia` download URL**, which is all FBI's
+*Remote Install -> Scan QR Code* needs: the console fetches and installs on its own, with no PC and
+no SD card removal. Build artifacts cannot serve this — they are zipped, they expire, and they need
+a signed-in GitHub session — but a release asset is a plain permanent public URL.
+
+[`tools/release_assets.py`](../tools/release_assets.py) writes the QR codes and the release body. It
+*predicts* each URL rather than reading it back, which is sound because a release asset's address is
+fixed by the tag and file name alone:
+
+```
+https://github.com/<repo>/releases/download/<tag>/<file>
+```
+
+So the QR can be made before the release exists and is correct the moment it is published. The
+encoding is chosen for a 2012 camera rather than for QR codes: error correction **M** (the ~79-byte
+URL lands in QR version 5, 37x37 modules, at either L or M — so M is free here), 10 px per module
+and a 4-module quiet zone. A QR flush against other content often will not resolve at all.
+
+Re-running a workflow reuses its run number, so the publish step replaces an existing `R<n>` release
+and its tag rather than failing on it.
+
+**Unverified on hardware:** whether FBI can complete the HTTPS fetch from GitHub. The console's TLS
+stack is old, and release downloads redirect to `objects.githubusercontent.com`. If a scan fails at
+the download rather than the scan, that is the reason, and the fallback is a plain-HTTP mirror or
+`.cia` sideloading — the QR itself decodes correctly at 3DS camera scale, which was checked with
+`zbarimg` on a downscaled render.
+
 ## Rules
 
 - **No `#ifdef`/`#if` on version, anywhere.** Version deltas go in the manifest.

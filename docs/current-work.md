@@ -3,6 +3,22 @@
 Last verified: 2026-09-16. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## The host build did not link without a decoder (2026-09-18)
+
+The first CI run of the new `test` job failed to link, and the cause was ours rather than the
+runner's: `vorbis_stream.cpp`'s `#else  // !MC_HAVE_VORBIS` branch stubbed `create` but **not
+`createMus` or `open`**, though the header declares all three. `SoundEngine::playRecord` calls
+`open` unguarded and handles the null itself -- which is the right shape -- so a build with no
+decoder was an undefined reference, not the silence the header promises. Two audio cases
+(`aRecordIsStoppedOnTheWayOutOfAWorldAndTheMusicIsNot`, and the eject in the case below it) also
+asserted `recordPlaying()` without the `vorbisAvailable()` guard their neighbours use. Both are
+fixed; the no-decoder configuration now builds and passes 1822/1822, checked by configuring with
+`PKG_CONFIG_LIBDIR=/nonexistent`. It had never been built before -- the developer machine has
+libvorbis and CI had never built the host target at all.
+
+CI installs `libvorbis-dev` anyway rather than relying on the stubs: a skipped test is not a passing
+test, and a runner without a decoder would cover less than `build-host` does locally.
+
 ## CI runs the host suite, and the binaries wait on it (2026-09-18)
 
 `.github/workflows/build.yml` gained a `test` job over the same `versions/*.json` matrix the builds
@@ -14,6 +30,13 @@ time of the change (1820/1820). This matters more per version added, since the a
 configure-time selection over forks is that shared code stays checked against every manifest.
 See [build-versions.md](build-versions.md#ci). Not yet done: a Debug configuration for the 3DS
 target, and the run number is still filename-only -- nothing on the console reports which R it is.
+
+**A push to main now publishes a release tagged `R<n>`** with every version's `.cia` and `.3dsx`,
+plus a QR per version encoding that `.cia`'s download URL for FBI's Remote Install --
+`tools/release_assets.py` writes both, predicting the asset URL from tag and file name. Branch
+pushes build and test but do not publish. **Untested on hardware:** whether FBI's HTTPS fetch
+survives GitHub's redirect to `objects.githubusercontent.com` on a 2012 TLS stack. The QR encoding
+itself is verified -- `zbarimg` reads it back correctly at 240x240, well under what the camera sees.
 
 ## The diorama stood next to the world, and four things on the bottom screen (2026-09-18)
 

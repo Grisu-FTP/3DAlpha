@@ -74,3 +74,9 @@ Thumbs.db
 # the codec against a real server. It is a local file, never redistributed.
 /srv/
 *.jar
+
+# The ELF matching whatever is in build/ right now. It is a live pointer, not an
+# archived crash -- crashlogs/<dir>/*.elf are the pairs worth keeping, and this one
+# is replaced on every build. Tracking it added a 27 MB blob to history per rebuild.
+# See crashlogs/README.md.
+/crashlogs/current-build.elf

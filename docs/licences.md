@@ -1,13 +1,15 @@
-# Third-party licences
+# Licences
 
-The notices that have to travel with a binary built from this tree.
+This program's own licence, and the third-party notices that have to travel with a binary
+built from this tree.
 
 **They travel inside it.** Every notice below is also compiled into the binary, in
 [`src/core/util/about.cpp`](../src/core/util/about.cpp), and a player reads it on the
 **Options → Info** row. This file is the same list in prose, for whoever has the repository;
 it is no longer the only copy. See [Where the notice lives in a shipped binary](#where-the-notice-lives-in-a-shipped-binary--decided).
 
-Most entries are libraries the build *links*, so their source is not in this repository but
+After the first section, which is the licence this tree *grants*, every entry is a notice it
+*owes*. Most of those are libraries the build *links*, so their source is not in this repository but
 their code ends up inside a distributed `.3dsx` or `.cia`. One — fdlibm — is transcribed
 into the tree, and is marked as such.
 
@@ -18,6 +20,27 @@ game content, which is never bundled at all.
 **Transcribed from the installed package's own licence file, not from upstream's website,
 and checked on 2026-09-18.** That check is not a formality: it corrected two things this
 file previously had wrong, both marked below.
+
+## 3DAlpha's own licence
+
+**GPL-3.0-or-later**, in [`LICENSE`](../LICENSE) at the root. This section is here because the
+question "what is this file's licence" has two halves and only one of them is third-party: every
+other entry below is a notice this tree *owes* someone, and this is the one it *grants*.
+
+Two consequences worth stating rather than leaving to be inferred:
+
+- **A release asset owes its source.** The CI publishes `.3dsx` and `.cia` files to a public
+  release (see [build-versions.md](build-versions.md)); those are conveyed binaries, and GPLv3
+  §6 is satisfied by the public repository the release is built from and tagged in. If a build is
+  ever handed out from somewhere that is not this repository, it has to carry the offer itself.
+- **Nothing below conflicts with it.** zlib, fdlibm and the Xiph BSD terms are permissive, and
+  craftus_reloaded is MIT — all of them GPL-compatible in the direction that matters, which is
+  inbound. ViaLegacy is GPLv3 and is read as documentation only; no code from it is here, so the
+  compatibility question never arises.
+
+The GPL applies to this program and not to the game it reimplements. No Mojang code or asset is
+in this tree or in a binary built from it — see [assets.md](assets.md#licensing-rules) and
+[CONTRIBUTING.md](../CONTRIBUTING.md#licensing-discipline), which is the rule that keeps it so.
 
 ## zlib
 

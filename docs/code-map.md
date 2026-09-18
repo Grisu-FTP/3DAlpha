@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 249 modules, 133,082 lines.**
+**23 directories, 250 modules, 133,399 lines.**
 
 ## `src/core/audio/`
 
@@ -251,6 +251,7 @@ weight is, not what is important.
 | Module | Lines | What it is |
 |---|--:|---|
 | `aabb.hpp` | 73 | An axis-aligned box in doubles, and the geometry that does not need a world. |
+| `about.{hpp,cpp}` | 244 | What this build is, and whose work it carries. |
 | `chunk_queue.{hpp,cpp}` | 266 | A list of chunk coordinates waiting for something to be done to them, which holds each coordinate **once** however many times it is offered. |
 | `compress.{hpp,cpp}` | 151 | Deflate wrappers. |
 | `console_text.{hpp,cpp}` | 78 | Fitting text to a fixed-width character console, escape sequences and all. |
@@ -267,7 +268,7 @@ weight is, not what is important.
 | `seed_text.{hpp,cpp}` | 195 | Turning what a player typed into a world seed. |
 | `segmented_pool.hpp` | 192 | **A pool that grows instead of refusing** -- what every entity pool is. a1.1.2 keeps its entities in `ArrayList`s and caps none of them: `World.spawnEntityInWorld` adds, `EffectRenderer.addEffect` adds (read off `bq.a(Lnq;)V`: one `List.add` and a return), and neither asks how many there are. |
 | `span.hpp` | 50 | A minimal non-owning view over contiguous memory. |
-| `strict_math.hpp` | 175 | java.lang.StrictMath, for the parts that world generation depends on. |
+| `strict_math.hpp` | 178 | java.lang.StrictMath, for the parts that world generation depends on. |
 | `types.hpp` | 27 | Fixed-width types for core code. |
 | `worker.{hpp,cpp}` | 111 | Who creates a background thread, and on which core. |
 
@@ -355,7 +356,7 @@ weight is, not what is important.
 | `local_link.{hpp,cpp}` | 529 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
 | `main.cpp` | 4532 | The 3DS entry point. |
 | `map_screen.{hpp,cpp}` | 1531 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 8067 | The main menu: the title screen, the world list, and creating a world. |
+| `menu.{hpp,cpp}` | 8137 | The main menu: the title screen, the world list, and creating a world. |
 | `menu_preview.{hpp,cpp}` | 1786 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
 | `net_play.{hpp,cpp}` | 454 | A multiplayer session as the game loop sees it: what the server's packets do to the world and the player, and what the player's ticks and clicks become. |
 | `network.{hpp,cpp}` | 190 | The console's half of multiplayer: its socket service, and the name it logs in with. |

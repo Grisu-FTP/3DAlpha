@@ -67,3 +67,18 @@ is simply there. See [docs/assets.md](docs/assets.md).
 
 The same list, with the notices in full, is on the **Options → Info** row in game and in
 [docs/licences.md](docs/licences.md).
+
+## Licence
+
+3DAlpha is free software under the **GNU General Public License, version 3 or later** — see
+[LICENSE](LICENSE). A binary you are given comes with the right to the source that built it.
+
+The acknowledgements above are compatible with that: zlib, fdlibm and the Xiph libraries are
+permissive, and craftus_reloaded is MIT, which GPLv3 absorbs as long as the attribution stays.
+ViaLegacy is GPLv3 itself and is used as documentation only — no code from it is here, and the
+licence does not change that.
+
+The GPL covers **this program**. It does not cover, and cannot cover, Mojang's game: no Mojang
+code, texture, sound or asset is in this repository or in a binary built from it, and the tables
+in `data/` are facts about a 2010 game rather than anything copied out of one. See
+[CONTRIBUTING.md](CONTRIBUTING.md#licensing-discipline).

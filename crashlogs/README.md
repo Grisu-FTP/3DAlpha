@@ -85,5 +85,8 @@ So there is a fourth thing to recognise, and it is a **dump that is not about th
 | a fault in `gspEventThreadMain`, `aptEventHandler` or any libctru service thread, **with `sp` unmapped in the `0x08000000` region** | the process called `abort()`. The thread in the dump is collateral; the one that failed is not in it. Go to `sdmc:/3dalpha-oom.txt` and to `006`/`007`, not to the registers |
 
 `current-build.elf` is a copy of the ELF matching the `.3dsx` currently in `build/`. If the next
-run crashes, that is the one to resolve against -- move it into the new dump's directory before
-rebuilding.
+run crashes, that is the one to resolve against -- **move it into the new dump's directory before
+rebuilding**, which is also what commits it: it is in `.gitignore` and the archived pairs are not.
+Untracked is the point. A file that is replaced on every build is a new 27 MB blob in the history
+every time, and it is worth nothing to anyone who clones -- their `build/` holds something else.
+The pair inside a dump directory is the artifact; this is the spare you have not needed yet.

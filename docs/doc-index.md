@@ -80,7 +80,7 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/assets.md`
 
-469 lines, ~7,706 tokens.
+472 lines, ~7,830 tokens.
 
 - **7-29** What the player has to supply: nothing
 - **30-68** What "an a1.1.2 texture pack" actually is
@@ -97,8 +97,8 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 - **329-344** Tinting
 - **345-374** Fonts
 - **375-388** Audio and DSP firmware
-- **389-402** Licensing rules
-  - **403-469** Provenance of the generated tables
+- **389-405** Licensing rules
+  - **406-472** Provenance of the generated tables
 
 ## `docs/audio-a1.1.2.md`
 
@@ -255,11 +255,14 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/licences.md`
 
-87 lines, ~1,244 tokens.
+169 lines, ~2,488 tokens.
 
-- **12-26** zlib
-- **27-63** libvorbisidec (Tremor) and libogg
-- **64-87** Where the notice lives in a shipped binary — decided
+- **24-44** 3DAlpha's own licence
+- **45-68** zlib
+- **69-87** fdlibm
+- **88-130** libvorbisidec (Tremor) and libogg
+- **131-147** libctru and citro3d — open
+- **148-169** Where the notice lives in a shipped binary — decided
 
 ## `docs/map.md`
 

@@ -2421,12 +2421,15 @@ carrying 97 % of the world is where that would show — which **the sixth launch
 measurable.** See §2. The toggle that answered it has been removed from the settings page; the test
 is on unconditionally, in every pass, set once per frame.
 
-**Controls and the bottom screen**, added after that launch and not yet run on hardware:
+**Controls and the bottom screen**, added after that launch and not yet run on hardware. **Which
+device walks and which turns is the Options screen's Controls row** — see §57; the table below names
+all three schemes where they differ and nothing else moves between them:
 
 | | |
 |---|---|
-| circle pad | move. Focused **on the Map page**, it scrolls the map instead and the body stands still — panning and walking at once would be two things fighting over one window |
-| C-stick | look — through `ir:rst`, not `hid`, so a Circle Pad Pro on an **old** 3DS gets it too |
+| circle pad | move under the **New 3DS** and **Old 3DS Alt** schemes; **look** under Old 3DS. Focused **on the Map page**, it scrolls the map instead and the body stands still — panning and walking at once would be two things fighting over one window |
+| C-stick | look — through `ir:rst`, not `hid`, so a Circle Pad Pro on an **old** 3DS gets it too. **Read under every scheme**, not only the one that names it: a New 3DS set to an Old scheme still has its right stick |
+| d-pad | nothing under **New 3DS**. **Move** under Old 3DS, **look** under Old 3DS Alt — and then the bottom screen has to ask for it: the map's zoom needs the focus (X) it did not need before, the debug pages behind SELECT take it outright and the player stands still while one is up, and SELECT takes it back for the stereo tuner. `Overlay::dpadTakenByScreen`, `readStick` |
 | touch drag | look. **Yaw was inverted**: the view turned the opposite way from the finger. Both axes now follow the mouse convention, drag right look right, and the reason it is `+=` is that `Camera::look` sends yaw 0 to +Z and positive yaw toward −X — south turning to west, which is right |
 | B | Spectator: up. Otherwise **jump** |
 | Y | Spectator: down. Creative flight: down. Riding: dismount. Otherwise **toggles sneak**, which walks the move back at a ledge, silences the footsteps, drops the camera 0.08 and cuts the stick to three tenths. **A toggle rather than a held button**: what a player sneaks for is edging over a drop to build under themselves, and that is a thumb on the pad and a finger on a shoulder already. The three uses above keep the button and also stand the player up, so a crouch cannot outlive the button that ends it |
@@ -9779,6 +9782,73 @@ back, which is the one the first implementation got wrong.
 
 **No hardware run.** The repeat timings (0.35 s then 0.11 s) are the thing a console would argue
 with; nothing else here is a matter of feel.
+
+### 57. A Controls row, because the port was written for a console with two sticks
+
+**The New 3DS scheme was the only scheme.** Circle pad walks, C-stick looks — which is the pairing
+every console Minecraft has used and the reason the touch screen could go back to being a screen.
+An Old 3DS has no C-stick, and `ir:rst` answers for a Circle Pad Pro and nothing else, so under that
+one binding an Old 3DS was left steering with one stick and looking with a finger.
+
+Options gained **Controls**, third row, under Sensitivity, with three values. `3ds.ini` gained
+`controls`, as a **word** rather than an ordinal — the choice `gamemodeToken` already makes, so a
+file from a later build that adds a scheme is readable here instead of being a number that silently
+means something else.
+
+| | walks | turns |
+|---|---|---|
+| New 3DS | circle pad | C-stick |
+| Old 3DS | d-pad | circle pad |
+| Old 3DS Alt | circle pad | d-pad |
+
+The two Old schemes are each other swapped, and which one a player wants is which thumb they want
+the analogue stick under. **Nothing else moves between the three** — the shoulders, the face buttons
+and SELECT's two modifiers are the same everywhere — which is why the row's bottom screen prints the
+whole controls table rather than two lines: the answer a player wants at the moment they change this
+is *where did everything else go*, and "nowhere" only convinces when it is written out.
+
+**The default is the console, not a number.** `defaultControlScheme(isNew3DS)`, applied in
+`Menu::initCommon` where the render distance and the cache size already pick per model. This one
+could not use the `-1 means not chosen yet` convention the numeric rows use, because every scheme is
+a real answer, so the absence is a flag of its own: `GameSettings::controlSchemeChosen`. **It is a
+change for an Old 3DS whose `3ds.ini` predates the row** — it moves to d-pad-walks — and that is the
+point of the row rather than a side effect of it. The flag is set once the menu has filled the row
+in, or a trip back from the first world would overwrite a choice the player had just made:
+`loadSettings` runs once per boot and `initCommon` runs every lap.
+
+**A d-pad is a keyboard, which is what a1.1.2 was played on.** `readStick` reports it as −1, 0 or 1
+per axis and `moveFlying` clamps the diagonal exactly as it clamps the original's two arrow keys, so
+nothing downstream knows which device it is reading. The look is rate-based like the C-stick's —
+1.8 rad/s at full deflection, the same constant, scaled by the Sensitivity row — which is what makes
+a d-pad usable for turning at all: a held direction is a steady turn rather than a jump.
+
+**The d-pad had four owners already, and two of them had to give it back.** The map page answered an
+*unfocused* d-pad for zoom and grid, which under either Old scheme would have zoomed the map every
+time the player walked past it — so that one now wants the focus (X), which the tooltip says. The
+debug pages behind SELECT drive their rows with it and have no focus of their own, so they take it
+outright and the player stands still while one is up — the rule the stick already follows, which is
+a1.1.2's own: an open screen is what stops the original reading the movement keys. The game-over
+screen chooses Respawn or Title with it and is claimed the same way -- the body is already still
+there, so what it stops is the camera turning under a press meant for a menu. The stereo tuner
+keeps SELECT + d-pad, and `readStick` returns zero while SELECT is held rather than letting the world
+spin under the tuning. The seam is one flag each way — `Overlay::setDpadIsGameplay` in, and
+`dpadTakenByScreen` out, which the loop turns into a `held` with four bits missing.
+
+**On the pause menu as well**, like Sensitivity and for the same reason: the only way to find out
+which of the two Old schemes suits you is to walk around under each.
+
+#### What was run
+
+`tests/control_scheme_test.cpp`, seven cases: that no scheme walks and looks off the same device;
+that New 3DS is still circle-pad-and-C-stick, stated so a rearranged enum cannot quietly change what
+an existing `3ds.ini` means; that Alt is Old 3DS swapped; that neither Old scheme reaches for a
+C-stick; the token round trip; an unknown word leaving the caller's default alone; and the per-model
+default. Two more in `tests/settings_file_test.cpp`: a file written before the row says it has no
+scheme, and a hand-edited `controls=wii-u` is not a chosen one.
+
+**No hardware run.** Everything a console would argue with is here: whether 1.8 rad/s is the right
+turn for a digital press, whether the Old 3DS default is the one an existing player wants, and
+whether the map's zoom wanting the focus is a fair trade for the d-pad walking.
 
 ## Standing constraints
 

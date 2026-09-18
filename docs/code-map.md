@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 250 modules, 133,399 lines.**
+**23 directories, 251 modules, 133,836 lines.**
 
 ## `src/core/audio/`
 
@@ -203,9 +203,10 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
+| `control_scheme.{hpp,cpp}` | 160 | Which stick walks the player and which one turns the view. |
 | `ini.{hpp,cpp}` | 102 | The `key=value` reader both settings files share. |
 | `sensitivity.{hpp,cpp}` | 102 | How fast the view turns, as a1.1.2's own slider. |
-| `settings_file.{hpp,cpp}` | 242 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
+| `settings_file.{hpp,cpp}` | 269 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
 | `world_settings.{hpp,cpp}` | 560 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
 
 ## `src/core/texture/` -- Texture packs, atlases, PNG and zip
@@ -354,13 +355,13 @@ weight is, not what is important.
 | `host_play.{hpp,cpp}` | 822 | Hosting, as the game loop sees it: the world is the player's own, open the way it always is, with a session running beside it and a server inside it. |
 | `hud.{hpp,cpp}` | 1647 | The bottom screen's furniture: the hotbar along the top, the tab strip along the bottom, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
 | `local_link.{hpp,cpp}` | 529 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
-| `main.cpp` | 4532 | The 3DS entry point. |
+| `main.cpp` | 4637 | The 3DS entry point. |
 | `map_screen.{hpp,cpp}` | 1531 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 8137 | The main menu: the title screen, the world list, and creating a world. |
+| `menu.{hpp,cpp}` | 8248 | The main menu: the title screen, the world list, and creating a world. |
 | `menu_preview.{hpp,cpp}` | 1786 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
 | `net_play.{hpp,cpp}` | 454 | A multiplayer session as the game loop sees it: what the server's packets do to the world and the player, and what the player's ticks and clicks become. |
 | `network.{hpp,cpp}` | 190 | The console's half of multiplayer: its socket service, and the name it logs in with. |
-| `overlay.{hpp,cpp}` | 3696 | The bottom screen. |
+| `overlay.{hpp,cpp}` | 3730 | The bottom screen. |
 | `probe.{hpp,cpp}` | 953 | The M0 hardware probe, reachable by holding SELECT at boot. |
 | `progress_screen.{hpp,cpp}` | 556 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
 | `renderer.{hpp,cpp}` | 5014 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |

@@ -3,6 +3,63 @@
 Last verified: 2026-09-16. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## A Controls row: the port had one scheme, and it needed a C-stick (2026-09-18)
+
+Options gained **Controls**, third row, under Sensitivity, also on the pause menu and live the
+moment that menu closes. Three schemes, and only two lines of the controls table move between them:
+
+| | walks | turns |
+|---|---|---|
+| New 3DS | circle pad | C-stick |
+| Old 3DS | d-pad | circle pad |
+| Old 3DS Alt | circle pad | d-pad |
+
+`core/settings/control_scheme.{hpp,cpp}` is the whole rule — the enum, `moveStick`/`lookStick`, the
+labels and the `3ds.ini` token. It names no button; `platform/ctr/main.cpp`'s `readStick` turns a
+`Stick` into a reading, and `lookWithCstick` became `lookWithStick`.
+
+**The default is the console model**, `defaultControlScheme(isNew3DS)`, filled in by
+`Menu::initCommon` — so **an Old 3DS whose `3ds.ini` predates this row moves to d-pad-walks**, which
+is the point of the row. Absence is a flag (`controlSchemeChosen`) rather than a sentinel value,
+because every scheme is a real answer.
+
+**The d-pad had other owners.** The map's zoom answered an unfocused d-pad and now wants the focus
+(X); the debug pages behind SELECT take it outright and the player stands still while one is up; the
+stereo tuner keeps SELECT + d-pad and `readStick` returns zero while SELECT is held. One flag in
+(`Overlay::setDpadIsGameplay`) and one out (`dpadTakenByScreen`).
+
+The row's bottom screen prints the **whole** controls table for the chosen scheme, not the two lines
+that differ — what a player wants to know when they change this is where everything else went.
+
+Seven cases in `tests/control_scheme_test.cpp`, two more in `tests/settings_file_test.cpp`. Host
+suite and the 3DS build both pass. **Not verified on hardware**: the 1.8 rad/s turn on a digital
+press, and whether the Old 3DS default is what an existing player wants, are console questions.
+`status.md` §57.
+
+## The CIA crashed on launch: no DSP memory mapping in the exheader (2026-09-18)
+
+`crashlogs/010-cia-dsp-memory-unmapped/` — a data abort in `ndspInitialize`, writing to
+`0x1FF57FFE` in DSP DRAM. The region is mapped only for a process whose exheader asks for it, and
+`packaging/3dalpha.rsf.in` granted the `dsp::DSP` *service* while mapping no memory at all. A 3DSX
+never noticed because it runs inside the Homebrew Launcher's host title and inherits its mapping,
+so every hardware audio test so far has run on someone else's permissions.
+
+Fixed by adding `IORegisterMapping: 1ff00000-1ff7ffff` to the RSF template (IO, not `MemoryMapping`
+— the DSP writes the region concurrently, so it has to be uncached). Verified without a console:
+`makerom` built from the tag CI pins, two CIAs made from one ELF, and the ARM11 kernel capability
+descriptors diffed — `0xFF81FF00`/`0xFF81FF80` present after, absent before. **Not verified on
+hardware yet.**
+
+Two things worth carrying forward. `DSP_ConvertProcessAddressFromDspDram` is arithmetic on the
+service side and returns success whether or not the caller can reach the address, so `ndspInit`
+never failed — which means `audio.cpp`'s missing-`dspfirm.cdc` path never ran and **only players
+whose audio would have worked hit the crash**. And the general shape: the RSF is the one build
+input a 3DSX test cannot check. See `docs/build-versions.md`, "3DSX needs none of this".
+
+VRAM's `MemoryMapping: 1f000000-1f5fffff:r` was considered and left out — nothing CPU-touches VRAM
+(the VBO VRAM tier is off, `textures.cpp` routes VRAM destinations through `C3D_SyncTextureCopy`).
+Reasoning is in the dump's `NOTES.md`.
+
 ## The host build did not link without a decoder (2026-09-18)
 
 The first CI run of the new `test` job failed to link, and the cause was ours rather than the

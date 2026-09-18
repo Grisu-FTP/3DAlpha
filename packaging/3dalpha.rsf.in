@@ -28,6 +28,25 @@ AccessControlInfo:
   FileSystemAccess:
     - DirectSdmcWrite
 
+  # DSP memory, 0x1FF00000-0x1FF7FFFF. **A CIA does not get this for free and a
+  # 3DSX does**, which is why audio worked under the Homebrew Launcher and a
+  # CIA of the same build died on launch: HBL runs us inside a host title whose
+  # exheader already carries the mapping, and 3dbrew's memory layout says the
+  # region is "access to this is specified by the exheader" and nothing else.
+  #
+  # ndsp does not probe for it. `ndspInit` loads the firmware, asks the DSP
+  # service to convert its DRAM offsets with DSP_ConvertProcessAddressFromDspDram
+  # -- which is arithmetic on the service side and succeeds whether or not the
+  # caller can reach the result -- and then writes through the returned pointer.
+  # Without this line that store is a translation fault, so the graceful
+  # "no dspfirm.cdc" path in platform/ctr/audio.cpp never gets a chance to run.
+  # See crashlogs/010-cia-dsp-memory-unmapped/.
+  #
+  # IORegisterMapping rather than MemoryMapping: the DSP writes this region
+  # concurrently with the ARM11, so it has to be mapped uncached.
+  IORegisterMapping:
+    - 1ff00000-1ff7ffff
+
   IdealProcessor                : 0
   AffinityMask                  : 1
   Priority                      : 16

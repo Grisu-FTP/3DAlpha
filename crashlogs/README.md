@@ -4,9 +4,16 @@ Luma writes these to `luma/dumps/<process>/` on the SD card. They live here rath
 `build/`, which a clean rebuild deletes.
 
 **Check whose dump it is before anything else.** Luma dumps *every* process that faults, and the
-directory name on the SD card says which -- as does the first line the reader now prints. 3DAlpha
-appears as **`3dsx_app`**; resolving anyone else's addresses against our ELF produces plausible,
+directory name on the SD card says which -- as does the first line the reader now prints. **The
+name depends on how the build was launched**: a 3DSX under the Homebrew Launcher is `3dsx_app`,
+while an installed CIA is its own title and appears under its own name, **`3DAlpha`** (`010` is
+the first of those). Resolving anyone else's addresses against our ELF produces plausible,
 confident nonsense.
+
+**And the launch route is itself a variable, not just a label.** A 3DSX runs inside the Homebrew
+Launcher's host title and inherits its permissions; a CIA has only what `packaging/3dalpha.rsf.in`
+grants it. So "works from hbmenu, dies as a CIA" is a whole class of bug that no amount of reading
+our own code will explain -- see `010`.
 
 **But "not ours" is not the same as "not about us".** A dump belonging to `loader` is the one
 shape that is still entirely our problem: `LoadProcess` wraps the homebrew loader in
@@ -26,7 +33,8 @@ Read one with:
     tools/lumadump.py crashlogs/<dir>/*.dmp --elf crashlogs/<dir>/*.elf
 
 **Keep the `.elf` that produced the crash beside the `.dmp`.** A 3DSX loads at `0x00100000` and the
-ELF is linked there, so `addr2line` resolves dump addresses directly -- but *any* build resolves
+ELF is linked there -- and a CIA's ExeFS `.code` loads at the same address, so the same ELF resolves
+either one -- so `addr2line` resolves dump addresses directly -- but *any* build resolves
 *any* address to some plausible function, so a later build answers confidently and wrongly. Nothing
 detects this; the archived pair is the only defence.
 
@@ -40,6 +48,7 @@ detects this; the archived pair is the only defence.
 | `007-abort-aftermath/` | **The dump is the aftermath of `abort()`, not the fault that caused it.** `gspEventThreadMain` faulting in its own prologue with `sp` unmapped in the `0x08000000` region -- the newlib heap, freed by `__libctru_exit` while the GSP event thread was still running on it, because `__appExit` does not call `gspExit`. **This is what settles `005` and corrects `006`: the exception screen and the clean drop to HOME are the same event**, decided by whether one GSP interrupt lands between the heap free and `svcExitProcess`. Says nothing about *what* called `abort`. |
 | `008-out-of-heap/` | **The out-of-memory reporter fired, and the obvious reading of it is wrong.** `free 4405k of 40960k  blocks 10688k  cols 382` — so the newlib heap is confirmed as what runs out (`006`'s hypothesis, settled), but **resident columns are only 29 % of it** and the grid had not finished loading. The larger half is the chunk cache, the generator's cache and overhead, and the reporter named none of them. The fix for this one is the heap/linear split, not the column budget. |
 | `009-save-with-a-minecart/` | **A use-after-free of `TickWorld`, not a storage fault.** Two dumps, one event in two builds: a prefetch abort with `pc == r0 == r3` pointing into **newlib's `__malloc_av_`** — the freed-chunk `fd`/`bk` of a `TickAccess`, whose first two fields are a context and a function pointer. `WorldStreamer::close` destroyed `tick_` *before* the drain loop whose progress callback draws a whole frame, and the minecart pass borrows the tick world. Neither dump has its ELF; the byte pattern of the malloc bins is what settles it. **Corrects the command-buffer verdict a previous session filed these under.** |
+| `010-cia-dsp-memory-unmapped/` | **Not a bug in the binary -- a permission the CIA did not ask for.** `ndspInitialize` storing through a pointer into DSP DRAM at `0x1FF57FFE`, which is mapped only for a process whose exheader says so. A 3DSX inherits the mapping from the Homebrew Launcher's host title, so the identical ELF boots from hbmenu and dies as a CIA. `DSP_ConvertProcessAddressFromDspDram` is arithmetic and returns success regardless, so `audio.cpp`'s graceful no-firmware path never runs -- **the crash only reaches players whose audio would have worked**. Fixed by `IORegisterMapping: 1ff00000-1ff7ffff` in the RSF; verified by diffing the kernel capability descriptors of two CIAs built from one ELF. First dump in the set about packaging rather than code. |
 | `003-loader-rejected-the-3dsx/` | **`loader` refusing to load our 3DSX**, not a crash in it. `panic()` on core 1 with `r0 = 0xFFFFFFFF`, which is `Ldr_Get3dsxSize` failing to read the file's 32-byte header, and the hb:ldr title id in `r6`/`r7`. Our code never ran, so nothing about the build's *contents* is implicated -- the file loader opened was empty, truncated or not a 3DSX. First filed as "not ours"; that verdict was wrong. |
 
 ## Neither set has its ELF, and that is the lesson
@@ -68,7 +77,7 @@ binary has one way to exit that is not the player's: `abort()`, which is where a
 
 | what the console did | what it is | where to look |
 |---|---|---|
-| exception screen, red text | a fault — data abort, bad instruction | `luma/dumps/3dsx_app/`, resolved against the archived ELF |
+| exception screen, red text | a fault — data abort, bad instruction | `luma/dumps/3dsx_app/`, or `luma/dumps/3DAlpha/` for a CIA, resolved against the archived ELF |
 | frozen or black, HOME dead | a hang — the main thread is blocked, usually on the GPU | no dump exists; the bottom screen is the channel, see `geoTrace` |
 | **clean drop to the HOME menu** | `abort()` — out of heap, or a deliberate one | `sdmc:/3dalpha-oom.txt`, see `006` |
 

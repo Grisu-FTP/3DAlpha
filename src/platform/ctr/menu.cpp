@@ -280,6 +280,11 @@ enum OptionsRow {
     // are what the player sees and how they see it; the pack and the skin are
     // what it is made of.
     kOptSensitivity,
+    // **Under the Sensitivity row, because it is the other half of the same
+    // question.** One says how fast the view turns; this one says what turns
+    // it. The pack and the skin below are what the world is made of, which is
+    // a different thing to be looking for.
+    kOptControls,
     kOptPack,
     kOptSkin,
     kOptAudio,
@@ -296,7 +301,7 @@ enum OptionsRow {
     kOptBack,
     kOptCount,
 };
-constexpr u8 kOptionsGroups[kOptCount] = {0, 0, 0, 0, 1, 1, 1, 2, 3, 4};
+constexpr u8 kOptionsGroups[kOptCount] = {0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 4};
 
 // The rows of the World Settings screen. **World Info is a row that does
 // nothing on the top screen**: it is where everything that is a fact about the
@@ -480,6 +485,7 @@ const char* optionsTitle(int row)
     switch (row) {
     case kOptDistance: return "Render Distance";
     case kOptSensitivity: return "Camera Sensitivity";
+    case kOptControls: return "Controls";
     case kOptPack:     return "Texture Pack";
     case kOptSkin:     return "Skin";
     case kOptAudio:    return "Audio";
@@ -582,6 +588,18 @@ bool Menu::initCommon(bool isNew3DS, int objects)
     }
     if (renderDistance_ < 2) {
         renderDistance_ = 2;
+    }
+
+    // **The one row whose default is a console rather than a number.** An Old
+    // 3DS under the New 3DS scheme has one stick for walking and a touch screen
+    // for looking, which is the state this row exists to get it out of -- so a
+    // console that has never been asked is not left in it. Marked chosen either
+    // way: `loadSettings` runs once and `initCommon` runs on every trip to the
+    // menu, so without this a player's choice would be overwritten on the way
+    // back from the first world they opened.
+    if (!controlSchemeChosen_) {
+        controlScheme_ = settings::defaultControlScheme(isNew3DS);
+        controlSchemeChosen_ = true;
     }
 
     // -1 is "no file said", which is first boot or a file an older build wrote.
@@ -1075,6 +1093,14 @@ void Menu::loadSettings()
                            ? settings::kDefaultSensitivity
                            : settings::clampSensitivity(saved.lookSensitivity);
 
+    // **No sentinel to clamp**, because every scheme is a real answer: the file
+    // says whether it had one at all, and `initCommon` answers for a file that
+    // did not. See core/settings/settings_file.hpp.
+    controlSchemeChosen_ = saved.controlSchemeChosen;
+    if (controlSchemeChosen_) {
+        controlScheme_ = saved.controlScheme;
+    }
+
     // The engine is handed the effect volume here rather than only when the
     // row moves, because this runs on every visit to the menu and the shell's
     // copy of the setting is the one that was read at boot. Music is not done
@@ -1098,6 +1124,8 @@ void Menu::saveSettings()
     current.musicVolume = musicVolume_;
     current.soundVolume = soundVolume_;
     current.lookSensitivity = lookSensitivity_;
+    current.controlScheme = controlScheme_;
+    current.controlSchemeChosen = true;
 
     if (!fs_.makeDirectories(kRootDir)) {
         return;
@@ -1306,6 +1334,47 @@ void Menu::buildOptionsInfo(int row)
         appendf(&out, "§7100%% is a1.1.2's own default.\n");
         appendf(&out, "§7Turning at §f%d%%§7 of that speed.",
                 int(settings::sensitivityGain(lookSensitivity_) * 100.0f + 0.5f));
+        break;
+    }
+    case kOptControls: {
+        // **The whole controls table, not a description of the row.** The two
+        // lines that differ between the schemes are the two at the top, and
+        // they are useless on their own: what a player wants to know at the
+        // moment they change this is where everything else went, and the
+        // answer -- nowhere -- is only convincing if it is written out. The
+        // rest of the list is `docs/status.md`'s controls table, short enough
+        // to read on a 320-pixel screen.
+        const settings::Stick move = settings::moveStick(controlScheme_);
+        const settings::Stick look = settings::lookStick(controlScheme_);
+        appendf(&out, "Which stick walks and which one turns.\n");
+        appendf(&out, "§7%s: §fMove\n", settings::stickLabel(move));
+        appendf(&out, "§7%s: §fLook\n", settings::stickLabel(look));
+        if (look != settings::Stick::CStick) {
+            // It is still read in both Old schemes -- a New 3DS set to one of
+            // them keeps its right stick, and so does a Circle Pad Pro -- so
+            // the row says so rather than letting it look broken.
+            appendf(&out, "§7%s: §fLook, if fitted\n",
+                    settings::stickLabel(settings::Stick::CStick));
+        }
+        appendf(&out, "§7Touch drag: §fLook\n");
+        appendf(&out, "§7B: §fJump §7(flying: up)\n");
+        appendf(&out, "§7Y: §fSneak §7(flying: down)\n");
+        appendf(&out, "§7R / L: §fBreak / Place\n");
+        appendf(&out, "§7ZL / ZR: §fChange slot (New 3DS)\n");
+        appendf(&out, "§7X: §fFocus bottom screen\n");
+        appendf(&out, "§7A: §fPick, when focused\n");
+        if (move == settings::Stick::Dpad || look == settings::Stick::Dpad) {
+            // **The one binding a scheme really does move**, so it is said
+            // rather than left to be discovered: the map's zoom answers an
+            // unfocused d-pad under the New 3DS scheme, and cannot under these
+            // two, because the same press is a step or a turn.
+            appendf(&out, "§7Map zoom: §fX first, then %s\n",
+                    settings::stickLabel(settings::Stick::Dpad));
+        }
+        appendf(&out, "§7START: §fPause\n");
+        appendf(&out, "§7SELECT + Y / X: §fCycle screen\n");
+        appendf(&out, "§7SELECT + %s: §fTune the 3D",
+                settings::stickLabel(settings::Stick::Dpad));
         break;
     }
     case kOptAudio:
@@ -1911,6 +1980,7 @@ MenuChoice Menu::run()
             choice.autosaveSeconds = autosaveSeconds_;
             choice.chunkCacheMB = chunkCacheMB_;
             choice.lookSensitivity = lookSensitivity_;
+            choice.controlScheme = controlScheme_;
             choice.atlas = atlas_;
             return choice;
         }
@@ -1925,6 +1995,7 @@ MenuChoice Menu::run()
     choice.autosaveSeconds = autosaveSeconds_;
     choice.chunkCacheMB = chunkCacheMB_;
     choice.lookSensitivity = lookSensitivity_;
+    choice.controlScheme = controlScheme_;
     choice.atlas = atlas_;
     return choice;
 }
@@ -2053,6 +2124,7 @@ PauseChoice Menu::endPause()
     pauseChoice_.renderDistance = renderDistance_;
     pauseChoice_.autosaveSeconds = autosaveSeconds_;
     pauseChoice_.lookSensitivity = lookSensitivity_;
+    pauseChoice_.controlScheme = controlScheme_;
     pauseChoice_.atlasChanged = packRevision_ != pauseRevisionAtEntry_;
     return pauseChoice_;
 }
@@ -2427,6 +2499,25 @@ void Menu::handleOptions(u32 down)
                                                           + settings::kSensitivityStep);
         }
         if (lookSensitivity_ != previous) {
+            playClick();
+            saveSettings();
+        }
+        break;
+    }
+    case kOptControls: {
+        // **Clamped rather than wrapped**, like the Distance and Autosave rows
+        // above: three items is short enough that a wrap would land a player
+        // back where they started without their noticing they had gone round.
+        const settings::ControlScheme previous = controlScheme_;
+        int index = int(controlScheme_);
+        if ((down & kLeft) != 0 && index > 0) {
+            --index;
+        }
+        if ((down & kRight) != 0 && index < settings::kControlSchemeCount - 1) {
+            ++index;
+        }
+        controlScheme_ = settings::ControlScheme(index);
+        if (controlScheme_ != previous) {
             playClick();
             saveSettings();
         }
@@ -4959,6 +5050,7 @@ void Menu::drawOptions()
     SettingRowView rows[kOptCount];
     rows[kOptDistance] = {"Render distance:", distance, false};
     rows[kOptSensitivity] = {"Sensitivity:", sensitivity, false};
+    rows[kOptControls] = {"Controls:", settings::controlSchemeLabel(controlScheme_), false};
     rows[kOptPack] = {"Texture Pack:", packLabel(), false};
     rows[kOptSkin] = {"Skin:", skinLabel(), false};
     rows[kOptAudio] = {"Audio:", audioEnabled_ ? "On" : "Off", !audioEnabled_};

@@ -33,6 +33,7 @@
 // that makes it survivable is measurable, and moving it to core1 without a
 // frame time to measure against would be building on a guess.
 
+#include "core/settings/control_scheme.hpp"
 #include "core/settings/sensitivity.hpp"
 #include "core/net/client_session.hpp"
 #include "platform/ctr/audio.hpp"
@@ -184,19 +185,64 @@ float axis(s16 raw)
     return value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
 }
 
+// **A two-axis reading off whichever device the Controls row named**, in the
+// circle pad's own convention: +x right, +y up (away from the player), each
+// clamped to -1..1. Everything downstream -- walking, flying, turning -- is
+// written against that convention and never against a button.
+//
+// The d-pad is a button pair per axis and so is only ever -1, 0 or 1. That is
+// not a limitation to apologise for: it is a keyboard, which is what a1.1.2 was
+// played on, and `moveFlying` already clamps the diagonal it produces the same
+// way it clamps the original's two arrow keys. A rate-based look off it is a
+// turn at one speed, which is why the Sensitivity row matters more under the
+// Old schemes than under the New one.
+//
+// **`held` rather than the hardware**, for the d-pad alone: the frame loop
+// zeroes `held` while a screen is up, so the d-pad is silenced by the same rule
+// that silences every other button and needs no guard of its own. The two
+// sticks are read straight from libctru and do need one -- see the call sites.
+//
+// **SELECT takes the d-pad back.** SELECT + d-pad tunes the 3D, and under the
+// two Old schemes that d-pad is also walking or turning; without this the world
+// would spin while the stereo was being dialled in.
+void readStick(mc::settings::Stick stick, u32 held, float* x, float* y)
+{
+    if (stick == mc::settings::Stick::Dpad) {
+        if ((held & KEY_SELECT) != 0) {
+            *x = 0.0f;
+            *y = 0.0f;
+            return;
+        }
+        *x = float(((held & KEY_DRIGHT) != 0 ? 1 : 0) - ((held & KEY_DLEFT) != 0 ? 1 : 0));
+        *y = float(((held & KEY_DUP) != 0 ? 1 : 0) - ((held & KEY_DDOWN) != 0 ? 1 : 0));
+        return;
+    }
+
+    circlePosition pad;
+    if (stick == mc::settings::Stick::CStick) {
+        hidCstickRead(&pad);
+    } else {
+        hidCircleRead(&pad);
+    }
+    *x = axis(pad.dx);
+    *y = axis(pad.dy);
+}
+
 // Free flight, which is now **Spectator's** movement rather than the only one.
 // It stays exactly as honest as it was: no body, no collision, no gravity, and
 // it is offered under a name that says so.
 //
 // Up and down are B and Y rather than R and L, because the shoulders are the
 // two mouse buttons now. See the controls table in docs/status.md.
-void flyCamera(ctr::Camera& camera, float dt, bool sprint)
+void flyCamera(ctr::Camera& camera, float dt, bool sprint, mc::settings::ControlScheme scheme,
+               u32 stickHeld)
 {
-    circlePosition pad;
-    hidCircleRead(&pad);
-
-    const float px = axis(pad.dx);
-    const float pz = axis(pad.dy);
+    float px = 0.0f;
+    float pz = 0.0f;
+    // The caller's `held` with the d-pad taken out if a screen has claimed it;
+    // the B and Y below stay on the hardware, which is where this function has
+    // always read them.
+    readStick(mc::settings::moveStick(scheme), stickHeld, &px, &pz);
 
     const float speed = (sprint ? 40.0f : 12.0f) * dt;
 
@@ -302,19 +348,24 @@ void liftIntoTheWorld(mc::entity::PlayerBody& body, const mc::tick::TickWorld& w
     }
 }
 
-// The circle pad and the two body buttons, as the original's heading inputs.
+// The movement device and the two body buttons, as the original's heading
+// inputs. **Which device that is comes off the Controls row** -- see
+// `readStick`, which reports all of them in one convention so nothing below
+// this line knows the difference.
 //
 // **Strafe is negated.** `moveFlying` sends a positive strafe to +X at yaw 0,
-// and yaw 0 faces +Z, so +X is the player's *left*; the circle pad's positive x
-// is their right. One of the two has to flip and it is this one.
-mc::entity::PlayerInput readBodyInput(const ctr::Camera& camera, u32 held, bool sneaking)
+// and yaw 0 faces +Z, so +X is the player's *left*; the stick's positive x is
+// their right. One of the two has to flip and it is this one.
+mc::entity::PlayerInput readBodyInput(const ctr::Camera& camera, u32 held, bool sneaking,
+                                      mc::settings::ControlScheme scheme)
 {
-    circlePosition pad;
-    hidCircleRead(&pad);
+    float px = 0.0f;
+    float pz = 0.0f;
+    readStick(mc::settings::moveStick(scheme), held, &px, &pz);
 
     mc::entity::PlayerInput input;
-    input.strafe = -axis(pad.dx);
-    input.forward = axis(pad.dy);
+    input.strafe = -px;
+    input.forward = pz;
     input.yawDegrees = camera.yaw * 180.0f / kPi;
     input.jump = (held & KEY_B) != 0;
     // **Sneak is a toggle and is handed in**, not read off Y here: it is the
@@ -1071,26 +1122,33 @@ void lookWithTouch(ctr::Camera& camera, bool* dragging, touchPosition* last, int
     *dragging = true;
 }
 
-// The New 3DS C-stick, which is the right way to look and the reason the touch
-// screen can go back to being a screen.
+// **Turning the view with a stick**, whichever one the Controls row named.
 //
-// It arrives through ir:rst rather than hid -- the same service a Circle Pad
-// Pro reports through, so an old 3DS with one attached gets this for free. Both
-// axes are rate rather than position: the further it is pushed the faster the
-// view turns, which is what a stick with a return spring wants.
-void lookWithCstick(ctr::Camera& camera, float dt, float gain)
+// The C-stick was the first and is still the New 3DS scheme's: it arrives
+// through ir:rst rather than hid -- the same service a Circle Pad Pro reports
+// through, so an old 3DS with one attached gets it for free. The Old schemes
+// point this at the circle pad or the d-pad instead, and nothing else about it
+// changes.
+//
+// Both axes are rate rather than position: the further it is pushed the faster
+// the view turns, which is what a stick with a return spring wants, and what
+// makes a d-pad usable here at all -- a held direction is a steady turn rather
+// than a jump.
+void lookWithStick(ctr::Camera& camera, float dt, float gain, mc::settings::Stick stick,
+                   u32 held)
 {
-    circlePosition stick;
-    hidCstickRead(&stick);
-
     // Radians a second at full deflection. About 100 degrees, which is a little
     // brisker than the original's default mouse sensitivity and reads as normal
     // on a stick this short.
     constexpr float kTurnRate = 1.8f;
 
-    camera.yaw += axis(stick.dx) * kTurnRate * gain * dt;
+    float x = 0.0f;
+    float y = 0.0f;
+    readStick(stick, held, &x, &y);
+
+    camera.yaw += x * kTurnRate * gain * dt;
     // Push up, look up. Positive pitch looks down, so this subtracts.
-    camera.pitch -= axis(stick.dy) * kTurnRate * gain * dt;
+    camera.pitch -= y * kTurnRate * gain * dt;
     clampPitch(camera);
 }
 
@@ -2170,6 +2228,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // the world being closed. See core/settings/sensitivity.hpp.
     float lookGain = settings::sensitivityGain(choice.lookSensitivity);
 
+    // **The Controls row, live.** Like the gain above it, `applyPause` puts a
+    // new one here without the world being closed -- which is the point of the
+    // row being on the pause menu: the only way to find out which scheme suits
+    // you is to walk around under it. See core/settings/control_scheme.hpp.
+    settings::ControlScheme controls = choice.controlScheme;
+
     u64 lastTick = svcGetSystemTick();
 
     // The pool's eviction rule is "nothing drawn in this frame", so the counter
@@ -2501,6 +2565,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // is on the pause menu precisely so it can be: a look rate is set by
         // feeling it, and feeling it means going back to the world and turning.
         lookGain = settings::sensitivityGain(paused.lookSensitivity);
+        controls = paused.controlScheme;
 
         return false;
     };
@@ -2638,7 +2703,24 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // answered instead. See `backHeldByScreen`.
         const bool focusHadB = overlay.uiFocused();
 
+        // **Whether the bottom screen may treat the d-pad as its own**, which
+        // it may not once the Controls row has pointed walking or looking at
+        // it. Told rather than asked, because the scheme can change under a
+        // running world -- the pause menu has the row.
+        overlay.setDpadIsGameplay(settings::moveStick(controls) == settings::Stick::Dpad
+                                  || settings::lookStick(controls) == settings::Stick::Dpad);
+
         const bool settingsChanged = overlay.handleInput(down, held, &settings, &camera);
+
+        // **`held`, less the d-pad when a screen has taken it.** The focused
+        // pages walk a cursor with it and the debug pages behind SELECT drive
+        // their rows with it, and a frame that is using the d-pad for one of
+        // those is not also using it to walk. Only the stick reads take this;
+        // the face buttons stay on `held`, because nothing here is claiming
+        // them. The pause menu needs no mention: `held` is already zero by then
+        // and this is derived from it.
+        constexpr u32 kDpad = KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT;
+        const u32 stickHeld = overlay.dpadTakenByScreen() ? (held & ~kDpad) : held;
 
         // Cleared by letting go, claimed by any frame a screen was up for. The
         // release is checked first, so a claim is never carried past the press
@@ -2780,7 +2862,8 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         if (overlay.gamemode() == settings::Gamemode::Spectator) {
             // X is sprint and also SELECT + X is a page back, so sprint waits
             // for SELECT to be let go.
-            flyCamera(camera, dt, (held & KEY_X) != 0 && !(held & KEY_SELECT));
+            flyCamera(camera, dt, (held & KEY_X) != 0 && !(held & KEY_SELECT), controls,
+                      stickHeld);
         }
 
         // **Creative's flight toggle: double-tap jump.** It is the gesture the
@@ -2849,8 +2932,29 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             overlay.tickFocus(dt);
 
             lookWithTouch(camera, &dragging, &lastTouch, overlay.touchLookTop(), lookGain);
+
+            // **The C-stick turns the view under every scheme**, not only the
+            // one that names it: a New 3DS set to an Old scheme still has its
+            // right stick, and so does an old one with a Circle Pad Pro on it.
+            // Taking it away would be taking a device off the console rather
+            // than reassigning it, and nothing else wants it.
+            const settings::Stick lookStick = settings::lookStick(controls);
             if (haveCstick) {
-                lookWithCstick(camera, dt, lookGain);
+                lookWithStick(camera, dt, lookGain, settings::Stick::CStick, stickHeld);
+            }
+
+            // **And then the scheme's own look device, if it is not that one.**
+            //
+            // A focused bottom screen takes it, which the C-stick above never
+            // needs: the d-pad is walking the cursor over the palette and the
+            // circle pad is panning the map, and a page that has taken a device
+            // cannot also be turning the camera with it. This is the same rule
+            // `uiFocused` applies to the body's heading further down -- see
+            // Overlay::uiCursorActive -- and it is spelled out here because the
+            // circle pad is read off the hardware and so cannot be silenced by
+            // `held` going to zero the way the d-pad is.
+            if (lookStick != settings::Stick::CStick && !overlay.uiFocused()) {
+                lookWithStick(camera, dt, lookGain, lookStick, stickHeld);
             }
         }
         tuneStereo(renderer);
@@ -3249,7 +3353,8 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 // leaving its crop standing on screen. See
                 // WorldStreamer::RenderBracket.
                 mc::render::WorldStreamer::RenderBracket draws(world, renderer.chunks());
-                mc::entity::PlayerInput bodyInput = readBodyInput(camera, held, sneaking);
+                mc::entity::PlayerInput bodyInput =
+                    readBodyInput(camera, stickHeld, sneaking, controls);
                 // **A dead player does not move**: the game-over screen owns
                 // the buttons, and the body falls where it lies.
                 //

@@ -35,12 +35,27 @@ ls $DEVKITPRO/libctru/lib/libcitro3d.a
 ## makerom and bannertool — NOT in devkitPro
 
 `.3dsx` builds work with what's installed. **CIA packaging does not**: devkitPro does not distribute
-`makerom` or `bannertool`, so neither is on this machine. Both come from
+`makerom` or `bannertool`. Both come from
 [3DSGuy/Project_CTR](https://github.com/3DSGuy/Project_CTR) (or a maintained community fork) and go
 somewhere on `PATH`. CI builds `makerom` from source at a pinned tag rather than downloading the
 release binary, which is linked against a newer glibc than the devkitPro image has — see
 [build-versions.md §CI](build-versions.md#ci). `bannertool` is not needed: the icon comes from
 `ctr_generate_smdh` and the CIA takes it with `-icon`.
+
+The same four commands work locally, and take about two seconds:
+
+```sh
+git clone --depth 1 --branch makerom-v0.19.0 https://github.com/3DSGuy/Project_CTR.git /tmp/project_ctr
+make -C /tmp/project_ctr/makerom deps -j"$(nproc)"
+make -C /tmp/project_ctr/makerom -j"$(nproc)"
+install -m755 /tmp/project_ctr/makerom/bin/makerom ~/.local/bin/makerom
+```
+
+**`find_program` result is cached, so installing it is not enough on an already-configured tree.**
+`MAKEROM_EXE:FILEPATH=MAKEROM_EXE-NOTFOUND` sits in `build/<ver>/CMakeCache.txt` and CMake will not
+look again; the `cia` target simply does not exist, with no message saying why. Re-run the configure
+step (`arm-none-eabi-cmake -S . -B build/<ver> -DMCVER=<ver>`) after installing. Editing the cache
+entry out by hand corrupts it — the `//Path to a program.` line above it has to go too.
 
 This matters as soon as multiple versions are in play: `.3dsx` files coexist by filename, but
 installing several versions onto the HOME menu at once requires CIAs with distinct title IDs — see
@@ -97,6 +112,18 @@ is specific to us: **`ptm:sysm`**, because `osSetSpeedupEnable()` goes through P
 out and the New 3DS clock is lost silently. There is also no `RomFs` section: nothing ships inside
 the title (see [assets.md](assets.md)), and `makerom` fails outright on a `RootPath` that does not
 exist.
+
+**Those two fail loudly. The memory mappings do not, and that is the worse failure.** A missing
+`IORegisterMapping`/`MemoryMapping` range is not a `makerom` error, not a warning, and not visible
+in the `.cia` — it is a region the kernel declines to map, and the first anyone hears of it is a
+data abort on hardware. We shipped exactly that: no DSP mapping, so `ndspInit` faulted on launch
+while the identical `.3dsx` ran fine under the Homebrew Launcher, which lends us its host title's
+permissions. See [crashlogs/010-cia-dsp-memory-unmapped](../crashlogs/010-cia-dsp-memory-unmapped/).
+
+To check what a built CIA actually grants, scan it for ARM11 kernel capability descriptors with the
+`0b11111111100x` prefix — `0xFF81FF00`/`0xFF81FF80` is the DSP range, present twice (exheader and
+access descriptor). Two CIAs built from one ELF and two RSFs differ in nothing else, which is how
+the fix was confirmed without a console.
 
 The shared settings that matter for performance:
 

@@ -79,6 +79,15 @@ bool loadSettings(io::FileSystem& fs, const char* path, GameSettings* out)
             }
             continue;
         }
+        if (key == "controls") {
+            // A word rather than a number, so an unknown one is recognisably
+            // unknown: the scheme keeps its default instead of becoming
+            // whichever one an out-of-range ordinal would land on.
+            if (controlSchemeFromToken(value, &out->controlScheme)) {
+                out->controlSchemeChosen = true;
+            }
+            continue;
+        }
         if (key == "texture_pack") {
             // A pack name is a file name and must stay one: a value with a
             // separator in it would let an edited ini point the loader outside
@@ -128,6 +137,10 @@ bool saveSettings(io::FileSystem& fs, const char* path, const GameSettings& sett
 
     std::snprintf(line, sizeof(line), "look_sensitivity=%d\n", settings.lookSensitivity);
     text += line;
+
+    text += "controls=";
+    text += controlSchemeToken(settings.controlScheme);
+    text += '\n';
 
     text += "texture_pack=";
     text += settings.texturePack;

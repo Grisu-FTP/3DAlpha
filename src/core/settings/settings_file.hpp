@@ -15,6 +15,7 @@
 // An absent file is the first-boot state, not an error.
 
 #include "core/io/file_system.hpp"
+#include "core/settings/control_scheme.hpp"
 #include "core/util/types.hpp"
 
 #include <string>
@@ -70,6 +71,19 @@ struct GameSettings {
     // becomes `kDefaultSensitivity`. See core/settings/sensitivity.hpp for the
     // curve and for why 100% is exactly unity.
     int lookSensitivity = -1;
+
+    // **Which stick walks and which one turns** -- see
+    // core/settings/control_scheme.hpp for the three pairings and why there
+    // are three.
+    //
+    // This one cannot use the "0 means not chosen yet" convention the numbers
+    // above use, because every value of the enum is a real answer, so the
+    // absence is carried in its own flag. Absent is first boot, or a file an
+    // older build wrote: the menu fills in the scheme named after the console
+    // it is running on, rather than this file inventing one for a model it
+    // cannot see from here.
+    bool controlSchemeChosen = false;
+    ControlScheme controlScheme = ControlScheme::New3DS;
 
     // **Which player skin the arm of an empty hand is drawn with**, as
     // `SkinEntry::key`: empty for Default -- the active pack's `char.png`, or

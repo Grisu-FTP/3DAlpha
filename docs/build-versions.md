@@ -249,14 +249,23 @@ TitleInfo:
 ```
 
 Everything else in the RSF (the New 3DS block — `SystemModeExt`, `CpuSpeed`, `EnableL2Cache`,
-`CanAccessCore2` — and `FileSystemAccess: DirectSdmcWrite`, which we need for SD access) is shared
-and lives in an RSF template.
+`CanAccessCore2`; `FileSystemAccess: DirectSdmcWrite`, which we need for SD access; and
+`IORegisterMapping: 1ff00000-1ff7ffff`, which we need for audio) is shared and lives in an RSF
+template.
 
-### 3DSX needs none of this
+### 3DSX needs none of this — and that is a hazard, not just a convenience
 
 `.3dsx` files in `sd:/3ds/` coexist by filename alone, and hbmenu reads the title from the embedded
 SMDH. Multi-version side-by-side is free there. Title IDs only matter for CIA installs onto the HOME
 menu.
+
+But the RSF is not only naming. **A 3DSX runs inside the Homebrew Launcher's host title and borrows
+its permissions; a CIA is its own process and has exactly what the RSF grants.** So the RSF is the
+one build input whose mistakes a 3DSX test cannot find: everything the launcher happens to allow
+works from `sd:/3ds/` and faults on the HOME menu. `crashlogs/010-cia-dsp-memory-unmapped/` is that
+bug — `ndspInit` writing to DSP memory the CIA had no mapping for — and the shape recurs for any
+service, SVC or memory region we start using. **When a change reaches for something new at the
+platform layer, check the RSF, and test the CIA rather than the 3DSX.**
 
 ## SD card layout
 

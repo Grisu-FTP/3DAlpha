@@ -46,6 +46,7 @@
 
 #include "core/net/server_list.hpp"
 #include "core/io/posix_file_system.hpp"
+#include "core/settings/control_scheme.hpp"
 #include "core/settings/sensitivity.hpp"
 #include "platform/ctr/guest_play.hpp"
 #include "platform/ctr/world_transfer.hpp"
@@ -150,6 +151,10 @@ struct MenuChoice {
     // and applies it to both look devices.
     int lookSensitivity = settings::kDefaultSensitivity;
 
+    // Which stick the shell reads movement off and which one it turns the view
+    // with. The Controls row; see core/settings/control_scheme.hpp.
+    settings::ControlScheme controlScheme = settings::ControlScheme::New3DS;
+
     // The block atlas for the chosen texture pack, already assembled and
     // already known to decode -- the pack screen builds it at the moment of
     // selection so a broken pack is refused there, in front of the player,
@@ -199,6 +204,11 @@ struct PauseChoice {
     // on this screen: a rate is something you set by feeling it, and feeling it
     // means looking around.
     int lookSensitivity = settings::kDefaultSensitivity;
+
+    // And the Controls row, which is on this screen for exactly the same
+    // reason: a player finds out which of the two Old schemes they want by
+    // walking around under each of them, not by reading the names.
+    settings::ControlScheme controlScheme = settings::ControlScheme::New3DS;
 
     // The player chose a different texture pack. The image is Menu::atlas();
     // the caller hands it to Renderer::setAtlas.
@@ -1174,6 +1184,15 @@ private:
     // turns exactly as it did before the row existed. See
     // core/settings/sensitivity.hpp.
     int lookSensitivity_ = settings::kDefaultSensitivity;
+
+    // The Controls row: which stick walks and which one turns. The flag is the
+    // settings file's "the player has never been asked" -- see
+    // `initCommon`, which answers it with the console model and then sets it,
+    // so a later trip through the menu cannot walk over a row the player has
+    // since moved. See core/settings/control_scheme.hpp.
+    settings::ControlScheme controlScheme_ = settings::ControlScheme::New3DS;
+    bool controlSchemeChosen_ = false;
+
     bool audioEnabled_ = true;
 
     // Borrowed, process-lifetime, and both null in the overlay's copy of this

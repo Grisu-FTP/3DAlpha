@@ -127,7 +127,7 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/build-versions.md`
 
-366 lines, ~4,148 tokens.
+375 lines, ~4,342 tokens.
 
 - **14-30** Why not `#if MC_VERSION >= ...`
 - **31-32** Three tiers, matched to the size of the delta
@@ -139,106 +139,108 @@ grep -n 'geometry shader' docs/*.md   # find which section first
   - **199-211** Slot binding convention
 - **212-213** Installing several versions at once
   - **214-239** Title IDs
-  - **240-254** RSF fields that differ per version
-  - **255-260** 3DSX needs none of this
-- **261-281** SD card layout
-- **282-320** CI
-- **321-357** Releases, and installing from one without a PC
-- **358-366** Rules
+  - **240-255** RSF fields that differ per version
+  - **256-269** 3DSX needs none of this — and that is a hazard, not just a convenience
+- **270-290** SD card layout
+- **291-329** CI
+- **330-366** Releases, and installing from one without a PC
+- **367-375** Rules
 
 ## `docs/current-work.md`
 
-2,755 lines, ~50,779 tokens.
+2,812 lines, ~51,668 tokens.
 
-- **6-21** The host build did not link without a decoder (2026-09-18)
-- **22-40** CI runs the host suite, and the binaries wait on it (2026-09-18)
-- **41-91** The diorama stood next to the world, and four things on the bottom screen (2026-09-18)
-- **92-111** The bottom screen takes the stick, and the press that closes it (2026-09-17)
-- **112-132** A Sensitivity row, on a1.1.2's own curve (2026-09-17)
-- **133-164** Import and Export: a world crosses the room (2026-09-17)
-- **165-166** The spider's eyes, and a sweep for documentation that had stopped being true (2026-09-17)
-  - **167-194** The eyes are a blended pass now, and the alpha comes out of the lightmap (2026-09-17)
-  - **195-213** Four documented facts that had stopped being true (2026-09-17)
-- **214-215** The frame that did not add up, and two mob rules put back (2026-09-17)
-  - **216-238** `CPU busy` was answering a question nobody asked (2026-09-17)
-  - **239-251** An arrow now misses its own archer by identity, not by address (2026-09-17)
-  - **252-269** The one-path-search-a-tick budget is gone (2026-09-17)
-- **270-271** Two from play: pausing froze a session, and the map stopped at the render distance (2026-09-16)
-  - **272-291** START no longer stops a world somebody else is in (2026-09-16)
-  - **292-313** The map fills in the band no column will ever arrive for (2026-09-16)
-- **314-315** Three from play: the music skipped, a guest's mining dropped nothing, and a ring of the world was served by nobody (2026-09-16)
-  - **316-341** The scheduler, not the decoder (2026-09-16)
-  - **342-364** A guest mining dropped nothing, anywhere (2026-09-16)
-  - **365-389** A three-chunk ring at the end of the host's render distance where nothing generated (2026-09-16)
-- **390-491** Six from a session: dark mobs, a stepping herd, the slime's face, redstone, the wall a guest walked into, and a banner that moved screens (2026-09-15)
-- **492-555** Seven things the first two-console session found (2026-09-15)
-- **556-605** A guest plays the host's game: rules, where they land, and what is alive (2026-09-15)
-- **606-675** The world crosses the link: two consoles in one world (2026-09-15)
-- **676-714** Terrain crosses the link: the expensive half of a chunk, made on somebody else's console (2026-09-14)
-- **715-752** Two consoles in one room: the link, the session, and the menu that opens one (2026-09-14)
-- **753-773** Three from the jukebox: the disc was free, breaking it voided it, and the record outlived the world (2026-09-14)
-- **774-814** Four more from play: DNS, a splash that repeated, a hollow door, and glass that was a stack of boxes (2026-09-14)
-- **815-862** Six reports from play: a port row, the fence and furnace icons, the jukebox, the special carts (2026-09-14)
-- **863-887** Checkout context
-- **888-1008** Multiplayer is joinable (2026-09-13)
-- **1009-1025** Fences need ground again, and sign boards stopped sliding (2026-09-13)
-- **1026-1068** Six reports from play: an invisible join, far signs, stacked torches, buckets, X (2026-09-13)
-- **1069-1108** The chest connects, a third one goes in through water, and a seed breaks bedrock (2026-09-13)
-- **1109-1140** The near plane, the spawn lift's order, and a death screen that outlived its world (2026-09-13)
-- **1141-1179** The two screens: a square hotbar slot, Spectator's forty pixels, and a wear bar (2026-09-13)
-- **1180-1219** Survival is on (M3 step 4)
-- **1220-1256** Five things the first Survival playthrough found (2026-09-13)
-- **1257-1284** Create World is a screen now, not two keyboards
-- **1285-1350** Extra Settings: a per-world screen that is deliberately not a1.1.2
-- **1351-1371** World Settings measures a world on a thread, so a big world no longer freezes the menu
-- **1372-1486** Main-menu bottom-screen previews: a row of skins, a pack scene, a world diorama
-- **1487-1515** Options and World Settings: grouped scrolling lists, tooltips on a dirt bottom screen
-- **1516-1525** Explosions destroy dropped items
-- **1526-1544** Water and lava are generated textures now; fire's standing still is not yet explained
-- **1545-1569** The open inventory keeps up, the carried stack is visible, and X throws it
-- **1570-1606** The sky: colours from the clock, two flat planes, the sun, the moon and 780 stars
-- **1607-1640** Walking on a block: farmland is trampled, and redstone ore lights up
-- **1641-1718** You can stand on a minecart, and a minecart stops at what is standing on it
-- **1719-1770** The bottom map follows the world, and the game never waits for it
-- **1771-1804** `TileEntities` is modelled, so signs, spawners and dungeon loot all persist
-- **1805-1836** The mob spawner works, and the mob was in the world file all along
-- **1837-1863** A sword hits for what it is worth, and the hoe works
-- **1864-1892** Arrows are not eaten by the archer any more, and a flying player can shoot a painting down
-- **1893-1923** The stone button is a button in the hand and in the slot, not a stone block
-- **1924-1946** An arrow no longer shoots the player who fired it
-- **1947-1964** Dropped items do not stack on their own any more, and Beta 1.8 was the wrong date
-- **1965-1999** A cactus hurts what touches it, and an item cactus is the cell and not the inset box
-- **2000-2022** Fire burns entities now: `kh.c(DDD)V`'s tail, and a finding that was wrong
-- **2023-2052** A burning mob now shows it: `ak.a(Lkh;DDDF)V`
-- **2053-2103** TNT is complete: `jd`, and all four ways a1.1.2 lights it
-- **2104-2139** Sneaking is a toggle, it lowers the camera, and it slows you down
-- **2140-2169** All twelve particles
-- **2170-2188** A Creative player is not something a monster hunts
-- **2189-2212** Where the monsters actually go, and the chunk order that decided it
-- **2213-2239** Three fixes on top of the hostile mobs
-- **2240-2285** The hostile mobs are in: zombie, skeleton, creeper, spider, slime
-- **2286-2319** The entity sounds, and the boot list that was swallowing half of them
-- **2320-2356** The peaceful animals are in: pig, sheep, cow, chicken
-- **2357-2372** A door's texture now shows which side its hinge is on
-- **2373-2387** Item-sheet sprites were never uploaded at launch
-- **2388-2404** Teleport has no height range; cacti have spikes
-- **2405-2425** Greedy meshing is in, through a cube atlas and a seam
-- **2426-2439** The crosshair's entity pick is `getMouseOver`'s now
-- **2440-2452** Furnaces and stairs face their neighbours, and a furnace draws its mouth where it faces
-- **2453-2461** A sign whose support is broken now goes
-- **2462-2471** A minecart stack no longer overflows to NaN; a NaN entity no longer bricks a save
-- **2472-2510** Entity pools have no cap
-- **2511-2523** Breaking entities, and the crop's seeds
-- **2524-2539** Entity persistence
-- **2540-2566** The held item
-- **2567-2590** Skins
-- **2591-2622** Hardware save crash — cause found, previous verdict corrected
-- **2623-2643** Dungeons after the null-side-effects tweak
-- **2644-2664** Minecart placement and the crosshair, checked rather than assumed
-- **2665-2693** The crosshair was being back-face culled
-- **2694-2720** The compass no longer repaints a screen that has not changed
-- **2721-2741** Arrow and minecart follow-up
-- **2742-2755** Verification evidence
+- **6-38** A Controls row: the port had one scheme, and it needed a C-stick (2026-09-18)
+- **39-62** The CIA crashed on launch: no DSP memory mapping in the exheader (2026-09-18)
+- **63-78** The host build did not link without a decoder (2026-09-18)
+- **79-97** CI runs the host suite, and the binaries wait on it (2026-09-18)
+- **98-148** The diorama stood next to the world, and four things on the bottom screen (2026-09-18)
+- **149-168** The bottom screen takes the stick, and the press that closes it (2026-09-17)
+- **169-189** A Sensitivity row, on a1.1.2's own curve (2026-09-17)
+- **190-221** Import and Export: a world crosses the room (2026-09-17)
+- **222-223** The spider's eyes, and a sweep for documentation that had stopped being true (2026-09-17)
+  - **224-251** The eyes are a blended pass now, and the alpha comes out of the lightmap (2026-09-17)
+  - **252-270** Four documented facts that had stopped being true (2026-09-17)
+- **271-272** The frame that did not add up, and two mob rules put back (2026-09-17)
+  - **273-295** `CPU busy` was answering a question nobody asked (2026-09-17)
+  - **296-308** An arrow now misses its own archer by identity, not by address (2026-09-17)
+  - **309-326** The one-path-search-a-tick budget is gone (2026-09-17)
+- **327-328** Two from play: pausing froze a session, and the map stopped at the render distance (2026-09-16)
+  - **329-348** START no longer stops a world somebody else is in (2026-09-16)
+  - **349-370** The map fills in the band no column will ever arrive for (2026-09-16)
+- **371-372** Three from play: the music skipped, a guest's mining dropped nothing, and a ring of the world was served by nobody (2026-09-16)
+  - **373-398** The scheduler, not the decoder (2026-09-16)
+  - **399-421** A guest mining dropped nothing, anywhere (2026-09-16)
+  - **422-446** A three-chunk ring at the end of the host's render distance where nothing generated (2026-09-16)
+- **447-548** Six from a session: dark mobs, a stepping herd, the slime's face, redstone, the wall a guest walked into, and a banner that moved screens (2026-09-15)
+- **549-612** Seven things the first two-console session found (2026-09-15)
+- **613-662** A guest plays the host's game: rules, where they land, and what is alive (2026-09-15)
+- **663-732** The world crosses the link: two consoles in one world (2026-09-15)
+- **733-771** Terrain crosses the link: the expensive half of a chunk, made on somebody else's console (2026-09-14)
+- **772-809** Two consoles in one room: the link, the session, and the menu that opens one (2026-09-14)
+- **810-830** Three from the jukebox: the disc was free, breaking it voided it, and the record outlived the world (2026-09-14)
+- **831-871** Four more from play: DNS, a splash that repeated, a hollow door, and glass that was a stack of boxes (2026-09-14)
+- **872-919** Six reports from play: a port row, the fence and furnace icons, the jukebox, the special carts (2026-09-14)
+- **920-944** Checkout context
+- **945-1065** Multiplayer is joinable (2026-09-13)
+- **1066-1082** Fences need ground again, and sign boards stopped sliding (2026-09-13)
+- **1083-1125** Six reports from play: an invisible join, far signs, stacked torches, buckets, X (2026-09-13)
+- **1126-1165** The chest connects, a third one goes in through water, and a seed breaks bedrock (2026-09-13)
+- **1166-1197** The near plane, the spawn lift's order, and a death screen that outlived its world (2026-09-13)
+- **1198-1236** The two screens: a square hotbar slot, Spectator's forty pixels, and a wear bar (2026-09-13)
+- **1237-1276** Survival is on (M3 step 4)
+- **1277-1313** Five things the first Survival playthrough found (2026-09-13)
+- **1314-1341** Create World is a screen now, not two keyboards
+- **1342-1407** Extra Settings: a per-world screen that is deliberately not a1.1.2
+- **1408-1428** World Settings measures a world on a thread, so a big world no longer freezes the menu
+- **1429-1543** Main-menu bottom-screen previews: a row of skins, a pack scene, a world diorama
+- **1544-1572** Options and World Settings: grouped scrolling lists, tooltips on a dirt bottom screen
+- **1573-1582** Explosions destroy dropped items
+- **1583-1601** Water and lava are generated textures now; fire's standing still is not yet explained
+- **1602-1626** The open inventory keeps up, the carried stack is visible, and X throws it
+- **1627-1663** The sky: colours from the clock, two flat planes, the sun, the moon and 780 stars
+- **1664-1697** Walking on a block: farmland is trampled, and redstone ore lights up
+- **1698-1775** You can stand on a minecart, and a minecart stops at what is standing on it
+- **1776-1827** The bottom map follows the world, and the game never waits for it
+- **1828-1861** `TileEntities` is modelled, so signs, spawners and dungeon loot all persist
+- **1862-1893** The mob spawner works, and the mob was in the world file all along
+- **1894-1920** A sword hits for what it is worth, and the hoe works
+- **1921-1949** Arrows are not eaten by the archer any more, and a flying player can shoot a painting down
+- **1950-1980** The stone button is a button in the hand and in the slot, not a stone block
+- **1981-2003** An arrow no longer shoots the player who fired it
+- **2004-2021** Dropped items do not stack on their own any more, and Beta 1.8 was the wrong date
+- **2022-2056** A cactus hurts what touches it, and an item cactus is the cell and not the inset box
+- **2057-2079** Fire burns entities now: `kh.c(DDD)V`'s tail, and a finding that was wrong
+- **2080-2109** A burning mob now shows it: `ak.a(Lkh;DDDF)V`
+- **2110-2160** TNT is complete: `jd`, and all four ways a1.1.2 lights it
+- **2161-2196** Sneaking is a toggle, it lowers the camera, and it slows you down
+- **2197-2226** All twelve particles
+- **2227-2245** A Creative player is not something a monster hunts
+- **2246-2269** Where the monsters actually go, and the chunk order that decided it
+- **2270-2296** Three fixes on top of the hostile mobs
+- **2297-2342** The hostile mobs are in: zombie, skeleton, creeper, spider, slime
+- **2343-2376** The entity sounds, and the boot list that was swallowing half of them
+- **2377-2413** The peaceful animals are in: pig, sheep, cow, chicken
+- **2414-2429** A door's texture now shows which side its hinge is on
+- **2430-2444** Item-sheet sprites were never uploaded at launch
+- **2445-2461** Teleport has no height range; cacti have spikes
+- **2462-2482** Greedy meshing is in, through a cube atlas and a seam
+- **2483-2496** The crosshair's entity pick is `getMouseOver`'s now
+- **2497-2509** Furnaces and stairs face their neighbours, and a furnace draws its mouth where it faces
+- **2510-2518** A sign whose support is broken now goes
+- **2519-2528** A minecart stack no longer overflows to NaN; a NaN entity no longer bricks a save
+- **2529-2567** Entity pools have no cap
+- **2568-2580** Breaking entities, and the crop's seeds
+- **2581-2596** Entity persistence
+- **2597-2623** The held item
+- **2624-2647** Skins
+- **2648-2679** Hardware save crash — cause found, previous verdict corrected
+- **2680-2700** Dungeons after the null-side-effects tweak
+- **2701-2721** Minecart placement and the crosshair, checked rather than assumed
+- **2722-2750** The crosshair was being back-face culled
+- **2751-2777** The compass no longer repaints a screen that has not changed
+- **2778-2798** Arrow and minecart follow-up
+- **2799-2812** Verification evidence
 
 ## `docs/entity-render-a1.1.2.md`
 
@@ -425,280 +427,282 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/status.md`
 
-9,794 lines, ~176,014 tokens.
+9,863 lines, ~177,340 tokens.
 
 - **27-64** Milestones
-- **65-123** Environment facts worth not rediscovering
-- **124-177** What exists in the tree
-- **178-284** Decisions that are settled
-  - **285-294** Reversed, and why (keep this — the reasoning matters)
-- **295-572** Measured numbers (do not re-derive)
-- **573-767** Facts recovered from the client jar
-- **768-769** Next steps, in order
-  - **770-788** 0. The chunk worker — built, and the world it makes is the same world
-    - **789-844** The world must not depend on the clock, and making that true was most of the work
-    - **845-905** What is not closed
-  - **906-1004** 0b. The main menu — the game starts from it now
-  - **1005-1095** 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
-  - **1096-1125** 0d. The pause menu — START stops the world instead of leaving it
-    - **1126-1154** ...except in a session, where stopping is not one console's decision to make
-    - **1155-1200** The pause menu draws into the game's frame, not into one of its own
-    - **1201-1236** The finding: citro3d holds one target per screen output, and a menu takes it
-    - **1237-1262** Opening it costs a frame, not two seconds
-    - **1263-1279** "Saving level.." says how far along it is
-    - **1280-1294** Deviations from `ie.class`
-  - **1295-1345** 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
-    - **1346-1378** When anything is actually written — and one reversal
-    - **1379-1393** How it is held honest
-    - **1394-1414** What to read on the console
-  - **1415-1481** 0f. Revisited chunks not drawing — a stale `published` flag
-  - **1482-1513** 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
-    - **1514-1534** Why that is a correction rather than a deviation
-    - **1535-1567** What that costs, stated plainly
-    - **1568-1577** Considered and rejected: clamping the camera at the frontier
-    - **1578-1608** And the throughput cap it was hiding: one column per rendered frame
-  - **1609-1615** 0h. The freeze while moving — classification off the render thread, and the queue that went with it
-    - **1616-1635** The mechanism
-    - **1636-1666** Why deferring was said to be impossible, and why it is not
-    - **1667-1695** The ordering traps, all three found by the test that exists for them
-    - **1696-1717** And the queue is gone
-    - **1718-1748** Measured
-    - **1749-1766** The dirty cap follows the free heap
-    - **1767-1782** What holds it
-  - **1783-1803** 0i. Generation stopping, and "Saving level.." never going away
-    - **1804-1843** 1. Nothing bounded what was owed to the card
-    - **1844-1855** 2. A blocking flush could wait for ever
-    - **1856-1863** 3. …and it was waiting for the wrong thing anyway
-    - **1864-1873** 4. A sweep that cannot finish is now visible
-    - **1874-1887** What holds it
-  - **1888-2019** 0j. Packed worlds, per-world settings, and the world options screen
-  - **2020-2071** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
-    - **2072-2094** Modelling the console's card, so this class of bug stops needing hardware
-  - **2095-2113** 0l. A bottom screen per gamemode, and a map on the spectator one
-    - **2114-2145** The map
-    - **2146-2207** What it cost -- **and the hardware number that changed the design**
-  - **2208-2826** 1. Run it on a console
-  - **2827-2893** 2. The M2 gate — **half measured, and the baseline fails**
-    - **2894-2977** Why it is the default before the gate is measured
-  - **2978-3052** Deferred but not forgotten
-  - **3053-3144** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
-  - **3145-3186** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
-    - **3187-3211** The generation wait now covers the whole render distance
-    - **3212-3232** What holds it
-  - **3233-3307** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
-    - **3308-3339** The fluids, and the one thing about them that matters on this console
-    - **3340-3361** Fire, and three tables that are not one table
-    - **3362-3401** Redstone: the power model, the wire and the torch
-    - **3402-3471** What of redstone needs a player, and what turned out not to
-  - **3472-3675** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
-  - **3676-3684** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
-    - **3685-3722** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
-    - **3723-3749** The crash: the tick recursed with no bound, on a 32 KB stack
-    - **3750-3777** The frame drops: three costs, one of them quadratic
-    - **3778-3793** Found while looking: tick edits were silently lost
-    - **3794-3823** The lava: there was no runtime lighting at all
-    - **3824-3839** The flash: "needs remeshing" was encoded as "has no mesh"
-    - **3840-3870** Two follow-ups from the first hardware run, and one of them was mine
-    - **3871-3891** What the retirement rule costs, measured
-    - **3892-3905** What is measured and what is not
-  - **3906-3911** 0r. The map's d-pad — a zoom, and the grids taken off the debug page
-    - **3912-3923** The grids moved because the reasoning that put them on the debug page was half right
-    - **3924-3953** The zoom is four levels, and the range is asymmetric on purpose
-    - **3954-4006** What it costs to draw — **and the 3,283 µs that found a much older bug**
-    - **4007-4015** Where it is checked
-  - **4016-4032** 0s. Creative — a hotbar, a palette that is not an inventory, and flight that collides
-    - **4033-4050** The palette is derived, not curated
-    - **4051-4064** The palette is a separate page from the inventory
-    - **4065-4091** The hotbar is a band on every page, and the bottom screen grew a third one
-    - **4092-4111** A block icon was a flat tile, and "there is no way to do that here" was wrong
-    - **4112-4140** X focuses the bottom screen, and it is not a convenience
-    - **4141-4155** The banner, and the one thing that made it awkward
-    - **4156-4185** The focused stick scrolls the map
-    - **4186-4197** Instant break was already true, and nothing is spent
-    - **4198-4222** Flight is Spectator's mover with `moveEntity` under it
-    - **4223-4235** What is not done
-  - **4236-4242** 4. The item table, the inventory, and five things the first Creative pass got wrong
-    - **4243-4260** The camera was drawn where the body was, not where it is
-    - **4261-4269** Changing gamemode put you in the ground
-    - **4270-4298** The item table, which is what the other four bugs were
-    - **4299-4315** The inventory is real, and it is saved
-    - **4316-4330** Two sheets, and a cube in the slot
-    - **4331-4352** Fire's texture really does say "fire"
-  - **4353-4360** 5. Ten shapes that drew nothing, a slab that drew as a cube, and swimming
-    - **4361-4379** The cube vertex formats cannot express a slab
-    - **4380-4403** Ten emitters, and `renderItemIn3d`
-    - **4404-4421** Measured: +0.9 µs a section, and the two attempts before it
-    - **4422-4436** The placement rules were already written; nobody asked them
-    - **4437-4454** Swimming
-    - **4455-4466** Smaller things from the same list
-    - **4467-4479** What is not done in step 5
-    - **4480-4499** What is not done in step 4
-  - **4500-4504** 6. Holding jump in water, and a slab a1.1.2 will not let you finish
-    - **4505-4534** Holding jump in water jumped instead of swimming up
-    - **4535-4559** "Slabs cannot be placed on the top half of a block" -- and in a1.1.2 they cannot
-    - **4560-4616** A door arrived as half a door, and nothing could be opened
-    - **4617-4632** What is not done in step 6
-  - **4633-4637** 7. Footsteps, breaking, and sixty-four flecks of dirt
-    - **4638-4663** There is no `dig.*` in a1.1.2, and that is the finding
-    - **4664-4682** The positional sound path
-    - **4683-4694** The footstep trigger, and the four ways to get it wrong
-    - **4695-4719** The particles, and a rounding trap that ate them
-    - **4720-4734** What is not done in step 7
-  - **4735-4740** 8. Four things a play session found: a lever that deleted itself, wire that never connected, footsteps from the sky, and a drop button
-    - **4741-4783** The lever deleted itself when flicked, and the placement table put it down switched on
-    - **4784-4800** Redstone wire drew the crossing tile, always, unlit
-    - **4801-4814** The lever's handle was broken at the top, and it was the UVs
-    - **4815-4827** Flying paid out a burst of footsteps over low ground
-    - **4828-4837** A drops one of what is in the hand
-    - **4838-4852** What is not done in step 8
-  - **4853-4857** 9. One flight speed, and something to pick back up
-    - **4858-4871** The held boost went, and A is only the drop now
-    - **4872-4904** `EntityItem`, transcribed
-    - **4905-4926** Picking one up
-    - **4927-4952** Drawing it, and the second texture that needed
-    - **4953-4968** What is not done in step 9
-  - **4969-4977** 10. Six things a play session found: plates, currents, heaps, and fire that stood still
-    - **4978-5012** Pressure plates -- the seam a block behaviour needed and no other has
-    - **5013-5041** The flow field had one reader and needed two
-    - **5042-5064** Fire had one shape and needed three
-    - **5065-5085** ...and it stood still, because the atlas is in VRAM
-    - **5086-5105** Dropped items: heaps, and a clock that only runs while somebody is there
-    - **5106-5113** The palette's page arrows
-    - **5114-5125** What is not done in step 10
-  - **5126-5134** 11. Nine things a play session found, and one of them was two years of Minecraft history
-    - **5135-5158** Ladders: three faults on one block
-    - **5159-5194** Rails: `mk`, the largest block behaviour in the version
-    - **5195-5231** What a block leaves behind, and the table that had to be generated for it
-    - **5232-5253** Sand that falls rather than teleports
-    - **5254-5272** The bottom screen: the two bands changed places
-    - **5273-5291** The inventory: the whole page, and the armour
-    - **5292-5300** The palette offers the whole table now
-    - **5301-5321** Two reports that were a1.1.2 being itself
-    - **5322-5341** A pressure plate that felt unresponsive was a pressure plate with no sound
-    - **5342-5365** What is not done in step 11
-  - **5366-5371** 12. Six things a play session found: a ladder measured from the wrong method, and dropped items drawn from a buffer written twice
-    - **5372-5414** The ladder's selection box was a full cube, and the generator was reading the wrong method
-    - **5415-5433** Many dropped items were invisible, and no icon was missing
-    - **5434-5449** Any armour piece went in any armour slot
-    - **5450-5475** The bucket, which is the first item to go down `Item.onItemRightClick`
-    - **5476-5485** Jump climbs a ladder
-    - **5486-5491** The tab strip's labels sat on the top edge of their buttons
-    - **5492-5521** The other seven, classified
-  - **5522-5527** 13. The compass was a texture, and the entity renderer was already half-built
-    - **5528-5565** The compass is not an item
-    - **5566-5596** The entity renderer, which was mostly already there
-    - **5597-5629** Paintings
-    - **5630-5651** What is left, and what it now needs
-  - **5652-5656** 14. The other four: an arrow, a boat, a minecart and a sign
-    - **5657-5674** `yOffset` is computed in float, and a minecart written with a double simply does not go
-    - **5675-5686** `EntityLiving` has no idea it is riding anything
-    - **5687-5694** A head-on boat does not break
-    - **5695-5737** The four features
-    - **5738-5746** A shared-sheet consequence worth knowing
-  - **5747-5754** 15. The held item, and three things about a screen that is not a 4:3 window
-    - **5755-5785** The class file, in two halves
-    - **5786-5826** The empty hand is the arm, and the skin is a pack file
-    - **5827-5855** Three numbers that are the screen's and not the game's
-    - **5856-5876** And a stereo number, which is the one that wants hardware
-    - **5877-5894** The hand was invisible, and the crosshair is why
-    - **5895-5917** The skin is a pack file, and there is a screen for it
-    - **5918-5937** The narrow body belongs to 1.8, and the build says so
-    - **5938-5955** Coverage
-  - **5956-6037** 16. Nothing could be hit, and one hook was never called
-  - **6038-6071** 17. Arrows hit every collidable entity, and a full item pool stops eating drops
-  - **6072-6141** 18. The entity pools have no cap; the heap decides, and the draw is nearest-first
-    - **6142-6193** The refusal is said on the top screen
-    - **6194-6236** What an entity costs in memory, and what a mob farm will
-  - **6237-6280** 19. A minecart stack overflowed to NaN, and took its rider and the save with it
-  - **6281-6308** 20. "Placed blocks don't face the way I'm looking": furnaces and stairs face their neighbours
-  - **6309-6339** 21. Entity hitboxes were the arrow's, and the outline ignored what the click would hit
-  - **6340-6437** 22. Greedy meshing: a cube atlas to repeat tiles in, and a seam for the rasteriser
-  - **6438-6550** 23. The four peaceful animals: a mob that is a table, a pathfinder with a dead loop, and nothing that is not a1.1.2's
-  - **6551-6651** 24. The entity sounds, and the boot list that was silently swallowing half of them
-  - **6652-6774** 25. The five hostiles: the dead half of the creature AI, an explosion, and a difficulty
-  - **6775-6849** 26. The bug that refused every monster, and the discs the item table could not reach
-  - **6850-6920** 27. Where the monsters actually go, and the chunk order that decided it
-  - **6921-6966** 28. A Creative player is not something a monster hunts
-  - **6967-7070** 29. All twelve particles, and the thousand darts that throw most of them
-  - **7071-7134** 30. Wrong pixels on rails: one staging buffer, two readers
-  - **7135-7253** 31. TNT: the four ways a1.1.2 lights it, and the one entity that was missing
-  - **7254-7310** 32. A burning mob was invisible fire: `doRenderShadowAndFire`'s missing half
-  - **7311-7397** 33. Fire did not burn anything: `moveEntity`'s tail, and a conclusion that was wrong twice
-  - **7398-7469** 34. The cactus: `onEntityCollidedWithBlock` at last, and an item shape read from the wrong table
-  - **7470-7512** 35. Dropped items do not stack on their own, and the version that claim was dated to was wrong
-  - **7513-7577** 36. Three shapes, not two: `setBlockBoundsForItemRender`, and the arrow that was eaten by its archer
-  - **7578-7645** 37. A sword that hit like a fist, and the hoe that was a column short
-  - **7646-7739** 38. The mob spawner: the first tile entity that ticks, and the mob that was in the file all along
-  - **7740-7780** 40. Create World is a screen, not two keyboards
-  - **7781-7868** 39. Extra Settings: one screen that is deliberately not a1.1.2
-- **7869-7872** Open questions
-  - **7873-7913** Answered
-  - **7914-8032** 39. `TileEntities`: the list stops being a blob, and all four tenants land at once
-  - **8033-8053** 40. The map was a photograph: a chunk was sampled once, ever
-    - **8054-8071** A serial off one session-wide counter, read whenever the map next looks
-    - **8072-8094** Two costs the obvious fix would have added, and what stopped them
-    - **8095-8116** What is pinned
-  - **8117-8124** 41. The map may not make the game wait, and the spare core may help it
-    - **8125-8136** What §40 actually cost, and why a fluid was the case that settled it
-    - **8137-8160** One list, filled where the writes already funnel
-    - **8161-8179** A slice of the frame, not a number of chunks
-    - **8180-8209** Core 2, and generation still first
-    - **8210-8231** What is pinned
-  - **8232-8320** 42. Farmland ignored being walked on: `onEntityWalking`, and an override that was missed
-  - **8321-8476** 43. The sky: two flat planes, 780 stars, and a fog colour that was a constant
-  - **8477-8483** 44. Lava was the wrong colour because it was the pack's, not the client's
-    - **8484-8499** The colour is the evidence
-    - **8500-8524** Four class files, and they are not each other
-    - **8525-8533** Six runs a tick, not twelve tiles
-    - **8534-8549** A staging race, found on the way, that this change would have made visible
-    - **8550-8565** What is still unmeasured, and what the next run will say
-  - **8566-8799** 45. The main menu's bottom screen shows what the list is about: skins, a pack scene, a world diorama
-  - **8800-8897** 46. Survival: health on the top screen, a break loop that is not a timer, and four screens made of one slot list
-  - **8898-9019** 47. What the first Survival playthrough found, and what the jar said about each
-  - **9020-9111** 48. The bottom screen is two shapes now, the hotbar's slot is square, and a worn tool says so
-  - **9112-9115** 49. The near plane was three bugs, the spawn lift ran a tick too late, and the death screen outlived its world
-    - **9116-9160** The near plane was three bugs
-    - **9161-9181** Half a heart for being born
-    - **9182-9191** The death screen outlived its world
-  - **9192-9196** 50. The chest: a texture that reads its neighbours, the triple-chest hole, the seed that breaks bedrock, and a screen that scrolls
-    - **9197-9230** The texture: `b.a(Lnm;IIII)I`, which is a branch and not a row
-    - **9231-9249** The triple chest, which is a hole in `World.canBlockBePlacedAt`
-    - **9250-9270** The seed that breaks bedrock: `jn.a(Lev;Ldm;Lcn;IIII)Z`
-    - **9271-9286** The screen scrolls, and that part is ours
-    - **9287-9311** Four things the first look at it on a console found
-    - **9312-9322** What was checked
-  - **9323-9327** 51. Six from play: a port row, two icons that showed the wrong face, the jukebox, and the carts that carried nothing
-    - **9328-9336** The server list: a Port row under Address
-    - **9337-9348** A fence in the hand wore a full plank square
-    - **9349-9363** The furnace icon showed its back, and so did the chest and the pumpkin
-    - **9364-9399** The jukebox: a disc is block metadata, and `.mus` is an Ogg behind one byte
-    - **9400-9424** The special carts: a block to draw, a chest to open, and coal to take
-    - **9425-9435** Create World gained Extra Settings, and the gamemode order changed
-    - **9436-9445** What was run
-  - **9446-9449** 52. DNS, a splash that repeated, a door that was hollow, and the face test that was one line
-    - **9450-9485** DNS did not work, and now the console's own servers are asked directly
-    - **9486-9510** The splash that repeated, and the box a1.1.2 inverts
-    - **9511-9532** The door was hollow, because the detail pass was two-sided
-    - **9533-9560** Glass was a stack of boxes, because `shouldSideBeRendered` was read as a field
-    - **9561-9568** What was run
-  - **9569-9573** 53. Three from the jukebox: a disc that was not spent, a break that voided it, and a record that outlived the world
-    - **9574-9583** A disc went in and stayed in the hand
-    - **9584-9606** Breaking it voided the disc and kept the sound
-    - **9607-9623** The record followed the player to the title screen
-    - **9624-9628** What was run
-  - **9629-9676** 54. Import and Export: a world crosses the room, and the original is only ever read
-    - **9677-9690** What was run
-  - **9691-9726** 55. The Sensitivity row, and a curve that lands exactly on the rate we already had
-    - **9727-9737** What was run
-  - **9738-9771** 56. Two things the bottom screen was not taking: the stick, and the press that closed it
-    - **9772-9783** What was run
-- **9784-9794** Standing constraints
+- **65-122** Environment facts worth not rediscovering
+- **123-176** What exists in the tree
+- **177-283** Decisions that are settled
+  - **284-293** Reversed, and why (keep this — the reasoning matters)
+- **294-571** Measured numbers (do not re-derive)
+- **572-766** Facts recovered from the client jar
+- **767-768** Next steps, in order
+  - **769-787** 0. The chunk worker — built, and the world it makes is the same world
+    - **788-843** The world must not depend on the clock, and making that true was most of the work
+    - **844-904** What is not closed
+  - **905-1003** 0b. The main menu — the game starts from it now
+  - **1004-1094** 0c. Texture packs — the browser, the jar importer, and Dev Art as a pack
+  - **1095-1124** 0d. The pause menu — START stops the world instead of leaving it
+    - **1125-1153** ...except in a session, where stopping is not one console's decision to make
+    - **1154-1199** The pause menu draws into the game's frame, not into one of its own
+    - **1200-1235** The finding: citro3d holds one target per screen output, and a menu takes it
+    - **1236-1261** Opening it costs a frame, not two seconds
+    - **1262-1278** "Saving level.." says how far along it is
+    - **1279-1293** Deviations from `ie.class`
+  - **1294-1344** 0e. Chunk I/O off the render thread — the cache, the I/O thread, and the autosave interval
+    - **1345-1377** When anything is actually written — and one reversal
+    - **1378-1392** How it is held honest
+    - **1393-1413** What to read on the console
+  - **1414-1480** 0f. Revisited chunks not drawing — a stale `published` flag
+  - **1481-1512** 0g. Generation order — nearest-first, and why the FIFO queue was ours rather than Alpha's
+    - **1513-1533** Why that is a correction rather than a deviation
+    - **1534-1566** What that costs, stated plainly
+    - **1567-1576** Considered and rejected: clamping the camera at the frontier
+    - **1577-1607** And the throughput cap it was hiding: one column per rendered frame
+  - **1608-1614** 0h. The freeze while moving — classification off the render thread, and the queue that went with it
+    - **1615-1634** The mechanism
+    - **1635-1665** Why deferring was said to be impossible, and why it is not
+    - **1666-1694** The ordering traps, all three found by the test that exists for them
+    - **1695-1716** And the queue is gone
+    - **1717-1747** Measured
+    - **1748-1765** The dirty cap follows the free heap
+    - **1766-1781** What holds it
+  - **1782-1802** 0i. Generation stopping, and "Saving level.." never going away
+    - **1803-1842** 1. Nothing bounded what was owed to the card
+    - **1843-1854** 2. A blocking flush could wait for ever
+    - **1855-1862** 3. …and it was waiting for the wrong thing anyway
+    - **1863-1872** 4. A sweep that cannot finish is now visible
+    - **1873-1886** What holds it
+  - **1887-2018** 0j. Packed worlds, per-world settings, and the world options screen
+  - **2019-2070** 0k. The wall at the edge of an imported world — a pass that ran and was never recorded
+    - **2071-2093** Modelling the console's card, so this class of bug stops needing hardware
+  - **2094-2112** 0l. A bottom screen per gamemode, and a map on the spectator one
+    - **2113-2144** The map
+    - **2145-2206** What it cost -- **and the hardware number that changed the design**
+  - **2207-2828** 1. Run it on a console
+  - **2829-2895** 2. The M2 gate — **half measured, and the baseline fails**
+    - **2896-2979** Why it is the default before the gate is measured
+  - **2980-3054** Deferred but not forgotten
+  - **3055-3146** 0m. Four hardware symptoms, two faults — the generator's live set, and the map's budget
+  - **3147-3188** 0n. The two waits a player sits through — a bar, and a square of chunks arriving
+    - **3189-3213** The generation wait now covers the whole render distance
+    - **3214-3234** What holds it
+  - **3235-3309** 0o. The world tick -- the clock, the update list, and fifteen blocks that do something
+    - **3310-3341** The fluids, and the one thing about them that matters on this console
+    - **3342-3363** Fire, and three tables that are not one table
+    - **3364-3403** Redstone: the power model, the wire and the torch
+    - **3404-3473** What of redstone needs a player, and what turned out not to
+  - **3474-3677** 0p. Audio -- the music timer, a decoder and a DSP that may not be there
+  - **3678-3686** 0q. Four hardware symptoms after the tick landed, and the three faults underneath them
+    - **3687-3724** The stretched polygons, and probably the crash and the freeze: the pool wrote over memory the GPU was reading
+    - **3725-3751** The crash: the tick recursed with no bound, on a 32 KB stack
+    - **3752-3779** The frame drops: three costs, one of them quadratic
+    - **3780-3795** Found while looking: tick edits were silently lost
+    - **3796-3825** The lava: there was no runtime lighting at all
+    - **3826-3841** The flash: "needs remeshing" was encoded as "has no mesh"
+    - **3842-3872** Two follow-ups from the first hardware run, and one of them was mine
+    - **3873-3893** What the retirement rule costs, measured
+    - **3894-3907** What is measured and what is not
+  - **3908-3913** 0r. The map's d-pad — a zoom, and the grids taken off the debug page
+    - **3914-3925** The grids moved because the reasoning that put them on the debug page was half right
+    - **3926-3955** The zoom is four levels, and the range is asymmetric on purpose
+    - **3956-4008** What it costs to draw — **and the 3,283 µs that found a much older bug**
+    - **4009-4017** Where it is checked
+  - **4018-4034** 0s. Creative — a hotbar, a palette that is not an inventory, and flight that collides
+    - **4035-4052** The palette is derived, not curated
+    - **4053-4066** The palette is a separate page from the inventory
+    - **4067-4093** The hotbar is a band on every page, and the bottom screen grew a third one
+    - **4094-4113** A block icon was a flat tile, and "there is no way to do that here" was wrong
+    - **4114-4142** X focuses the bottom screen, and it is not a convenience
+    - **4143-4157** The banner, and the one thing that made it awkward
+    - **4158-4187** The focused stick scrolls the map
+    - **4188-4199** Instant break was already true, and nothing is spent
+    - **4200-4224** Flight is Spectator's mover with `moveEntity` under it
+    - **4225-4237** What is not done
+  - **4238-4244** 4. The item table, the inventory, and five things the first Creative pass got wrong
+    - **4245-4262** The camera was drawn where the body was, not where it is
+    - **4263-4271** Changing gamemode put you in the ground
+    - **4272-4300** The item table, which is what the other four bugs were
+    - **4301-4317** The inventory is real, and it is saved
+    - **4318-4332** Two sheets, and a cube in the slot
+    - **4333-4354** Fire's texture really does say "fire"
+  - **4355-4362** 5. Ten shapes that drew nothing, a slab that drew as a cube, and swimming
+    - **4363-4381** The cube vertex formats cannot express a slab
+    - **4382-4405** Ten emitters, and `renderItemIn3d`
+    - **4406-4423** Measured: +0.9 µs a section, and the two attempts before it
+    - **4424-4438** The placement rules were already written; nobody asked them
+    - **4439-4456** Swimming
+    - **4457-4468** Smaller things from the same list
+    - **4469-4481** What is not done in step 5
+    - **4482-4501** What is not done in step 4
+  - **4502-4506** 6. Holding jump in water, and a slab a1.1.2 will not let you finish
+    - **4507-4536** Holding jump in water jumped instead of swimming up
+    - **4537-4561** "Slabs cannot be placed on the top half of a block" -- and in a1.1.2 they cannot
+    - **4562-4618** A door arrived as half a door, and nothing could be opened
+    - **4619-4634** What is not done in step 6
+  - **4635-4639** 7. Footsteps, breaking, and sixty-four flecks of dirt
+    - **4640-4665** There is no `dig.*` in a1.1.2, and that is the finding
+    - **4666-4684** The positional sound path
+    - **4685-4696** The footstep trigger, and the four ways to get it wrong
+    - **4697-4721** The particles, and a rounding trap that ate them
+    - **4722-4736** What is not done in step 7
+  - **4737-4742** 8. Four things a play session found: a lever that deleted itself, wire that never connected, footsteps from the sky, and a drop button
+    - **4743-4785** The lever deleted itself when flicked, and the placement table put it down switched on
+    - **4786-4802** Redstone wire drew the crossing tile, always, unlit
+    - **4803-4816** The lever's handle was broken at the top, and it was the UVs
+    - **4817-4829** Flying paid out a burst of footsteps over low ground
+    - **4830-4839** A drops one of what is in the hand
+    - **4840-4854** What is not done in step 8
+  - **4855-4859** 9. One flight speed, and something to pick back up
+    - **4860-4873** The held boost went, and A is only the drop now
+    - **4874-4906** `EntityItem`, transcribed
+    - **4907-4928** Picking one up
+    - **4929-4954** Drawing it, and the second texture that needed
+    - **4955-4970** What is not done in step 9
+  - **4971-4979** 10. Six things a play session found: plates, currents, heaps, and fire that stood still
+    - **4980-5014** Pressure plates -- the seam a block behaviour needed and no other has
+    - **5015-5043** The flow field had one reader and needed two
+    - **5044-5066** Fire had one shape and needed three
+    - **5067-5087** ...and it stood still, because the atlas is in VRAM
+    - **5088-5107** Dropped items: heaps, and a clock that only runs while somebody is there
+    - **5108-5115** The palette's page arrows
+    - **5116-5127** What is not done in step 10
+  - **5128-5136** 11. Nine things a play session found, and one of them was two years of Minecraft history
+    - **5137-5160** Ladders: three faults on one block
+    - **5161-5196** Rails: `mk`, the largest block behaviour in the version
+    - **5197-5233** What a block leaves behind, and the table that had to be generated for it
+    - **5234-5255** Sand that falls rather than teleports
+    - **5256-5274** The bottom screen: the two bands changed places
+    - **5275-5293** The inventory: the whole page, and the armour
+    - **5294-5302** The palette offers the whole table now
+    - **5303-5323** Two reports that were a1.1.2 being itself
+    - **5324-5343** A pressure plate that felt unresponsive was a pressure plate with no sound
+    - **5344-5367** What is not done in step 11
+  - **5368-5373** 12. Six things a play session found: a ladder measured from the wrong method, and dropped items drawn from a buffer written twice
+    - **5374-5416** The ladder's selection box was a full cube, and the generator was reading the wrong method
+    - **5417-5435** Many dropped items were invisible, and no icon was missing
+    - **5436-5451** Any armour piece went in any armour slot
+    - **5452-5477** The bucket, which is the first item to go down `Item.onItemRightClick`
+    - **5478-5487** Jump climbs a ladder
+    - **5488-5493** The tab strip's labels sat on the top edge of their buttons
+    - **5494-5523** The other seven, classified
+  - **5524-5529** 13. The compass was a texture, and the entity renderer was already half-built
+    - **5530-5567** The compass is not an item
+    - **5568-5598** The entity renderer, which was mostly already there
+    - **5599-5631** Paintings
+    - **5632-5653** What is left, and what it now needs
+  - **5654-5658** 14. The other four: an arrow, a boat, a minecart and a sign
+    - **5659-5676** `yOffset` is computed in float, and a minecart written with a double simply does not go
+    - **5677-5688** `EntityLiving` has no idea it is riding anything
+    - **5689-5696** A head-on boat does not break
+    - **5697-5739** The four features
+    - **5740-5748** A shared-sheet consequence worth knowing
+  - **5749-5756** 15. The held item, and three things about a screen that is not a 4:3 window
+    - **5757-5787** The class file, in two halves
+    - **5788-5828** The empty hand is the arm, and the skin is a pack file
+    - **5829-5857** Three numbers that are the screen's and not the game's
+    - **5858-5878** And a stereo number, which is the one that wants hardware
+    - **5879-5896** The hand was invisible, and the crosshair is why
+    - **5897-5919** The skin is a pack file, and there is a screen for it
+    - **5920-5939** The narrow body belongs to 1.8, and the build says so
+    - **5940-5957** Coverage
+  - **5958-6039** 16. Nothing could be hit, and one hook was never called
+  - **6040-6073** 17. Arrows hit every collidable entity, and a full item pool stops eating drops
+  - **6074-6143** 18. The entity pools have no cap; the heap decides, and the draw is nearest-first
+    - **6144-6195** The refusal is said on the top screen
+    - **6196-6238** What an entity costs in memory, and what a mob farm will
+  - **6239-6282** 19. A minecart stack overflowed to NaN, and took its rider and the save with it
+  - **6283-6310** 20. "Placed blocks don't face the way I'm looking": furnaces and stairs face their neighbours
+  - **6311-6341** 21. Entity hitboxes were the arrow's, and the outline ignored what the click would hit
+  - **6342-6439** 22. Greedy meshing: a cube atlas to repeat tiles in, and a seam for the rasteriser
+  - **6440-6552** 23. The four peaceful animals: a mob that is a table, a pathfinder with a dead loop, and nothing that is not a1.1.2's
+  - **6553-6653** 24. The entity sounds, and the boot list that was silently swallowing half of them
+  - **6654-6776** 25. The five hostiles: the dead half of the creature AI, an explosion, and a difficulty
+  - **6777-6851** 26. The bug that refused every monster, and the discs the item table could not reach
+  - **6852-6922** 27. Where the monsters actually go, and the chunk order that decided it
+  - **6923-6968** 28. A Creative player is not something a monster hunts
+  - **6969-7072** 29. All twelve particles, and the thousand darts that throw most of them
+  - **7073-7136** 30. Wrong pixels on rails: one staging buffer, two readers
+  - **7137-7255** 31. TNT: the four ways a1.1.2 lights it, and the one entity that was missing
+  - **7256-7312** 32. A burning mob was invisible fire: `doRenderShadowAndFire`'s missing half
+  - **7313-7399** 33. Fire did not burn anything: `moveEntity`'s tail, and a conclusion that was wrong twice
+  - **7400-7471** 34. The cactus: `onEntityCollidedWithBlock` at last, and an item shape read from the wrong table
+  - **7472-7514** 35. Dropped items do not stack on their own, and the version that claim was dated to was wrong
+  - **7515-7579** 36. Three shapes, not two: `setBlockBoundsForItemRender`, and the arrow that was eaten by its archer
+  - **7580-7647** 37. A sword that hit like a fist, and the hoe that was a column short
+  - **7648-7741** 38. The mob spawner: the first tile entity that ticks, and the mob that was in the file all along
+  - **7742-7782** 40. Create World is a screen, not two keyboards
+  - **7783-7870** 39. Extra Settings: one screen that is deliberately not a1.1.2
+- **7871-7874** Open questions
+  - **7875-7915** Answered
+  - **7916-8034** 39. `TileEntities`: the list stops being a blob, and all four tenants land at once
+  - **8035-8055** 40. The map was a photograph: a chunk was sampled once, ever
+    - **8056-8073** A serial off one session-wide counter, read whenever the map next looks
+    - **8074-8096** Two costs the obvious fix would have added, and what stopped them
+    - **8097-8118** What is pinned
+  - **8119-8126** 41. The map may not make the game wait, and the spare core may help it
+    - **8127-8138** What §40 actually cost, and why a fluid was the case that settled it
+    - **8139-8162** One list, filled where the writes already funnel
+    - **8163-8181** A slice of the frame, not a number of chunks
+    - **8182-8211** Core 2, and generation still first
+    - **8212-8233** What is pinned
+  - **8234-8322** 42. Farmland ignored being walked on: `onEntityWalking`, and an override that was missed
+  - **8323-8478** 43. The sky: two flat planes, 780 stars, and a fog colour that was a constant
+  - **8479-8485** 44. Lava was the wrong colour because it was the pack's, not the client's
+    - **8486-8501** The colour is the evidence
+    - **8502-8526** Four class files, and they are not each other
+    - **8527-8535** Six runs a tick, not twelve tiles
+    - **8536-8551** A staging race, found on the way, that this change would have made visible
+    - **8552-8567** What is still unmeasured, and what the next run will say
+  - **8568-8801** 45. The main menu's bottom screen shows what the list is about: skins, a pack scene, a world diorama
+  - **8802-8899** 46. Survival: health on the top screen, a break loop that is not a timer, and four screens made of one slot list
+  - **8900-9021** 47. What the first Survival playthrough found, and what the jar said about each
+  - **9022-9113** 48. The bottom screen is two shapes now, the hotbar's slot is square, and a worn tool says so
+  - **9114-9117** 49. The near plane was three bugs, the spawn lift ran a tick too late, and the death screen outlived its world
+    - **9118-9162** The near plane was three bugs
+    - **9163-9183** Half a heart for being born
+    - **9184-9193** The death screen outlived its world
+  - **9194-9198** 50. The chest: a texture that reads its neighbours, the triple-chest hole, the seed that breaks bedrock, and a screen that scrolls
+    - **9199-9232** The texture: `b.a(Lnm;IIII)I`, which is a branch and not a row
+    - **9233-9251** The triple chest, which is a hole in `World.canBlockBePlacedAt`
+    - **9252-9272** The seed that breaks bedrock: `jn.a(Lev;Ldm;Lcn;IIII)Z`
+    - **9273-9288** The screen scrolls, and that part is ours
+    - **9289-9313** Four things the first look at it on a console found
+    - **9314-9324** What was checked
+  - **9325-9329** 51. Six from play: a port row, two icons that showed the wrong face, the jukebox, and the carts that carried nothing
+    - **9330-9338** The server list: a Port row under Address
+    - **9339-9350** A fence in the hand wore a full plank square
+    - **9351-9365** The furnace icon showed its back, and so did the chest and the pumpkin
+    - **9366-9401** The jukebox: a disc is block metadata, and `.mus` is an Ogg behind one byte
+    - **9402-9426** The special carts: a block to draw, a chest to open, and coal to take
+    - **9427-9437** Create World gained Extra Settings, and the gamemode order changed
+    - **9438-9447** What was run
+  - **9448-9451** 52. DNS, a splash that repeated, a door that was hollow, and the face test that was one line
+    - **9452-9487** DNS did not work, and now the console's own servers are asked directly
+    - **9488-9512** The splash that repeated, and the box a1.1.2 inverts
+    - **9513-9534** The door was hollow, because the detail pass was two-sided
+    - **9535-9562** Glass was a stack of boxes, because `shouldSideBeRendered` was read as a field
+    - **9563-9570** What was run
+  - **9571-9575** 53. Three from the jukebox: a disc that was not spent, a break that voided it, and a record that outlived the world
+    - **9576-9585** A disc went in and stayed in the hand
+    - **9586-9608** Breaking it voided the disc and kept the sound
+    - **9609-9625** The record followed the player to the title screen
+    - **9626-9630** What was run
+  - **9631-9678** 54. Import and Export: a world crosses the room, and the original is only ever read
+    - **9679-9692** What was run
+  - **9693-9728** 55. The Sensitivity row, and a curve that lands exactly on the rate we already had
+    - **9729-9739** What was run
+  - **9740-9773** 56. Two things the bottom screen was not taking: the stick, and the press that closed it
+    - **9774-9785** What was run
+  - **9786-9839** 57. A Controls row, because the port was written for a console with two sticks
+    - **9840-9852** What was run
+- **9853-9863** Standing constraints
 
 ## `docs/task-map.md`
 
-82 lines, ~7,107 tokens.
+83 lines, ~7,316 tokens.
 
-- **68-82** Bounded discovery
+- **69-83** Bounded discovery
 
 ## `docs/tick-a1.1.2.md`
 
@@ -740,16 +744,16 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/toolchain-setup.md`
 
-143 lines, ~1,452 tokens.
+170 lines, ~1,887 tokens.
 
 - **3-34** devkitPro — installed
-- **35-49** makerom and bannertool — NOT in devkitPro
-- **50-59** Portlibs we rely on
-- **60-68** Host build
-- **69-87** Building
-- **88-120** Packaging: the RSF file
-- **121-132** Running
-- **133-143** Debugging
+- **35-64** makerom and bannertool — NOT in devkitPro
+- **65-74** Portlibs we rely on
+- **75-83** Host build
+- **84-102** Building
+- **103-147** Packaging: the RSF file
+- **148-159** Running
+- **160-170** Debugging
 
 ## `docs/working-guide.md`
 

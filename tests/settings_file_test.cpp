@@ -8,6 +8,7 @@
 #include <string>
 
 using namespace mc;
+using settings::ControlScheme;
 using settings::GameSettings;
 
 namespace {
@@ -56,12 +57,18 @@ TEST(settings_round_trip)
     written.texturePack = "minecraft-a1.1.2_01-client.zip";
     written.skin = "file:Steve.png";
     written.lookSensitivity = 135;
+    written.controlScheme = ControlScheme::Old3DSAlt;
     CHECK(settings::saveSettings(fs, path.c_str(), written));
 
     GameSettings read;
     CHECK(settings::loadSettings(fs, path.c_str(), &read));
     CHECK_EQ(read.renderDistance, 10);
     CHECK_EQ(read.lookSensitivity, 135);
+    // The Controls row is a word in the file rather than a number, so the round
+    // trip is through `controlSchemeToken` -- and a file that was written by
+    // this build has been asked, which is what the flag says.
+    CHECK(read.controlSchemeChosen);
+    CHECK(read.controlScheme == ControlScheme::Old3DSAlt);
     CHECK_EQ(read.texturePack, written.texturePack);
     // The skin key carries a prefix and a colon, which is the one value in this
     // file that is not a bare name or a number -- and `key=value` splits on the
@@ -106,6 +113,39 @@ TEST(a_settings_file_from_before_the_sensitivity_row_says_so_rather_than_reading
     CHECK_EQ(read.renderDistance, 8);
     // Not 0, which is a real setting on this row -- it is `*yawn*`.
     CHECK_EQ(read.lookSensitivity, -1);
+}
+
+// The same question for the Controls row, which cannot answer it with a
+// sentinel value: every scheme is a real answer, so "nobody has been asked" is
+// a flag of its own and the menu is what fills the row in -- with the console
+// model, which this file cannot see.
+TEST(a_settings_file_from_before_the_controls_row_says_it_has_no_scheme)
+{
+    TempDir dir;
+    io::PosixFileSystem fs;
+    const std::string path = dir.at("3ds.ini");
+
+    writeText(fs, path, "render_distance=8\nlook_sensitivity=100\n");
+
+    GameSettings read;
+    CHECK(settings::loadSettings(fs, path.c_str(), &read));
+    CHECK(!read.controlSchemeChosen);
+}
+
+// And a card edited on a PC to a word this build has never heard of. The flag
+// stays false, so the menu fills the row in rather than the file quietly
+// meaning a scheme it did not name.
+TEST(an_unknown_controls_word_in_the_file_is_not_a_chosen_scheme)
+{
+    TempDir dir;
+    io::PosixFileSystem fs;
+    const std::string path = dir.at("3ds.ini");
+
+    writeText(fs, path, "controls=wii-u\n");
+
+    GameSettings read;
+    CHECK(settings::loadSettings(fs, path.c_str(), &read));
+    CHECK(!read.controlSchemeChosen);
 }
 
 // The first boot on a console that has never run this. Not an error, and the

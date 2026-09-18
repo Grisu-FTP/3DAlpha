@@ -64,6 +64,13 @@ struct GameSettings {
     int musicVolume = -1;
     int soundVolume = -1;
 
+    // How fast the view turns, as the percentage a1.1.2's own slider prints:
+    // 0..200, and 100 is the rate this port had before the row existed. -1 is
+    // "not chosen yet", the convention `autosaveSeconds` already uses, and
+    // becomes `kDefaultSensitivity`. See core/settings/sensitivity.hpp for the
+    // curve and for why 100% is exactly unity.
+    int lookSensitivity = -1;
+
     // **Which player skin the arm of an empty hand is drawn with**, as
     // `SkinEntry::key`: empty for Default -- the active pack's `char.png`, or
     // the black silhouette when it has none -- `pack:<name>` for another pack's

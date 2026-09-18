@@ -153,8 +153,16 @@ enum class EntitySkin : u8 {
     // cheaper than a second page size for the sheet's arithmetic to carry.
     Sun,
     Moon,
+    // **The same `char.png`, kept where the player's own choice cannot reach
+    // it.** A player who picks a skin picks it for themselves: `applyPlayerSkin`
+    // writes the `Player` page and only that one, so the other people on a
+    // server would otherwise all be wearing this console's chosen skin. This
+    // page is filled from the pack like every other and is never overwritten,
+    // so they wear the pack's own character instead. See
+    // core/render/remote_player_mesh.hpp.
+    OtherPlayer,
 };
-inline constexpr int kEntitySkinCount = 19;
+inline constexpr int kEntitySkinCount = 20;
 
 // The sun and the moon are square and 32 texels, where every other page is
 // 64 x 32. core/render/sky.cpp reads this to build their UVs.

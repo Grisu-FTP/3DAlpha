@@ -51,6 +51,13 @@ struct TickAccess {
     // neighbours; the streamer marks the column dirty so the autosave writes
     // it. Called once per changed block, after the write.
     void (*changed)(void* ctx, i32 x, int y, i32 z) = nullptr;
+
+    // Called just *before* a cell's block or metadata changes, with what it
+    // held. Null in single player. A multiplayer world is `gs`, whose write
+    // overrides record exactly this so an edit the server never confirms can be
+    // put back -- see core/net/pending_edits.hpp.
+    void (*beforeWrite)(void* ctx, i32 x, int y, i32 z, block::BlockId oldBlock,
+                        u8 oldData) = nullptr;
 };
 
 // The six faces, in the order `cn.g(IIII)V` notifies them. The order is
@@ -439,6 +446,29 @@ public:
         }
     }
 
+    // **`cn.a(Ljava/lang/String;III)V` -- World.playRecord**, which is the one
+    // sound in a1.1.2 that is not fire-and-forget: it is a streaming source
+    // that keeps playing until the disc is taken out, so it needs a stop as
+    // well as a start and cannot go through `playSoundAt`.
+    //
+    // `track` is `ItemDef::record` -- "13", "cat" -- and **null means stop**,
+    // which is the original's own signal: `cv.e` ejects a disc with
+    // `world.playRecord(null, i, j, k)` before it clears the metadata, and
+    // `of.a` reads a null name as "stop the streaming source and start
+    // nothing". The string is a table entry and outlives the call.
+    using RecordSink = void (*)(void* ctx, const char* track, i32 x, int y, i32 z);
+    void setRecordSink(RecordSink sink, void* ctx)
+    {
+        recordSink_ = sink;
+        recordSinkCtx_ = ctx;
+    }
+    void playRecord(const char* track, i32 x, int y, i32 z) const
+    {
+        if (recordSink_ != nullptr) {
+            recordSink_(recordSinkCtx_, track, x, y, z);
+        }
+    }
+
     // **A whole stack thrown with its own motion** -- `new EntityItem(...)` with
     // the stack's damage and a velocity the caller chose, which is how a broken
     // chest spills. `spawnItem` above is the block-drop constructor and cannot
@@ -702,6 +732,8 @@ private:
     void* columnModifiedSinkCtx_ = nullptr;
     ContainerSink containerSink_ = nullptr;
     void* containerSinkCtx_ = nullptr;
+    RecordSink recordSink_ = nullptr;
+    void* recordSinkCtx_ = nullptr;
     StackSink stackSink_ = nullptr;
     void* stackSinkCtx_ = nullptr;
 

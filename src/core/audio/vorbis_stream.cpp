@@ -21,6 +21,65 @@ bool vorbisAvailable()
 #endif
 }
 
+namespace {
+
+// The two constants out of `hk.read(byte[], int, int)`, as `u32` so the
+// multiply wraps rather than being undefined. See the header.
+constexpr u32 kMusMultiplier = 498729871u;
+constexpr u32 kMusAddend = 85731u;
+
+// The part of a path after the last separator -- `url.getPath()` then
+// `substring(lastIndexOf("/") + 1)`. The extension stays on: `hk` hashes
+// "13.mus", not "13".
+std::string_view fileNameOf(std::string_view path)
+{
+    const usize slash = path.find_last_of("/\\");
+    return slash == std::string_view::npos ? path : path.substr(slash + 1);
+}
+
+}  // namespace
+
+bool VorbisStream::isMus(std::string_view path)
+{
+    const std::string_view name = fileNameOf(path);
+    if (name.size() < 4) {
+        return false;
+    }
+    const std::string_view tail = name.substr(name.size() - 4);
+    return (tail[0] == '.') && (tail[1] == 'm' || tail[1] == 'M')
+           && (tail[2] == 'u' || tail[2] == 'U') && (tail[3] == 's' || tail[3] == 'S');
+}
+
+i32 musKey(std::string_view fileName)
+{
+    // `String.hashCode()` over UTF-16 units. Every name a resources folder
+    // holds is ASCII, where a UTF-8 byte and a UTF-16 unit are the same number;
+    // a name that is not would hash differently in Java, and there is no such
+    // file to be faithful to.
+    u32 hash = 0;
+    for (const char c : fileNameOf(fileName)) {
+        hash = hash * 31u + u32(u8(c));
+    }
+    return i32(hash);
+}
+
+void musDecode(u8* bytes, usize count, i32* key)
+{
+    u32 state = u32(*key);
+    for (usize i = 0; i < count; ++i) {
+        // `buf[i] ^= (byte)(key >> 8)` -- the low eight bits of an *arithmetic*
+        // shift, which for a XOR of one byte is the same either way.
+        const u8 plain = u8(bytes[i] ^ u8(state >> 8));
+        bytes[i] = plain;
+        // `key = key * 498729871 + 85731 * b`, and `b` is the decoded byte
+        // **sign-extended**: `i2b` leaves a signed byte on the stack and the
+        // multiply is an int one. Widening it as unsigned is a different
+        // keystream from the second byte over 0x7F onwards.
+        state = state * kMusMultiplier + kMusAddend * u32(i32(i8(plain)));
+    }
+    *key = i32(state);
+}
+
 #if MC_HAVE_VORBIS
 
 struct VorbisStream::Impl {
@@ -70,6 +129,23 @@ std::unique_ptr<VorbisStream> VorbisStream::create(io::FileSystem& fs, std::stri
     return stream;
 }
 
+std::unique_ptr<VorbisStream> VorbisStream::createMus(io::FileSystem& fs, std::string path)
+{
+    std::unique_ptr<VorbisStream> stream = create(fs, std::move(path));
+    if (stream) {
+        stream->mus_ = true;
+        stream->musKeySeed_ = musKey(stream->path_);
+        stream->musKey_ = stream->musKeySeed_;
+    }
+    return stream;
+}
+
+std::unique_ptr<VorbisStream> VorbisStream::open(io::FileSystem& fs, std::string path)
+{
+    const bool cipher = isMus(path);
+    return cipher ? createMus(fs, std::move(path)) : create(fs, std::move(path));
+}
+
 bool VorbisStream::prepare()
 {
     if (impl_ && impl_->open) {
@@ -94,11 +170,18 @@ bool VorbisStream::prepare()
     position_ = 0;
     impl_.reset(new Impl());
 
+    musKey_ = musKeySeed_;
+
     ov_callbacks callbacks{};
     callbacks.read_func = &readFunc;
-    callbacks.seek_func = &seekFunc;
+    // **A `.mus` is unseekable and says so.** Its keystream advances on the
+    // plaintext, so byte n cannot be deciphered without every byte before it;
+    // handing Vorbis a seek it could use would let it jump and read noise.
+    // Vorbisfile treats a null `seek_func` as "this is a pipe" and decodes
+    // forward only, which is how paulscode played these in the first place.
+    callbacks.seek_func = mus_ ? nullptr : &seekFunc;
     callbacks.close_func = &closeFunc;
-    callbacks.tell_func = &tellFunc;
+    callbacks.tell_func = mus_ ? nullptr : &tellFunc;
 
     if (ov_open_callbacks(this, &impl_->vf, nullptr, 0, callbacks) < 0) {
         return false;
@@ -192,12 +275,23 @@ usize VorbisStream::callbackRead(void* ptr, usize size, usize nmemb)
     if (!file_->readAt(position_, ByteSpan(static_cast<u8*>(ptr), wanted))) {
         return 0;
     }
+    if (mus_) {
+        // Forward-only, and the state carries across calls: the stream is
+        // opened unseekable precisely so that this is always the next block.
+        musDecode(static_cast<u8*>(ptr), wanted, &musKey_);
+    }
     position_ += wanted;
     return wanted / size;
 }
 
 int VorbisStream::callbackSeek(i64 offset, int whence)
 {
+    if (mus_) {
+        // Never reached -- `prepare` hands Vorbis a null seek for a `.mus` --
+        // but a seek that silently succeeded here would decipher the rest of
+        // the file against the wrong keystream, so it refuses out loud.
+        return -1;
+    }
     i64 target = 0;
     switch (whence) {
         case 0: target = offset; break;                       // SEEK_SET

@@ -447,14 +447,16 @@ struct Bow {
     entity::ArrowSystem* arrows = nullptr;
     tick::TickWorld* world = nullptr;
     int shots = 0;
+    u32 lastShooter = 0;
 
     static void shoot(void* ctx, double x, double y, double z, double dx, double dy, double dz,
-                      float velocity, float inaccuracy)
+                      float velocity, float inaccuracy, u32 shooterMob)
     {
         Bow& self = *static_cast<Bow*>(ctx);
         ++self.shots;
+        self.lastShooter = shooterMob;
         self.arrows->shootFrom(*self.world, x, y, z, dx, dy, dz, velocity, inaccuracy,
-                               entity::ArrowShooter::Skeleton);
+                               entity::ArrowShooter::Skeleton, shooterMob);
     }
 };
 
@@ -528,6 +530,91 @@ TEST(a_skeletons_arrow_does_not_shoot_the_skeleton_that_fired_it)
     CHECK(bow.shots >= 1);
     CHECK(cave.mobs.count() > skeleton);
     CHECK_EQ(int(cave.mobs[skeleton].health), health);
+}
+
+TEST(a_skeleton_that_moved_since_it_fired_still_does_not_shoot_itself)
+{
+    // The exclusion used to be a footprint test -- is a mob still standing over
+    // the place the shot was recorded at -- which is only ever an approximation
+    // of `kg.e_()`'s `entity != shootingEntity`. It holds while the shooter
+    // stays inside its own 0.6-wide box, and stops holding the moment anything
+    // moves it further than its own half-width in one tick: knockback from a
+    // punch, a shove from the mob beside it, or being pushed out of a block.
+    // The arrow is still inside the box it was born in on its first tick, so a
+    // missed exclusion spends it on its own archer at a distance of zero.
+    //
+    // `Mob::handle` is an identity rather than a place, so how far the shooter
+    // has got since no longer enters into it.
+    Cave cave;
+    entity::ArrowSystem arrows{31337};
+
+    const int skeleton = cave.add(MobType::Skeleton, 0.5, 0.5);
+    CHECK(skeleton >= 0);
+    const int health = cave.mobs[skeleton].health;
+    const u32 handle = cave.mobs.handleAt(skeleton);
+    CHECK(handle != 0);
+
+    const double x = cave.mobs[skeleton].body.x;
+    const double y = cave.mobs[skeleton].body.y;
+    const double z = cave.mobs[skeleton].body.z;
+
+    // Loosed from inside its own box, 1.3 up and heading straight up, so it
+    // stays inside for the whole of the tick below.
+    CHECK(arrows.shootFrom(cave.w(), x, y + 1.3, z, 0.0, 1.0, 0.0, 0.6f, 0.0f,
+                           entity::ArrowShooter::Skeleton, handle));
+
+    // **Four tenths of a block, against a half-width of three.** Far enough
+    // that `(x, z)` is no longer under the skeleton -- its box is now
+    // `[x + 0.1, x + 0.7]` -- and near enough that the arrow, grown by the
+    // sweep's 0.3, still overlaps it. That is exactly the gap the footprint
+    // test fell through.
+    cave.mobs.at(skeleton).body.setFeet(x + 0.4, y, z);
+
+    entity::ArrowTargets hits;
+    hits.mobs = &cave.mobs;
+    arrows.tick(cave.w(), hits);
+
+    CHECK_EQ(int(cave.mobs[skeleton].health), health);
+    // And the arrow is still in the air rather than spent on it.
+    CHECK_EQ(arrows.count(), 1);
+}
+
+TEST(a_spiders_eyes_are_their_own_blended_pass_and_not_in_the_solid_one)
+{
+    // `ok.a(ax, int)` draws the eye page as a *pass*: blended at
+    // `(1 - getBrightness(1.0F)) * 0.5F` with the alpha test off. It used to be
+    // one more box in the solid run, which is an alpha cut -- the eyes came out
+    // fully opaque at every light level, twice as bright as the jar ever draws
+    // them and still there in daylight, where the jar's have faded to nothing.
+    //
+    // The split is what this checks. Whether the *alpha* is right is the
+    // combiner's business and wants a console; that the geometry reaches the
+    // pass which can apply it is checkable here.
+    Cave cave;
+    const int spider = cave.add(MobType::Spider, 0.5, 0.5);
+    CHECK(spider >= 0);
+    cave.mobs.at(spider).body.snapRenderPosition();
+
+    static std::vector<mesh::DetailVertex> solid(render::kMobMaxVertices);
+    static std::vector<mesh::DetailVertex> eyes(render::kMobEyeMaxVertices);
+
+    const int solidWritten = render::buildMobs(cave.mobs, 0.0, Cave::kGround, 0.0, 1.0f,
+                                               solid.data(), render::kMobMaxVertices);
+    const int eyeWritten = render::buildMobEyes(cave.mobs, 0.0, Cave::kGround, 0.0, 1.0f,
+                                                eyes.data(), render::kMobEyeMaxVertices);
+
+    // `jy` is eleven boxes and the eye overlay is the twelfth: the solid run
+    // takes the eleven and the eye run the one.
+    CHECK_EQ(eyeWritten, render::kBoxVertices);
+    CHECK_EQ(solidWritten, 11 * render::kBoxVertices);
+
+    // Nothing but a spider may land in that buffer, which is the other half of
+    // the predicate.
+    Cave pasture;
+    CHECK(pasture.add(MobType::Creeper, 0.5, 0.5) >= 0);
+    CHECK_EQ(render::buildMobEyes(pasture.mobs, 0.0, Cave::kGround, 0.0, 1.0f, eyes.data(),
+                                  render::kMobEyeMaxVertices),
+             0);
 }
 
 TEST(a_creeper_killed_by_a_skeleton_leaves_a_record)

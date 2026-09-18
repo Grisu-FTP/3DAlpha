@@ -164,6 +164,55 @@ public:
 
     void stopMusic();
 
+    // `of.a(String, FFFFF)` -- **playStreaming**, which is what a jukebox does
+    // and the one sound in a1.1.2 that keeps going after the call:
+    //
+    // ```
+    // if (!loaded || options.soundVolume == 0.0F) return;
+    // if (playing("streaming")) stop("streaming");
+    // if (name == null) return;
+    // SoundPoolEntry e = streamingPool.getRandomSound(name);
+    // if (e != null && volume > 0) {
+    //     if (playing("BgMusic")) stop("BgMusic");
+    //     newStreamingSource(..., x, y, z, ATTENUATION_LINEAR, 16.0F * 4.0F);
+    //     setVolume("streaming", 0.5F * options.soundVolume);
+    //     play("streaming");
+    // }
+    // ```
+    //
+    // **Three things about it are not the music path.** It is gated on
+    // `soundVolume`, not `musicVolume`; its gain is a flat half of that rather
+    // than the interface path's quarter; and its range is sixty-four blocks
+    // rather than sixteen, so a disc is audible from four times as far as a
+    // footstep.
+    //
+    // **A null `track` is the stop**, which is the original's own signal --
+    // `BlockJukeBox.ejectRecord` calls `world.playRecord(null, ...)`. So is a
+    // track this card has no file for.
+    //
+    // It rides the backend's one streaming voice, which the music was already
+    // using, and that is faithful rather than a compromise: the original stops
+    // `BgMusic` the moment a record starts and `playMusicTicker` will not start
+    // one while `playing("streaming")`, so the two never overlap in a1.1.2
+    // either.
+    void playRecord(const char* track, double x, double y, double z);
+
+    // True while a disc is on the streaming voice -- `playing("streaming")`,
+    // which is the second thing `of.c()` asks before it touches its counter.
+    bool recordPlaying() const;
+
+    // **Stops a disc and leaves the background music alone**, which is the one
+    // thing `stopMusic` cannot do: the two share a voice here, so a caller that
+    // wanted to silence a jukebox and used `stopMusic` would cut a track the
+    // menu is in the middle of.
+    //
+    // This is what leaving a world calls. a1.1.2 has nothing to do here --
+    // quitting a world tears the whole `SoundManager` down with it -- but this
+    // port keeps one engine for the life of the process, so a record left
+    // playing followed the player all the way back to the title screen.
+    // Reported from play.
+    void stopRecord();
+
     // For the debug overlay: ticks until the next track may start.
     i32 ticksUntilMusic() const { return ticker_.ticksRemaining(); }
 
@@ -176,6 +225,10 @@ private:
     // lets it fail later; we open the file here so a track that cannot be
     // decoded costs one failed open rather than a silent voice.
     void startTrack(const SoundEntry& entry);
+
+    // `0.5F * options.soundVolume`, attenuated from the disc to the listener
+    // over the streaming source's own sixty-four-block range.
+    float recordGain() const;
 
     // What a preloaded file is playable as. Keyed by path rather than by a
     // pointer into the pool because `SoundPool::add` grows a vector and would
@@ -197,6 +250,15 @@ private:
     std::vector<LoadedSample> samples_;
     float musicVolume_ = 1.0f;
     float soundVolume_ = 1.0f;
+
+    // Where the disc on the streaming voice is, so its gain can follow the
+    // listener. `recordPlaying_` is ours rather than the backend's: the voice
+    // is shared with the music and the backend cannot say which of the two is
+    // on it.
+    bool recordPlaying_ = false;
+    double recordX_ = 0.0;
+    double recordY_ = 0.0;
+    double recordZ_ = 0.0;
     double listenerX_ = 0.0;
     double listenerY_ = 0.0;
     double listenerZ_ = 0.0;

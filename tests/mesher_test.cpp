@@ -144,17 +144,22 @@ TEST(a_solid_section_is_hollow_from_the_inside)
     CHECK_EQ(m.quadCount(), usize(6 * 16 * 16));
 }
 
-TEST(glass_is_a_full_cube_that_does_not_cull_its_neighbour)
+TEST(glass_hides_the_face_it_shares_with_glass_and_culls_nothing_else)
 {
-    // Alpha has no glass panes and no face merging between glass blocks: two
-    // adjacent glass blocks draw all twelve faces. Getting this wrong by
-    // treating fullCube as opaque would make glass invisible from inside.
+    // **`fc.c(Lnm;IIII)Z` -- BlockBreakable.shouldSideBeRendered**, which this
+    // used to assert the opposite of: "alpha has no glass panes and no face
+    // merging between glass blocks, so two adjacent glass blocks draw all
+    // twelve faces". The class file says otherwise. Glass is constructed with
+    // its `a` flag false, and the override is
+    // `if (!a && world.getBlockId(i,j,k) == blockID) return false;` before the
+    // base call -- so the shared pane is not drawn, and a wall of glass is a
+    // window rather than a stack of boxes. Reported from play.
     ChunkColumn column;
     column.setBlock(5, 5, 5, kGlass);
     column.setBlock(5, 6, 5, kGlass);
 
     const MeshBuilder m = meshOf(column, 0);
-    CHECK_EQ(m.quadCount(), usize(12));
+    CHECK_EQ(m.quadCount(), usize(10));
 
     // Stone under glass is the asymmetric case, and the count is the proof:
     // the stone keeps its top face because you can see it through the glass,
@@ -756,5 +761,148 @@ TEST(positions_stay_inside_the_byte_range_the_format_allows)
         CHECK(v.x <= 16);
         CHECK(v.y <= 16);
         CHECK(v.z <= 16);
+    }
+}
+
+// The other two `own_kind` blocks, and they are the same class: `hi` for
+// leaves and `fc` for ice, both constructed with `a` false.
+TEST(leaves_and_ice_hide_their_own_shared_faces_too)
+{
+    ChunkColumn leaves;
+    leaves.setBlock(5, 5, 5, u16(mcver::Block::Leaves));
+    leaves.setBlock(5, 6, 5, u16(mcver::Block::Leaves));
+    CHECK_EQ(meshOf(leaves, 0).quadCount(), usize(10));
+
+    // Ice is translucent, so its quads are on the other stream -- the rule is
+    // the same one and the count is where it lands that differs.
+    ChunkColumn ice;
+    ice.setBlock(5, 5, 5, u16(mcver::Block::Ice));
+    ice.setBlock(5, 6, 5, u16(mcver::Block::Ice));
+    const MeshBuilder m = meshOf(ice, 0);
+    CHECK_EQ(m.quadCount() + m.translucentQuadCount(), usize(10));
+
+    // **And a block of a different kind is not hidden**, which is the half of
+    // the rule that is easy to lose: the test is on the id, not on the class.
+    ChunkColumn mixed;
+    mixed.setBlock(5, 5, 5, u16(mcver::Block::Glass));
+    mixed.setBlock(5, 6, 5, u16(mcver::Block::Leaves));
+    CHECK_EQ(meshOf(mixed, 0).quadCount(), usize(12));
+}
+
+// `oi.c(Lnm;IIII)Z` -- the slab's, and the order of its four lines is the
+// behaviour: top always, then the opaque test, then bottom always, then the id.
+TEST(a_slab_hides_the_side_it_shares_with_a_slab_and_keeps_its_top)
+{
+    ChunkColumn column;
+    column.setBlock(5, 5, 5, u16(mcver::Block::Slab));
+    column.setBlock(6, 5, 5, u16(mcver::Block::Slab));
+
+    // Two boxes, six faces each, less the one side they share -- and each keeps
+    // its own top and bottom.
+    const MeshBuilder m = meshOf(column, 0);
+    CHECK_EQ(m.detailQuadCount(), usize(10));
+
+    // **Buried in stone, a slab still draws its top and loses its bottom**, and
+    // that asymmetry is the order of the method: `if (l == 1) return true` is
+    // *before* the base test and `if (l == 0) return true` is after it. So the
+    // top ignores the stone above and the bottom does not ignore the stone
+    // below. The `l == 0` line is what keeps the underside of a slab stacked on
+    // another slab drawn, since the two boxes do not meet.
+    ChunkColumn buried;
+    for (int x = 4; x <= 6; ++x) {
+        for (int z = 4; z <= 6; ++z) {
+            buried.setBlock(x, 4, z, kStone);
+            buried.setBlock(x, 6, z, kStone);
+        }
+    }
+    buried.setBlock(4, 5, 5, kStone);
+    buried.setBlock(6, 5, 5, kStone);
+    buried.setBlock(5, 5, 4, kStone);
+    buried.setBlock(5, 5, 6, kStone);
+    buried.setBlock(5, 5, 5, u16(mcver::Block::Slab));
+
+    int slabTop = 0;
+    int slabBottom = 0;
+    const MeshBuilder b = meshOf(buried, 0);
+    for (usize q = 0; q < b.detailQuadCount(); ++q) {
+        const mesh::DetailVertex* v = b.detailVertices() + q * 4;
+        if (v->face == mesh::kFacePosY) ++slabTop;
+        if (v->face == mesh::kFaceNegY) ++slabBottom;
+    }
+    CHECK_EQ(slabTop, 1);
+    CHECK_EQ(slabBottom, 0);
+
+    // A slab on a slab keeps its underside: the base test passes (a slab is not
+    // opaque) and `l == 0` answers before the id test could hide it.
+    ChunkColumn stacked;
+    stacked.setBlock(5, 5, 5, u16(mcver::Block::Slab));
+    stacked.setBlock(5, 6, 5, u16(mcver::Block::Slab));
+    int undersides = 0;
+    const MeshBuilder t = meshOf(stacked, 0);
+    for (usize q = 0; q < t.detailQuadCount(); ++q) {
+        if ((t.detailVertices() + q * 4)->face == mesh::kFaceNegY) ++undersides;
+    }
+    CHECK_EQ(undersides, 2);
+}
+
+// **Every sheet is two-sided, and since the opaque detail pass is culled that
+// is now load-bearing rather than merely true.**
+//
+// The renderer draws non-cube opaque geometry under `GPU_CULL_BACK_CCW`, which
+// is what stops a door showing its own inside through the window in its top
+// tile. Nothing in the mesher may rely on the cull state to be seen from
+// behind: `mesh::addSheet` emits the plane and its mirror, and a shape that
+// forgot to go through it would vanish from one side with no other symptom.
+// This is the assertion that catches that.
+TEST(every_sheet_shape_emits_both_windings)
+{
+    struct Case {
+        u16 block;
+        u8 metadata;
+        int x, y, z;
+    };
+    const Case cases[] = {
+        {u16(mcver::Block::Ladder), 2, 5, 5, 5},
+        {u16(mcver::Block::Rail), 0, 5, 5, 5},
+        {u16(mcver::Block::Wheat), 7, 5, 5, 5},
+        {u16(mcver::Block::Fire), 0, 5, 5, 5},
+        {u16(mcver::Block::RedstoneWire), 0, 5, 5, 5},
+    };
+
+    for (const Case& c : cases) {
+        ChunkColumn column;
+        // Something for each of them to stand on or hang from.
+        for (int x = 3; x <= 7; ++x) {
+            for (int z = 3; z <= 7; ++z) {
+                column.setBlock(x, 4, z, kStone);
+            }
+        }
+        column.setBlock(5, 5, 4, kStone);  // the ladder's wall
+        column.setBlock(c.x, c.y, c.z, c.block);
+        column.setBlockData(c.x, c.y, c.z, c.metadata);
+
+        const MeshBuilder m = meshOf(column, 0);
+        const usize quads = m.detailQuadCount();
+        CHECK(quads > 0);
+
+        // Each quad must have a partner with its corners in reverse order.
+        for (usize q = 0; q < quads; ++q) {
+            const mesh::DetailVertex* a = m.detailVertices() + q * 4;
+            bool paired = false;
+            for (usize r = 0; r < quads && !paired; ++r) {
+                if (r == q) {
+                    continue;
+                }
+                const mesh::DetailVertex* b = m.detailVertices() + r * 4;
+                bool same = true;
+                for (int i = 0; i < 4 && same; ++i) {
+                    const mesh::DetailVertex& av = a[i];
+                    const mesh::DetailVertex& bv = b[3 - i];
+                    same = av.x == bv.x && av.y == bv.y && av.z == bv.z;
+                }
+                paired = same;
+            }
+            CHECK(paired);
+        }
     }
 }

@@ -160,6 +160,15 @@ enum class TickBehaviour : u8 {
     // class. It is a row here for the chest's reason: the right-click dispatch
     // reads this column, and a block id is not allowed to decide.
     Workbench,
+
+    // **The jukebox, whose record is its metadata and not a tile entity.**
+    // `ic`'s registry has four entries and none of them is this one: `cv`
+    // keeps the disc as `1 + (item - record13)` in the block's four bits, so a
+    // jukebox round-trips through the save format with nothing but the cell it
+    // is in. Right-clicking one that is playing ejects the disc; putting one in
+    // is the *item's* `onItemUse` (`lg`), not the block's, which is why an
+    // empty jukebox answers false to a click and lets the hand act.
+    Jukebox,
     Count,
 };
 
@@ -237,6 +246,47 @@ enum class WorldTexture : u8 {
 };
 
 const char* worldTextureName(WorldTexture texture);
+
+// **`ly.c(Lnm;IIII)Z` -- shouldSideBeRendered**, which is the question the
+// mesher asks before it emits a face and is *not* only "is the neighbour
+// opaque".
+//
+// The base class is that one line -- `return !iblockaccess.isBlockOpaqueCube(
+// i, j, k)` -- and four classes in a1.1.2 override it. Two of them have
+// identical bodies and between them cover three blocks:
+//
+//   * `fc` (glass, ice) and `hi` (leaves), both
+//     `if (!this.a && world.getBlockId(i,j,k) == blockID) return false;` before
+//     the base call. All three pass `false` for `a`, so **a face between two
+//     of the same block is not drawn** -- which is why a wall of glass is a
+//     wall and not a stack of boxes, and it is the one of these four a player
+//     notices immediately.
+//   * `fd` (the snow layer): the **top face is always drawn**, and a face
+//     against the same *material* is not.
+//   * `oi` (the slabs): top and bottom always drawn, and a side face against
+//     the same block id is not. (Its first line calls the base method and
+//     throws the answer away -- there is a `pop` in the class file. It is
+//     transcribed as the nothing it is.)
+//
+// `km` (the staircase) overrides it too and its whole body is a call to super,
+// so it is not a rule.
+//
+// The numbering is ours and the column is assigned by a maintainer in
+// blocks.json, exactly as `tick` and `worldTexture` are: the extractor can see
+// which class a block is but the rule itself is a branch.
+enum class SideRule : u8 {
+    // `ly.c` -- the neighbour being an opaque cube is the whole test.
+    None = 0,
+    // `fc` and `hi`: also hidden against the same block id.
+    OwnKind,
+    // `fd`: the top face always draws; hidden against the same material.
+    OwnMaterial,
+    // `oi`: top and bottom always draw; a side is hidden against the same id.
+    Slab,
+    Count,
+};
+
+const char* sideRuleName(SideRule rule);
 
 // **What a block sounds like underfoot and when it breaks** -- `bb`, a1.1.2's
 // StepSound, which is nine singletons that seventy blocks point at.
@@ -465,6 +515,10 @@ struct BlockDef {
     // Which world-dependent texture rule the faces follow, or `None` for the
     // sixty-nine blocks whose `faces` row is the whole answer.
     WorldTexture worldTexture;
+
+    // Which `shouldSideBeRendered` this block has, and `Default` for the
+    // sixty-five that have the base class's. See `SideRule`.
+    SideRule sideRule;
 };
 
 }  // namespace mc::block

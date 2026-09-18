@@ -71,6 +71,21 @@ private:
     int capacity_ = 0;
 };
 
+// **A chest minecart's 27 slots**, flattened so the snapshot stays trivially
+// copyable -- which `SavedPool` requires and an `ItemStack` is not, because it
+// carries the preserved-tag vector every stack in this project carries. The
+// tags are dropped here and that is deliberate: this pool is a namespaced
+// level.dat extension of ours, not something the real client ever wrote, so
+// there is nobody's tag to round-trip.
+//
+// Keyed by the cart's `Minecart::id`, which is saved with the cart.
+struct SavedCartChest {
+    u32 cart = 0;
+    i16 id[kMinecartChestSlots] = {};
+    i16 damage[kMinecartChestSlots] = {};
+    i8 count[kMinecartChestSlots] = {};
+};
+
 struct PersistentEntities {
     SavedPool<Painting> paintings;
     SavedPool<Arrow> arrows;
@@ -80,6 +95,9 @@ struct PersistentEntities {
     SavedPool<FallingBlock> fallingBlocks;
     SavedPool<PrimedTnt> primedTnt;
     SavedPool<Mob> mobs;
+
+    // One entry per chest cart that has anything in it. See `SavedCartChest`.
+    SavedPool<SavedCartChest> minecartChests;
 
     // False when the heap could not hold the copy. The caller keeps the
     // snapshot it had rather than writing a partial one.

@@ -46,6 +46,24 @@ namespace mc::mesh {
 // A bit per face, in `mc::mesh::Face` order.
 inline constexpr int kAllBoxFaces = 0x3F;
 
+// **Which slice of its tile one face of a box shows.** The four atlas
+// coordinates a face's corners take, already inset, with the two u ends in
+// `kFaceCornerUV`'s 0-then-1 order -- so a corner whose entry is 0 takes `u0`.
+struct BoxTileUv {
+    i16 u0, v0, u1, v1;
+};
+
+// `bc.a` through `bc.f`'s rule, as the header states it: the caps take u from
+// x and v from z, the sides take u from the horizontal axis they face across
+// and v from y, and the range is the **box's own**, not the whole tile.
+//
+// It is a function rather than four lines inside the mesher because the world
+// is not the only thing that draws a box: an item in the hand and an item on
+// the ground are the same block at another scale, and drawing a fence post
+// there with the whole plank tile stretched across a quarter-block face is
+// what made a fence in the hand look like a plain square of planks.
+BoxTileUv boxTileUv(int tile, const AABB& bounds, int face);
+
 // Emits `bounds` -- in block-local coordinates, so a full cube is 0,0,0 to
 // 1,1,1 -- at block (x, y, z) of the section.
 //

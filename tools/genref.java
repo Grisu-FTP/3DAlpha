@@ -6564,6 +6564,14 @@ public class genref {
             // is the same "places nothing and still does something" hole the
             // `spawns` column exists for.
             Class<?> hoeItem = loader.loadClass("fu");
+            // **ItemRecord**, whose private `a` is the track name -- "13" and
+            // "cat". It is read rather than matched on the item's name because
+            // a1.1.2's `Item` carries no names of its own: this one string is
+            // the game's own answer to which file a disc plays, and it is also
+            // the key `SoundPool` files `streaming/13.mus` under.
+            Class<?> recordItem = loader.loadClass("lg");
+            java.lang.reflect.Field recordName = recordItem.getDeclaredField("a");
+            recordName.setAccessible(true);
             java.lang.reflect.Field minecartType = minecartItem.getField("a");
             Class<?> worldClass = loader.loadClass(WORLD);
             Class<?> playerClass = loader.loadClass("dm");
@@ -6677,6 +6685,7 @@ public class genref {
             // before any row can be written.
             java.util.List<int[]> measured = new java.util.ArrayList<int[]>();
             java.util.List<String> names = new java.util.ArrayList<String>();
+            java.util.List<String> records = new java.util.ArrayList<String>();
             java.util.List<java.util.Set<Integer>> placedByItem =
                 new java.util.ArrayList<java.util.Set<Integer>>();
             java.util.List<String> rows = new java.util.ArrayList<String>();
@@ -6784,6 +6793,9 @@ public class genref {
                     items[id], new Object[]{null})).intValue();
                 // Whether this item turns grass or dirt into farmland.
                 final int tills = hoeItem.isInstance(items[id]) ? 1 : 0;
+                // The track a music disc plays, and "" for everything else.
+                records.add(recordItem.isInstance(items[id])
+                    ? (String) recordName.get(items[id]) : "");
 
                 measured.add(new int[]{id, icon, stack, damage, places, armour, bucket, fx,
                                       spawns, spawnVariant, hits, tills});
@@ -6833,6 +6845,8 @@ public class genref {
                          + ", \"spawns\": \"" + SPAWN_NAMES[row[8]] + "\""
                          + ", \"spawnVariant\": " + row[9]
                          + ", \"tills\": " + (row[11] != 0)
+                         + (records.get(i).isEmpty()
+                            ? "" : ", \"record\": \"" + records.get(i) + "\"")
                          + ", \"palette\": " + inPalette + "}");
             }
 
@@ -6868,6 +6882,9 @@ public class genref {
             p("    \"painting, boat, minecart or arrow, and `none` for everything else. It is\",");
             p("    \"why four items measure `places` as 0 and still do something. `spawnVariant`\",");
             p("    \"is ItemMinecart's own type field -- 0 cart, 1 chest, 2 furnace.\",");
+            p("    \"`record` is ItemRecord's own name field -- the track a music disc\",");
+            p("    \"plays -- and is present only on the two discs. It is the string handed\",");
+            p("    \"to World.playRecord and the key streaming/13.mus files itself under.\",");
             p("    \"`palette` is whether the Creative hand offers it: everything this version\",");
             p("    \"defines except an ItemBlock whose block already has a carried form, and a\",");
             p("    \"handful of engine-only ids named in emitItems.\"");

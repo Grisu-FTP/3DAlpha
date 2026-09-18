@@ -178,8 +178,9 @@ path when the surface's z stride is exactly −1 and walks pixel by pixel otherw
 reading a row-major buffer gets the same picture — which `tests/map_test.cpp` checks both ways.
 
 **What the map samples, and when — the second thing hardware had to say.** A chunk is sampled once,
-ever, and the sampling is done from the chunks the game already holds, so the only question is how
-many to take per frame. It was one on an old 3DS and two on a New one, scanned in raster order from
+ever, and the sampling is done from the chunks the game already holds — and, for the band that holds
+none, from the card; see [the band the grid cannot fill](#the-band-the-grid-cannot-fill). So the only
+question is how many to take per frame. It was one on an old 3DS and two on a New one, scanned in raster order from
 the north-west corner of the window, and both halves of that were wrong. A cold window is up to 196
 chunks: at one a frame that is six seconds, and because the scan ran from the north-west corner, the
 ground *under the marker* — the only part anyone looks at — was not reached until halfway through
@@ -192,8 +193,54 @@ picture is read in and the order the streamer brings the columns in, so a spent 
 spent on a chunk that has not arrived. And the budget is **sixteen a frame on a New 3DS, eight on an
 old one**, against a sample's ~50 µs — under a millisecond either way — with a **cold-start burst of
 64** that runs until a whole pass finds nothing left to take. The burst ends on "nothing to take"
-rather than on "window full", because at render distances below 7 the map reaches further than the
-renderer does and the window never fills.
+rather than on "window full", because the resident ground is not the whole window: at render
+distances below 7 — and at every distance once the map is zoomed out — the map reaches further than
+the renderer does, and what is left over is not sampled from memory at all.
+
+### The band the grid cannot fill
+
+The window is 14 chunks across at 1:1 and 27 at the widest zoom. The grid the render distance
+gives is `2r + 1` chunks: 21 at a New 3DS's default of 10, 13 at an old one's default of 6, and 5 at
+the minimum of 2. **Wherever the window is the wider of the two, the difference is ground the grid
+will never hold**, and waiting does not help: there is no column and there is never going to be one.
+Zoomed out one level it is most of the picture on either console. For a long time that
+band simply stayed blank, and the further the player zoomed out the more of the bottom screen it
+was — which is the opposite of what zooming out is for.
+
+It is read off the card instead, and the three rules that make that affordable are all in
+`ChunkCache::survey`:
+
+* **The read *and the sampling* happen on the I/O thread.** The visitor runs there, over a column the
+  cache owns for the length of the call, and what crosses back to the main thread is the 1 KB sample
+  — not the 80 KB column. The frame pays a store and a patch redraw, which is exactly what a resident
+  chunk costs it; the 4 ms of card and the ~50 µs of scanning are somebody else's.
+* **Nothing is installed and nothing is evicted.** A survey that had to read reads into one scratch
+  column the I/O thread keeps and reuses, so a map filling in seven hundred chunks cannot push the
+  ring the player is standing in out of the chunk cache. A survey that finds the column already
+  retained is answered from it for free.
+* **It is the lowest priority there is** — under the read-ahead ring, which is itself under every
+  write and every listing. The world's own streaming cannot be slowed by it; a survey simply waits.
+  `tests/chunk_cache_test.cpp` states that ordering directly.
+
+Above that, the map offers a chunk to the card **only after the grid has refused it**, so resident
+ground is always sampled first and the card is asked about exactly the band that is left; at most
+four requests are outstanding at once; and a coordinate is offered once. That last part is what
+matters in an unexplored world, where most of the window is ground **nobody has generated**: a chunk
+that is not there is not held either, so without a record of what has been asked the walk would
+offer it again on every block the player crossed.
+
+At the 4 ms an operation this codebase models, a cold window at the widest zoom is a few seconds of
+card, arriving nearest-first because the queue inherits the ring walk's order. **That figure has not
+been taken on hardware**; the Info page's `fill` column — chunks waiting, chunks filled — is where it
+lands.
+
+**A chunk filled from the card is replaced by the live one the moment there is one.** The sample is
+stored with a serial of zero, which is what the streamer says about a column it does not hold, so
+when the grid does adopt that chunk `adoptColumn` puts it on the change list with a fresh serial and
+the ordinary path re-samples it. Neither side has to know about the other.
+
+**A guest has no card.** On a remote world there is no storage under the streamer at all, so a
+session's map shows what the server sent and nothing more.
 
 What still costs the old price is a **texture pack change or a grid toggle**: every patch in the
 window is stale at once, which is at most 196 of them, about 5.9 ms on that console — once, at a moment the
@@ -378,5 +425,7 @@ let go, so a drag that wanders down onto the page cannot end up turning the view
 | `src/platform/ctr/hud.hpp` | the tab strip, the inventory page, the look pad, and text in arbitrary colours |
 | `src/platform/ctr/map_screen.hpp` | the map page: layout, the framebuffer, the coordinate readout |
 | `src/platform/ctr/overlay.hpp` | which tabs each gamemode gets, and who owns a touch |
+| `src/core/world/chunk_cache.hpp` | `survey`: a column read for one look at it, under everything else |
 | `tests/map_test.cpp` | all of the above, including the framebuffer's strides |
+| `tests/chunk_cache_test.cpp` | the survey: what it answers, what it keeps, and what it waits for |
 | `tests/paint_test.cpp` | the primitives, through both a row-major buffer and the console's strides |

@@ -134,6 +134,33 @@ u8 attachedPlacementMetadata(const TickWorld& world, block::BlockId placed, i32 
 // ported, and a click eaten to do nothing would read as a broken placement.
 bool blockActivated(TickWorld& world, i32 x, int y, i32 z);
 
+// **`cv.e(Lcn;IIII)V` -- BlockJukeBox.ejectRecord**, and it is called from two
+// places that have nothing else in common: a right-click on a jukebox that is
+// playing, and the jukebox being broken (`cv.a(Lcn;IIIIF)V`, which ejects
+// before the block itself drops -- see core/tick/drop.hpp).
+//
+// Its four steps in the original's order, which matters because three of them
+// take draws off the **world's** random and the fourth stops a sound:
+//
+// ```
+// world.playRecord(null, i, j, k);          // the music stops first
+// world.setBlockMetadata(i, j, k, 0);       // the jukebox is empty
+// int id = Item.record13.shiftedIndex + metadata - 1;
+// float f = 0.7F;                           // three nextFloat()s
+// EntityItem item = new EntityItem(world, i + dx, j + dy + 0.6, k + dz,
+//                                  new ItemStack(id));
+// item.delayBeforeCanPickup = 10;
+// world.spawnEntityInWorld(item);
+// ```
+//
+// **The y offset is not the other two.** `dx` and `dz` are the usual middle
+// 70 % of the cell; `dy` is `nextFloat() * 0.7 + 0.3 * 0.2 + 0.6`, so a disc
+// comes out of the *top* of the block rather than its middle. Nothing else in
+// a1.1.2 spawns an item that way.
+//
+// Does nothing for `metadata` 0, which is a jukebox with nothing in it.
+void ejectRecord(TickWorld& world, i32 x, int y, i32 z, u8 metadata);
+
 // **Which chests a chest's screen joins**, in the order `hs` nests them: the
 // clicked chest, with a -x or -z neighbour put in front of it and a +x or +z one
 // after. A real double chest is two of these; the original builds the same

@@ -502,6 +502,9 @@ cadence and a different budget on a 268 MHz ARM11. That is a design decision, no
         still the right answer *if monsters land*, which is where 200 of anything comes from.
       - Pathfinding has its per-tick budget: one search per tick across all animals, and 1,024
         nodes per search. Neither binds in ordinary play.
+        *(The per-tick budget was removed on 2026-09-17: it bound hard once the monsters landed,
+        and it sat in front of the wander branch's random draws. Only the node ceiling remains --
+        see docs/mobs-a1.1.2.md, "The pathfinder".)*
       - **Monsters are not ported**, and with them `ek`'s attack branch and the 200-cap spawner.
         *(Closed below.)*
 - [x] **The five hostile mobs** -- zombie, skeleton, creeper, spider and slime -- with `ek`'s
@@ -518,6 +521,8 @@ cadence and a different budget on a 268 MHz ARM11. That is a design decision, no
       - **The player has no health yet**, so a monster's fist leaves through a seam and
         `main.cpp` takes the knockback and the sound and counts the damage. That is step 4's, and
         it is the one thing these mobs are still short of.
+        *(Superseded: `PlayerVitals` landed with step 4 and `PlayerHarm::hurt` is wired in
+        `main.cpp`, so a monster's fist lands. Checked 2026-09-17.)*
       - `ctr::kMaxSamples` 80 -> 128 off a second host measurement (108 samples / 6.6 MB).
 - [x] **The entity sounds** -- `random.splash`, the two `random.fizz` sites, and the arrow's
       `random.drr` moved off the player's ears and onto the arrow. Landed in status.md 24; the

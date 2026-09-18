@@ -31,6 +31,7 @@
 // (`ar.a(Ldm;)V`) and whatever is in a crafting grid (`et`'s and `n`'s own
 // override). A chest's and a furnace's contents stay in them.
 
+#include "core/entity/minecart.hpp"
 #include "core/item/container.hpp"
 #include "core/item/crafting.hpp"
 #include "core/item/inventory.hpp"
@@ -45,7 +46,13 @@ class TickWorld;
 
 namespace mc::item {
 
-enum class ScreenKind : u8 { None, Inventory, Workbench, Furnace, Chest };
+// **MinecartChest is a chest whose 27 slots are an entity's, not a cell's.**
+// `oc` implements `IInventory` itself and `player.displayGUIChest(minecart)`
+// opens `GuiChest` on the cart, so the screen, the click rules and the layout
+// are a chest's exactly -- only where the stacks live differs. It is a kind of
+// its own rather than a flag on `Chest` because every `pull` and `push` has to
+// ask a different question, and a bool inside those would be read four times.
+enum class ScreenKind : u8 { None, Inventory, Workbench, Furnace, Chest, MinecartChest };
 
 inline constexpr int kMaxChestScreenSlots = tick::kMaxChestParts * world::kChestSlots;
 
@@ -66,8 +73,20 @@ public:
     bool openFurnace(tick::TickWorld& world, i32 x, int y, i32 z);
     bool openChest(tick::TickWorld& world, i32 x, int y, i32 z);
 
-    // Refreshes the copies from the tile entities. False when a block the
-    // screen is on has gone, which is the caller's cue to close.
+    // **`player.displayGUIChest(minecart)`** -- a chest cart's own 27 slots,
+    // addressed by the cart's stable id rather than by a cell. False, and
+    // nothing opened, when that id is not a live chest cart.
+    //
+    // The system is borrowed and must outlive the screen, which on the console
+    // it does: both belong to the world loop. `pull` re-reads through it and
+    // closes the screen when the cart has gone -- run over, broken, or simply
+    // out of a resident chunk -- which is the same answer `pull` gives a chest
+    // whose block was blown up under it.
+    bool openMinecartChest(entity::MinecartSystem& carts, u32 cartId);
+
+    // Refreshes the copies from the tile entities -- or, for a chest cart, from
+    // the cart. False when a block the screen is on, or the cart it is on, has
+    // gone, which is the caller's cue to close.
     //
     // **That is a deviation, and a safe one.** a1.1.2's containers have no
     // `canInteractWith` at all -- `ar` has no such method -- so a chest blown
@@ -140,6 +159,10 @@ public:
     int y() const { return y_; }
     i32 z() const { return z_; }
 
+    // The chest cart this screen is on, or 0. A caller that checks reach
+    // against a block has to ask this first: a cart has no cell to check.
+    u32 minecartChest() const { return cart_; }
+
 private:
     // Where a slot index lands. Exactly one of `stack` or `playerSlot` is set.
     struct Resolved {
@@ -175,6 +198,11 @@ private:
     tick::ChestPart parts_[tick::kMaxChestParts];
     int chestParts_ = 0;
     ItemStack chest_[kMaxChestScreenSlots];
+
+    // The chest cart, when that is what is open. Borrowed; see
+    // `openMinecartChest`.
+    entity::MinecartSystem* carts_ = nullptr;
+    u32 cart_ = 0;
 };
 
 }  // namespace mc::item

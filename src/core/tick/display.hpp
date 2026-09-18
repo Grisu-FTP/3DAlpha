@@ -62,6 +62,16 @@ class TickWorld;
 inline constexpr int kDisplayTickRadius = 16;
 inline constexpr int kDisplayTickDarts = 1000;
 
+// `ai.i(Lcn;III)V` -- **redstone ore's glitter**, six motes thrown one per
+// face and each kept only if the face it came off is open. It is declared here
+// rather than left inside the display tick because two different things run it
+// and only one of them is a display tick: `ai.b(Lcn;IIILjava/util/Random;)V`
+// asks for it once a tick while the ore is lit, and `ai.h(Lcn;III)V` -- the
+// glow a touch, a punch or a footstep causes -- runs it **before** the block
+// becomes the lit one, so the sparkle happens on the dull ore too. See
+// `tick::redstoneOreActivated`.
+void redstoneOreSparkle(const TickWorld& world, i32 x, int y, i32 z, JavaRandom& rand);
+
 // `ly.b(Lcn;IIILjava/util/Random;)V` -- one block's own display tick. `self` is
 // the block already read at those coordinates, because every caller has it.
 //

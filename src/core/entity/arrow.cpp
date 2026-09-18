@@ -162,14 +162,12 @@ bool ArrowSystem::shoot(const tick::TickWorld& world, double eyeX, double eyeY, 
     a.yaw = a.prevYaw = yawDegrees;
     a.pitch = a.prevPitch = pitchDegrees;
 
-    // **The shooter's own footprint**, which the player's shot needs every bit
-    // as much as a skeleton's: the muzzle offset is 0.16 against a half-width
-    // of 0.3, so the arrow is born inside the box of whoever loosed it and the
-    // first tick's segment would otherwise strike them. `eyeX/eyeZ` is the
-    // player's `posX/posZ` -- the eye only moves the y -- so it is the place to
-    // record, not the offset muzzle. See `Arrow::shooterGrace`.
-    a.shooterX = eyeX;
-    a.shooterZ = eyeZ;
+    // **The five ticks it owes its own archer.** The muzzle offset is 0.16
+    // against a half-width of 0.3, so the arrow is born inside the box of
+    // whoever loosed it and the first tick's segment would otherwise strike
+    // them. The player is excluded by identity, so there is nothing to record
+    // beyond the window itself -- `shooterMob` stays zero, because no mob fired
+    // this. See `Arrow::shooterGrace`.
     a.shooterGrace = i8(kArrowSelfGrace);
 
     // The launch heading, straight out of the constructor. Note motionX uses
@@ -227,7 +225,7 @@ void ArrowSystem::playStruck(const tick::TickWorld& world, const Arrow& a)
 
 bool ArrowSystem::shootFrom(const tick::TickWorld& world, double x, double y, double z,
                             double dx, double dy, double dz, float velocity, float inaccuracy,
-                            ArrowShooter shooter)
+                            ArrowShooter shooter, u32 shooterMob)
 {
     Arrow* slot = arrows_.push();
     if (slot == nullptr) {
@@ -242,8 +240,7 @@ bool ArrowSystem::shootFrom(const tick::TickWorld& world, double x, double y, do
     a.prevX = x;
     a.prevY = y;
     a.prevZ = z;
-    a.shooterX = x;
-    a.shooterZ = z;
+    a.shooterMob = shooterMob;
     a.shooterGrace = i8(kArrowSelfGrace);
 
     // `kg.a(DDDFF)V` -- setThrowableHeading, the same method the player's shot
@@ -313,7 +310,11 @@ void ArrowSystem::tick(tick::TickWorld& world, const ArrowTargets& targets)
             const bool inWater = block::handleWaterMovement(world, a.box, kWaterMaterial,
                                                             &a.motionX, &a.motionY, &a.motionZ);
             const WaterEntryResult wet =
-                updateWaterEntry(a.water, inWater, a.motionX, a.motionY, a.motionZ);
+                updateWaterEntry(a.water, inWater, a.motionX, a.motionY, a.motionZ,
+                                 [&] {
+                                     return block::isMaterialInBox(world, a.box,
+                                                                   kWaterMaterial);
+                                 });
             if (wet.splash) {
                 world.playSoundAt(kSplashSound, a.x, a.y, a.z, wet.volume, splashPitch(rand_));
             }
@@ -376,43 +377,45 @@ void ArrowSystem::tick(tick::TickWorld& world, const ArrowTargets& targets)
             const double dirY = a.motionY / step;
             const double dirZ = a.motionZ / step;
             // `entity != shootingEntity || ticksInAir >= 5` -- see
-            // `Arrow::shooterGrace`. **Which candidate that excludes depends on
-            // who fired**, and only one of the two has to be found by place:
+            // `Arrow::shooterGrace`. **Both candidates are excluded by
+            // identity**, which is the jar's comparison rather than a stand-in
+            // for it:
             //
-            //   * A player's arrow skips **the player, by identity.** There is
-            //     one of them and `targets.playerPresent` is the handle, so the
-            //     original's `entity != shootingEntity` is available exactly
-            //     rather than as a proxy -- and the proxy was wrong here in a
-            //     way a player can reach in one press. The footprint test holds
-            //     only while the shooter stays inside its own box, and Creative
-            //     flight is 0.6 blocks a tick against a half-width of 0.3: one
-            //     tick of flying puts the player clear of the place the shot
-            //     was recorded at, the exclusion misses, and the arrow -- still
-            //     inside the box it was born in -- is spent on its own archer
-            //     at a distance of zero. That is "arrows do nothing in
-            //     Creative", and it took the paintings with it.
-            //   * A skeleton's arrow skips **the mob standing where it was
-            //     fired from**, which is the proxy and stays one: the mob pool
-            //     swap-removes and has no stable handle. A skeleton walks at
-            //     well under its own half-width a tick, so the two agree.
+            //   * A player's arrow skips **the player.** There is one of them
+            //     and `targets.playerPresent` is the handle.
+            //   * A mob's arrow skips **the mob holding `shooterMob`**, which
+            //     is a session handle off `Mob::handle` and survives the pool
+            //     swap-removing around it.
+            //
+            // The mob half used to be a footprint test -- is a mob still
+            // standing over the place the shot was recorded at -- and that is
+            // the kind of proxy that holds until it does not. It fails for a
+            // shooter that moved more than its own half-width in the tick it
+            // fired, which is what a skeleton shot or knocked back on that tick
+            // does: the exclusion missed and the arrow, still inside the box it
+            // was born in, was spent on its own archer at a distance of zero.
+            // The same shape of bug in the player's half was "arrows do nothing
+            // in Creative", and it was fixed the same way.
             //
             // Nothing else is ever the shooter, so nothing else is excluded: a
             // painting, a boat or a cart the player is standing inside is a
             // target from the first tick, as it is in the jar.
             const bool byPlayer = a.shooter == ArrowShooter::Player;
-            auto isShooter = [&](EntityHit::Kind kind, const AABB& box) {
+            auto isShooter = [&](EntityHit::Kind kind, u32 handle) {
                 if (a.shooterGrace <= 0) {
                     return false;
                 }
                 if (byPlayer) {
                     return kind == EntityHit::Player;
                 }
-                return kind == EntityHit::Mob && a.shooterX >= box.minX
-                       && a.shooterX <= box.maxX && a.shooterZ >= box.minZ
-                       && a.shooterZ <= box.maxZ;
+                // Zero never matches: an arrow with no shooter excludes nobody,
+                // and a mob with no handle is not a thing this pool makes.
+                return kind == EntityHit::Mob && a.shooterMob != 0
+                       && handle == a.shooterMob;
             };
-            auto consider = [&](EntityHit::Kind kind, int index, const AABB& box) {
-                if (isShooter(kind, box)) {
+            auto consider = [&](EntityHit::Kind kind, int index, const AABB& box,
+                                u32 handle = 0) {
+                if (isShooter(kind, handle)) {
                     return;
                 }
                 double distance = 0.0;
@@ -450,7 +453,7 @@ void ArrowSystem::tick(tick::TickWorld& world, const ArrowTargets& targets)
                     if (!m.alive) {
                         continue;
                     }
-                    consider(EntityHit::Mob, n, m.body.box);
+                    consider(EntityHit::Mob, n, m.body.box, m.handle);
                 }
             }
             if (targets.playerPresent) {

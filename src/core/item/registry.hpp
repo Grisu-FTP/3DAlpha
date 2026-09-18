@@ -47,4 +47,37 @@ inline const ItemDef& def(ItemId id)
 // The block this item puts down, or 0. The place path's whole question.
 inline u16 placesBlock(ItemId id) { return def(id).places; }
 
+// **The track a music disc plays**, and null for everything else -- which is
+// also the test for "is this a record at all". See `ItemDef::record`.
+inline const char* recordTrack(ItemId id)
+{
+    const char* track = def(id).record;
+    return (track != nullptr && track[0] != '\0') ? track : nullptr;
+}
+
+// **A disc as a jukebox's four bits**, which is `lg.a`'s own arithmetic:
+// `this.shiftedIndex - Item.record13.shiftedIndex + 1`. Zero -- the metadata
+// of an empty jukebox -- for anything that is not a disc, so a caller that
+// forgot to ask `recordTrack` first writes nothing rather than something
+// wrong.
+inline u8 recordMetadata(ItemId id)
+{
+    if (recordTrack(id) == nullptr || mcver::kFirstRecordItem < 0) {
+        return 0;
+    }
+    const int meta = int(id) - int(mcver::kFirstRecordItem) + 1;
+    return meta > 0 && meta <= 15 ? u8(meta) : u8(0);
+}
+
+// The inverse: which disc a jukebox holding `metadata` will spit out.
+// `cv.e`'s `Item.record13.shiftedIndex + metadata - 1`. Zero for metadata 0,
+// which is a jukebox with nothing in it.
+inline ItemId recordItemFor(u8 metadata)
+{
+    if (metadata == 0 || mcver::kFirstRecordItem < 0) {
+        return 0;
+    }
+    return ItemId(int(mcver::kFirstRecordItem) + int(metadata) - 1);
+}
+
 }  // namespace mc::item

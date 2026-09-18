@@ -518,8 +518,13 @@ bool PlayerBody::handleWaterMovement(const tick::TickWorld& world)
 // the tick already makes.
 WaterEntryResult PlayerBody::updateWaterEntry(const tick::TickWorld& world)
 {
-    const WaterEntryResult result =
-        entity::updateWaterEntry(water, handleWaterMovement(world), motionX, motionY, motionZ);
+    // The body is 1.8 tall, so `g_()`'s inset never inverts its box and the
+    // flicker `updateWaterEntry` latches against cannot happen to a player --
+    // but the predicate is the same one either way, and an animal shorter than
+    // 0.8 goes through this method too. See core/entity/water_entry.hpp.
+    const WaterEntryResult result = entity::updateWaterEntry(
+        water, handleWaterMovement(world), motionX, motionY, motionZ,
+        [&] { return block::isMaterialInBox(world, box, kWaterMaterial); });
     if (result.inWater) {
         fallDistance = 0.0f;
     }

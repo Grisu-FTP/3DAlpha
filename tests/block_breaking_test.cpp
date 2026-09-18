@@ -238,3 +238,37 @@ TEST(the_crack_interpolates_between_the_last_two_ticks)
     CHECK_EQ(f.breaker.crackStage(1.0f), int(now * 10.0f));
     CHECK_EQ(f.breaker.crackStage(0.0f), int(before * 10.0f));
 }
+
+// ---- somebody else's click -------------------------------------------------
+//
+// `in.c(III)Z` in `srv/a0.2.1.jar` -- the host running a guest's finished dig.
+// The tool it asks about is the digger's, which is the whole point: the guest
+// has no stack sink of its own, so a break that drops nothing here drops
+// nothing anywhere.
+
+TEST(a_guests_break_drops_what_the_guests_tool_earns)
+{
+    Fixture f;
+    f.put(Block::Stone);
+    CHECK(item::harvestBlockFor(f.scene.w(), kX, kY, kZ,
+                                item::ItemId(Item::StonePickaxe), f.effects));
+    CHECK_EQ(int(blockAt(f)), int(block::kAir));
+    CHECK_EQ(f.catcher.countOf(u16(Block::Cobblestone)), 1);
+}
+
+TEST(a_guests_bare_handed_break_leaves_nothing_behind)
+{
+    Fixture f;
+    f.put(Block::Stone);
+    CHECK(item::harvestBlockFor(f.scene.w(), kX, kY, kZ, 0, f.effects));
+    CHECK_EQ(int(blockAt(f)), int(block::kAir));
+    CHECK_EQ(f.catcher.total(), 0);
+}
+
+TEST(a_guests_break_on_air_is_not_a_break)
+{
+    Fixture f;
+    CHECK(!item::harvestBlockFor(f.scene.w(), kX, kY, kZ,
+                                 item::ItemId(Item::StonePickaxe), f.effects));
+    CHECK_EQ(f.catcher.total(), 0);
+}

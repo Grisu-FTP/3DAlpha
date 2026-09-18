@@ -41,10 +41,10 @@ hard oracle to check itself against.
 | **M2** Renderer | **in progress; the gate failed and the answer to it is built but unrun** — the whole pipeline exists and runs end to end on hardware. Six launches that ran: a stack overflow, a VRAM write, a wrong daylight curve, fog/depth/frame-time, black torches, and the profile below. **Two more did not launch at all, and neither was a bug in the build** — `loader` refused the file on the SD card both times, which looks exactly like a crash; see §1. **The 12-byte/4-vertex path costs 0.208 µs per quad and misses the M2 gate by 3.2× at distance 10, and by an estimated 2.1× at the distance 8 the New 3DS gate has been lowered to.** The geometry-shader path §2 always pointed at now exists, is measured on the host, **draws the whole render distance on hardware without stalling, and is what the game boots into as of this change** — the 4-vertex path stays as the watchdog's fallback and as the only encoding that can ever carry per-corner light. What is still *not* taken is the gate measurement itself: GPU draw time per quad, both formats, one session, one position |
 | M3 Singleplayer gameplay | not started as *gameplay*, **but its foundation is now built: the world ticks.** a1.1.2's 20 Hz clock (`ir.class`, accumulator, partial ticks, the ten-tick cap that drops rather than defers), its scheduled-update list with the original's ordering and both of its limits, its 80-samples-a-chunk random tick, and fifteen block behaviours -- grass, leaves, saplings, crops, farmland, flowers, mushrooms, sugar cane, cactus, ice, both snows, torches, sand and gravel. Blocks are dispatched by a **tick behaviour**, never by id, the way the renderer dispatches on render type. Redstone, fire and the fluids are named and not done; see §0o and [tick-a1.1.2.md](tick-a1.1.2.md). Also **the main menu and the pause menu, which are built** — title, world list, create-a-world with a typed seed, delete, and an options screen for render distance. The game now starts from it rather than opening whatever `readdir` returned first; see §0b. **START pauses instead of exiting**: Resume, World Settings, Options, Exit World, over a world that stays open and stops dead while the menu is up. **World Settings is the world's own screen, as against Options, which is the console's** -- Gamemode, Format, Size, Copy, Delete, reached from the pause menu and from `X` on the world list, and cut to Gamemode alone when a world is open behind it. Gamemode is real: it lives in `<world>/3dalpha.ini`, a file of ours that a real Alpha client never reads, because a1.1.2 has no gamemode key for `level.dat` and a per-world value has no business in `3ds.ini` either. **Spectator and Creative are both implemented; Survival is the one drawn disabled.** Spectator is free flight with no body and is offered under a name that says so; Creative landed at M3 step 3 with a body that collides, a four-block reach, break and place, a nine-slot hotbar on the bottom screen, a block palette page fed from the registry, and flight that collides -- **and a1.1.2 has no Creative mode at all**, so all of it is invented and none of it has an oracle. See section 0s. Survival stays disabled because everything it adds -- damage, hardness, drops, depletion -- is a rule on top of the same body and does not exist. **Worlds have a storage format now**, Folder or Packed, converted losslessly from that screen; new worlds are packed. See §0j. Built and linked; not yet seen on hardware. It is the same `Menu` object, so Options and Texture Pack in a world are the ones the title screen uses and both apply live; see §0d. **It is transparent**: the world is redrawn behind it every frame and dimmed with a1.1.2's own gradient, because the menu now draws into the renderer's frame rather than into a target of its own. **Opening it costs a frame** -- the two card listings that used to run on every `Menu::init` are asked for by the screens that show them instead. **Opening it also saves**, which is more than the original does -- a1.1.2 only writes everything out on Save and quit to title -- and only when a column is dirty, so pausing twice costs one save. Leaving a world counts the drain out as a percentage. Options has an autosave row beside render distance and texture pack. **The bottom screen is now a tabbed HUD, and the debug pages are behind it rather than beside it.** The player's half is three pages switched by touching tabs along the **bottom** -- **Map**, **Items** and **Look** -- drawn as panels, slots and bevels in a1.1.2's own GUI colours over the pack's tiled dirt, while the three debug pages stay shared, unchanged and behind `SELECT + Y`. It is still libctru's text console underneath: the furniture is written straight into the RGB565 framebuffer and the console's glyphs are printed on top of it, on backgrounds set per row with `\x1b[48;2;R;G;Bm`, which is what stopped text punching black rectangles through the panels. **Map** is 208 by 200 blocks at one pixel per block, centred on the player, drawn from the columns the streamer already holds -- **in every gamemode now, not only Spectator's** -- and it shows **coordinates and nothing else**: the chunk, the map tile, the chunk count and the redraw time were the maintainer's questions and have moved to the Info page, and the debug grids to the settings page. **There is no strip of button hints along the bottom**, because it was the same three lines on every page spending a twelfth of the screen to repeat itself; the debug pages keep theirs, which is where `SELECT + Y` is worth naming. Those 24 rows and 24 columns off the coordinate panel are what made the window a quarter bigger than the 192 by 176 it started at -- an estimated 790 us a redraw against 700, measured on the host as 16.9 us against 14.2. The marker is an **arrowhead rotated to a real yaw** rather than a diamond with a whole-block tick, which is what fixes both of the old one's faults at once -- it pointed eight ways and it was 41 % longer on a diagonal than on a straight. **Items** is the inventory, nine across and three rows with **the four armour slots down its left**, filling the whole page band and not offered in Spectator -- it lost its fourth row, because **the hotbar is a band of its own across the *top* of every player page** in every mode that has one, edge to edge, with slots 35 and 36 pixels wide so that nine of them land exactly on both screen edges. See §11. Creative adds a fourth tab, **Blocks**, which is the block palette and is deliberately not the inventory: a catalogue held by nobody against what a player is carrying. The map lost 32 pixels to that band and got cheaper for it, 208x168 rather than 208x200. **Look** is a pad that hands the drag to the camera, with a compass ribbon over it -- which exists because the bottom screen is both the UI and the only pointing device an old 3DS has, and dragging on a map used to turn the view. **Run on hardware, where a redraw read 5,000 us**; a per-chunk patch cache took that to a copy, and the number is on the Info page. **The HUD itself has not been seen on hardware.** See [map.md](map.md) |
 | **M4** a1.1.2 worldgen, seed-exact | **done, wired, and on a worker thread.** Terrain, caves, **the Far Lands**, lighting, the whole population pass, **and `ft`, the chunk provider above them all** match a real a1.1.2 World byte for byte, reflected under a real JVM by `tools/genref.java`. `ChunkGenerator` turns "there is no chunk here" into a finished, populated, lit column, and `WorldStreamer` now asks it for one and writes what comes back — so the game makes world where there is none, which is what an Alpha world does. **Generation runs on its own thread**, below the render thread, so making ground costs latency rather than frame rate — and the world it produces is byte-identical to the one generating inline produces, which is a test rather than a hope. `--fly <empty-dir> 8 2000 gen` creates a world, generates it, meshes it and saves it under sanitizers. It found a real bug in `WorldGenBigTree` that no per-generator test could. See [worldgen-a1.1.2.md](worldgen-a1.1.2.md). **Run on hardware now, and the cost is exactly what was predicted**: generation is slow and a walking player outruns it and never sees it catch up. The cause was not the generator but the thread it was on — `std::thread` had put it on core 0 at the bottom priority, where it ran on scraps. It is on **core 2** on a New 3DS now; see §0 |
-| M5 Multiplayer (protocol 2) | not started |
-| M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, and background music is built but unheard**, both ahead of the rest of M6; mobs and packaging not started. **Music is a1.1.2's `of.c()` transcribed exactly** -- the counter seeded at `nextInt(12000)` and reset to `nextInt(24000)+24000`, and, the part that is easy to lose, *not decremented while a track is playing*, so the period is the track's own length plus 20-40 minutes. It runs on the same `elapsedTicks()` the world does, beside `stepTicks`. Underneath it: `audio::Backend` (the `IAudio` docs/architecture.md always named), an ndsp voice on channel 0 fed by a ring of eight 1024-frame wave buffers in linear memory, and a third `WorkerRole` -- `Audio` -- decoding Ogg Vorbis through Tremor. **On an Old 3DS that decode is on core 0**, because a 3DSX has no other core; it sits below the main thread and the 186 ms ring is what makes that safe, which is a claim only hardware can settle -- the overlay counts underruns and decode microseconds for exactly that reason. Options -> Sound carries the volumes and the one line that says why a console is silent, distinguishing a missing DSP firmware from a DSP something else is holding. **Sound effects are deliberately absent**: nothing in the port can emit one yet, so the machinery arrives with its first caller rather than as dead code. See [audio-a1.1.2.md](audio-a1.1.2.md). Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
+| M5 Multiplayer (protocol 2) | **joinable, built, and not yet seen on hardware.** A server list (add, edit, delete, join) kept in `sdmc:/3dalpha/servers.txt`, the friend list's screen name as the login name ("Player" when FRD cannot say), offline login, the server's world streamed through the ordinary `WorldStreamer` (`openRemote`), and movement, digging, placing, chat, time, the inventory and thrown items reported the way the a1.1.2 client reports them. The packet table is read off both jars rather than a wiki, and the whole thing is verified on the host against the real 0.2.1 server with `--join`. **Other players and ground items are drawn** (`core/net/entities.hpp`): a player is the same biped the zombie is, appended to the mob pass's own buffer and draw call, walking toward the server's last word over three ticks the way `EntityOtherPlayerMP` does; an item is spawned into the ordinary `ItemEntitySystem` by its server id, and nothing is picked up locally because the server says who collected what. Verified against the real 0.2.1 server with two clients at once. Mobs are drawn too, with their local mind held off (`Mob::remote`), and every other player carries their name over their head on the sign pass. **Not built:** vehicles are received and counted but not drawn; chest and furnace contents (a1.1.2 sends them as client-owned `0x3B` NBT, so opening one would lose items -- it is refused with a chat line); sign text either way. **And this console now speaks the other half of it**: a hosted local session serves its own world in the same protocol-2 packets, so the whole client above was reused unchanged -- see `core/net/world_server.hpp` and the 2026-09-15 entry in `current-work.md`. See [protocol-a1.1.2.md](protocol-a1.1.2.md) and `current-work.md` |
+| M6 Audio, mobs, texture-pack browser, packaging | **the texture-pack browser is done and run on hardware, and background music is built but unheard**, both ahead of the rest of M6; mobs and packaging not started. **Music is a1.1.2's `of.c()` transcribed exactly** -- the counter seeded at `nextInt(12000)` and reset to `nextInt(24000)+24000`, and, the part that is easy to lose, *not decremented while a track is playing*, so the period is the track's own length plus 20-40 minutes. It runs on the same `elapsedTicks()` the world does, beside `stepTicks`. Underneath it: `audio::Backend` (the `IAudio` docs/architecture.md always named), an ndsp voice on channel 0 fed by a ring of sixteen 1024-frame wave buffers in linear memory, and a third `WorkerRole` -- `Audio` -- decoding Ogg Vorbis through Tremor. **On an Old 3DS that decode is on core 0**, because a 3DSX has no other core; it sits below the main thread, and the claim that a deep ring alone made that safe is the one hardware settled against -- the music skipped under load, because the ARM11 scheduler is SCHED_FIFO and equal priority is a queue rather than a share. The ring is deeper now, the decoder outranks what it shares a core with, and it lifts itself above the main thread while it is catching up; the overlay counts underruns, boosts and the ring's low-water mark for exactly that reason. Options -> Sound carries the volumes and the one line that says why a console is silent, distinguishing a missing DSP firmware from a DSP something else is holding. **Sound effects are deliberately absent**: nothing in the port can emit one yet, so the machinery arrives with its first caller rather than as dead code. See [audio-a1.1.2.md](audio-a1.1.2.md). Options -> Texture Pack lists the packs on the card and applies one; Extract from a jar turns a player's own `minecraft.jar` into a pack and offers to delete the jar afterwards; the generated art is now "Dev Art", one pack among them. **Three of a pack's files have consumers now**: `terrain.png` is the block atlas, and `default.png` and `dirt.png` are the menu -- the font every label is drawn with and the backdrop behind them, both a1.1.2's own rules read out of the jar, both optional and both with a fallback that needs no file. A pack's gui, mob and item textures are still carried and counted and unread. **The menu art is built and not yet seen on hardware.** See §0c and [assets.md](assets.md) |
 
-**946 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
+**1,773 tests pass** under ASan/UBSan/float-cast-overflow, at `-O3`, and the 3DS target links clean.
 **They also pass under ThreadSanitizer, which reports no races** — a separate build, because TSan and
 ASan cannot be combined: `cmake -S . -B build-tsan -DSANITIZE=OFF -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread`. It is worth re-running after anything that touches
@@ -146,13 +146,25 @@ core/util/        types, span, nibble, compress, math (Vec3/Mat4/Plane), frustum
                   coord and seed text parsing (what a player types, parsed where it can be tested)
 core/world/       ...and the light engine: sky and block light as one fixed point;
                   world_list -- the saves folder as a list, without opening anything
+core/net/         two wires, one protocol. The packets are protocol 2 whichever wire
+                  carries them (packets, wire, chunk_payload, player_sync, pending_edits,
+                  entities, packet_channel -- the interface the client runs over), and the
+                  wires are a TCP socket to a Java server (client_session, dns, tcp_socket,
+                  server_list) or the console-to-console link (link -- datagrams,
+                  acknowledgements, retransmission, in-order delivery; session -- HostSession
+                  and GuestSession over it; local_channel -- the guest's end as a stream;
+                  world_server -- the host's, which decides what each guest is told;
+                  terrain_share -- the one thing that goes the other way)
 impl/storage/alpha_chunkfiles/   chunk paths, chunk NBT, level.dat, storage slot
 impl/worldgen/alpha_nobiome/     noise, terrain, caves, the nine population generators,
                   the pass driver, and ChunkGenerator -- `ft`, which decides what gets
                   generated and when it gets populated
 platform/ctr/     heap policy, VBO allocator, atlas/lightmap/fog, citro3d renderer,
                   citro2d main menu, the bottom screen (one per gamemode, plus the three
-                  debug pages) and the spectator map's framebuffer half, game loop, M0 probe
+                  debug pages) and the spectator map's framebuffer half, game loop, M0 probe;
+                  the two networks -- network (SOC) and net_play for a Java server, local_link
+                  (UDS: the beacon, the scan, the frames) with host_play and guest_play for a
+                  session next door
 platform/host/    harness: --version, --mesh, --fly, --generate, --map
 tools/            configure.py, extract_blocks.py, javap.py, nbtdiff.py, genref.java
 ```
@@ -579,6 +591,13 @@ Obfuscated names are version-specific; these are for a1.1.2_01 only.
 | Cross shading | unshaded — `bc.h` calls `setColorOpaque_F` once with the block's own brightness and never consults the per-face table |
 | Fluid renderer | `bc.j(ly,int,int,int)`, transcribed whole into `core/mesh/fluid.cpp` |
 | Torch renderer | `bc.b(ly,int,int,int)` picks the mount and `bc.a(ly,DDDDD)` — renderTorchAtAngle — builds it. Both transcribed into `core/mesh/torch.cpp` |
+| Served areas: the generator's second frontier | `WorldStreamer::servedGeneratorSlack` -- **measured on the host**, filling a radius-7 served square 200 chunks from a render distance of 4: peak **258 columns live** against a cache of 296 (254 before the served walk stopped skipping the grid's outer three rings) (`cacheColumnsFor(5)` = 176 plus 120 of slack), with `evictedLive`, `generationFailures`, `generationIncomplete` and `generationUnlightable` all zero. `cacheColumnsFor` is fitted to *one* player's frontier and `kRetireSlackChunks` leaves a flat 32 columns of headroom on it, so without the slack the same fill wants 258 slots out of 176 and every column `acquire` takes to make room comes back as bare terrain. Re-run `a_served_area_at_a_full_view_distance_does_not_overrun_the_generator` before changing the formula |
+| Redstone ore's glitter | `ai.i(Lcn;III)V` -- six `"reddust"` motes, one per face, each nudged a sixteenth outside the block when that face is not an opaque cube and **only drawn when it ended up outside**. Called from `ai.b(Lcn;IIILjava/util/Random;)V` once a display tick while lit, and from `ai.h(Lcn;III)V` -- the glow -- *before* the id swap, so it fires on a dull ore too. The y test is `< 0.0D` where the other two axes test the block's own coordinate, which is the jar's and is why an exposed ore sparkles on five faces and not six |
+| Redstone wire's mote | `kf.b(Lcn;IIILjava/util/Random;)V` -- one `"reddust"` at `y + 0.0625`, guarded on the wire's own metadata being above zero. **So a1.1.2 does have redstone particles**, from both the ore and any powered wire |
+| `ge.a(DDDFFI)V` | `setPositionAndRotation2`, overridden on `EntityLiving` to store `newPosX/Y/Z` (`c`,`d`,`e`), `newRotationYaw/Pitch` (`f`,`g`) and `newPosRotationIncrements` (`b`). `ge.j()` divides what is left by **what is left on the clock**, not by what it started at. `gy` passes `iconst_3` at every call site: mob spawn, entity teleport and relative move alike |
+| `ge.B` | `isMultiplayerEntity`, set by `gy.a(ez)` on every mob it spawns. It suppresses `b_()` -- the AI -- and **only** `b_()`: the interpolation above, the legs, the body's heading and the light all still run on the client |
+| `ma.g()I` and `ge.onDeath` | a slime drops a slimeball only at size 1, and then `rand.nextInt(3)` of them -- **0, 1 or 2**. A slime that dropped nothing is the common case, not a fault |
+| `gq.a(Lma;I)Z` | the only `shouldRenderPass` in the game. Pass 0 enables `GL_BLEND` with `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` and draws `hh(0)`, the 8-unit shell, over the main model `hh(16)`, which carries the eyes and the mouth. `mob/slime.png`'s shell quarter is **alpha 199 of 255** (measured), so an alpha test at 0.1 draws it opaque and hides the face |
 | Torch full-bright | `bc.b` reads the cell's brightness and then throws it away: `if (ly.t[blockID] > 0) brightness = 1.0f`. `ly.t` is the light-emission table, already the block table's `light` column |
 | Fluid surface height | `jp.b(I)F` is `if (level >= 8) level = 0; return (level + 1) / 9.0f` — **ninths, not eighths**. A source block's surface sits at 1 − 1/9 = **8/9** of a block |
 | Fluid corner heights | `bc.a(int,int,int,gb)`, transcribed below |
@@ -1103,6 +1122,35 @@ loop, so nothing is streamed, nothing is meshed, no column is generated and the 
 The generation worker finishes at most the one column it had in flight and then blocks on its
 condition variable, which is what it does when idle anyway. What the player sees behind the menu is
 that stopped world — the same frame redrawn — under the original's own dim.
+
+#### ...except in a session, where stopping is not one console's decision to make
+
+**A guest that froze would stop answering its host and be dropped; a host that froze would take
+every guest's world with it.** So START in a session does not hand over the frame loop. The menu is
+`beginPause` / `stepPause` / `endPause` — `runPause` taken apart, with the game loop calling one
+step per frame and drawing the menu into its own frame through `Menu::pauseOverlayEntry`. That is
+the same `PauseBackdrop` arrangement with the two halves the other way round: in single player the
+menu owns the frame and calls back for the world, and here the world owns it and calls back for the
+menu.
+
+Every screen, cursor and decision is the same code down both paths, because `runPause` *is* the
+three calls with a loop around them. What differs is only who owns the frame — and, therefore, that
+in a session the link is pumped, chunks stream, the clock runs, the other players and the mobs move,
+and **the body goes on being simulated**: a player who pauses over lava still burns.
+
+**Nothing reaches the player while the menu is up**, and that is the original's rule rather than a
+new one: `Minecraft` releases every key when a screen opens, so the movement state is read from keys
+that are all up and the world ticks around a player who is standing still. Here the loop zeroes
+`down` and `held` for the rest of the frame, and the three input paths that read the hardware for
+themselves — the focused circle pad, the touch drag and the C-stick — are skipped by name, as is the
+stick inside `readBodyInput`.
+
+`Minecraft.runTick`'s own pause is behind `!isMultiplayerWorld()`, which is exactly this split.
+
+One thing is still a stop for everybody: **the software keyboard**, which the Chat row opens. It is
+an applet and it suspends the whole application, so the session is told first —
+`ctr::linkPausing`, and `net::link::Msg::Away` — the same way every other keyboard in the build
+announces itself.
 
 #### The pause menu draws into the game's frame, not into one of its own
 
@@ -3449,31 +3497,72 @@ on purpose: start a stream, stop it, ask whether it is still playing, take a dec
 fire it. The two halves have different shapes deliberately: music arrives as a `PcmSource` because it
 is minutes long and decoded as it plays, an effect arrives already decoded and is afterwards played
 by handle. ndsp sits behind it on the
-console, a `.wav` writer on the host. Music is channel 0 of 24, fed by eight 1024-frame wave buffers
-in linear memory -- 32 KB, taken once -- and decoded by a third `WorkerRole`, `Audio`, running
-Tremor. The ndsp callback signals an event and decodes nothing; starting a track hands over a path
+console, a `.wav` writer on the host. Music is channel 0 of 24, fed by sixteen 1024-frame wave
+buffers in linear memory -- 64 KB, taken once; it was eight until hardware said otherwise, below --
+and decoded by a third `WorkerRole`, `Audio`, running Tremor. The ndsp callback signals an event and decodes nothing; starting a track hands over a path
 and not an open file, so no card read lands on the frame.
 
-**Where the decode thread runs, and why depth beats priority.** On a New 3DS it takes core 2 at the
-main thread's own priority, **sharing with the generation worker rather than outranking it**. The
-first cut asked for one step above; that was wrong twice over. The kernel refuses a priority below
-what the process was granted and a refused `threadCreate` is silent, so it would have fallen through
-to the Old 3DS path and put the decoder on core 0 of a console with a spare core, with nothing on
-screen to say so -- and it buys nothing, because the decoder needs about 15% of a core against a
-third of a second of buffer and does not have to win a race to stay ahead. Equal priority on core 2
-is also the one arrangement already proven on this hardware: generation has used it since M4.
+**Where the decode thread runs -- and the claim that depth beats priority, which hardware
+disproved.** The original arrangement put the decoder on core 2 of a New 3DS at the main thread's
+own priority, **sharing with the generation worker rather than outranking it**, on the argument that
+a decoder needing ~15% of a core against a third of a second of buffer does not have to win a race
+to stay ahead, and that asking for a step above risks a silent `threadCreate` refusal dropping it
+onto core 0 of a console with a spare core. On an Old 3DS it took core 0 one step below the main
+thread, beside the I/O thread, met CONTRIBUTING's "no decompression on core 0" in substance rather
+than literally, and rested on the same 186 ms ring.
 
-**On an Old 3DS it is core 0**, because a 3DSX has no other core, so CONTRIBUTING's "no
-decompression on core 0" cannot be met literally. It is met in substance -- never the main thread,
-one buffer per wake, and a 186 ms ring. **That path is unexercised and likely to stay that way:
-there is no Old 3DS to hand.** Treat it as designed-but-unproven, not as tested.
+**Played from a console, the music skipped whenever the load got high enough**, and the reason is
+one clause of that argument: *at equal priority the scheduler round-robins*. It does not. The ARM11
+kernel is strictly priority-ordered with **no round-robin and no time slice** -- 3dbrew's
+[Multi-threading](https://www.3dbrew.org/wiki/Multi-threading) page calls it SCHED_FIFO -- so a
+runnable thread never displaces one of equal priority, and a thread below the running one gets
+nothing at all until that one blocks. Both consoles lost the same way:
 
-The claim is instrumented rather than asserted either way: the Info page reports microseconds per
-buffer and an underrun count. **This is going onto a console whose M2 gate currently fails by 3.2x**,
-though on a New 3DS the decoder is on a different core from the renderer, which is most of why that
-is survivable. If the numbers say no, the fallback is a one-time transcode to raw PCM in `cache/`,
-which turns playback into a `readAt` -- a `PcmSource` implementation, not a redesign. Do not build it
-before measuring.
+- **New 3DS.** `WorldStreamer::workerMain` takes its own next job the moment it finishes one, so a
+  full slate is a thread that never blocks. At equal priority on core 2 the decoder ran only in the
+  gaps generation's card reads happened to leave.
+- **Old 3DS.** Below the main thread on core 0, the decoder lives on the slack the main thread
+  leaves at VBlank -- and a frame already over budget leaves none. It also tied with the I/O thread,
+  which under FIFO means a chunk being inflated holds core 0 for the whole of that slack.
+
+**Depth buys time; priority is what spends it.** Four changes, none of them to the decoder:
+
+1. The ring is **sixteen buffers, ~372 ms** (64 KB), up from eight. It is sized for the length of
+   stall the boost below has to notice and recover inside, not for the decoder's own throughput.
+2. **Generation takes core 2 one step below the main thread** rather than at it. Nothing else is on
+   that core, so it buys generation no less of it than before; all it does is put the thread with
+   the deadline in front -- without depending on the kernel granting anything.
+3. The decoder asks for **core 2 one step above the main thread** on a New 3DS, falling back to the
+   main thread's priority on the *same core* if refused. Either way it now outranks generation,
+   because of 2.
+4. On either console the decode thread **raises its own priority above the main thread's when the
+   ring runs low** (`kBoostBelow`, five buffers ~= 116 ms left) and drops back when it is full again
+   (`kRestoreAt`, twelve). What it may ask for is probed once, at thread start, by taking a boost
+   and putting it back -- the only honest way to learn what a process is granted. A boosted pass is
+   capped at `kBoostBuffersPerPass` (four buffers, ~93 ms of audio) so the most a catch-up can take
+   from the frame it interrupts is four buffers' decode. One step up is a real fallback rather than
+   a consolation: on an Old 3DS that is the main thread's own priority, and under FIFO the frame
+   loop waking up cannot interrupt a pass that has already started.
+
+The steady state is unchanged -- below the main thread, costing a frame nothing -- and on a console
+where the boost never engages, nothing about the old arrangement has changed.
+
+Two smaller things went with it. `prepare()` -- the open and the header parse, which read the card
+-- **no longer happens under the lock the main thread takes** in `playMusic`/`stopMusic`: a
+LightLock lends no priority, so holding it across an SD read parked the frame loop behind the decode
+thread at exactly the moment a track started. And `decode us / buffer` was a whole pass divided by
+nothing; it is divided by the buffers the pass filled now, which is what the label always said.
+
+The Info page reports all four numbers: microseconds per buffer, the ring's **low-water mark** for
+the current track, how many **boosts** were needed, and the **underruns** that are the boost having
+failed anyway -- a gap the player heard. A low-water mark that never approaches `kBoostBelow` means
+the ring was never tested on this console; boosts climbing on every track mean the steady-state
+priority is still wrong. **The Old 3DS path remains unexercised: there is no Old 3DS to hand.**
+Treat it as designed-but-unproven.
+
+If the numbers still say no, the fallback is unchanged and still unbuilt: a one-time transcode to
+raw PCM in `cache/`, which turns playback into a `readAt` -- a `PcmSource` implementation, not a
+redesign. Do not build it before measuring.
 
 **One bug found before it ever ran, and worth remembering as a shape.** `gWorkerIsNew3DS` and
 `setWorkerThreadOps` were set inside `runGame`, which was fine while a world was the only thing that
@@ -9230,6 +9319,467 @@ face, and through bedrock; `tests/container_layout_test.cpp` covers the window, 
 hidden rectangles and the bar. Host suite **1621/1621**, the 3DSX build links, and
 `extract_blocks.py --verify` still agrees with the jar on all 70 blocks. **No hardware run of my
 own**; the four fixes above came off one, which is where the grass came from.
+
+### 51. Six from play: a port row, two icons that showed the wrong face, the jukebox, and the carts that carried nothing
+
+Six reports, and four of them turn out to be one kind of mistake -- a table read where a branch
+was meant, or a projection guessed where the class file has one.
+
+#### The server list: a Port row under Address
+
+`net::ServerEntry` was a name and one string, and a port lived inside that string. It has a `u16
+port` now, defaulting to 25565, and `servers.txt` grows a `port=` line under each `address=`.
+**Nothing that already exists is refused**: `loadServerList` splits a `host:port` it finds in
+`address=` into the two fields, and so does the Address row's keyboard -- an address is copied off
+a forum post in one piece, and taking it apart is the work two rows exist to save. The list row
+shows `:port` only when it is not the default, and the row's keyboard is `SWKBD_TYPE_NUMPAD`.
+
+#### A fence in the hand wore a full plank square
+
+`render/held_item.cpp`'s own `addBox` mapped the whole tile onto every face whatever the box's
+extent, and so did `item_entity_mesh.cpp`'s cube. The fence's *shape* was right -- a quarter-block
+post, off `block::itemRenderBoxes` -- so what was wrong looked like a texture and was a UV.
+
+`renderBlockOnInventory` does not have a special path: it sets the block's bounds and then calls
+the very `bc.a`..`bc.f` the world mesher calls, and those clip their UVs to the bounds. That clip
+was already transcribed once, in `mesh/box.cpp`, so it is now `mesh::boxTileUv` and the world, the
+hand and the ground all ask it. A full cube comes out unchanged, which is what keeps this from
+being a second answer to a settled question.
+
+#### The furnace icon showed its back, and so did the chest and the pumpkin
+
+`gui/item_icon.cpp` rasterises the inventory cube rather than rendering it, so which three faces
+are visible is a table -- and that table was **a quarter turn out**: top, *north* and *east*.
+
+`RenderItem.renderItemIntoGui` turns the block `glRotatef(210, 1, 0, 0)` then
+`glRotatef(45, 0, 1, 0)`, under a GUI ortho whose y axis is flipped (`glOrtho(0, w, h, 0, ...)`),
+and working the visible set out of that gives **top, west and south**. South is face 3, which is
+where `BlockFurnace`, `BlockChest`, `BlockDispenser` and `BlockPumpkin` all put their front -- so
+the old pair was the one choice of two that hid the face those four blocks exist to show.
+
+The fix is three lines and a sign: `project`'s `sy` term becomes `(z - x)`, `kVisibleFaces`
+becomes `{+Y, -X, +Z}`, and `nearness` becomes `-x + y + z`. The shades follow the faces rather
+than being re-chosen, which is the rule that file already had.
+
+#### The jukebox: a disc is block metadata, and `.mus` is an Ogg behind one byte
+
+Two halves, and the second is the one that had kept the first off the list.
+
+`cv` (BlockJukeBox) has no tile entity -- `ic`'s registry has four entries and this is not one of
+them. The disc is `1 + (item - record13)` in the cell's four metadata bits, so a jukebox
+round-trips through the save format with nothing but the block it is. `lg.a` (ItemRecord's
+`onItemUse`) puts one in and refuses a jukebox that is already playing; `cv.a(Lcn;IIILdm;)Z`
+ejects on a click and **answers false when empty**, which is exactly how the click falls through
+to the item; and `cv.a(Lcn;IIIIF)V` -- an override of `dropBlockAsItemWithChance`, the only one in
+a1.1.2 -- ejects before the block's own drop and takes its three `nextFloat()`s off the world's
+random first.
+
+`.mus` was called undecoded here for a year. It is class `ep` wrapping `hk`, and `hk.read` is
+seven instructions:
+
+```
+key = fileName.hashCode();          // "13.mus" -- the extension is in the hash
+b = buf[i] ^= (byte)(key >> 8);     // b is the *decoded* byte
+key = key * 498729871 + 85731 * b;  // and b is sign-extended into the multiply
+```
+
+So a record is an Ogg Vorbis file behind a one-byte cipher. **The state advances on the
+plaintext**, so byte n cannot be deciphered without every byte before it -- which is why
+`VorbisStream::createMus` hands Vorbis a null `seek_func` and decodes forward only, exactly as
+paulscode did over an `InputStream`. The codec is picked off the extension rather than by the
+caller, because a beta-era `streaming/` folder holds `13.mus` *and* `13.ogg` and the pool keys
+both as `13`.
+
+A record rides the music voice, and that is faithful: `of.a(String,FFFFF)` stops `BgMusic` the
+moment a disc starts and `of.c()` will not start a track while one is on. What is kept of the
+streaming source is its own sum -- `0.5F * options.soundVolume`, on **soundVolume**, not
+musicVolume -- and its own range, `16.0F * 4.0F`, re-attenuated every tick as the listener moves.
+**Measured**: `3dalpha --record-dump <resources> 13 out.wav` writes 20 s of real audio off a real
+`13.mus`, peak 2761 of 32767 at the origin.
+
+#### The special carts: a block to draw, a chest to open, and coal to take
+
+`kt.a` draws the carried block between the tilt and the cart's own model -- `glScalef(0.75)`,
+`glTranslatef(0, 0.3125, 0)`, `glRotatef(90, 0, 1, 0)`, then `renderBlockOnInventory` of `ly.av`
+(chest) or `ly.aC` (the *idle* furnace; a burning furnace cart does not light up). It is a second
+builder and a second draw because it is a second sheet: the cart is `item/cart.png` and the block
+is `terrain.png`. Both take their frame from one `cartFrame`, so the block cannot part company
+with the cart on a curve.
+
+`oc.a(Ldm;)Z` is one method with three bodies and only the first was here. A chest cart opens its
+own 27 slots; a furnace cart takes a piece of coal for `fuel += 1200` **and is aimed away from
+whoever clicked it whether or not there was any coal** -- the two `pushX`/`pushZ` lines are
+outside the `if`, which is how a furnace cart is turned round and reads as a bug until they are
+noticed.
+
+The chest cart's stacks cannot live in the cart: `SegmentedPool` requires a trivially destructible
+element and an `ItemStack` carries the preserved-tag vector every stack here carries. They live in
+a side store keyed by a new `Minecart::id` -- a handle that survives the pool's swap-with-last
+removal, which matters because a screen open on a cart outlives several ticks -- and are written
+beside the carts as `minecartChests`. `ContainerSession` gains `ScreenKind::MinecartChest`, which
+is a chest's screen in every respect but where `pull` and `push` go; a cart that is broken, run
+over or unloaded makes `pull` answer false and the screen closes, the same answer a chest gives
+for a block blown up under it. Breaking one spills its contents the way a broken chest does, which
+is `oc.F()` -- setDead -- and not an embellishment.
+
+#### Create World gained Extra Settings, and the gamemode order changed
+
+The three deliberately-not-a1.1.2 rows on the Create screen (both generation fixes and the fence
+placement) moved behind an **Extra Settings** button at the bottom of it, with World Texture Pack
+beside them. It is the same screen World Settings opens -- one more row-list layout, the shape
+`worldSettingsLayout` already had -- over `newWorld_.settings` and writing nothing to the card
+until Create. The gamemode row steps **Survival -> Creative -> Spectator** now, and a new world
+starts in Survival (`settings::kNewWorldGamemode`). A world with no settings file still reads as
+Spectator: that is what every world written before that file existed was played as, and reading
+one as Survival would drop a player into terrain they had been flying through.
+
+#### What was run
+
+`tests/jukebox_test.cpp` is new -- the disc in, the eject on a click, the eject on a break, the
+metadata arithmetic both ways -- and `audio_test.cpp`, `minecart_test.cpp`,
+`container_session_test.cpp`, `entity_persistence_test.cpp`, `held_item_test.cpp` and
+`item_icon_test.cpp` gained cases for the rest. The `.mus` vector is the first eight bytes of a
+real `streaming/13.mus` and its expected decode, `OggS\0\2\0\0`, long enough to catch both ways
+the state can be advanced wrongly. Host suite **1689/1689**, the 3DSX build links, and
+`extract_blocks.py --verify` still agrees with the jar on all 70 blocks. **No hardware run.**
+
+### 52. DNS, a splash that repeated, a door that was hollow, and the face test that was one line
+
+Four from play, and three of them are the same shape as the last batch: a rule read as a value.
+
+#### DNS did not work, and now the console's own servers are asked directly
+
+`TcpSocket::connect` resolved a name with `gethostbyname` and nothing else, on a comment that
+said it "is what has always worked there". The first hardware session past the loopback said
+otherwise: a numeric address connected every time and a host name never did. That call is one IPC
+command into SOC's own resolver, a service path only Nintendo's titles exercise, and there is
+nothing underneath it a homebrew process can reach.
+
+So a name is now tried against everything the console has, cheapest and most certain first:
+
+1. `inet_aton` -- a numeric address needs no resolver at all;
+2. `getaddrinfo`, SOC's *other* resolver and the one most 3DS homebrew uses;
+3. `gethostbyname`, SOC's first, kept because a service that answers one and not the other is
+   exactly the sort of thing this stack does;
+4. **an A query of our own**, to the name servers the console was given.
+
+Step 4 is `core/net/dns.hpp`. `SOCU_GetNetworkOpt(SOL_CONFIG, NETOPT_DNS_TABLE)` hands back the
+servers DHCP put in the lease -- on a home network, the router -- and `NETOPT_ROUTING_TABLE`
+supplies the default gateway as one more thing to try, since a router that hands out a stale DNS
+address is usually still answering on port 53 itself. That is the literal answer to the report's
+own question, *can it not just use the 3DS's or the router's DNS*: it can, and two hundred lines
+of UDP over a wire format frozen in 1987 are more debuggable than a service call that cannot be
+traced.
+
+Only A records, only IPv4, one question per server and one wait: `TcpSocket` connects over a
+`sockaddr_in` and a resolver that did not answer inside the budget is one to move on from rather
+than ask twice. The parser walks the answer section by *skipping* names rather than parsing them,
+because the only thing wanted out of it is four bytes of RDATA -- so a compression pointer, a
+CNAME chain and an out-of-order section all come out the same way, and a pointer is never
+followed, which is how a parser is made to loop forever by a hostile packet. Every offset is
+bounds-checked; `tests/dns_test.cpp` feeds it every prefix of a good reply.
+
+The host build never reaches step 4 -- its libc answers at step 2 -- which is why the tests are
+against canned bytes. The failure message now names the server that did not answer instead of
+saying "a name needs the network's DNS".
+
+#### The splash that repeated, and the box a1.1.2 inverts
+
+Reported as "a block falling into water plays a sound and particle for every water block it
+falls". A falling *block* is silent in a1.1.2 and in this port -- `ff` does not call up to
+`onEntityUpdate` -- so what was being heard is the dropped item, and it really does repeat.
+
+`kh.g_()` is one line: hand `handleMaterialAcceleration` the bounding box
+`expand(0.0D, -0.4D, 0.0D)`. For a player, 1.8 tall, that leaves a metre of box. For **anything
+shorter than 0.8 of a block** it leaves a box whose `minY` is above its `maxY`, and that method's
+y loop is `for (l1 = floor(minY); l1 < floor(maxY + 1); l1++)`: on an inverted box it runs once or
+not at all depending on where between two cells the entity is. Over a whole cell of positions it
+sees a cell on **45 % of ticks**. Four things in this port are shorter than 0.8 -- the dropped
+item at 0.25, the arrow at 0.5, the chicken at 0.4 and the boat at 0.6 -- and `!inWater` is the
+whole of the splash's condition, so a sinking stack splashed again, with its six bubbles and six
+splashes, every few blocks all the way down. Measured before the change: two splashes through a
+twelve-block column, and a deeper one gives more.
+
+**This is a deviation and it is a narrow one.** `WaterEntry` gains a `splashed` latch, cleared
+only when the entity's *own* box -- uninset, and therefore not flickering -- holds no water. The
+predicate is a callable rather than a bool because it is consulted only on a tick that has already
+splashed and now reads dry, which is a handful of ticks in an entity's life. Everything else is
+left exactly as the jar computes it: `inWater` still flickers, so the current still pushes on the
+ticks it pushes on, the fall distance still clears on those ticks and fire still goes out on them.
+One splash through the same column afterwards.
+
+#### The door was hollow, because the detail pass was two-sided
+
+The opaque *detail* pass ran under `GPU_CULL_NONE`, with a comment arguing that a flower is two
+crossed planes and the original has no culling to satisfy. The first half is true and the
+conclusion was not: `mesh::addSheet` -- which **every** non-box shape in `shapes.cpp` is built
+from -- emits the plane and its mirror, and so does the cross in `mesher.cpp`. Nothing in that
+pass ever depended on the cull state.
+
+What the missing cull cost is a door. The top tile of a wooden door has a window in it: terrain
+tile 81 carries 48 transparent texels, which is the only transparency on either door tile.
+`renderBlockDoor` emits all six faces of the door's three-sixteenths box and asks
+`shouldSideBeRendered` for none of them -- so does this -- and with nothing culled, looking through
+that window draws the far side of the box *from behind*. The door reads as hollow, which is what
+was reported. Culled, you see through the window, which is what the window is for.
+
+A torch was the other one already written for it: `torch.cpp` winds its four sides outward with a
+comment saying the two facing away are culled, and until now they were not. The entity passes,
+which used to inherit the missing cull from this pass, now state it themselves.
+
+`tests/mesher_test.cpp` gains the assertion the cull now leans on: every quad a sheet shape emits
+has a partner with its corners reversed.
+
+#### Glass was a stack of boxes, because `shouldSideBeRendered` was read as a field
+
+The mesher's face test was `!block::def(neighbour).opaque`. That is `ly.c(Lnm;IIII)Z` -- the base
+class -- and it is right for sixty-five of a1.1.2's seventy blocks. **Four classes override it**,
+and the report ("glass should also cull connected sides") is the first of them:
+
+| class | blocks | rule |
+|---|---|---|
+| `fc` | glass, ice | also hidden against the same block **id** |
+| `hi` | leaves | the same body, and the same `a == false` |
+| `fd` | snow layer | the **top** always draws; hidden against the same **material** |
+| `oi` | slabs | top always, then the base test, then bottom always, then the id |
+
+`km` (the staircase) overrides it with a call to super, so it is not a rule.
+
+All three `own_kind` blocks construct with their flag false, so the test is unconditional here --
+there is no second state of it in this version to carry. The order of `oi`'s four lines is the
+behaviour and is not interchangeable: the base test sits *between* the two faces that ignore it,
+so a slab buried in stone draws its top and loses its bottom, while a slab stacked on a slab keeps
+its underside because the two boxes do not meet.
+
+It is a new `sideRule` column in blocks.json -- hand-assigned, for the reason `tick` and
+`worldTexture` are: the extractor can see which class a block is, but the rule is a branch -- and
+one function, `core/block/side_rule.hpp`, asked by the cube fast path and by `addBoundedCube`. The
+old mesher test asserted the opposite of the jar in as many words ("alpha has no glass panes and
+no face merging between glass blocks, so two adjacent glass blocks draw all twelve faces"); it is
+ten now, and says why.
+
+#### What was run
+
+`tests/dns_test.cpp` is new. `tests/mesher_test.cpp` gained the three side rules and the
+two-sided-sheet invariant, and `tests/entity_sound_test.cpp` the splash latch. Host suite
+**1699/1699**, the 3DSX build links, and `extract_blocks.py --verify` still agrees with the jar on
+all 70 blocks. **No hardware run of my own**: all four of these came off one, and the DNS cascade
+in particular is a thing only a console can confirm.
+
+### 53. Three from the jukebox: a disc that was not spent, a break that voided it, and a record that outlived the world
+
+All three are the same shape -- a path a1.1.2 does not have, or a column that
+could not say what the jar's class does.
+
+#### A disc went in and stayed in the hand
+
+`lg.a` ends `itemstack.stackSize--` on its success path, exactly as the nine
+other `onItemUse` classes that spend do. `item::spendOnUse` reads that off the
+item table's columns -- `places != 0`, or `spawns` naming an entity -- and a
+music disc has neither: it places no block and spawns no entity, it goes *into*
+one. So the disc was not taken out of the hand, and taking it back out of the
+jukebox was a second one. It is now the one row in `spendOnUse` that no column
+can be read off, and it says so.
+
+#### Breaking it voided the disc and kept the sound
+
+`cv` puts its eject in `dropBlockAsItemWithChance`, which in a1.1.2 is the only
+way a player destroys a block -- so that is the faithful place for it and it is
+where §51 put it. **This port has a second way**: Creative's left click is
+`item::destroyBlock` and nothing else, with no drop table after it. A jukebox
+broken that way lost its disc and went on playing.
+
+The eject is now in `blockRemoved` as well -- `Block.onBlockRemoval`, which
+every removal path runs, and which `TickWorld::writeBlock` calls *after* the
+block id is written and *before* the metadata is, so the departing jukebox can
+still read its own disc.
+
+**Both copies read the metadata out of the world rather than from the argument
+they were handed**, and that is what keeps a disc from coming back twice. The
+two orders are genuinely different: a break reaches `blockRemoved` first and
+`dropBlockAsItem` afterwards with the breaker's *saved* metadata, which by then
+is stale; an explosion reaches `dropBlockAsItem` first, while the jukebox is
+still standing, and the removal afterwards. Re-reading makes whichever runs
+first clear the cell and the other find a zero -- and it leaves the explosion's
+three `nextFloat()`s where the jar takes them, before the block's own drop
+draws.
+
+#### The record followed the player to the title screen
+
+a1.1.2 has nothing to do here: quitting a world takes `SoundManager` down with
+it. This port keeps one `SoundEngine` for the life of the process -- it is what
+the menu's music comes out of -- so a disc still on the streaming voice played
+on over the title screen.
+
+`SoundEngine::stopRecord` is separate from `stopMusic` for the reason the two
+share a voice at all: a caller that silenced a jukebox with `stopMusic` would
+cut a menu track. It touches the voice only when a disc is on it, is idempotent
+because more than one path leaves a world, and is called from `runGame`'s tail
+beside the other things the world borrowed.
+
+`tests/audio_test.cpp` gains a backend that actually accepts a stream -- the
+recording one refuses every `playMusic`, so a start, a state and a stop were
+all invisible through it.
+
+#### What was run
+
+Host suite **1705/1705**, the 3DSX build links. **No hardware run**; all three
+came off one.
+
+### 54. Import and Export: a world crosses the room, and the original is only ever read
+
+**The ask.** A row under Create New World that takes a world off another console, a row under Copy
+that sends one, the same Local-or-Internet question both already ask, and a promise: the world that
+was sent is left exactly as it was.
+
+**It is `copyWorld` with a radio in the middle.** That framing decided nearly everything. A transfer
+carries files, not chunks: `core/world/world_transfer.cpp` walks the world into a manifest of
+relative paths and sizes, sorted by path, and neither end ever opens a chunk. So a packed world
+arrives packed and a folder world arrives a folder -- a transfer is a backup that travelled, not a
+conversion, which is the same sentence `copyWorld` already had on it.
+
+**The payload carries no sequence numbers, and that is not an oversight.** `link::Peer` already
+delivers the reliable half in the order it was queued, so `WorldFile` followed by n `WorldData`
+messages followed by the next `WorldFile` arrives in that order or not at all. Five message kinds
+were added to `link::Msg` (20-24) and the exchange in `core/net/world_copy.hpp` is four lines long.
+Flow control is `Peer::inFlight()` against a limit four below the window: queueing the whole world
+would mean holding all of it in the retransmit buffer, so the link *is* the flow control and the
+sender reads it.
+
+**The receiver trusts nothing it is told.** Every path off the radio goes through
+`world::safeRelativePath` -- no absolute path, no `..`, no empty component, no backslash, no control
+character, nothing Windows would refuse -- and the check lives next to the write, in
+`ImportStaging::beginFile`, not only at the far end where a modified build would simply not run it.
+Everything lands in `saves/.importing`, which is dot-prefixed and therefore already invisible to
+`listWorlds`, and becomes a world only when the last file has arrived, `detectFormat` agrees it is
+one, and the name is still free. An import interrupted by a flat battery leaves that directory and
+nothing else; `discardStagedImport` removes it beside `recoverConversions`, on the same pass.
+
+**The exporting console is the one that puts the beacon up**, which mirrors Host and Join: the
+console with the thing offers it, and the console that wants it goes looking. That needed a byte in
+the beacon -- `LocalKind::Session` or `WorldOffer` -- so an Import scan is not shown a game and a
+Join list is not shown a folder transfer. Adding it moved the appdata layout, so `link::kProtocol`
+went to 2 and the passphrase to `3dalpha-local-2`, which is exactly what the comment on that
+constant said it was for.
+
+**Two keyboards' worth of thought went into one.** The name an incoming world gets is asked *before*
+the radio is touched, because `swkbdInputText` suspends the console outright and a link that does
+not exist yet cannot be told to expect it. After that there is no applet anywhere in a transfer.
+
+`Menu` grew two screens (`ImportScan`, `Transfer`) and `netModeForHost_` became `NetPurpose`, since
+four buttons now ask the Local-or-Internet question and two of them are not multiplayer at all. The
+world list grew a second pinned row, so every `worldCursor_ - 1` in the file became
+`- kWorldRowFirst`, and `MenuPreview` gained a second empty table row to match.
+
+**Internet is still the disabled row it is for Host**, worded for what was pressed: "Sending a world
+over the internet is not in this build yet."
+
+#### What was run
+
+`tests/world_copy_test.cpp`, eight cases: the path rules; a manifest that does not depend on
+readdir; a 200 KB world crossing intact with the source fingerprinted before and after; the same
+over a wire that loses one frame in five; a name already taken refused before a byte is written,
+with the refusal reaching the sending console rather than being left to a timeout; an abandoned
+import leaving nothing a listing would show; a staging directory refusing a path that would climb
+out of it; and a transfer the sending console stops half way through -- the receiver is *told* rather
+than left to the ten-second silence, throws away what had arrived, and the world that was being sent
+fingerprints the same before and after.
+
+**No hardware run.** Every claim above is host-tested or read off the service's own documentation;
+that two consoles in a room actually find each other has not been tried.
+
+### 55. The Sensitivity row, and a curve that lands exactly on the rate we already had
+
+**Read off the jar, not invented.** `iq.a(F)` -- `EntityRenderer`'s camera update -- scales the mouse
+delta before it reaches the player:
+
+```java
+float f  = settings.c * 0.6F + 0.2F;   // fr.c, the Sensitivity slider, 0..1
+float f1 = f * f * f * 8.0F;
+turn(mouse.dx * f1, mouse.dy * f1 * (settings.d ? -1 : 1));
+```
+
+`fr.c` defaults to **0.5**, and the label `fr` prints is `(int)(c * 200)` with a `%`, plus two named
+ends: `Sensitivity: *yawn*` at zero and `Sensitivity: HYPERSPEED!!!` at one. So the slider a player
+sees is 0%-200%, sitting at 100%.
+
+**The number that made this cheap: at 100% the gain is exactly 1.0.** `0.5 * 0.6 + 0.2 = 0.5`, and
+`0.5³ * 8 = 1`. The two look rates in `platform/ctr/main.cpp` -- 0.012 rad per pixel of touch drag,
+1.8 rad/s at full C-stick deflection -- were tuned on this console and are not derived from anything
+in the jar, so they could not have been replaced by the jar's arithmetic. They did not have to be:
+the curve multiplies them, and it multiplies them by one until the row is moved. A console that never
+touches the row turns exactly as it did before the row existed. The ends work out at 6.4% and 409.6%,
+which is the other thing the cube buys -- the bottom of the slider is slow, not stopped.
+
+**Both devices, one gain.** The touch drag and the C-stick are the only two things in the build that
+turn the camera, and both take it as a parameter. The map's focused circle pad does not: it scrolls a
+map and is not a camera.
+
+`core/settings/sensitivity.{hpp,cpp}` is the curve, the clamp and a1.1.2's labels; `GameSettings`
+gained `look_sensitivity` on the same "-1 means not chosen yet" convention the autosave timer uses,
+so a `3ds.ini` written by an older build gets 100% rather than `*yawn*` -- **0 is a real setting on
+this row**, which is why the absent case cannot be zero. The row is the second on the Options screen,
+next to Render Distance, because those two are what you see and how you see it while the pack and the
+skin are what it is made of. It is on the **pause** Options screen too and applies the moment the menu
+closes, which is the point: a look rate is set by feeling it, and feeling it means going back to the
+world and turning.
+
+#### What was run
+
+`tests/sensitivity_test.cpp`, seven cases -- the identity at 100% asserted as exact float equality
+rather than a tolerance; the curve checked against a second, independent transcription of the jar's
+arithmetic at every step; the two ends; monotonicity; a hand-edited value clamped and snapped to the
+step grid; and both named labels. Two more in `tests/settings_file_test.cpp`: the key round-trips, and
+a file written before the row existed reads back as -1 rather than 0.
+
+**No hardware run.** That 100% still feels right on a console, and that the step is the right size,
+are questions only a 3DS can answer.
+
+### 56. Two things the bottom screen was not taking: the stick, and the press that closed it
+
+**Leaving the inventory jumped.** B is the back button on a focused screen and B is jump, and the two
+were told apart by `Overlay::uiFocused()` -- which is false by the time the body is ticked, because
+the press that made it false was this frame's. Worse, the finger is still on B for several frames
+after that, and jump is a *held* button: even a same-frame snapshot would only have moved the jump to
+the next frame.
+
+So ownership is decided at the press and held until the release. `backHeldByScreen` in the world loop
+is claimed on any frame a screen was up when the buttons were read, and cleared only by B coming up:
+a B that belonged to a screen never becomes a jump, however long it is held afterwards. The pause
+menu needed two lines of its own -- it answers its own press, inside `runPause` or `stepPause`, so
+the loop never sees the edge and the claim is made where the press is answered. **Leaving the pause
+menu with B jumped too**, and had for as long as the pause menu has existed.
+
+**And the stick walked the player while a grid was open.** That was deliberate once -- "the world
+keeps moving underneath" -- and it is wrong: an open `GuiScreen` is what stops a1.1.2 reading the
+movement keys at all, and every focused page here is a screen in that sense. The stick now steps the
+focused cursor exactly as the d-pad does, and the body hears nothing. One guard on `uiFocused()`
+replaced three on `uiFocused`, `mapPanActive` and `containerOpen`, which were three ways of saying
+the same thing.
+
+`Overlay::mapPanActive` gained `&& !containerOpen()` on the way past. A world container is drawn
+*over* the page, so a chest opened while the Map tab happened to be up was a map being panned behind
+a chest whose cursor nothing was moving.
+
+**The rule came out of the overlay.** Which way a diagonal counts, and when a held direction counts
+again, are decisions about how a control feels and need no 3DS to check -- so they are
+`core/gui/stick_cursor.{hpp,cpp}` and the console keeps the two lines that are actually its own,
+`hidCircleRead` and the `KEY_D*` bit. A corner resolves to the axis pushed harder, because the grids
+take one step at a time and a stick held into one would otherwise step twice and land somewhere
+nobody aimed. Nothing here is a1.1.2's: the original has a mouse on these screens and no second
+pointing device to reconcile with the first.
+
+#### What was run
+
+`tests/stick_cursor_test.cpp`, ten cases: the deadzone; the four directions with up being up; a
+diagonal resolving to one step; one axis counting while the other is inside the deadzone; the first
+step landing on the frame it is pushed; the repeat rate measured over a second rather than at one
+edge; release and re-push; turning to a new direction mid-repeat; `reset`; and the timing under a
+late frame and under a stall -- a frozen second must not walk the cursor nine cells when it comes
+back, which is the one the first implementation got wrong.
+
+**No hardware run.** The repeat timings (0.35 s then 0.11 s) are the thing a console would argue
+with; nothing else here is a matter of feel.
 
 ## Standing constraints
 

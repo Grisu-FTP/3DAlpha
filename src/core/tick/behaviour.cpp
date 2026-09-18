@@ -1,4 +1,6 @@
 #include "core/tick/behaviour.hpp"
+
+#include "core/item/registry.hpp"
 #include "core/tick/drop.hpp"
 #include "core/tick/rail.hpp"
 
@@ -1183,6 +1185,45 @@ bool chestActivated(TickWorld& world, i32 x, int y, i32 z)
 
 }  // namespace
 
+void ejectRecord(TickWorld& world, i32 x, int y, i32 z, u8 metadata)
+{
+    if (metadata == 0) {
+        return;
+    }
+    // The music first, so a disc taken out while it is playing goes quiet on
+    // the same frame rather than on the next one -- and so that a jukebox
+    // *broken* while it is playing takes its sound with it, which is the half
+    // of this that was reported from play.
+    world.playRecord(nullptr, x, y, z);
+    // `cn.b(IIII)V` -- setBlockMetadata, which marks the cell for redraw and
+    // tells no neighbour. A jukebox's metadata is not a signal to anything.
+    world.setDataRaw(x, y, z, 0);
+
+    const item::ItemId disc = item::recordItemFor(metadata);
+    if (disc == 0) {
+        // A jukebox holding metadata this version has no disc for -- a later
+        // version's save. The block is emptied and the music stopped; there is
+        // nothing to hand back, and inventing an id would be worse.
+        return;
+    }
+
+    // `float f = 0.7F;` and then three `nextFloat()`s off the **world's**
+    // random, which is why this is written out rather than folded: the draws
+    // are part of the stream every block tick after this one is in step with.
+    constexpr float kSpread = 0.7f;
+    constexpr double kEdge = double(1.0f - kSpread);
+    JavaRandom& rand = world.random();
+    const double dx = double(rand.nextFloat() * kSpread) + kEdge * 0.5;
+    // **Not the same expression as the other two**: 0.2 rather than 0.5, plus
+    // 0.6 -- so the disc comes out of the top of the block. See the header.
+    const double dy = double(rand.nextFloat() * kSpread) + kEdge * 0.2 + 0.6;
+    const double dz = double(rand.nextFloat() * kSpread) + kEdge * 0.5;
+
+    // `delayBeforeCanPickup = 10`, which is what the drop sink already gives
+    // every block drop -- see core/entity/item_entity.hpp.
+    world.spawnItem(double(x) + dx, double(y) + dy, double(z) + dz, u16(disc), 1);
+}
+
 int chestInventoryParts(const TickWorld& world, i32 x, int y, i32 z,
                         ChestPart out[kMaxChestParts])
 {
@@ -1247,6 +1288,18 @@ bool blockActivated(TickWorld& world, i32 x, int y, i32 z)
         // `ku.a(Lcn;IIILdm;)Z` -- the screen on this furnace's tile entity.
         world.openContainer(TickWorld::ContainerKind::Furnace, x, y, z);
         return true;
+    case TickBehaviour::Jukebox: {
+        // `cv.a(Lcn;IIILdm;)Z` -- **a jukebox that is playing gives the disc
+        // back and takes the click; an empty one answers false**, which is how
+        // a disc gets in at all: the click falls through to `lg.a`, the
+        // *item's* onItemUse. See core/item/use.cpp.
+        const u8 metadata = world.dataAt(x, y, z);
+        if (metadata == 0) {
+            return false;
+        }
+        ejectRecord(world, x, y, z, metadata);
+        return true;
+    }
     default:
         // `ly.a(Lcn;IIILdm;)Z` returns false, and so does a staircase, which
         // forwards to the block it is modelled on.
@@ -1352,6 +1405,23 @@ void blockRemoved(TickWorld& world, i32 x, int y, i32 z, BlockId old)
         break;
     case TickBehaviour::Chest:
         chestRemoved(world, x, y, z);
+        break;
+    case TickBehaviour::Jukebox:
+        // **`cv` has no `onBlockRemoval` and this port needs one.** In a1.1.2
+        // there is exactly one way a jukebox is destroyed by a player and it
+        // goes through `dropBlockAsItemWithChance`, which `cv` overrides -- so
+        // putting the eject there alone is faithful *there*. It is not enough
+        // here: this port has a Creative mode, whose break is
+        // `item::destroyBlock` and never drops anything, and a jukebox broken
+        // that way kept playing and swallowed the disc. Reported from play.
+        //
+        // **The metadata is read from the world rather than passed in**, and so
+        // is `dropBlockAsItem`'s copy of this branch, so that whichever of the
+        // two runs first clears it and the second finds nothing. The cell's
+        // block is already air by the time this runs and its metadata is not --
+        // see `TickWorld::writeBlock`, which is why this hook can see the disc
+        // at all.
+        ejectRecord(world, x, y, z, world.dataAt(x, y, z));
         break;
     case TickBehaviour::Furnace:
         // `ku` has no `onBlockRemoval` of its own: `jt.b` forgets the entry and

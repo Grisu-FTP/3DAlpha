@@ -14,6 +14,7 @@
 #include "items.hpp"  // generated; see tools/configure.py
 
 #include <cmath>
+#include <utility>
 
 namespace mc::entity {
 namespace {
@@ -236,6 +237,7 @@ bool MinecartSystem::place(const tick::TickWorld& world, i32 blockX, int blockY,
     Minecart c{};
     c.alive = true;
     c.type = type;
+    c.id = nextId_++;
     c.forwardDirection = 1;
     const double px = double(blockX) + 0.5;
     const double py = double(blockY) + 0.5;
@@ -255,6 +257,109 @@ bool MinecartSystem::place(const tick::TickWorld& world, i32 blockX, int blockY,
     }
     *slot = c;
     return true;
+}
+
+MinecartSystem::CartChest* MinecartSystem::openChestStore(u32 cartId)
+{
+    for (CartChest& chest : chests_) {
+        if (chest.cart == cartId) {
+            return &chest;
+        }
+    }
+    chests_.push_back(CartChest{});
+    chests_.back().cart = cartId;
+    return &chests_.back();
+}
+
+void MinecartSystem::dropChestStore(u32 cartId)
+{
+    for (usize i = 0; i < chests_.size(); ++i) {
+        if (chests_[i].cart == cartId) {
+            chests_[i] = std::move(chests_.back());
+            chests_.pop_back();
+            return;
+        }
+    }
+}
+
+item::ItemStack* MinecartSystem::chestSlots(u32 cartId)
+{
+    const int index = indexOfId(cartId);
+    if (index < 0 || carts_[index].type != MinecartType::Chest) {
+        return nullptr;
+    }
+    return openChestStore(cartId)->slots;
+}
+
+const item::ItemStack* MinecartSystem::chestSlots(u32 cartId) const
+{
+    const int index = indexOfId(cartId);
+    if (index < 0 || carts_[index].type != MinecartType::Chest) {
+        return nullptr;
+    }
+    for (const CartChest& chest : chests_) {
+        if (chest.cart == cartId) {
+            return chest.slots;
+        }
+    }
+    // A chest cart nobody has opened yet has no entry, and an empty chest is
+    // what it holds. The const path cannot make one, so it answers with a
+    // shared empty row rather than with null -- which would read as "not a
+    // chest cart" and is a different answer.
+    static const item::ItemStack kEmpty[kMinecartChestSlots] = {};
+    return kEmpty;
+}
+
+int MinecartSystem::indexOfId(u32 cartId) const
+{
+    if (cartId == 0) {
+        return -1;
+    }
+    for (int i = 0; i < carts_.size(); ++i) {
+        if (carts_[i].alive && carts_[i].id == cartId) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+MinecartSystem::Interaction MinecartSystem::interact(int index, item::ItemId held,
+                                                     double playerX, double playerZ)
+{
+    Interaction out;
+    if (index < 0 || index >= carts_.size() || !carts_[index].alive) {
+        return out;
+    }
+    Minecart& c = carts_[index];
+    switch (c.type) {
+    case MinecartType::Rideable:
+        // `player.mountEntity(this)`, which is `mount` -- and a cart that is
+        // already ridden refuses, so the click does nothing rather than
+        // stealing the seat.
+        if (!mount(index)) {
+            return out;
+        }
+        out.kind = Interaction::Kind::Mounted;
+        return out;
+    case MinecartType::Chest:
+        // `player.displayGUIChest(this)` -- the cart *is* the inventory.
+        openChestStore(c.id);
+        out.kind = Interaction::Kind::Chest;
+        out.cart = c.id;
+        return out;
+    case MinecartType::Furnace:
+        if (held == item::ItemId(mcver::Item::Coal)) {
+            c.fuel += kMinecartCoalFuel;
+            out.spentFuel = true;
+        }
+        // **Outside the `if`**: the aim is taken whether or not there was any
+        // coal, which is how a furnace cart is turned round. See the header.
+        c.pushX = c.x - playerX;
+        c.pushZ = c.z - playerZ;
+        out.kind = Interaction::Kind::Furnace;
+        return out;
+    }
+    return out;
 }
 
 bool MinecartSystem::mount(int index)
@@ -361,9 +466,51 @@ bool MinecartSystem::hitByArrow(const tick::TickWorld& world, int index)
     return attack(world, index, 4);
 }
 
+// `oc.F()` -- **setDead**, which for a chest cart is a chest's own spill by
+// another name: every stack in slot order, from one random point inside the
+// cart per stack, in clumps of 10 to 30 on a small Gaussian with a lift of 0.2.
+//
+// The draws come off the cart pool's generator, which stands in for `oc`'s own
+// `Entity.rand` and for the new item's -- the same substitution
+// `behaviour.cpp`'s `chestRemoved` makes, and for the same reason: a spill must
+// not move the block-tick stream.
+void MinecartSystem::spillChest(const tick::TickWorld& world, const Minecart& c)
+{
+    item::ItemStack* slots = chestSlots(c.id);
+    if (slots == nullptr) {
+        return;
+    }
+    for (int slot = 0; slot < kMinecartChestSlots; ++slot) {
+        item::ItemStack& stack = slots[slot];
+        if (stack.empty()) {
+            continue;
+        }
+        const float fx = rand_.nextFloat() * 0.8f + 0.1f;
+        const float fy = rand_.nextFloat() * 0.8f + 0.1f;
+        const float fz = rand_.nextFloat() * 0.8f + 0.1f;
+        int left = stack.count;
+        while (left > 0) {
+            int clump = rand_.nextInt(21) + 10;
+            if (clump > left) {
+                clump = left;
+            }
+            left -= clump;
+            const double mx = double(float(rand_.nextGaussian()) * 0.05f);
+            const double my = double(float(rand_.nextGaussian()) * 0.05f + 0.2f);
+            const double mz = double(float(rand_.nextGaussian()) * 0.05f);
+            world.spawnItemStack(c.x + double(fx), c.y + double(fy), c.z + double(fz),
+                                 u16(stack.id), clump, stack.damage, mx, my, mz);
+        }
+        stack = item::ItemStack{};
+    }
+}
+
 void MinecartSystem::dropAndRemove(const tick::TickWorld& world, int index)
 {
     const Minecart& c = carts_[index];
+    // **The contents first**, which is `oc.F()`'s own order: `setDead` spills
+    // and only then is the cart gone.
+    spillChest(world, c);
     // `dropItemWithOffset(id, 1, 0.0F)` three times over at most: the cart
     // itself always, and then the container it was, if it was one. **The
     // storage and powered cart items are not what drops** -- a chest cart
@@ -380,6 +527,7 @@ void MinecartSystem::dropAndRemove(const tick::TickWorld& world, int index)
 
 void MinecartSystem::removeAt(int index)
 {
+    dropChestStore(carts_[index].id);
     if (ridden_ == index) {
         ridden_ = -1;
     } else if (ridden_ == carts_.size() - 1) {

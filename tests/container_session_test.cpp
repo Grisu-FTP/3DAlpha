@@ -1,5 +1,6 @@
 // The open container screen: which stack a click lands on, and what it sets off.
 
+#include "core/entity/minecart.hpp"
 #include "core/item/container_session.hpp"
 #include "core/item/inventory.hpp"
 #include "core/item/registry.hpp"
@@ -269,4 +270,87 @@ TEST(a_quick_move_into_a_furnace_puts_fuel_on_the_fire_and_ore_in_the_top)
     CHECK_EQ(int(s.slotAt(inventory, tick::kFurnaceFuelSlot).id), int(Item::Coal));
     CHECK_EQ(int(s.slotAt(inventory, tick::kFurnaceInputSlot).id), int(Block::Cobblestone));
     CHECK_EQ(int(s.slotAt(inventory, tick::kFurnaceInputSlot).count), 4);
+}
+
+// ---------------------------------------------------------------------------
+// A chest minecart, which is a chest whose 27 slots are an entity's
+// ---------------------------------------------------------------------------
+
+// `player.displayGUIChest(minecart)` opens `GuiChest` on the cart itself --
+// `oc` implements `IInventory` -- so the screen, the click rules and the row
+// count are a chest's exactly and only the storage differs.
+TEST(a_chest_cart_opens_a_chests_screen_on_the_carts_own_slots)
+{
+    SceneWorld scene(0, 0);
+    entity::MinecartSystem carts(1234);
+    scene.place(kX, kY, kZ, block::BlockId(Block::Rail), 0);
+    CHECK(carts.place(scene.w(), kX, kY, kZ, entity::MinecartType::Chest));
+    const u32 cart = carts[0].id;
+
+    Inventory inventory;
+    inventory.set(9, item::ItemId(Block::Stone), 20);
+
+    ContainerSession s;
+    CHECK(s.openMinecartChest(carts, cart));
+    CHECK(s.kind() == item::ScreenKind::MinecartChest);
+    CHECK_EQ(s.containerSlots(), entity::kMinecartChestSlots);
+    CHECK_EQ(s.chestRows(), 3);
+    CHECK_EQ(s.minecartChest(), cart);
+
+    // Twenty stone out of the backpack and into the cart's first slot.
+    s.click(nullptr, inventory, backpack(s, 0), 0);
+    CHECK_EQ(int(s.cursor().count), 20);
+    s.click(nullptr, inventory, 0, 0);
+    CHECK(s.cursor().empty());
+
+    // **It reached the cart, not just the screen's copy.** This is the whole
+    // of what `push` is for: the stacks the screen edits are a copy, and a
+    // click writes them back through the pool.
+    const item::ItemStack* slots = carts.chestSlots(cart);
+    CHECK(slots != nullptr);
+    CHECK_EQ(int(slots[0].id), int(Block::Stone));
+    CHECK_EQ(int(slots[0].count), 20);
+
+    // And a fresh screen on the same cart sees it.
+    ContainerSession again;
+    CHECK(again.openMinecartChest(carts, cart));
+    CHECK_EQ(int(again.slotAt(inventory, 0).count), 20);
+}
+
+// A cart that is not a chest cart, and an id nothing carries, both refuse --
+// and refusing is what the caller turns into "no screen opened".
+TEST(only_a_chest_cart_opens_a_screen)
+{
+    SceneWorld scene(0, 0);
+    entity::MinecartSystem carts(1234);
+    scene.place(kX, kY, kZ, block::BlockId(Block::Rail), 0);
+    CHECK(carts.place(scene.w(), kX, kY, kZ, entity::MinecartType::Furnace));
+
+    ContainerSession s;
+    CHECK(!s.openMinecartChest(carts, carts[0].id));
+    CHECK(!s.openMinecartChest(carts, 4242));
+    CHECK(!s.isOpen());
+}
+
+// **The screen closes when the cart goes**, which is the same answer a chest
+// gives for a block blown up under it: every stack taken out of a container
+// that is no longer there would be a copy.
+TEST(a_chest_carts_screen_closes_when_the_cart_is_gone)
+{
+    SceneWorld scene(0, 0);
+    entity::MinecartSystem carts(1234);
+    scene.place(kX, kY, kZ, block::BlockId(Block::Rail), 0);
+    CHECK(carts.place(scene.w(), kX, kY, kZ, entity::MinecartType::Chest));
+    const u32 cart = carts[0].id;
+
+    ContainerSession s;
+    CHECK(s.openMinecartChest(carts, cart));
+    CHECK(s.pull(nullptr));
+
+    // Five bare-handed hits break a cart -- see tests/minecart_test.cpp.
+    for (int i = 0; i < 5; ++i) {
+        carts.attack(scene.w(), 0, 1);
+    }
+    CHECK_EQ(carts.count(), 0);
+    CHECK(!s.pull(nullptr));
 }

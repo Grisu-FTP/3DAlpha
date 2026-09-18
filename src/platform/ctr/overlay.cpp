@@ -5,7 +5,9 @@
 #include "core/item/registry.hpp"
 #include "core/util/console_text.hpp"
 #include "core/util/coord_text.hpp"
+#include "core/net/session.hpp"
 #include "platform/ctr/heap.hpp"
+#include "platform/ctr/local_link.hpp"
 
 #include <3ds.h>
 
@@ -751,10 +753,9 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
                 focusGrid_ = pageHasGrid();
                 paletteCursor_ = 0;
                 itemsCursor_ = 0;
-                // The banner has to appear over whatever is already drawn, and
-                // the page below it has to come back when it goes -- so both
-                // directions are a full redraw. It happens on a button press,
-                // not in a loop.
+                // The page draws a cursor while it is focused and none when
+                // it is not, so both directions are a full redraw. It happens
+                // on a button press, not in a loop.
                 dirty_ = true;
             }
             return false;
@@ -879,6 +880,10 @@ bool Overlay::editSignViaKeyboard(world::SignStore* store, int index)
     // starts as -- so there is nothing here for a filter to refuse.
 
     char text[kMaxText];
+    // **The session is told before the applet starts, not after.** This
+    // suspends the whole application for as long as somebody is typing; see
+    // `ctr::linkPausing`.
+    linkPausing(net::link::kAppletAwayMs);
     const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
 
     // The same re-init `teleportViaKeyboard` documents at length: libctru's
@@ -945,6 +950,10 @@ bool Overlay::teleportViaKeyboard(Camera* camera)
     swkbdSetFilterCallback(&swkbd, validateCoordinates, nullptr);
 
     char text[kMaxText];
+    // **The session is told before the applet starts, not after.** This
+    // suspends the whole application for as long as somebody is typing; see
+    // `ctr::linkPausing`.
+    linkPausing(net::link::kAppletAwayMs);
     const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
 
     // **Re-init the console before anything else.** libctru's console caches
@@ -986,6 +995,20 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
                    const Camera& camera, const FrameTiming& timing, float frameMs,
                    float timeOfDay, const DebugSettings& settings)
 {
+    // **What the frame is claimed to be made of**, and therefore what is left.
+    // `blockedMs` and `submitMs` are the renderer's own halves of `drawFrame`;
+    // the other three are main.cpp's. The GPU numbers are deliberately not in
+    // here: they run alongside the CPU rather than inside it, so subtracting
+    // them would count the same milliseconds twice in the other direction.
+    //
+    // `frameMs` is measured one loop-top to the next, so a single frame's
+    // residual carries part of the previous frame and can come out negative.
+    // Over a block of twenty it does not, and the clamp is there for the frame
+    // it does rather than as a correction to the mean.
+    const float accounted = timing.walkMs + timing.streamMs + timing.tickMs
+                            + renderer.submitMs() + renderer.blockedMs();
+    const float other = frameMs > accounted ? frameMs - accounted : 0.0f;
+
     accum_.frame += frameMs;
     accum_.draw += renderer.gpuDrawMs();
     accum_.process += renderer.gpuProcessMs();
@@ -994,13 +1017,28 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
     accum_.walk += timing.walkMs;
     accum_.stream += timing.streamMs;
     accum_.tick += timing.tickMs;
+    accum_.other += other;
+
+    peak_.frame = frameMs > peak_.frame ? frameMs : peak_.frame;
+    peak_.draw = renderer.gpuDrawMs() > peak_.draw ? renderer.gpuDrawMs() : peak_.draw;
+    peak_.process = renderer.gpuProcessMs() > peak_.process ? renderer.gpuProcessMs()
+                                                            : peak_.process;
+    peak_.blocked = renderer.blockedMs() > peak_.blocked ? renderer.blockedMs() : peak_.blocked;
+    peak_.submit = renderer.submitMs() > peak_.submit ? renderer.submitMs() : peak_.submit;
+    peak_.walk = timing.walkMs > peak_.walk ? timing.walkMs : peak_.walk;
+    peak_.stream = timing.streamMs > peak_.stream ? timing.streamMs : peak_.stream;
+    peak_.tick = timing.tickMs > peak_.tick ? timing.tickMs : peak_.tick;
+    peak_.other = other > peak_.other ? other : peak_.other;
 
     const bool tick = ++samples_ >= kSamplesPerUpdate;
     if (tick) {
         const float n = float(samples_);
         shown_ = {accum_.frame / n,  accum_.draw / n,   accum_.process / n, accum_.blocked / n,
-                  accum_.submit / n, accum_.walk / n,    accum_.stream / n,  accum_.tick / n};
+                  accum_.submit / n, accum_.walk / n,    accum_.stream / n,  accum_.tick / n,
+                  accum_.other / n};
+        shownPeak_ = peak_;
         accum_ = Accum{};
+        peak_ = Accum{};
         samples_ = 0;
 
         // What the cache did over the block that just ended, against what it
@@ -1102,14 +1140,22 @@ void Overlay::releaseFocus()
     // of -- the stick walks again the moment X is let go.
     map_.clearPan();
 
-    // A full clear rather than the two page flags. The banner *darkened* the
-    // pixels underneath it, which is not something that can be undone by
-    // drawing the banner again; only repainting the page restores them.
+    // A full clear rather than the two page flags: the cursor and the map's
+    // pan window are drawn *into* the page, so the only way to take them away
+    // is to paint the page again.
     dirty_ = true;
 }
 
 void Overlay::tickFocus(float dt)
 {
+    if (uiCursorActive()) {
+        tickCursorStick(dt);
+        return;
+    }
+    // Centred as far as the cursor is concerned, so the next time a grid is
+    // focused the first push is a fresh one rather than a repeat left over from
+    // whatever the stick was doing on the way out.
+    stick_.reset();
     if (!mapPanActive()) {
         return;
     }
@@ -1134,6 +1180,36 @@ void Overlay::tickFocus(float dt)
     // Pad +y is *up* on the stick, which is north, which is -Z.
     map_.pan(double(x) * blocksWide * windowsPerSecond * double(dt),
              double(-z) * blocksHigh * windowsPerSecond * double(dt));
+}
+
+// **The circle pad, walked like a d-pad.** The focused screens are grids and
+// rows, and a grid is crossed by stepping -- so the stick does what the d-pad
+// does rather than an analogue thing of its own, and a player who was holding
+// it to walk does not have to find another control to move a cursor.
+//
+// The rule is core's -- see core/gui/stick_cursor.hpp for which way a diagonal
+// counts and how the repeat is timed. This is the two lines that are actually
+// the console's: reading the pad, and the `KEY_D*` bit the screens below expect
+// a direction to arrive as.
+void Overlay::tickCursorStick(float dt)
+{
+    circlePosition pad;
+    hidCircleRead(&pad);
+
+    // Raw rather than through `padAxis`: the deadzone is part of the rule and
+    // is applied on the other side of this call, not twice.
+    const float x = float(pad.dx) / 156.0f;
+    const float y = float(pad.dy) / 156.0f;
+
+    u32 direction = 0;
+    switch (stick_.step(x, y, dt)) {
+    case gui::StickStep::Left:  direction = KEY_DLEFT; break;
+    case gui::StickStep::Right: direction = KEY_DRIGHT; break;
+    case gui::StickStep::Up:    direction = KEY_DUP; break;
+    case gui::StickStep::Down:  direction = KEY_DDOWN; break;
+    case gui::StickStep::None:  return;
+    }
+    handleFocusedInput(direction);
 }
 
 // True when the press was the focused screen's and the caller should stop.
@@ -1519,6 +1595,35 @@ void Overlay::openContainer(tick::TickWorld& world, tick::TickWorld::ContainerKi
     // The first of the screen's own slots that takes a stack: a crafting
     // grid's first cell rather than its take-only result.
     containerCursor_ = kind == tick::TickWorld::ContainerKind::Workbench ? 1 : 0;
+    shownCook_ = -1;
+    shownBurn_ = -1;
+    focus_ = true;
+    focusGrid_ = true;
+    dirty_ = true;
+}
+
+void Overlay::openMinecartChest(tick::TickWorld& world, entity::MinecartSystem& carts,
+                                u32 cartId)
+{
+    if (!hasHotbar() || dead_) {
+        return;
+    }
+    closeSession();
+    heldSlot_ = -1;
+    throwSlot_ = -1;
+    // **The world is still held**, even though the cart's slots do not live in
+    // it: everything else the screen does -- dropping what a close leaves,
+    // syncing the inventory -- goes through it exactly as a chest's does.
+    containerWorld_ = &world;
+
+    if (!session_.openMinecartChest(carts, cartId)) {
+        syncInventorySession();
+        return;
+    }
+    session_.takeChanged();
+    containerScroll_ = 0;
+    gui::buildContainerLayout(session_, hud::pageTop(), &layout_, containerScroll_);
+    containerCursor_ = 0;
     shownCook_ = -1;
     shownBurn_ = -1;
     focus_ = true;
@@ -1935,9 +2040,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
     if (cleared) {
         // The console first: `\x1b[2J` blanks every cell, and every panel below
         // is drawn over the top of that. Doing it the other way round would
-        // erase the panels. The focus banner is drawn at the *end* of this
-        // function rather than here, because it darkens the backdrop and has to
-        // find it already down.
+        // erase the panels.
         clearScreen();
         hud::drawBackdrop(screen, haveBackdrop_ ? backdrop_ : nullptr);
         hud::drawTabs(screen, tabs());
@@ -1982,9 +2085,6 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         bodyDirty_ = false;
         hotbarDirty_ = false;
         progressDirty_ = false;
-        if (cleared && focus_) {
-            drawFocusBanner(screen);
-        }
         return drewContainer;
     }
 
@@ -1998,9 +2098,8 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
     switch (playerPage_) {
     case PlayerPage::Map:
         // The map times and flushes its own writes -- see MapScreen::draw --
-        // and it is the one page here that draws on most frames. **Its answer
-        // matters now**: the focus banner is drawn over the map, so a redraw
-        // this function could not see would quietly erase it.
+        // and it is the one page here that draws on most frames, which is why
+        // its answer is folded into this function's rather than assumed.
         drew = map_.draw(screen, camera, cleared) || drew;
         break;
     case PlayerPage::Items:
@@ -2039,33 +2138,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         drew = true;
     }
 
-    // **On a clear and never otherwise.** The row it sits in is reserved --
-    // the backdrop paints it on a clear and no page paints it afterwards, see
-    // `hud::bannerTop` -- so the banner drawn there survives every page redraw
-    // that follows. Everything that changes what it says -- the focus going on
-    // or off, and a change of tab -- sets `dirty_`, so there is no state where
-    // the strip and the page disagree.
-    if (cleared && focus_) {
-        drawFocusBanner(screen);
-    }
     return drew;
-}
-
-void Overlay::drawFocusBanner(const gui::Surface& surface) const
-{
-    // Forty columns exactly, which is the screen. What the buttons mean differs
-    // by page, and saying so is most of the value: the map's stick scrolls and
-    // the other pages' d-pad picks, and neither is guessable.
-    if (session_.isOpen()) {
-        hud::drawFocusBanner(surface, containerOpen()
-                                          ? " A take, Y half, X move, B close"
-                                          : " A take, Y half, X move, B back");
-        return;
-    }
-    const char* label = playerPage_ == PlayerPage::Map
-                            ? " Bottom screen focused: pad pans, B back"
-                            : " Bottom screen focused: d-pad, A, B back";
-    hud::drawFocusBanner(surface, label);
 }
 
 bool Overlay::drawLook(const gui::Surface& surface, const Camera& camera, bool cleared)
@@ -2115,14 +2188,32 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
         int(shown_.process), tenths(shown_.process) % 10);
     // The frame minus the vsync wait. If `busy` is well under 16.7 the console
     // is at its refresh rate and there is nothing to fix; if `vsync` is near
-    // zero the CPU is the thing missing frames, and the three numbers under it
+    // zero the CPU is the thing missing frames, and the four numbers under it
     // say which part.
-    const float busy = shown_.walk + shown_.stream + shown_.tick + shown_.submit;
+    //
+    // **`other` is in it, which is what makes the row mean anything.** `busy`
+    // used to be the four measured buckets and nothing else, so it answered a
+    // question nobody asked: not "what did the CPU spend" but "what did the
+    // CPU spend in the parts of the loop that happen to be instrumented". A
+    // frame could read 25 ms over a 15 ms `CPU busy` and every line on the page
+    // was telling the truth. It also used to double-count the tick, which the
+    // stream bucket already contained; main.cpp subtracts it there now.
+    const float busy =
+        shown_.walk + shown_.stream + shown_.tick + shown_.submit + shown_.other;
     row(r++, "  CPU busy %2d.%d ms  vsync %2d.%d ms", int(busy), tenths(busy) % 10,
         int(shown_.blocked), tenths(shown_.blocked) % 10);
     row(r++, "  walk %d.%d  stream %2d.%d  submit %d.%d", int(shown_.walk),
         tenths(shown_.walk) % 10, int(shown_.stream), tenths(shown_.stream) % 10,
         int(shown_.submit), tenths(shown_.submit) % 10);
+    // **The rest of the loop, and the worst single frame behind the means.**
+    // `other` is everything outside the instrumented spans -- input, the net
+    // pump, the map sampler, this console's own printing. `frm` against the
+    // `frame` mean two rows up is the vsync quantum made visible: 16.7 and 33.4
+    // are the only two frame times the top screen has, so a mean between them
+    // is a mixture and `frm` says which of the two the bad half was.
+    row(r++, "  other %2d.%d ms  peak frm %2d.%d tk %2d.%d", int(shown_.other),
+        tenths(shown_.other) % 10, int(shownPeak_.frame), tenths(shownPeak_.frame) % 10,
+        int(shownPeak_.tick), tenths(shownPeak_.tick) % 10);
     // **The tick, separately, with what the pool and the tick refused.** All
     // four of these were invisible on a console and all four are things that
     // cost a frame or lose behaviour when they are not zero: the tick catching
@@ -2153,12 +2244,13 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     // **The mobs**, which nothing else on this console reports. `path` is the
     // pathfinder's lifetime search count and `ex` the ones that hit the
     // 1,024-node budget -- `ex` climbing means the budget is shaping mob
-    // movement rather than the world is. `hurt` is what a monster has cost the
-    // player so far, and it is a count rather than a subtraction because there
-    // is no player health in this build yet.
+    // movement rather than the world is. `pk` is the most searches any single
+    // tick has run, which is the number the removed per-tick cap used to hold
+    // at one. `hurt` is what a monster has cost the player so far.
     if (mobStats_.animals != 0 || mobStats_.monsters != 0 || mobStats_.hits != 0) {
-        row(r++, "  mobs %3d + %3d  path %5u/%u", mobStats_.animals, mobStats_.monsters,
-            mobStats_.searches, mobStats_.exhausted);
+        row(r++, "  mobs %3d + %3d  path %5u/%u pk %d", mobStats_.animals,
+            mobStats_.monsters, mobStats_.searches, mobStats_.exhausted,
+            mobStats_.peakSearches);
         if (mobStats_.hits != 0) {
             row(r++, "  hurt %4d over %d hit(s)", mobStats_.taken, mobStats_.hits);
         }
@@ -2341,8 +2433,15 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     // block or turns far enough to move the marker, so a figure near 700 is the
     // copy and a figure in the thousands is every patch being redrawn -- a
     // texture pack change, or the grid above being toggled.
-    row(r++, "map   %5lu us a redraw",
-        static_cast<unsigned long>(map_.lastDrawMicros()));
+    //
+    // **And what the card is filling in beside it.** The map reaches past the
+    // render distance, so the band the grid can never answer for is read off
+    // the card a chunk at a time at the lowest priority there is; `fill` is how
+    // many chunks are still waiting to be asked about and how many have come
+    // back with ground in them. See map_screen.hpp.
+    row(r++, "map   %5lu us a redraw fill %4d/%5lu",
+        static_cast<unsigned long>(map_.lastDrawMicros()), map_.fillWaiting(),
+        static_cast<unsigned long>(map_.filled()));
 
     blank(r++);
     // **Two rows, because the Far Lands are the point.** x reaches 12,550,824
@@ -2449,14 +2548,20 @@ int Overlay::drawStorage(const render::WorldStreamer& world)
     blank(r++);
     row(r++, "autosave %s", world.autosaveSeconds() > 0 ? "on" : "off");
 
-    // **Audio, and specifically the two numbers a host cannot answer.**
+    // **Audio, and specifically the numbers a host cannot answer.**
     //
     // The decode thread runs below the main thread, on core 0 on an Old 3DS
-    // because a 3DSX has nowhere else to put it, and the claim that a 186 ms
-    // ring makes that safe is the one thing in the subsystem that only hardware
-    // can settle. `under` is that claim being wrong, counted; `decode` is what a
-    // 23 ms buffer costs this console, which is the number the thread priority
-    // should be argued from rather than guessed at. See ctr/audio.hpp.
+    // because a 3DSX has nowhere else to put it, and whether a ring deep enough
+    // makes that safe is the one thing in the subsystem only hardware can
+    // settle. It did not: the music skipped under load, which is what the boost
+    // in ctr/audio.hpp exists for.
+    //
+    // So four numbers, and each answers a different question. `decode` is what
+    // one 23 ms buffer costs this console -- the figure the thread policy has to
+    // be argued from. `low` is the fewest buffers the DSP held at any point in
+    // this track: comfortably above kBoostBelow means the ring was never tested.
+    // `boost` is how often the decoder had to outrank the frame loop to stay
+    // ahead, and `under` is it having failed anyway -- a gap the player heard.
     blank(r++);
     if (audio_ == nullptr) {
         row(r++, "audio  not built");
@@ -2466,6 +2571,8 @@ int Overlay::drawStorage(const render::WorldStreamer& world)
             row(r++, "audio  on   %s", audio_->musicPlaying() ? "playing" : "quiet");
             row(r++, "  decode %4lu us / buffer",
                 static_cast<unsigned long>(audio_->decodeMicros()));
+            row(r++, "  ring   %2d of %2d low  boost %4lu", audio_->ringLow(),
+                kRingBuffers, static_cast<unsigned long>(audio_->boosts()));
             row(r++, "  under  %4lu", static_cast<unsigned long>(audio_->underruns()));
             break;
         case AudioStatus::NoFirmware:

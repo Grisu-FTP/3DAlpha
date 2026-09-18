@@ -6,6 +6,7 @@
 #include "core/block/model.hpp"
 #include "core/block/registry.hpp"
 #include "core/item/registry.hpp"
+#include "core/mesh/box.hpp"
 #include "core/render/draw_budget.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/math_helper.hpp"
@@ -161,7 +162,10 @@ int addSpunBox(const AABB& box, double cx, double cy, double cz, float scale, fl
             // A cactus, whose sides and caps are three boxes of the same cell.
             continue;
         }
-        const TileUv uv = tileUv(int(tiles[face]));
+        // The box's own slice of the tile, not the whole of it -- see
+        // `mesh::boxTileUv`. A fence on the ground is a post, and a post shows
+        // the strip of the plank tile it covers.
+        const mesh::BoxTileUv uv = mesh::boxTileUv(int(tiles[face]), box, face);
         for (int c = 0; c < 4; ++c) {
             const int idx = kFace[face][c];
             // `mesh::kFaceCornerUV`, which is the same four pairs for every

@@ -2,6 +2,8 @@
 
 #include "core/tick/drop.hpp"
 
+#include "core/tick/behaviour.hpp"
+
 #include "core/entity/primed_tnt.hpp"
 #include "core/tick/tick_world.hpp"
 
@@ -54,6 +56,23 @@ u16 idDropped(const mcver::BlockDrop& rule, u8 metadata, JavaRandom& rand)
 void dropBlockAsItem(TickWorld& world, i32 x, int y, i32 z, block::BlockId self, u8 metadata,
                      float chance)
 {
+    // **`cv.a(Lcn;IIIIF)V` -- the jukebox's override of this very method**, and
+    // it is the only one in a1.1.2. The disc comes out *before* the block does,
+    // and its three draws come off the same random the loop below uses, so the
+    // order is the behaviour and not a tidy-up. See `tick::ejectRecord`.
+    //
+    // **The metadata is re-read rather than taken from the argument**, which is
+    // the one thing here that is not the jar's. `blockRemoved` carries the same
+    // branch -- it has to, because this port's Creative break drops nothing at
+    // all -- and `metadata` is the *caller's saved copy*, which for a break is
+    // still the old value long after the cell went to air. Trusting it would
+    // hand the player a second disc. Whichever of the two runs first clears the
+    // cell, and the other then finds a zero: an explosion reaches this while
+    // the jukebox is still standing, and a break reaches `blockRemoved` first.
+    if (block::def(self).tick == block::TickBehaviour::Jukebox) {
+        ejectRecord(world, x, y, z, world.dataAt(x, y, z));
+    }
+
     const mcver::BlockDrop& rule = dropRule(self);
     JavaRandom& rand = world.random();
 

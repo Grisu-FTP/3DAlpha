@@ -454,6 +454,101 @@ TEST(the_minecart_meshes_into_six_boxes)
     CHECK(hi[1] - lo[1] < 1.0);
 }
 
+// **A chest or furnace cart carries its block, and a plain one does not.**
+// `kt.a` draws it between the tilt and the cart's own model, off terrain.png
+// rather than the cart sheet -- which is why it is a second builder.
+TEST(only_a_special_cart_carries_a_block_and_it_sits_in_the_cart)
+{
+    Track track;
+    CHECK(track.carts.place(track.w(), 0, 64, 0, MinecartType::Rideable));
+
+    mesh::DetailVertex verts[render::kMinecartBlockMaxVertices];
+    CHECK_EQ(render::buildMinecartBlocks(track.carts, track.w(), 0.0, 64.0, 0.0, 0.0f, verts,
+                                         render::kMinecartBlockMaxVertices),
+             0);
+
+    Track chestTrack;
+    CHECK(chestTrack.carts.place(chestTrack.w(), 0, 64, 0, MinecartType::Chest));
+    const int written =
+        render::buildMinecartBlocks(chestTrack.carts, chestTrack.w(), 0.0, 64.0, 0.0, 0.0f,
+                                    verts, render::kMinecartBlockMaxVertices);
+    CHECK_EQ(written, render::kMinecartBlockVerticesEach);
+
+    double lo[3] = {1e30, 1e30, 1e30};
+    double hi[3] = {-1e30, -1e30, -1e30};
+    for (int i = 0; i < written; ++i) {
+        const double p[3] = {double(verts[i].x) / double(mesh::kDetailUnitsPerBlock),
+                             double(verts[i].y) / double(mesh::kDetailUnitsPerBlock),
+                             double(verts[i].z) / double(mesh::kDetailUnitsPerBlock)};
+        for (int a = 0; a < 3; ++a) {
+            lo[a] = p[a] < lo[a] ? p[a] : lo[a];
+            hi[a] = p[a] > hi[a] ? p[a] : hi[a];
+        }
+    }
+    // `glScalef(0.75)` on a unit cube, and the same on all three axes because
+    // a quarter turn about Y does not change a cube's extent.
+    for (int a = 0; a < 3; ++a) {
+        CHECK(hi[a] - lo[a] > 0.7);
+        CHECK(hi[a] - lo[a] < 0.8);
+    }
+    // **Lifted out of the floor**: `glTranslatef(0, 0.3125, 0)` inside the
+    // scale, so the block's middle is 0.234375 above the cart's own drawn
+    // origin -- which is where the cart's model is centred too, so the two
+    // meshes' y centres differ by exactly that.
+    mesh::DetailVertex cartVerts[render::kMinecartMaxVertices];
+    const int cartWritten =
+        render::buildMinecarts(chestTrack.carts, chestTrack.w(), 0.0, 64.0, 0.0, 0.0f,
+                               cartVerts, render::kMinecartMaxVertices);
+    CHECK_EQ(cartWritten, render::kMinecartVerticesEach);
+    double cartLo = 1e30;
+    double cartHi = -1e30;
+    for (int i = 0; i < cartWritten; ++i) {
+        const double y = double(cartVerts[i].y) / double(mesh::kDetailUnitsPerBlock);
+        cartLo = y < cartLo ? y : cartLo;
+        cartHi = y > cartHi ? y : cartHi;
+    }
+    // The block sits above the cart's floor and stands proud of its sides,
+    // which is what a chest in a cart looks like from outside.
+    CHECK(lo[1] > cartLo);
+    CHECK(hi[1] > cartHi);
+    const double lift = (lo[1] + hi[1]) * 0.5 - (cartLo + cartHi) * 0.5;
+    CHECK(lift > 0.2339);
+    CHECK(lift < 0.2349);
+}
+
+// The block comes off terrain.png, so its tiles are the block table's and
+// nothing here may reach into the cart page.
+TEST(the_carried_block_is_textured_from_its_own_block_table_row)
+{
+    Track track;
+    CHECK(track.carts.place(track.w(), 0, 64, 0, MinecartType::Furnace));
+
+    mesh::DetailVertex verts[render::kMinecartBlockMaxVertices];
+    const int written =
+        render::buildMinecartBlocks(track.carts, track.w(), 0.0, 64.0, 0.0, 0.0f, verts,
+                                    render::kMinecartBlockMaxVertices);
+    CHECK_EQ(written, render::kMinecartBlockVerticesEach);
+
+    const block::BlockDef& furnace = block::def(block::BlockId(mcver::Block::Furnace));
+    // Every u and v lands inside one of the block's own six tiles.
+    for (int i = 0; i < written; ++i) {
+        bool inSomeTile = false;
+        for (int face = 0; face < 6; ++face) {
+            const int tile = int(furnace.faces[face]);
+            const int col = tile % mesh::kAtlasTilesPerEdge;
+            const int row = tile / mesh::kAtlasTilesPerEdge;
+            const int u0 = col * mesh::kUvUnitsPerTile;
+            const int v0 = row * mesh::kUvUnitsPerTile;
+            if (verts[i].u >= u0 && verts[i].u <= u0 + mesh::kUvUnitsPerTile
+                && verts[i].v >= v0 && verts[i].v <= v0 + mesh::kUvUnitsPerTile) {
+                inSomeTile = true;
+                break;
+            }
+        }
+        CHECK(inSomeTile);
+    }
+}
+
 TEST(every_minecart_uv_lands_inside_the_cart_page)
 {
     Track track;
@@ -686,7 +781,10 @@ TEST(the_nearest_entity_wins_whichever_pool_it_is_in)
           == item::EntityTarget::Kind::Boat);
 }
 
-TEST(a_right_click_on_a_cart_mounts_it_and_a_chest_cart_refuses)
+// `oc.a(Ldm;)Z` is one method with three bodies, and this is the first two:
+// a plain cart is mounted and a chest cart opens its slots instead -- it takes
+// the click either way, which is why the click never reaches the block behind.
+TEST(a_right_click_on_a_cart_mounts_it_and_a_chest_cart_opens_instead)
 {
     Track track;
     CHECK(track.carts.place(track.w(), 0, 64, 0, MinecartType::Rideable));
@@ -697,11 +795,142 @@ TEST(a_right_click_on_a_cart_mounts_it_and_a_chest_cart_refuses)
     item::EntityTarget target;
     target.kind = item::EntityTarget::Kind::Minecart;
     target.index = 0;
-    CHECK(item::interactWithEntity(track.w(), target, pools, 0).taken);
+    const item::EntityInteraction mounted =
+        item::interactWithEntity(track.w(), target, pools, 0);
+    CHECK(mounted.taken);
+    CHECK_EQ(mounted.opensMinecartChest, u32(0));
     CHECK_EQ(track.carts.riddenIndex(), 0);
+
     target.index = 1;
-    CHECK(!item::interactWithEntity(track.w(), target, pools, 0).taken);
+    const item::EntityInteraction opened =
+        item::interactWithEntity(track.w(), target, pools, 0);
+    CHECK(opened.taken);
+    // The cart's own id, which is what a screen is opened on -- not its index,
+    // which the pool's swap-with-last removal invalidates.
+    CHECK_EQ(opened.opensMinecartChest, track.carts[1].id);
+    CHECK(track.carts.chestSlots(opened.opensMinecartChest) != nullptr);
+    // And it did not steal the seat.
     CHECK_EQ(track.carts.riddenIndex(), 0);
+}
+
+// The third body, and the half of it that reads as a bug until the two lines
+// outside the `if` are noticed: **the aim is taken whether or not the coal
+// was**, which is how a furnace cart is turned round.
+TEST(a_furnace_cart_takes_coal_and_is_aimed_away_from_the_player)
+{
+    Track track;
+    CHECK(track.carts.place(track.w(), 0, 64, 0, MinecartType::Furnace));
+    item::EntityPools pools;
+    pools.minecarts = &track.carts;
+
+    item::EntityTarget target;
+    target.kind = item::EntityTarget::Kind::Minecart;
+    target.index = 0;
+
+    CHECK_EQ(track.carts[0].fuel, 0);
+    // An empty hand: no fuel, and the cart still points away from the player.
+    const item::EntityInteraction empty =
+        item::interactWithEntity(track.w(), target, pools, 0, -4.0, 0.0);
+    CHECK(empty.taken);
+    CHECK(!empty.spentFuel);
+    CHECK_EQ(track.carts[0].fuel, 0);
+    CHECK(track.carts[0].pushX > 0.0);
+
+    // A piece of coal: 1200 ticks of pushing, and the caller is told to spend
+    // the stack.
+    const item::EntityInteraction fed = item::interactWithEntity(
+        track.w(), target, pools, item::ItemId(mcver::Item::Coal), 4.0, 0.0);
+    CHECK(fed.taken);
+    CHECK(fed.spentFuel);
+    CHECK_EQ(track.carts[0].fuel, entity::kMinecartCoalFuel);
+    // Clicked from the other side, so it now points the other way.
+    CHECK(track.carts[0].pushX < 0.0);
+
+    // Anything else is not fuel.
+    const item::EntityInteraction stone =
+        item::interactWithEntity(track.w(), target, pools, 1, 4.0, 0.0);
+    CHECK(stone.taken);
+    CHECK(!stone.spentFuel);
+    CHECK_EQ(track.carts[0].fuel, entity::kMinecartCoalFuel);
+}
+
+// A plain cart has no inventory at all, which is the other half of what
+// `chestSlots` answers.
+TEST(only_a_chest_cart_has_slots)
+{
+    Track track;
+    CHECK(track.carts.place(track.w(), 0, 64, 0, MinecartType::Rideable));
+    CHECK(track.carts.place(track.w(), 0, 64, 5, MinecartType::Chest));
+    CHECK(track.carts.chestSlots(track.carts[0].id) == nullptr);
+    CHECK(track.carts.chestSlots(track.carts[1].id) != nullptr);
+    // An id nothing carries.
+    CHECK(track.carts.chestSlots(0) == nullptr);
+    CHECK(track.carts.chestSlots(9999) == nullptr);
+    // Ids are not indices and are not reused.
+    CHECK(track.carts[0].id != track.carts[1].id);
+    CHECK_EQ(track.carts.indexOfId(track.carts[1].id), 1);
+}
+
+// Everything the cart's stack sink was handed: `oc.F()` throws its contents
+// through the same seam a broken chest does.
+struct CartSpill {
+    int clumps = 0;
+    int biggest = 0;
+    int stone = 0;
+    int diamonds = 0;
+    static void sink(void* ctx, double, double, double, u16 item, int count, i16, double,
+                     double, double)
+    {
+        CartSpill& self = *static_cast<CartSpill*>(ctx);
+        ++self.clumps;
+        self.biggest = count > self.biggest ? count : self.biggest;
+        if (item == u16(mcver::Block::Stone)) {
+            self.stone += count;
+        } else if (item == u16(mcver::Item::Diamond)) {
+            self.diamonds += count;
+        }
+    }
+};
+
+// `oc.F()` -- **setDead**, which for a chest cart is a chest's own spill by
+// another name: every stack, in clumps of 10 to 30, thrown from a point inside
+// the cart. It runs before the cart's own drop, which is `setDead`'s order.
+TEST(a_broken_chest_cart_spills_what_was_in_it)
+{
+    Track track;
+    mc::test::DropCatcher caught;
+    caught.watch(track.w());
+    CartSpill spilled;
+    track.w().setStackSink(&CartSpill::sink, &spilled);
+
+    CHECK(track.carts.place(track.w(), 0, 64, 0, MinecartType::Chest));
+    const u32 cart = track.carts[0].id;
+    item::ItemStack* slots = track.carts.chestSlots(cart);
+    CHECK(slots != nullptr);
+    slots[0].id = i16(mcver::Block::Stone);
+    slots[0].count = 64;
+    slots[5].id = i16(mcver::Item::Diamond);
+    slots[5].count = 3;
+
+    for (int i = 0; i < 5; ++i) {
+        track.carts.attack(track.w(), 0, 1);
+    }
+    CHECK_EQ(track.carts.count(), 0);
+
+    // The cart and the chest, through the ordinary drop sink.
+    CHECK_EQ(caught.countOf(u16(mcver::Item::Minecart)), 1);
+    CHECK_EQ(caught.countOf(u16(mcver::Block::Chest)), 1);
+
+    // And the contents, through the stack sink -- 64 stone in clumps of 10 to
+    // 30, so at least three of them, and the three diamonds in one.
+    CHECK_EQ(spilled.stone, 64);
+    CHECK_EQ(spilled.diamonds, 3);
+    // 64 stone cannot come out in fewer than three clumps of at most 30, and
+    // the diamonds are one more.
+    CHECK(spilled.clumps >= 4);
+    CHECK(spilled.biggest <= 30);
+    // The store went with the cart.
+    CHECK(track.carts.chestSlots(cart) == nullptr);
 }
 
 // ---------------------------------------------------------------------------

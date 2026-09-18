@@ -56,6 +56,9 @@ public:
     enum class Kind {
         Generating,
         Saving,
+        // A multiplayer world arriving from its server: `dg`, "Downloading
+        // terrain", held up until the server has put the player somewhere.
+        Downloading,
     };
 
     // citro2d and a text buffer, and nothing else -- no render target, no card

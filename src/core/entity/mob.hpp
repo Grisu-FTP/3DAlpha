@@ -431,6 +431,14 @@ inline constexpr int kSlimeSpawnOdds = 10;
 // player and is within `0.6 * size` of them does `size` damage.
 inline constexpr double kSlimeTouchScale = 0.6;
 
+// **How many ticks a server's position update is walked over.** `gy` passes 3
+// to every `setPositionAndRotation2` it makes -- the mob spawn, the teleport
+// and the relative move alike -- and `ge.j()` divides what is left by whatever
+// is still on the clock, so the gap is closed in thirds, halves and then
+// wholly. The same number `net::RemoteEntities::kSmoothTicks` is, and the same
+// reason.
+inline constexpr int kServerSmoothTicks = 3;
+
 // `dq.a()Z` -- getCanSpawnHere for a monster, which is the whole of why they
 // are found underground: the **stored** sky light must be no more than a draw
 // from 32 and the block light no more than a draw from 8. Sky light is read
@@ -466,6 +474,52 @@ struct Mob {
 
     MobType type = MobType::Pig;
     bool alive = false;
+
+    // **A stable name for this mob, for as long as the session lasts.** The
+    // pool swap-removes, so an index is not an identity: the mob at slot 3 this
+    // tick is a different animal from the one that was there before slot 3's
+    // occupant died. `kg.e_()` compares `entity != shootingEntity` by
+    // reference, and this is what makes that comparison available -- see
+    // `Arrow::shooterMob`, which used to approximate it by asking which mob was
+    // still standing on the spot the shot was recorded at.
+    //
+    // **Not saved, and that is the jar's behaviour rather than a shortcut.**
+    // `shootingEntity` is a live reference and a1.1.2 writes nothing for it, so
+    // an arrow read back off the card has no shooter and excludes nobody. A
+    // fresh handle is issued to every mob on load (`reissueHandles`), so a
+    // number is never reused inside one run of the game.
+    //
+    // Zero is "no mob", which is what an arrow with no shooter carries.
+    u32 handle = 0;
+
+    // **The server's id, and whether the server is the one driving this mob.**
+    // Zero and false in single player. A remote mob is moved only by the
+    // packets that name it: its AI, its physics and its despawn are all the
+    // server's, and running them here as well would be a second mind arguing
+    // with the first. See core/net/entities.hpp.
+    i32 entityId = 0;
+    bool remote = false;
+
+    // **Where the server last said, and how many ticks are left to get
+    // there** -- `ge`'s `c`, `d`, `e`, `f`, `g` and `b`, which the jar calls
+    // `newPosX/Y/Z`, `newRotationYaw/Pitch` and `newPosRotationIncrements`.
+    //
+    // A client does **not** teleport a mob to each packet: `gy` hands every
+    // one of them to `setPositionAndRotation2` with three increments, and
+    // `ge.j()` walks a third of what is left on each of the next three ticks.
+    // That is the whole difference between an animal that moves and one that
+    // steps at 20 Hz, and it is the same three-tick walk another player gets
+    // (`net::RemoteEntities::kSmoothTicks`) because it is the same code path in
+    // the jar, one class up.
+    //
+    // **The target is also the server's position.** A relative move is added to
+    // it and never to where the body has got to -- `gy` accumulates into
+    // `kh.bd/be/bf`, the fixed-point server position, and divides that -- so a
+    // body still catching up does not fall further behind with every packet.
+    // Seeded by the spawn, as `gy.a(ez)` seeds it.
+    double serverX = 0.0, serverY = 0.0, serverZ = 0.0;
+    double serverYaw = 0.0, serverPitch = 0.0;
+    i16 smoothTicks = 0;
 
     // `ge`'s counters.
     i16 health = 10;
@@ -676,8 +730,13 @@ struct MobSurroundings {
     // ticks, and whose arrow is thrown away -- the same bargain
     // `TickWorld::spawnItem` takes, and for the same reason: the pools belong
     // to the frame loop.
+    //
+    // `shooterMob` is the firing mob's `Mob::handle`, carried through so the
+    // arrow can decline to hit the skeleton that loosed it -- `kg.e_()`'s
+    // `entity != shootingEntity`. See `Arrow::shooterMob`.
     void (*shootArrow)(void* ctx, double x, double y, double z, double dx, double dy,
-                       double dz, float velocity, float inaccuracy) = nullptr;
+                       double dz, float velocity, float inaccuracy,
+                       u32 shooterMob) = nullptr;
     void* shootArrowCtx = nullptr;
 
     // **What is lying on the ground, for `applyBlast`.** `je` hurts every
@@ -702,6 +761,32 @@ public:
     // only when the heap would not hold another.
     bool spawn(const tick::TickWorld& world, MobType type, double x, double y, double z,
                float yaw);
+
+    // ---- mobs a server owns --------------------------------------------
+    //
+    // The same animal, with `remote` set: it is drawn and interpolated here and
+    // decided entirely over there. Spawning one twice under the same id is the
+    // server re-sending it, and replaces rather than duplicates.
+    // `slimeSize` is 1, 2 or `kSlimeMaxSize` when the server named one, and
+    // **0 when it did not** -- which is what a real a1.1.2 server always
+    // leaves, `ez` having nowhere to put it. Zero keeps the size the
+    // constructor drew, which is the jar's behaviour; anything else overwrites
+    // it through `setSlimeSize`, box and health and all. See
+    // `net::RemoteEntities::mobTypeFor`.
+    Mob* spawnFromServer(const tick::TickWorld& world, i32 entityId, MobType type, double x,
+                         double y, double z, float yaw, float pitch, int slimeSize = 0);
+    Mob* findById(i32 entityId);
+    bool removeById(i32 entityId);
+
+    // `gy` -> `kh.a(DDDFFI)V` -- where the server says it is, to be walked to
+    // over the next `kServerSmoothTicks` ticks rather than jumped to. The legs
+    // follow from how far the body actually moves, as they do for another
+    // player, so they are driven in `tick` and not here.
+    bool placeById(i32 entityId, double x, double y, double z, bool hasLook, float yaw,
+                   float pitch);
+
+    // `gy.a(ju)` -- a look with no move. Same three ticks, position untouched.
+    bool turnById(i32 entityId, float yaw, float pitch);
 
     // One 20 Hz tick of `ge.e_()` for every live animal.
     void tick(tick::TickWorld& world, const MobSurroundings& around);
@@ -771,6 +856,26 @@ public:
     // core/entity/mob_spawn.hpp.
     void despawn(int index) { removeAt(index); }
 
+    // **Every mob in the pool gets a fresh handle.** Called once after a world
+    // is read back off the card, because `Mob::handle` is not in the save and
+    // every loaded mob therefore arrives holding zero -- which is the value an
+    // arrow uses for "fired by nobody". Without this every loaded mob would
+    // answer to that.
+    void reissueHandles()
+    {
+        for (int i = 0; i < mobs_.size(); ++i) {
+            mobs_[i].handle = nextHandle_++;
+        }
+    }
+
+    // The handle of the mob at `index`, or zero when there is none. The arrow
+    // sweep asks this rather than reaching into the pool, because "no mob at
+    // that slot" and "a mob that is nobody" have to answer the same way.
+    u32 handleAt(int index) const
+    {
+        return index >= 0 && index < mobs_.size() ? mobs_[index].handle : 0u;
+    }
+
     // `ge.z()` -- **spawnExplosionParticle**, the twenty-puff cloud a mob makes
     // when it dies and when a mob spawner places it. Public because the block
     // spawner (core/entity/mob_spawner.hpp) calls it on a mob it has just added
@@ -804,10 +909,28 @@ public:
     u32 refused() const { return refused_; }
     PathFinder& pathFinder() { return paths_; }
 
+    // **The most searches any one tick has run**, since the per-tick cap became
+    // a count. This is the number that says what removing it costs: against a
+    // 50 ms tick, a search that hits `PathFinder::kMaxNodes` is the expensive
+    // case and this says how many of them landed together. The debug page
+    // carries it beside `path`/`ex`.
+    int peakSearchesPerTick() const { return peakSearchesPerTick_; }
+
 private:
     friend struct PersistentEntities;
 
     void removeAt(int index);
+
+    // `ge.j()`'s first block -- one tick of the walk towards where the server
+    // last said this animal was. See the implementation.
+    void interpolateToServer(Mob& mob) const;
+
+    // `ge.e_()`'s tail: the legs, the body's heading, and the light byte the
+    // frame is drawn with. Run for a remote animal as well as for ours, which
+    // is the jar's arrangement -- `isMultiplayerEntity` holds off the AI and
+    // nothing else.
+    void headingAndLight(const tick::TickWorld& world, Mob& mob, double beforeX,
+                         double beforeZ) const;
 
     // `kh.f(kh)` -- applyEntityCollision. Pushes `mob` away from whatever is at
     // `(otherX, otherZ)` and pushes that thing back, unless it has no motion to
@@ -883,22 +1006,44 @@ private:
     bool updateCounters(tick::TickWorld& world, int index, const MobSurroundings& around);
 
     SegmentedPool<Mob, kInitialCapacity> mobs_;
+
+    // **Never reused inside a session**, which is the whole value of it: a
+    // handle that came back round could let an arrow's five-tick grace land on
+    // an animal that was not there when the shot was fired. It starts at one
+    // because zero means "nobody".
+    u32 nextHandle_ = 1;
     PathFinder paths_;
     int ridden_ = -1;
     u32 refused_ = 0;
     JavaRandom rand_;
 
-    // **One path search per tick, at most.** a1.1.2 runs the search inline
-    // whenever a mob asks, which on a 268 MHz ARM11 is the one part of this
-    // that could take a frame with it -- see docs/entity-render-a1.1.2.md,
-    // which asked for a per-tick budget before any of this was written. A mob
-    // that is refused keeps the tick's other odds and simply has no path this
-    // tick, which is a state the original reaches too.
+    // **How many searches this tick has run, counted and no longer capped.**
+    //
+    // It used to be a budget of one a tick across every mob in the world, on
+    // the argument that a1.1.2 runs the search inline whenever a mob asks and a
+    // 268 MHz ARM11 might not afford that. With fifteen animals it never bound
+    // -- they ask about 0.4 times a tick between them -- and it was invisible.
+    // With the monsters it binds hard and in the wrong direction: two hundred
+    // of them, a chasing one re-asking once in twenty ticks, is ten requests a
+    // tick against a budget of one, so nine in ten mobs were handed no path and
+    // fell back to `EntityLiving`'s aimless wander. That is not "the same state
+    // the original reaches too"; that is most of a cave standing still.
+    //
+    // **And it moved the random stream**, which is the half that made it a
+    // correctness bug rather than a performance trade. The wander branch draws
+    // ten candidate cells *before* deciding anything, and the jar draws them
+    // whether or not a path comes of it -- but the budget gate sat in front of
+    // the draws, so the second mob to want a path in a tick skipped thirty
+    // `nextInt` calls the original makes. Every mob ticked after it in that
+    // world saw a different stream from the one a1.1.2 would have given it.
+    //
+    // The ceiling that remains is `PathFinder::kMaxNodes`, which is a fixed
+    // arena rather than a refusal and is the one budget this port still keeps:
+    // an unbounded search means allocating inside the 20 Hz tick, which the
+    // platform does not allow. `PathFinder::exhausted()` says when it binds.
     int searchesThisTick_ = 0;
+    int peakSearchesPerTick_ = 0;
 };
-
-// How many path searches one tick may run. See `searchesThisTick_`.
-inline constexpr int kPathSearchesPerTick = 1;
 
 // **`je`'s middle phase, for whoever set the blast off.** Between `cast` and
 // `destroy`, every entity in reach takes damage and an impulse -- and it runs

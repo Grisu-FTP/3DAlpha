@@ -537,8 +537,11 @@ void MenuPreview::setPackCursor(int row)
 void MenuPreview::setWorldList(const std::vector<world::WorldEntry>& worlds)
 {
     worldRows_.clear();
-    worldRows_.reserve(worlds.size() + 1);
-    worldRows_.push_back(std::string());  // "+ Create New World" is an empty table
+    worldRows_.reserve(worlds.size() + 2);
+    // The two pinned rows have no world behind them, so they have no table on
+    // them either: an empty key is what every walk below skips.
+    worldRows_.push_back(std::string());  // "+ Create New World"
+    worldRows_.push_back(std::string());  // "+ Import World"
     for (const world::WorldEntry& entry : worlds) {
         worldRows_.push_back(entry.path);
     }
@@ -810,10 +813,10 @@ void MenuPreview::refreshWanted()
         const int n = preview::wantedOrder(worldCursor_, int(worldRows_.size()),
                                            preloadRadius(kWorldRadius), order, 64);
         for (int i = 0; i < n; ++i) {
-            if (order[i] == 0) {
-                continue;
-            }
             const std::string& path = worldRows_[usize(order[i])];
+            if (path.empty()) {
+                continue;  // a pinned row, which has no world to draw
+            }
             const int slot = worldSlotFor(path, false);
             if (slot >= 0 && worldSlots_[slot].complete && worldSlots_[slot].revision == revision) {
                 continue;
@@ -1456,7 +1459,8 @@ void MenuPreview::drawWorlds()
     }
 
     const WorldMeshes* slot = nullptr;
-    if (worldCursor_ > 0 && usize(worldCursor_) < worldRows_.size()) {
+    if (worldCursor_ > 0 && usize(worldCursor_) < worldRows_.size()
+        && !worldRows_[usize(worldCursor_)].empty()) {
         const int index = worldSlotFor(worldRows_[usize(worldCursor_)], false);
         if (index >= 0) {
             slot = &worldSlots_[index];

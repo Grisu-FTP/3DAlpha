@@ -126,10 +126,22 @@ u8* ChunkGenerator::scratchColumn(i32 x, i32 z)
     victim->z = z;
     victim->lastUse = ++clock_;
     u8* blocks = windowScratch_.data() + usize(victim - scratch_) * usize(kChunkBlocks);
-    provider_.generateColumn(x, z, blocks);
+    makeTerrain(x, z, blocks);
     ++stats_.generated;
     ++stats_.scratchColumns;
     return blocks;
+}
+
+// The one place terrain comes from, so the two callers above cannot disagree
+// about whether a session may have supplied it.
+void ChunkGenerator::makeTerrain(i32 x, i32 z, u8* blocks)
+{
+    if (store_.supplyTerrain != nullptr
+        && store_.supplyTerrain(store_.context, x, z, blocks)) {
+        ++stats_.terrainSupplied;
+        return;
+    }
+    provider_.generateColumn(x, z, blocks);
 }
 
 bool ChunkGenerator::finalAt(i32 x, i32 z) const
@@ -316,7 +328,7 @@ ChunkGenerator::Entry* ChunkGenerator::ensure(i32 x, i32 z)
         }
     } else {
         ++stats_.generated;
-        provider_.generateColumn(x, z, blocksOf(*entry));
+        makeTerrain(x, z, blocksOf(*entry));
         entry->populated = false;
     }
 
@@ -614,13 +626,27 @@ u32 ChunkGenerator::liveColumns() const
 // the streamer and of the sweep itself.
 u32 ChunkGenerator::retire(i32 centreX, i32 centreZ, int radius)
 {
+    const Centre one{centreX, centreZ};
+    return retire(&one, 1, radius);
+}
+
+u32 ChunkGenerator::retire(const Centre* centres, int count, int radius)
+{
+    if (centres == nullptr || count <= 0) {
+        return 0;
+    }
     const int r = radius < 0 ? 0 : radius;
     u32 freed = 0;
     for (Entry& e : entries_) {
         if (!e.used) {
             continue;
         }
-        if (std::abs(e.x - centreX) <= r && std::abs(e.z - centreZ) <= r) {
+        bool keep = false;
+        for (int i = 0; i < count && !keep; ++i) {
+            keep = std::abs(e.x - centres[i].chunkX) <= r
+                   && std::abs(e.z - centres[i].chunkZ) <= r;
+        }
+        if (keep) {
             continue;
         }
         if (!e.delivered) {

@@ -52,6 +52,8 @@ OpenResult ChunkCache::open(const char* worldDir, i64 nowMillis)
     prefetchQueue_.clear();
     groupQueue_.clear();
     urgentGroups_.clear();
+    surveyQueue_.clear();
+    surveyQueued_.clear();
     inFlight_.clear();
     unreadable_.clear();
     housekeepingPending_ = false;
@@ -91,6 +93,9 @@ void ChunkCache::close(i64 nowMillis, const PlayerState& player)
             inFlight_.erase(k);
         }
         prefetchQueue_.clear();
+        // Speculative in exactly the same way, and abandoned on the same terms.
+        surveyQueue_.clear();
+        surveyQueued_.clear();
         for (const u64 g : groupQueue_) {
             groups_[g].queued = false;
         }
@@ -306,6 +311,37 @@ void ChunkCache::prefetch(i32 x, i32 z)
     }
     prefetchQueue_.push_back(k);
     wake_.notify_one();
+}
+
+void ChunkCache::setSurveyor(SurveyFn visit, void* context)
+{
+    std::lock_guard<std::mutex> guard(mutex_);
+    surveyor_ = visit;
+    surveyorContext_ = context;
+}
+
+bool ChunkCache::survey(i32 x, i32 z)
+{
+    const i64 k = key(x, z);
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!open_ || surveyor_ == nullptr) {
+        return false;
+    }
+    if (!surveyQueued_.insert(k).second) {
+        return false;
+    }
+    surveyQueue_.push_back(k);
+    wake_.notify_one();
+    return true;
+}
+
+void ChunkCache::cancelSurveys()
+{
+    std::lock_guard<std::mutex> guard(mutex_);
+    surveyQueue_.clear();
+    surveyQueued_.clear();
+    surveyor_ = nullptr;
+    surveyorContext_ = nullptr;
 }
 
 void ChunkCache::warmGroup(i32 x, i32 z, bool urgent)
@@ -551,9 +587,13 @@ void ChunkCache::flush(bool blocking)
 bool ChunkCache::idle() const
 {
     std::lock_guard<std::mutex> guard(mutex_);
+    // Surveys count, because "the I/O thread has nothing left" is what this
+    // says and a queued survey is something left. Nothing in the game waits on
+    // it -- a flush waits on the writes, which is a different question and one
+    // a picture of far-off ground has no business delaying.
     return readQueue_.empty() && writeQueue_.empty() && prefetchQueue_.empty()
-           && groupQueue_.empty() && urgentGroups_.empty() && !housekeepingPending_
-           && jobsActive_ == 0;
+           && groupQueue_.empty() && urgentGroups_.empty() && surveyQueue_.empty()
+           && !housekeepingPending_ && jobsActive_ == 0;
 }
 
 void ChunkCache::applyPlayerState(const PlayerState& player)
@@ -948,6 +988,17 @@ bool ChunkCache::takeJobLocked(Job* out)
         ++jobsActive_;
         return true;
     }
+    // **Last, under the read-ahead ring.** A survey is a picture of ground
+    // nobody is standing in; every column the world itself is owed, every write
+    // and every listing goes first. See survey().
+    if (!surveyQueue_.empty() && surveyor_ != nullptr) {
+        const i64 k = surveyQueue_.front();
+        surveyQueue_.erase(surveyQueue_.begin());
+        surveyQueued_.erase(k);
+        *out = Job{JobKind::Survey, k, 0, false};
+        ++jobsActive_;
+        return true;
+    }
     return false;
 }
 
@@ -1020,6 +1071,51 @@ void ChunkCache::runJob(const Job& job)
             evictLocked();
         }
         finishJobLocked(job.kind);
+        break;
+    }
+
+    case JobKind::Survey: {
+        // **The visitor, on this thread and with no lock of ours held.** It is
+        // handed a column that belongs to the cache for the length of the call
+        // -- either the one already retained, or the single scratch this thread
+        // reads into -- and nothing is installed or evicted either way. See
+        // survey().
+        SurveyFn visit = nullptr;
+        void* context = nullptr;
+        std::shared_ptr<const ChunkColumn> held;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            visit = surveyor_;
+            context = surveyorContext_;
+            Entry* entry = find(job.chunk);
+            if (entry != nullptr && entry->column != nullptr) {
+                held = entry->column;
+                entry->used = ++clock_;
+                ++stats_.hits;
+            }
+        }
+        if (visit == nullptr) {
+            // Cancelled between being queued and being taken, which is a world
+            // closing under it.
+            std::lock_guard<std::mutex> guard(mutex_);
+            finishJobLocked(job.kind);
+            break;
+        }
+        if (held != nullptr) {
+            visit(context, keyX(job.chunk), keyZ(job.chunk), held.get());
+            std::lock_guard<std::mutex> guard(mutex_);
+            finishJobLocked(job.kind);
+            break;
+        }
+        if (surveyScratch_ == nullptr) {
+            surveyScratch_ = std::make_unique<ChunkColumn>(keyX(job.chunk), keyZ(job.chunk));
+        }
+        const bool read = readThrough(job.chunk, surveyScratch_.get());
+        visit(context, keyX(job.chunk), keyZ(job.chunk), read ? surveyScratch_.get() : nullptr);
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            finishJobLocked(job.kind);
+        }
         break;
     }
 
@@ -1194,7 +1290,7 @@ void ChunkCache::workerMain()
             wake_.wait(guard, [this] {
                 return workerStop_ || !readQueue_.empty() || !writeQueue_.empty()
                        || !groupQueue_.empty() || !urgentGroups_.empty()
-                       || !prefetchQueue_.empty()
+                       || !prefetchQueue_.empty() || !surveyQueue_.empty()
                        || housekeepingPending_;
             });
             if (workerStop_) {

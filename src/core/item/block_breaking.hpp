@@ -95,6 +95,34 @@ private:
 // `nj.b(IIII)Z` -- the break: removal, wear, and the drop if it was earned.
 bool harvestBlock(BreakContext& ctx, i32 x, int y, i32 z);
 
+// **The same break, for somebody else's click** -- a guest's dig arriving at the
+// host, which is the one break in this port whose player is on another console.
+//
+// It is `in.c(III)Z` in `srv/a0.2.1.jar`, ItemInWorldManager.removeBlock, and it
+// is the server's own copy of `nj.b`: read the id and the metadata, remove the
+// block through `b(III)` (which is `hq.b` -- particles, sound,
+// `onBlockDestroyedByPlayer`), then drop it if `canHarvestBlock` accepts what
+// the digger is holding.
+//
+//     boolean removed = this.b(i, j, k);
+//     ItemStack held = player.getCurrentEquippedItem();
+//     if (held != null) { held.hitBlock(id, i, j, k); ... }
+//     if (removed && player.canHarvestBlock(Block.blocksList[id]))
+//         Block.blocksList[id].harvestBlock(world, i, j, k, meta);
+//
+// **The wear is the one step left out, and deliberately.** The server owns the
+// player's pack in 0.2.1 and this port does not: a guest carries its own
+// inventory and pushes it back, so the tool is worn on the console holding it
+// and wearing it here as well would charge the pickaxe twice. The consequence
+// is the edge `harvestBlock` documents in reverse -- a tool that breaks on its
+// last block still earns that block's drop here, because the host is told what
+// was held when the dig started.
+//
+// Creative does not come through here: a host's own Creative break goes to
+// `destroyBlock` and drops nothing, as it always did.
+bool harvestBlockFor(tick::TickWorld& world, i32 x, int y, i32 z, ItemId held,
+                     const Effects& effects);
+
 // `ly.b(Lcn;IIILdm;)V` -- onBlockClicked. Four classes answer it in a1.1.2 and
 // all four do what a right click does: `fw` the door, `hu` the button and `no`
 // the lever call their own `blockActivated`, and `ai` redstone ore lights. The

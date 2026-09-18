@@ -1,6 +1,7 @@
 #include "core/tick/redstone.hpp"
 
 #include "core/block/registry.hpp"
+#include "core/tick/display.hpp"
 #include "core/tick/drop.hpp"
 #include "core/tick/tick_world.hpp"
 
@@ -845,6 +846,15 @@ void redstoneOreActivated(TickWorld& world, i32 x, int y, i32 z, BlockId self)
     // `ai.h(Lcn;III)V`, reached from a `blockActivated` that then returns
     // **false** -- so touching redstone ore lights it and the click carries on
     // to the item in the hand. It is the one activation that does not consume.
+    //
+    // **The sparkle first, and it is not conditional.** `h` is two statements:
+    // `i(world, i, j, k)` and then the `blockID == oreRedstone` test that
+    // swaps the block. So the six motes come off an ore that is *already* lit
+    // as well -- touching a glowing one glitters and changes nothing -- and
+    // they come off the dull one a frame before it stops being dull. The
+    // generator is the world's own (`cn.n`), which is what the class file
+    // reads; see core/tick/display.hpp.
+    redstoneOreSparkle(world, x, y, z, world.random());
     if (self != id(mcver::Block::RedstoneOre)) return;
     world.setBlockWithNotify(x, y, z, id(mcver::Block::LitRedstoneOre));
 }

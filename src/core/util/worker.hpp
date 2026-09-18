@@ -17,25 +17,31 @@
 //     3DS it wants core 2, which is idle and which Luma's synthesised 3DSX
 //     exheader already grants (`0xFF002109`, bit 13, "Access core2").
 //   * **I/O** spends nearly all its life blocked in an IPC round trip to the FS
-//     sysmodule. It wants core 0 at a priority just below the main thread's, so
-//     it runs in exactly the slack the main thread leaves while waiting on
-//     VBlank and is preempted the instant the main thread is ready. Giving it a
-//     core of its own would waste one; giving it the main thread's priority
-//     would cost frames.
+//     sysmodule. It wants core 0 below the main thread, so it runs in exactly
+//     the slack the main thread leaves while waiting on VBlank and is preempted
+//     the instant the main thread is ready. Giving it a core of its own would
+//     waste one; giving it the main thread's priority would cost frames. It sits
+//     one step under Audio rather than beside it, because the two cannot share a
+//     priority -- see below.
 //   * **Audio** is the awkward one: it is CPU-bound like Generation but has a
 //     deadline like nothing else here, because a decoder that misses its buffer
-//     is audible immediately. It takes core 2 on a New 3DS, sharing it with
-//     Generation at the same priority, and on an Old 3DS it takes the I/O
-//     policy -- core 0, just below the main thread -- because a 3DSX has no
-//     other core to move it to. CONTRIBUTING's "no decompression on core 0" is
-//     knowingly relaxed there.
+//     is audible immediately. It takes core 2 on a New 3DS, one step *above* the
+//     Generation worker already there, and on an Old 3DS it takes core 0 just
+//     below the main thread and just above I/O, because a 3DSX has no other core
+//     to move it to. CONTRIBUTING's "no decompression on core 0" is knowingly
+//     relaxed there.
 //
-//     **What makes it work on either console is buffer depth, not priority.**
-//     A third of a second of decoded audio is queued ahead, so the decoder only
-//     ever needs the slack the main thread already leaves at VBlank, and it
-//     never has to win a scheduling race to stay ahead. That is why it does not
-//     outrank Generation on a New 3DS even though it could ask to. See
-//     platform/ctr/audio.hpp.
+//     **Depth was once claimed to be enough on its own, and hardware disagreed:
+//     the music skipped under load.** The ARM11 kernel is SCHED_FIFO -- no
+//     round-robin and no time slice -- so equal priority is not a share, it is a
+//     queue: whichever thread is running keeps its core until it blocks, and
+//     `WorldStreamer::workerMain` takes its own next job the moment it finishes
+//     one. Queueing a third of a second of audio ahead buys the decoder time to
+//     survive a stall; it cannot buy it a turn. So it outranks what it shares a
+//     core with, and when even that is not enough -- an Old 3DS whose main
+//     thread is over budget and never blocks -- it lifts itself above the main
+//     thread until its ring is full and drops straight back.
+//     See platform/ctr/audio.hpp.
 //
 // `spawn` returns an opaque handle, or null if the thread could not be started
 // -- in which case the caller falls back to doing the work inline, which is slow
@@ -50,6 +56,9 @@ enum class WorkerRole {
     Generation,
     Io,
     Audio,
+    // A multiplayer session: blocked in poll almost all the time, awake to parse
+    // and inflate what arrives. See core/net/client_session.hpp.
+    Net,
 };
 
 using WorkerSpawn = void* (*)(void (*entry)(void*), void* arg, WorkerRole role);

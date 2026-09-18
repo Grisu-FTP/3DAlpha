@@ -58,9 +58,13 @@ inline constexpr double kSplashHorizontalWeight = 0.20000000298023224;
 // `firstUpdate` set**, which is why reopening a world does not splash
 // everything already floating in it -- and why a boat, which is placed *into*
 // water, is silent on the tick it is put down.
+//
+// **`splashed` is ours, and it is the one deviation in this file.** See
+// `updateWaterEntry`.
 struct WaterEntry {
     bool inWater = false;
     bool firstUpdate = true;
+    bool splashed = false;
 };
 
 struct WaterEntryResult {
@@ -79,13 +83,48 @@ struct WaterEntryResult {
 //
 // `firstUpdate` is cleared here rather than at the end of the caller's `y()`,
 // which is where the jar clears it. Nothing between the two reads it.
+//
+// ---------------------------------------------------------------------------
+//
+// **`touchingWater` is not in the jar, and the splash is latched on it.** This
+// is the one deviation in this file and it is worth the paragraph.
+//
+// `g_()` hands `handleMaterialAcceleration` the box **shrunk by four tenths top
+// and bottom** -- `boundingBox.expand(0.0D, -0.4D, 0.0D)`. For a player, 1.8
+// tall, that leaves a metre of box. For anything **shorter than 0.8 of a
+// block** it leaves a box whose `minY` is *above* its `maxY`, and the y loop
+// inside that method is `for (l1 = floor(minY); l1 < floor(maxY + 1); l1++)` --
+// which on an inverted box runs once or not at all depending on where between
+// two cells the entity happens to be. Measured over a whole cell of positions
+// it sees a cell on **45 % of ticks**.
+//
+// So a dropped stack (0.25), an arrow (0.5), a chicken (0.4) or a boat (0.6)
+// sinking through water has an `inWater` that flickers, and `!inWater` is the
+// whole of the splash's condition: it splashes again, with its full row of
+// bubbles, every few blocks all the way down. That was reported from play as
+// "a block falling into water plays a sound and particle for every water block
+// it falls", and it is a1.1.2's arithmetic rather than this port's.
+//
+// **Only the splash is latched.** `inWater` comes back exactly as the jar
+// computes it, so the current still pushes on the ticks the jar pushes on, the
+// fall distance still clears on those ticks and fire still goes out on them.
+// What changes is that a second splash needs the entity to have left the water
+// first -- and "left" is asked of the entity's own box, uninset, because that
+// is the question the flicker cannot answer.
+//
+// `touchingWater` is a predicate rather than a bool because it is only ever
+// consulted on a tick that already splashed once and is now dry by the jar's
+// reckoning, which is a handful of ticks in an entity's life. Everything else
+// pays nothing for it.
+template <class TouchingWater>
 inline WaterEntryResult updateWaterEntry(WaterEntry& state, bool inWaterNow, double motionX,
-                                         double motionY, double motionZ)
+                                         double motionY, double motionZ,
+                                         TouchingWater touchingWater)
 {
     WaterEntryResult out;
     if (inWaterNow) {
         out.inWater = true;
-        if (!state.inWater && !state.firstUpdate) {
+        if (!state.inWater && !state.firstUpdate && !state.splashed) {
             float volume = MathHelper::sqrtDouble(motionX * motionX * kSplashHorizontalWeight
                                                   + motionY * motionY
                                                   + motionZ * motionZ * kSplashHorizontalWeight)
@@ -95,7 +134,12 @@ inline WaterEntryResult updateWaterEntry(WaterEntry& state, bool inWaterNow, dou
             }
             out.splash = true;
             out.volume = volume;
+            state.splashed = true;
         }
+    } else if (state.splashed && !touchingWater()) {
+        // Out of the water by the only measure that does not flicker, so the
+        // next entry is a new one.
+        state.splashed = false;
     }
     state.inWater = out.inWater;
     state.firstUpdate = false;

@@ -129,6 +129,14 @@ int spendOnUse(ItemId held)
         || d.spawns == SpawnsEntity::Minecart) {
         return 1;
     }
+    // **A music disc, which places nothing and spends anyway.** `lg.a` ends
+    // `itemstack.stackSize--` like every other `onItemUse` that succeeds -- and
+    // because a disc's `places` is 0 and its `spawns` is None, neither test
+    // above reaches it. Without this row a disc put into a jukebox stays in the
+    // hand, and taking it out again is a second one: reported from play.
+    if (recordTrack(held) != nullptr) {
+        return 1;
+    }
     return 0;
 }
 

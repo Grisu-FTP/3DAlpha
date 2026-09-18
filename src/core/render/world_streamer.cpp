@@ -1,5 +1,6 @@
 #include "core/render/world_streamer.hpp"
 
+#include "core/item/block_breaking.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/util/worker.hpp"
 
@@ -31,6 +32,11 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
     player_ = {};
     entityPools_ = {};
     entitiesBound_ = false;
+
+    remote_ = false;
+    remoteColumns_.clear();
+    remoteOps_.clear();
+    edits_.clear();
 
     cache_.configure(cacheConfig_);
     if (cache_.open(worldDir, nowMillis) != world::OpenResult::Ok) {
@@ -79,6 +85,12 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
         store.load = &WorldStreamer::generatorLoad;
         store.deliver = &WorldStreamer::generatorDeliver;
 
+        // Through a trampoline rather than straight through: `Store::context`
+        // is this streamer, and the terrain source has a context of its own
+        // that outlives the world -- whoever is hosting the session.
+        store.supplyTerrain =
+            terrainSource_.supply != nullptr ? &WorldStreamer::generatorSupplyTerrain : nullptr;
+
         // Sized to the load radius, because what the generator has to hold at
         // once is two rings of unfinished frontier and that band grows with the
         // radius being filled. Undersizing it is not a slow path but a wrong
@@ -116,6 +128,17 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
         tick_->setImprovedFencePlacement(worldSettings.improvedFencePlacement);
     }
     tickDirtyCells_ = 0;
+    served_.clear();
+    servedAreaCount_ = 0;
+    servedOwed_ = 0;
+    servedOwedScan_ = 0;
+    servedCursor_ = 0;
+    servedGenerating_ = -1;
+    servedGeneratorGrown_ = 0;
+    for (int i = 0; i < kMaxServedAreas; ++i) {
+        servedAreaPending_[i] = 0;
+        servedAreaPendingScan_[i] = 0;
+    }
 
     // The relighter reaches columns through the same hook the tick does -- both
     // want "the resident column or nothing", and neither may generate.
@@ -133,10 +156,26 @@ world::ChunkColumn* WorldStreamer::tickColumn(void* ctx, i32 chunkX, i32 chunkZ)
 {
     auto* self = static_cast<WorldStreamer*>(ctx);
     Cell* cell = self->find(chunkX, chunkZ);
-    if (cell == nullptr || cell->state != CellState::Loaded) {
-        return nullptr;
+    if (cell != nullptr && cell->state == CellState::Loaded) {
+        return cell->column.get();
     }
-    return cell->column.get();
+
+    // **And then the ground somebody else is standing on.** This one line is
+    // what makes a served area a real part of the world rather than a buffer
+    // of bytes to post: the tick, the lighting, the fluids, a guest's pick and
+    // a guest's placement all reach columns through here, so a column held for
+    // a guest behaves exactly as a resident one does. See `setServedAreas`.
+    //
+    // The grid is asked first and wins: when the camera walks into ground that
+    // was being served, the cell is authoritative and the served entry is
+    // dropped on the next `pumpServed`.
+    if (self->servedAreaCount_ > 0) {
+        auto it = self->served_.find(remoteKey(chunkX, chunkZ));
+        if (it != self->served_.end()) {
+            return it->second.column.get();
+        }
+    }
+    return nullptr;
 }
 
 // A section's stored light moved, so its mesh -- which bakes light into every
@@ -150,21 +189,47 @@ void WorldStreamer::lightSectionLit(void* ctx, i32 chunkX, int sectionY, i32 chu
     }
     // The column's stored light changed, so what is on the card is out of date
     // just as surely as if a block had changed in it.
-    if (Cell* cell = self->find(chunkX, chunkZ)) {
+    //
+    // **A cell that holds a column, not a cell that exists.** Cells reach three
+    // rings further than columns do, and served ground now lives in that band --
+    // asking `find` here marked an empty cell dirty and left the served column
+    // clean, which is an edit that never reaches the card. See
+    // `gridColumnRadius`.
+    if (Cell* cell = self->loadedCell(chunkX, chunkZ)) {
         if (!cell->tickDirty) {
             cell->tickDirty = true;
             ++self->tickDirtyCells_;
         }
+        return;
     }
+    self->markServedModified(chunkX, chunkZ);
 }
 
 void WorldStreamer::markColumnModified(i32 x, i32 z)
 {
-    if (Cell* cell = find(x >> 4, z >> 4)) {
+    // `loadedCell` and not `find`, for the reason `lightSectionLit` gives.
+    if (Cell* cell = loadedCell(x >> 4, z >> 4)) {
         if (!cell->tickDirty) {
             cell->tickDirty = true;
             ++tickDirtyCells_;
         }
+        return;
+    }
+    markServedModified(x >> 4, z >> 4);
+}
+
+// The served half of the two `tickDirty` marks above. A column held for a guest
+// is edited by the same tick and has to reach the card the same way; what it
+// does *not* need is a mesh, a map serial or a renderer invalidation, because
+// nothing in it is on this console's screen.
+void WorldStreamer::markServedModified(i32 chunkX, i32 chunkZ)
+{
+    if (served_.empty()) {
+        return;
+    }
+    auto it = served_.find(remoteKey(chunkX, chunkZ));
+    if (it != served_.end()) {
+        it->second.dirty = true;
     }
 }
 
@@ -212,6 +277,15 @@ void WorldStreamer::tickBlockChanged(void* ctx, i32 x, int y, i32 z)
         }
     }
 
+    // **Ground held for somebody else, which the grid does not have.** One
+    // lookup, and only when a served area exists at all -- see
+    // `WorldStreamer::setServedAreas`.
+    // `loadedCell` and not `find`: a classified cell with nothing in it is not
+    // the grid answering for this ground. See `gridColumnRadius`.
+    if (self->servedAreaCount_ > 0 && self->loadedCell(cx, cz) == nullptr) {
+        self->markServedModified(cx, cz);
+    }
+
     // O(1), on the cell itself. See Cell::tickDirty for what this replaced and
     // why the old linear scan got slower the longer a session ran.
     if (Cell* cell = self->find(cx, cz)) {
@@ -233,11 +307,29 @@ void WorldStreamer::tickBlockChanged(void* ctx, i32 x, int y, i32 z)
         // `takeChangedColumn`.
         self->mapDirty_.push(cx, cz);
     }
+
+    // **And whoever is serving this world to another console**, which needs
+    // the block rather than the column. Last, because it is the only one of
+    // these that can be absent. See setBlockWatcher.
+    if (self->blockWatcher_ != nullptr) {
+        self->blockWatcher_(self->blockWatcherCtx_, x, y, z);
+    }
 }
 
 void WorldStreamer::stepTicks(ChunkRenderer& renderer, int ticks)
 {
     if (!open_ || tick_ == nullptr || ticks <= 0 || !centreSet_) {
+        return;
+    }
+
+    if (remote_) {
+        // `gs.g()`: the clock and the revert list, and nothing else ticks.
+        RenderBracket draws(*this, renderer);
+        for (int i = 0; i < ticks; ++i) {
+            tick_->setTime(tick_->time() + 1);
+            edits_.tick(&WorldStreamer::revertEdit, this);
+        }
+        level_.time = tick_->time();
         return;
     }
 
@@ -330,6 +422,20 @@ bool WorldStreamer::breakBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
     return item::destroyBlock(*tick_, x, y, z, effects);
 }
 
+bool WorldStreamer::harvestBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
+                                item::ItemId held, const item::Effects& effects)
+{
+    if (tick_ == nullptr) {
+        return false;
+    }
+    if (!tick_->chunkResident(x >> 4, z >> 4)) {
+        return false;
+    }
+
+    RenderBracket draws(*this, renderer);
+    return item::harvestBlockFor(*tick_, x, y, z, held, effects);
+}
+
 WorldStreamer::RenderBracket::RenderBracket(WorldStreamer& streamer, ChunkRenderer& renderer)
     : streamer_(streamer), previous_(streamer.tickRenderer_)
 {
@@ -350,6 +456,13 @@ WorldStreamer::RenderBracket::~RenderBracket()
 
 void WorldStreamer::flushTickDirty()
 {
+    if (remote_) {
+        for (Cell& cell : cells_) {
+            cell.tickDirty = false;
+        }
+        tickDirtyCells_ = 0;
+        return;
+    }
     // One clone and one queued write per column that changed, however many
     // blocks in it changed -- which is the whole reason this is deferred to
     // the save boundary instead of being done in the callback.
@@ -372,6 +485,350 @@ void WorldStreamer::flushTickDirty()
         cell.tickDirty = false;
     }
     tickDirtyCells_ = 0;
+    flushServedDirty();
+}
+
+// ---- served areas ----------------------------------------------------------
+//
+// See `WorldStreamer::setServedAreas` for what these are for. The shape of the
+// work is deliberately the grid's, one layer simpler: a column is read through
+// the same cache, generated by the same generator on the same slate, and saved
+// by the same autosave -- what it skips is everything to do with drawing,
+// because nothing here is on this console's screen.
+
+void WorldStreamer::setServedAreas(const ServedArea* areas, int count)
+{
+    if (areas == nullptr) {
+        count = 0;
+    }
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > kMaxServedAreas) {
+        count = kMaxServedAreas;
+    }
+    servedAreaCount_ = count;
+    int widest = 0;
+    for (int i = 0; i < count; ++i) {
+        servedAreas_[i] = areas[i];
+        if (servedAreas_[i].radius < 0) {
+            servedAreas_[i].radius = 0;
+        }
+        widest = servedAreas_[i].radius > widest ? servedAreas_[i].radius : widest;
+    }
+    if (servedGenerating_ >= count) {
+        servedGenerating_ = count > 0 ? 0 : -1;
+    } else if (servedGenerating_ < 0 && count > 0) {
+        servedGenerating_ = 0;
+    }
+
+    // **How large the generator's cache has to be**, which a second centre
+    // changes; see `servedGeneratorSlack`.
+    //
+    // **Asked for, not done here.** `setMeshDistance` grows the cache on this
+    // thread and pays `waitForWorkerIdle()` for the privilege, which is fair
+    // for a settings change a player made. This runs *every frame* of a hosted
+    // session, and `growCacheTo` resizes the very vectors the worker may be
+    // inside `provide()` reading -- so the number is published under the queue
+    // lock and the worker grows its own cache before its next sweep, where the
+    // generator belongs. See `generateColumn`.
+    servedGeneratorGrown_ = widest > 0 ? servedGeneratorSlack(widest) : 0;
+
+    // **The generator is told where to keep at the same moment**, because a
+    // centre it does not know about is a region it retires and re-derives on
+    // the next sweep that reaches it. Published under the queue lock with the
+    // camera's, which the worker reads together.
+    publishRetireCentre();
+}
+
+int WorldStreamer::servedDistance(i32 chunkX, i32 chunkZ) const
+{
+    int best = -1;
+    for (int i = 0; i < servedAreaCount_; ++i) {
+        const ServedArea& area = servedAreas_[i];
+        const int d = std::max(std::abs(chunkX - area.chunkX), std::abs(chunkZ - area.chunkZ));
+        if (d > area.radius) {
+            continue;
+        }
+        if (best < 0 || d < best) {
+            best = d;
+        }
+    }
+    return best;
+}
+
+bool WorldStreamer::inServedArea(i32 chunkX, i32 chunkZ) const
+{
+    return servedDistance(chunkX, chunkZ) >= 0;
+}
+
+void WorldStreamer::releaseServed(ServedColumn& entry, bool save)
+{
+    if (entry.column == nullptr) {
+        return;
+    }
+    const i32 cx = entry.column->x;
+    const i32 cz = entry.column->z;
+    if (save && entry.dirty) {
+        // Whatever the session holds outside the column goes back into it
+        // first, exactly as `flushTickDirty` does for a cell. See
+        // `setColumnSinks`.
+        if (columnSaving_ != nullptr) {
+            columnSaving_(columnSinkCtx_, *entry.column);
+        }
+        cache_.save(*entry.column, world::ChunkCache::SavePressure::Defer);
+    }
+    // `saving` and then `dropped`, in that order and for the reason `dropCell`
+    // gives: a sink that erases its entries for a column must not erase them
+    // out from under the one that writes them.
+    if (columnDropped_ != nullptr) {
+        columnDropped_(columnSinkCtx_, cx, cz);
+    }
+    // Given back rather than freed, for the reason `dropCell` gives: a guest
+    // pacing over a chunk border would otherwise cost a read every step.
+    cache_.give(std::move(entry.column));
+    entry.column.reset();
+    entry.dirty = false;
+}
+
+void WorldStreamer::flushServedDirty()
+{
+    for (auto& pair : served_) {
+        ServedColumn& entry = pair.second;
+        if (!entry.dirty || entry.column == nullptr) {
+            continue;
+        }
+        if (columnSaving_ != nullptr) {
+            columnSaving_(columnSinkCtx_, *entry.column);
+        }
+        cache_.save(*entry.column, world::ChunkCache::SavePressure::Defer);
+        entry.dirty = false;
+    }
+}
+
+// **How many of the wanted chunks are looked at in one frame.**
+//
+// Three guests at the host's view distance is 675 cells and every one of them
+// is a hash lookup, which is a different thing from the grid's own unbudgeted
+// classification pass -- that is an array index into a wrapping grid. Walking
+// a slice and resuming next frame keeps the cost flat in the number of guests,
+// and nothing is lost by it: a chunk missed this frame is asked about on the
+// next, and the whole square is covered in at most two frames at the cap below.
+constexpr int kServedScanPerFrame = 384;
+
+void WorldStreamer::pumpServed(int budget)
+{
+    // **Nothing to serve: let the whole set go, once.** Single player and every
+    // frame of a session with no guests takes this branch and one branch only.
+    if (servedAreaCount_ == 0) {
+        if (!served_.empty()) {
+            for (auto& pair : served_) {
+                releaseServed(pair.second, true);
+            }
+            served_.clear();
+        }
+        servedCursor_ = 0;
+        servedOwed_ = 0;
+        servedOwedScan_ = 0;
+        servedGenerating_ = -1;
+        for (int i = 0; i < kMaxServedAreas; ++i) {
+            servedAreaPending_[i] = 0;
+            servedAreaPendingScan_[i] = 0;
+        }
+        return;
+    }
+
+    // ---- what is no longer wanted -------------------------------------
+    //
+    // Two reasons to let a column go: nobody is near it any more, and **the
+    // camera has come within reach of it**. The second is the one that has to
+    // be exact. The grid is authoritative for every chunk it can reach, and
+    // two copies of one column being edited independently is a world that
+    // disagrees with itself -- so the test is the grid's *radius* and not
+    // whether the grid has actually got the column yet. Anything else leaves a
+    // window where a cell is still reading while the served copy is being
+    // written into, and the read lands on top of the writes.
+    //
+    // This runs before `update()` classifies a single cell, which is what
+    // makes "before" mean before: a chunk that came into reach this frame is
+    // saved here and read back by the grid from the cache, with the edits in
+    // it. See `ChunkCache::runJob`, whose completing read declines to replace
+    // an entry that already exists.
+    for (auto it = served_.begin(); it != served_.end();) {
+        const i32 cx = it->second.column != nullptr ? it->second.column->x : 0;
+        const i32 cz = it->second.column != nullptr ? it->second.column->z : 0;
+        const bool inGrid = centreSet_ && std::abs(cx - centreX_) <= gridColumnRadius()
+                            && std::abs(cz - centreZ_) <= gridColumnRadius();
+        const bool gone =
+            it->second.column == nullptr || !inServedArea(cx, cz) || inGrid;
+        if (!gone) {
+            ++it;
+            continue;
+        }
+        releaseServed(it->second, true);
+        it = served_.erase(it);
+    }
+
+    // ---- what is still owed --------------------------------------------
+    //
+    // A plain walk of every area's square, laid end to end and resumed where
+    // the last frame stopped. Flat rather than per-area so one cap covers the
+    // whole session however many guests there are and whatever radius each of
+    // them wants, and so "a pass" means all of it and not one guest's share.
+    //
+    // **No spiral, and that is deliberate.** The grid walks one because the
+    // *order* of generation is the world and nearest-first has to mean
+    // nearest-first; here the order that matters is still the grid's, because
+    // `refreshSlate` takes served columns only after the camera's own spiral is
+    // clear. What is left for this walk to decide is which of a guest's own
+    // columns is asked about first, and a1.1.2 has no opinion about that.
+    int total = 0;
+    for (int i = 0; i < servedAreaCount_; ++i) {
+        const int side = servedAreas_[i].radius * 2 + 1;
+        total += side * side;
+    }
+    if (servedCursor_ >= total) {
+        servedCursor_ = 0;
+        servedOwedScan_ = 0;
+    }
+
+    int served = int(served_.size());
+    int scanned = 0;
+    int base = 0;
+    for (int i = 0; i < servedAreaCount_ && scanned < kServedScanPerFrame; ++i) {
+        const ServedArea& area = servedAreas_[i];
+        const int side = area.radius * 2 + 1;
+        const int cells = side * side;
+        const int first = servedCursor_ + scanned - base;
+        base += cells;
+        for (int n = first < 0 ? 0 : first; n < cells && scanned < kServedScanPerFrame;
+             ++n, ++scanned) {
+            const i32 cx = area.chunkX - area.radius + i32(n % side);
+            const i32 cz = area.chunkZ - area.radius + i32(n / side);
+
+            // **The grid's reach, not the grid's contents.** A chunk the
+            // camera can reach belongs to the grid whether or not the grid has
+            // got round to reading it; see the eviction above for why the
+            // distinction matters.
+            //
+            // **Its reach and not its size** -- `gridColumnRadius`, which is
+            // `loadRadius_`. Skipping everything inside `gridRadius_` skipped
+            // three rings the grid never fills, and a guest standing in them
+            // starved. See `gridColumnRadius`.
+            if (centreSet_ && std::abs(cx - centreX_) <= gridColumnRadius()
+                && std::abs(cz - centreZ_) <= gridColumnRadius()) {
+                continue;
+            }
+            const i64 key = remoteKey(cx, cz);
+            auto existing = served_.find(key);
+            if (existing != served_.end()) {
+                if (existing->second.owed) {
+                    ++servedOwedScan_;
+                    ++servedAreaPendingScan_[i];
+                }
+                continue;
+            }
+            // Wanted and not held: either still to be asked about, or asked
+            // about and owed to the generator. Both count against this area's
+            // turn -- see `servedAreaPending_`.
+            ++servedOwedScan_;
+            ++servedAreaPendingScan_[i];
+            if (budget <= 0 || served >= kMaxServedColumns) {
+                continue;
+            }
+
+            std::unique_ptr<world::ChunkColumn> column;
+            switch (cache_.tryTake(cx, cz, &column)) {
+            case world::ChunkCache::Take::Took: {
+                ServedColumn& entry = served_[key];
+                entry.column = std::move(column);
+                entry.dirty = false;
+                entry.owed = false;
+                if (columnAdopted_ != nullptr && entry.column != nullptr) {
+                    columnAdopted_(columnSinkCtx_, *entry.column);
+                }
+                --servedOwedScan_;
+                --servedAreaPendingScan_[i];
+                ++served;
+                --budget;
+                break;
+            }
+            case world::ChunkCache::Take::Pending:
+                // Being read; ask again next frame, exactly as a cell does.
+                --budget;
+                break;
+            case world::ChunkCache::Take::Missing:
+                // **The world has never had this chunk.** It goes on the slate
+                // as owed, which is the same road the camera's own missing
+                // ground takes -- and it is taken only after the camera's, so
+                // a guest exploring can never stall the ground under the
+                // player holding the console. See `refreshSlate`.
+                //
+                // **Marked owed whichever area wants it**, and put on the
+                // slate only when it is that area's turn -- the two are
+                // different questions and answering them with one flag
+                // deadlocked the rotation: an area that was never allowed to
+                // record what it wanted could never be seen to want anything,
+                // so its turn never came. `refreshSlate` is where the turn is
+                // applied; see `servedGeneratorSlack` for why there is one.
+                if (generateMissing_ && generator_ != nullptr) {
+                    ServedColumn& entry = served_[key];
+                    entry.owed = true;
+                }
+                --budget;
+                break;
+            }
+        }
+    }
+
+    // **Published on a whole pass, not on a slice.** A counter that reported
+    // what one frame's slice happened to see would read near zero on a session
+    // owed hundreds of columns, which is the opposite of what it is for.
+    servedCursor_ += scanned;
+    if (servedCursor_ >= total) {
+        servedOwed_ = servedOwedScan_;
+        servedOwedScan_ = 0;
+        servedCursor_ = 0;
+        for (int i = 0; i < kMaxServedAreas; ++i) {
+            servedAreaPending_[i] = servedAreaPendingScan_[i];
+            servedAreaPendingScan_[i] = 0;
+        }
+
+        // **And the turn passes, at the end of a whole pass and not before.**
+        //
+        // The area on the slate keeps it until it wants **nothing** -- not
+        // merely nothing the generator owes, but nothing this console has still
+        // to ask storage about, which is what `servedAreaPending_` counts.
+        // Passing on the narrower test made two guests swap every few frames
+        // while both squares were still filling, and every swap moves the
+        // generator's second retire centre, which retires and re-derives a
+        // whole frontier.
+        if (servedAreaCount_ > 0 && !servedAreaWants(servedGenerating_)) {
+            const int was = servedGenerating_;
+            for (int step = 1; step <= servedAreaCount_; ++step) {
+                const int next = (was < 0 ? 0 : was + step) % servedAreaCount_;
+                if (servedAreaWants(next)) {
+                    servedGenerating_ = next;
+                    break;
+                }
+            }
+            if (servedGenerating_ != was) {
+                publishRetireCentre();
+            }
+        }
+    }
+}
+
+bool WorldStreamer::servedAreaWants(int index) const
+{
+    return index >= 0 && index < servedAreaCount_ && servedAreaPending_[index] > 0;
+}
+
+bool WorldStreamer::generatorSupplyTerrain(void* context, i32 chunkX, i32 chunkZ, u8* blocks)
+{
+    WorldStreamer* self = static_cast<WorldStreamer*>(context);
+    return self->terrainSource_.supply != nullptr
+           && self->terrainSource_.supply(self->terrainSource_.context, chunkX, chunkZ, blocks);
 }
 
 // ChunkGenerator::Store. The generator asks the world what is already there and
@@ -685,6 +1142,19 @@ void WorldStreamer::drainGenerated(ChunkRenderer& renderer)
         // generator and the eviction chase each other for ever.
         if (!centreSet_ || std::abs(cx - centreX_) > admitRadius()
             || std::abs(cz - centreZ_) > admitRadius()) {
+            // Out of the grid's reach, but it may be ground that was generated
+            // *for* a guest -- in which case it goes where that guest's ground
+            // goes rather than being dropped. It is already in the cache; this
+            // holds it so the server can post it without a read.
+            const bool inGrid = std::abs(cx - centreX_) <= gridColumnRadius()
+                                && std::abs(cz - centreZ_) <= gridColumnRadius();
+            if (!inGrid && inServedArea(cx, cz)) {
+                ServedColumn& entry = served_[remoteKey(cx, cz)];
+                entry.column = std::move(column);
+                entry.owed = false;
+                entry.dirty = false;
+                ++stats_.adoptedThisFrame;
+            }
             continue;
         }
         Cell& cell = cells_[cellIndex(cx, cz)];
@@ -722,7 +1192,7 @@ void WorldStreamer::buildGrid()
     // only when there is something that sweeps. With generation off the extra
     // ring would be cells that are classified and never used, and the harnesses
     // that measure a fixed world would be paying for a question they never ask.
-    gridRadius_ = loadRadius_ + (generateMissing_ ? 3 : 0);
+    gridRadius_ = loadRadius_ + (generateMissing_ && !remote_ ? 3 : 0);
     edge_ = gridRadius_ * 2 + 1;
     cells_.clear();
     cells_.resize(usize(edge_) * edge_);
@@ -829,6 +1299,11 @@ void WorldStreamer::setMeshDistance(int meshDistance, ChunkRenderer& renderer)
         }
         if (std::abs(cell.chunkX - centreX_) > gridRadius_
             || std::abs(cell.chunkZ - centreZ_) > gridRadius_) {
+            // A multiplayer column is never sent twice, so it is held rather
+            // than let go. See `openRemote`.
+            if (remote_ && cell.column != nullptr) {
+                remoteColumns_[remoteKey(cell.chunkX, cell.chunkZ)] = std::move(cell.column);
+            }
             continue;  // outside the new radius: let it go
         }
         Cell& destination = cells_[cellIndex(cell.chunkX, cell.chunkZ)];
@@ -903,6 +1378,61 @@ u32 WorldStreamer::dirtyColumns() const
 void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn progress)
 {
     if (!open_) {
+        return;
+    }
+
+    // **Whoever was listening to this world is not listening to the next one.**
+    // The streamer is a static that lives for the whole process and these two
+    // point into a session that closes with the world -- a terrain pool and a
+    // host, both gone by the time another world opens. Left set, the first
+    // block the next world writes would call through a dangling pointer. Every
+    // caller installs them after `open`, so clearing here is the pair to that.
+    blockWatcher_ = nullptr;
+    blockWatcherCtx_ = nullptr;
+    terrainSource_ = TerrainSource{};
+    serverViewRadius_ = kServerViewRadius;
+
+    // **And the map, for exactly the same reason.** A survey answers on the I/O
+    // thread into whatever registered it -- a screen that belongs to the session
+    // now closing -- so the queue is dropped and the visitor forgotten before
+    // anything else here runs. One already taken by the thread finishes against
+    // an object that is still alive, because nothing is torn down until the
+    // cache below is closed and its thread joined.
+    cache_.cancelSurveys();
+
+    if (remote_) {
+        // Nothing is owed to anything: the server has the world. The tick goes
+        // before the grid it reads, for the reason given further down.
+        entityPools_ = {};
+        entitiesBound_ = false;
+        tick_.reset();
+        light_.reset();
+        cells_.clear();
+        mapDirty_.clear();
+        remoteColumns_.clear();
+        remoteOps_.clear();
+        edits_.clear();
+        columnWork_ = nullptr;
+        columnWorkCtx_ = nullptr;
+        columnWorkCount_ = 0;
+        columnWorkDone_ = 0;
+        columnWorkPosted_ = false;
+        columnWorkBusy_ = false;
+        columnWorkReady_ = false;
+        centreSet_ = false;
+        remote_ = false;
+        served_.clear();
+        servedAreaCount_ = 0;
+        servedOwed_ = 0;
+        servedOwedScan_ = 0;
+        servedCursor_ = 0;
+        servedGenerating_ = -1;
+        servedGeneratorGrown_ = 0;
+        for (int i = 0; i < kMaxServedAreas; ++i) {
+            servedAreaPending_[i] = 0;
+            servedAreaPendingScan_[i] = 0;
+        }
+        open_ = false;
         return;
     }
     snapshotEntities();
@@ -981,6 +1511,24 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     tick_.reset();
     light_.reset();
 
+    // **The ground held for the other consoles, before the cache shuts.** A
+    // guest's last hour of mining is in these columns and nowhere else, so
+    // they are saved here for the same reason the grid's are.
+    for (auto& pair : served_) {
+        releaseServed(pair.second, true);
+    }
+    served_.clear();
+    servedAreaCount_ = 0;
+    servedOwed_ = 0;
+    servedOwedScan_ = 0;
+    servedCursor_ = 0;
+    servedGenerating_ = -1;
+    servedGeneratorGrown_ = 0;
+    for (int i = 0; i < kMaxServedAreas; ++i) {
+        servedAreaPending_[i] = 0;
+        servedAreaPendingScan_[i] = 0;
+    }
+
     // close() blocks until the last column is on the card, which is what the
     // "Saving level.." message on the way out is for. Everything the generator
     // just flushed went into the cache, so this is where it becomes files --
@@ -1007,6 +1555,260 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     open_ = false;
 }
 
+// ---- a multiplayer world ---------------------------------------------------
+
+bool WorldStreamer::openRemote(int meshDistance)
+{
+    tick_.reset();
+    light_.reset();
+    tickDirtyCells_ = 0;
+    player_ = {};
+    entityPools_ = {};
+    entitiesBound_ = false;
+
+    remote_ = true;
+    remoteColumns_.clear();
+    remoteOps_.clear();
+    edits_.clear();
+    // A client serves nobody: the world it is looking at is not its own.
+    served_.clear();
+    servedAreaCount_ = 0;
+    servedOwed_ = 0;
+    servedOwedScan_ = 0;
+    servedCursor_ = 0;
+    servedGenerating_ = -1;
+    servedGeneratorGrown_ = 0;
+    for (int i = 0; i < kMaxServedAreas; ++i) {
+        servedAreaPending_[i] = 0;
+        servedAreaPendingScan_[i] = 0;
+    }
+
+    path_.clear();
+    level_ = world::LevelData{};
+    lastSaveMillis_ = 0;
+    open_ = true;
+
+    meshDistance_ = meshDistance;
+    loadRadius_ = meshDistance + 1;
+    memoryRadius_ = loadRadius_;
+    // See the same line in `open`.
+    centreSet_ = false;
+    buildGrid();
+
+    tick::TickAccess tickAccess;
+    tickAccess.ctx = this;
+    tickAccess.column = &WorldStreamer::tickColumn;
+    tickAccess.changed = &WorldStreamer::tickBlockChanged;
+    tickAccess.beforeWrite = &WorldStreamer::recordEdit;
+    // No seed reaches a client in protocol 2, and nothing random ticks here.
+    tick_ = std::make_unique<tick::TickWorld>(tickAccess, 0);
+
+    world::LightAccess lightAccess;
+    lightAccess.ctx = this;
+    lightAccess.column = &WorldStreamer::tickColumn;
+    lightAccess.sectionLit = &WorldStreamer::lightSectionLit;
+    light_ = std::make_unique<world::LightUpdater>(lightAccess);
+
+    builder_.reserveQuads(4096);
+    return true;
+}
+
+void WorldStreamer::supplyColumn(std::unique_ptr<world::ChunkColumn> column)
+{
+    if (!remote_ || column == nullptr) {
+        return;
+    }
+    const i32 cx = column->x;
+    const i32 cz = column->z;
+    remoteColumns_[remoteKey(cx, cz)] = std::move(column);
+    remoteOps_.push_back(RemoteOp{cx, cz, false});
+}
+
+void WorldStreamer::unloadColumn(i32 chunkX, i32 chunkZ)
+{
+    if (!remote_) {
+        return;
+    }
+    remoteColumns_.erase(remoteKey(chunkX, chunkZ));
+    remoteOps_.push_back(RemoteOp{chunkX, chunkZ, true});
+}
+
+void WorldStreamer::drainRemote(ChunkRenderer& renderer)
+{
+    for (const RemoteOp& op : remoteOps_) {
+        if (std::abs(op.x - centreX_) > gridRadius_ || std::abs(op.z - centreZ_) > gridRadius_) {
+            continue;  // no cell: an arrival stays held, an unload has already let go
+        }
+        Cell& cell = cells_[cellIndex(op.x, op.z)];
+        const bool here =
+            cell.state != CellState::Empty && cell.chunkX == op.x && cell.chunkZ == op.z;
+
+        if (op.unload) {
+            if (here && cell.state == CellState::Loaded) {
+                cell.column.reset();  // not kept: the server let it go
+                dropCell(cell, renderer);
+            }
+            continue;
+        }
+
+        auto it = remoteColumns_.find(remoteKey(op.x, op.z));
+        if (it == remoteColumns_.end() || !here) {
+            // Unloaded again already, or a cell not classified yet --
+            // classification takes it out of the map itself.
+            continue;
+        }
+        if (cell.state == CellState::Loaded && cell.published) {
+            renderer.dropColumn(op.x, op.z);
+            cell.published = false;
+        }
+        std::unique_ptr<world::ChunkColumn> column = std::move(it->second);
+        remoteColumns_.erase(it);
+        adoptColumn(cell, std::move(column));
+        ++stats_.adoptedThisFrame;
+
+        // A neighbour already published was meshed with nothing here, which
+        // only happens at the edge of the server's view; its faces toward this
+        // column are re-made now that there is something to cull them against.
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                const Cell* neighbour = find(op.x + dx, op.z + dz);
+                if ((dx != 0 || dz != 0) && neighbour != nullptr && neighbour->published) {
+                    for (int sy = 0; sy < world::ChunkColumn::kSectionCount; ++sy) {
+                        renderer.invalidateSection(op.x + dx, sy, op.z + dz);
+                    }
+                }
+            }
+        }
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                publishIfReady(op.x + dx, op.z + dz, renderer);
+            }
+        }
+    }
+    remoteOps_.clear();
+}
+
+world::ChunkColumn* WorldStreamer::regionColumn(void* ctx, i32 chunkX, i32 chunkZ)
+{
+    auto* self = static_cast<WorldStreamer*>(ctx);
+    if (Cell* cell = self->find(chunkX, chunkZ)) {
+        if (cell->state == CellState::Loaded) {
+            return cell->column.get();
+        }
+    }
+    auto it = self->remoteColumns_.find(remoteKey(chunkX, chunkZ));
+    return it != self->remoteColumns_.end() ? it->second.get() : nullptr;
+}
+
+void WorldStreamer::applyRegion(ChunkRenderer& renderer, const net::MapChunkRegion& region)
+{
+    if (!remote_ || region.sizeX <= 0 || region.sizeY <= 0 || region.sizeZ <= 0) {
+        return;
+    }
+    // `gy.a(bz)`: the revert list forgets the box first.
+    edits_.confirm(region.x, region.y, region.z, region.x + region.sizeX - 1,
+                   region.y + region.sizeY - 1, region.z + region.sizeZ - 1);
+    net::applyMapChunk(region, &WorldStreamer::regionColumn, this, &regionScratch_);
+
+    const i32 cx0 = region.x >> 4;
+    const i32 cz0 = region.z >> 4;
+    const i32 cx1 = (region.x + region.sizeX - 1) >> 4;
+    const i32 cz1 = (region.z + region.sizeZ - 1) >> 4;
+    for (i32 cx = cx0; cx <= cx1; ++cx) {
+        for (i32 cz = cz0; cz <= cz1; ++cz) {
+            Cell* cell = find(cx, cz);
+            if (cell == nullptr || cell->state != CellState::Loaded) {
+                continue;
+            }
+            for (int sy = 0; sy < world::ChunkColumn::kSectionCount; ++sy) {
+                cell->masks[sy] = mesh::computeVisibility(cell->column->section(sy), visScratch_);
+            }
+            if (cell->published) {
+                renderer.dropColumn(cx, cz);
+                cell->published = false;
+            }
+            cell->freshlyAdopted = true;
+            cell->mapSerial = ++blockSerial_;
+            mapDirty_.push(cx, cz);
+            publishIfReady(cx, cz, renderer);
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx == 0 && dz == 0) {
+                        continue;
+                    }
+                    for (int sy = 0; sy < world::ChunkColumn::kSectionCount; ++sy) {
+                        renderer.invalidateSection(cx + dx, sy, cz + dz);
+                    }
+                }
+            }
+        }
+    }
+}
+
+bool WorldStreamer::applyServerBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
+                                     block::BlockId id, u8 data)
+{
+    if (!remote_ || tick_ == nullptr) {
+        return false;
+    }
+    edits_.confirm(x, y, z, x, y, z);
+    if (y < 0 || y >= world::ChunkColumn::kHeight) {
+        return false;
+    }
+
+    if (tick_->chunkResident(x >> 4, z >> 4)) {
+        RenderBracket draws(*this, renderer);
+        applyingServer_ = true;
+        const bool wrote = tick_->setBlockAndDataRaw(x, y, z, id, data);
+        applyingServer_ = false;
+        return wrote;
+    }
+
+    auto it = remoteColumns_.find(remoteKey(x >> 4, z >> 4));
+    if (it == remoteColumns_.end()) {
+        return false;
+    }
+    it->second->setBlock(x & 15, y, z & 15, id);
+    it->second->setBlockData(x & 15, y, z & 15, data);
+    net::refreshHeightMap(*it->second, &regionScratch_);
+    return true;
+}
+
+void WorldStreamer::setRemoteTime(i64 time)
+{
+    if (tick_ != nullptr) {
+        tick_->setTime(time);
+    }
+    level_.time = time;
+}
+
+void WorldStreamer::setRemoteSpawn(i32 x, i32 y, i32 z)
+{
+    level_.spawnX = x;
+    level_.spawnY = y;
+    level_.spawnZ = z;
+}
+
+void WorldStreamer::recordEdit(void* ctx, i32 x, int y, i32 z, block::BlockId oldBlock,
+                               u8 oldData)
+{
+    auto* self = static_cast<WorldStreamer*>(ctx);
+    if (!self->applyingServer_) {
+        self->edits_.record(x, y, z, oldBlock, oldData);
+    }
+}
+
+void WorldStreamer::revertEdit(void* ctx, i32 x, int y, i32 z, u16 block, u8 data)
+{
+    auto* self = static_cast<WorldStreamer*>(ctx);
+    if (self->tick_ == nullptr || !self->tick_->chunkResident(x >> 4, z >> 4)) {
+        return;
+    }
+    self->applyingServer_ = true;
+    self->tick_->setBlockAndDataRaw(x, y, z, block, data);
+    self->applyingServer_ = false;
+}
+
 void WorldStreamer::spawnPosition(double* x, double* y, double* z) const
 {
     // No narrowing on the way out: level.dat already holds these as doubles,
@@ -1031,6 +1833,12 @@ int WorldStreamer::cellIndex(i32 chunkX, i32 chunkZ) const
 WorldStreamer::Cell* WorldStreamer::find(i32 chunkX, i32 chunkZ)
 {
     return const_cast<Cell*>(static_cast<const WorldStreamer*>(this)->find(chunkX, chunkZ));
+}
+
+WorldStreamer::Cell* WorldStreamer::loadedCell(i32 chunkX, i32 chunkZ)
+{
+    Cell* cell = find(chunkX, chunkZ);
+    return cell != nullptr && cell->state == CellState::Loaded ? cell : nullptr;
 }
 
 const WorldStreamer::Cell* WorldStreamer::find(i32 chunkX, i32 chunkZ) const
@@ -1079,6 +1887,24 @@ WorldStreamer::LoadResult WorldStreamer::loadColumn(i32 chunkX, i32 chunkZ)
 
 void WorldStreamer::classifyCell(Cell& cell, i32 chunkX, i32 chunkZ)
 {
+    // A multiplayer cell asks the columns the server has already sent, and
+    // nothing else: there is no card to ask and nothing to generate.
+    if (remote_) {
+        cell.column.reset();
+        cell.chunkX = chunkX;
+        cell.chunkZ = chunkZ;
+        cell.published = false;
+        auto it = remoteColumns_.find(remoteKey(chunkX, chunkZ));
+        if (it != remoteColumns_.end()) {
+            std::unique_ptr<world::ChunkColumn> column = std::move(it->second);
+            remoteColumns_.erase(it);
+            adoptColumn(cell, std::move(column));
+        } else {
+            cell.state = CellState::Awaited;
+        }
+        return;
+    }
+
     // Asked once, and the answer kept. Which "no" it is -- the edge of a finite
     // world, or a frontier waiting to be filled -- is the whole difference
     // between a column that may be meshed against and one that may not.
@@ -1218,6 +2044,33 @@ void WorldStreamer::publishRetireCentre()
     retireCentreZ_ = centreZ_;
     retireRadius_ = loadRadius_ + kRetireSlackChunks;
     retireCentreSet_ = centreSet_;
+
+    // **The camera's centre and the one served area that may generate.**
+    //
+    // Not every area, which is the version this started as: retirement is by
+    // region, so a centre in the list is a region the generator keeps -- and
+    // keeping three guests' frontiers at once needs three guests' worth of
+    // cache, which is 11 MB of block pool on a console that has not got it.
+    // Only the area on the slate holds a frontier; the others are finished,
+    // delivered and evictable. See `servedGeneratorSlack`.
+    //
+    // A guest who is not the one generating therefore has their region retired,
+    // which is safe -- a region always goes as a unit -- and costs a re-derive
+    // when their turn comes round. It comes round only when the area before
+    // them owes nothing, so a filled square is not swept twice.
+    retireExtraCount_ = 0;
+    if (servedGenerating_ >= 0 && servedGenerating_ < servedAreaCount_) {
+        retireExtra_[0].chunkX = servedAreas_[servedGenerating_].chunkX;
+        retireExtra_[0].chunkZ = servedAreas_[servedGenerating_].chunkZ;
+        retireExtraCount_ = 1;
+    }
+    // And how much cache that second frontier needs, for the worker to grow to
+    // before its next sweep. Never shrunk: `growCacheTo` only grows.
+    wantedGeneratorColumns_ =
+        mcver::ChunkGenerator::cacheColumnsFor(loadRadius_) + servedGeneratorGrown_;
+    // The radius is the camera's, which is the wider of the two: a served area
+    // is the server's view distance and the grid is the render distance plus
+    // `kRetireSlackChunks`, so one number covers both.
 }
 
 bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
@@ -1271,19 +2124,34 @@ bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
     // Here rather than on the main thread because the generator belongs to
     // whichever thread is inside it, and this is that thread.
     {
-        i32 rx = 0;
-        i32 rz = 0;
+        mcver::ChunkGenerator::Centre centres[1 + kMaxServedAreas];
+        int count = 0;
         int rr = 0;
         bool set = false;
+        int wantedColumns = 0;
         {
             std::lock_guard<std::mutex> guard(queueLock_);
-            rx = retireCentreX_;
-            rz = retireCentreZ_;
-            rr = retireRadius_;
             set = retireCentreSet_;
+            rr = retireRadius_;
+            wantedColumns = wantedGeneratorColumns_;
+            if (set) {
+                centres[count++] = {retireCentreX_, retireCentreZ_};
+            }
+            for (int i = 0; i < retireExtraCount_; ++i) {
+                centres[count++] = retireExtra_[i];
+            }
+        }
+        // **The cache first, and on this thread.** A session serving ground to
+        // a guest outside the grid needs room for a second frontier
+        // (`servedGeneratorSlack`), and the main thread must not resize the
+        // vectors this function is about to read -- so it publishes a number
+        // and this grows to it, here, where the generator is this thread's.
+        // `growCacheTo` ignores anything not larger than what it already has.
+        if (wantedColumns > 0) {
+            generator_->growCacheTo(wantedColumns);
         }
         if (set) {
-            generator_->retire(rx, rz, rr);
+            generator_->retire(centres, count, rr);
         }
     }
 
@@ -1388,6 +2256,56 @@ void WorldStreamer::refreshSlate()
     // the count of cells still waiting to be asked about, because the two are
     // the same sentence.
     stats_.generationGated = blocked;
+
+    // **And then, and only then, the ground a guest is standing on.**
+    //
+    // After the camera's and never instead of it: the player holding this
+    // console must not watch their own world stop arriving because somebody
+    // else is exploring. A blocked walk above means the nearest owed column
+    // cannot be judged yet, and taking a served one while that is true would
+    // put the order of the sweeps -- which is the world -- in the hands of
+    // whichever directory listing landed first, exactly as the note above
+    // says. So a blocked frame serves nobody and tries again next frame.
+    //
+    // There is no nearest-first order *between* two guests and there is no
+    // order to be faithful to: a1.1.2's server generates for whoever asked,
+    // and two players asking at once is a case the single-player jar does not
+    // have. What is preserved is the thing that matters -- every column is
+    // swept once, by one sweep, with its neighbours -- and that is
+    // `ChunkGenerator`'s to keep, not this list's.
+    //
+    // **And one served area at a time.** Only the area whose turn it is is
+    // swept, because only one guest's frontier fits in the generator's cache
+    // beside the camera's; see `WorldStreamer::servedGeneratorSlack`.
+    if (blocked || servedGenerating_ < 0 || servedGenerating_ >= servedAreaCount_) {
+        return;
+    }
+    const ServedArea& turn = servedAreas_[servedGenerating_];
+    for (const auto& pair : served_) {
+        if (slate_.size() >= kSlateDepth) {
+            break;
+        }
+        if (!pair.second.owed || pair.second.column != nullptr) {
+            continue;
+        }
+        const i32 cx = i32(u32(u64(pair.first) >> 32));
+        const i32 cz = i32(u32(u64(pair.first)));
+        if (std::abs(cx - turn.chunkX) > turn.radius
+            || std::abs(cz - turn.chunkZ) > turn.radius) {
+            continue;
+        }
+        const std::pair<i32, i32> at{cx, cz};
+        if (jobActive_ && inFlight_ == at) {
+            continue;
+        }
+        if (std::find(completed_.begin(), completed_.end(), at) != completed_.end()) {
+            continue;
+        }
+        if (std::find(slate_.begin(), slate_.end(), at) != slate_.end()) {
+            continue;
+        }
+        slate_.push_back(at);
+    }
 }
 
 // **queueLock_ held.** The worker calls this as well as the main thread.
@@ -1468,7 +2386,7 @@ void WorldStreamer::dropCell(Cell& cell, ChunkRenderer& renderer)
     //
     // Saving here costs one clone and one queued write, on a path that already
     // runs only when the render distance moves past a column.
-    if (cell.tickDirty && cell.column != nullptr) {
+    if (cell.tickDirty && cell.column != nullptr && !remote_) {
         if (columnSaving_ != nullptr) {
             columnSaving_(columnSinkCtx_, *cell.column);
         }
@@ -1492,7 +2410,13 @@ void WorldStreamer::dropCell(Cell& cell, ChunkRenderer& renderer)
     // otherwise, so turning round is free. It is also what makes the read-ahead
     // band worth having: the two are the same table.
     if (cell.column != nullptr) {
-        cache_.give(std::move(cell.column));
+        if (remote_) {
+            // Still loaded on the server, which will not send it again: kept,
+            // so walking back into it costs nothing. See `openRemote`.
+            remoteColumns_[remoteKey(cell.chunkX, cell.chunkZ)] = std::move(cell.column);
+        } else {
+            cache_.give(std::move(cell.column));
+        }
     }
     cell.column.reset();
     cell.state = CellState::Empty;
@@ -1520,6 +2444,12 @@ bool WorldStreamer::neighboursReady(i32 chunkX, i32 chunkZ) const
             const Cell* cell = find(chunkX + dx, chunkZ + dz);
             if (cell == nullptr || cell->state == CellState::Empty
                 || cell->state == CellState::OnDisk || cell->state == CellState::Ungenerated) {
+                return false;
+            }
+            // A server column is on its way only inside the server's view.
+            if (cell->state == CellState::Awaited
+                && std::abs(chunkX + dx - centreX_) <= serverViewRadius_
+                && std::abs(chunkZ + dz - centreZ_) <= serverViewRadius_) {
                 return false;
             }
         }
@@ -1692,6 +2622,20 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     // has moved so a result is judged against where the player is now. A column
     // adopted here is one the scan below does not have to ask storage about.
     drainGenerated(renderer);
+    if (remote_) {
+        drainRemote(renderer);
+    }
+
+    // **The ground the other consoles are standing on**, after the grid's own
+    // and on a budget of the same size. That is a second read posted per frame
+    // while a guest is outside the grid, and it is deliberate rather than free:
+    // the reads are the I/O thread's and never the frame's, and generation --
+    // the expensive half -- is still strictly the camera's first, because
+    // `refreshSlate` will not touch a served column until the camera's own
+    // spiral is clear. One branch in single player. See `setServedAreas`.
+    if (!remote_) {
+        pumpServed(budget.columnsPerFrame);
+    }
 
     // **Classification first, over the whole grid, and unbudgeted.** It is one
     // index lookup per cell and it never touches a card, so "unbudgeted" now
@@ -1935,7 +2879,7 @@ void WorldStreamer::setPlayerInventory(const std::vector<item::ItemStack>& stack
 
 void WorldStreamer::tickSaves(i64 nowMillis)
 {
-    if (!open_ || autosaveSeconds_ <= 0) {
+    if (!open_ || remote_ || autosaveSeconds_ <= 0) {
         return;
     }
     if (nowMillis - lastSaveMillis_ < i64(autosaveSeconds_) * 1000) {
@@ -1946,7 +2890,7 @@ void WorldStreamer::tickSaves(i64 nowMillis)
 
 void WorldStreamer::saveNow(i64 nowMillis)
 {
-    if (!open_) {
+    if (!open_ || remote_) {
         return;
     }
     lastSaveMillis_ = nowMillis;
@@ -1982,7 +2926,7 @@ void WorldStreamer::saveNow(i64 nowMillis)
 
 void WorldStreamer::flushSaves(bool blocking)
 {
-    if (!open_) {
+    if (!open_ || remote_) {
         return;
     }
     cache_.flush(blocking);
@@ -1995,6 +2939,12 @@ const world::ChunkColumn* WorldStreamer::residentColumn(i32 chunkX, i32 chunkZ) 
         return nullptr;
     }
     return cell->column.get();
+}
+
+const world::ChunkColumn* WorldStreamer::servedColumn(i32 chunkX, i32 chunkZ) const
+{
+    auto it = served_.find(remoteKey(chunkX, chunkZ));
+    return it == served_.end() ? nullptr : it->second.column.get();
 }
 
 u32 WorldStreamer::columnBlockSerial(i32 chunkX, i32 chunkZ) const
@@ -2137,6 +3087,8 @@ gui::ChunkState WorldStreamer::progressAt(i32 chunkX, i32 chunkZ,
                 return gui::ChunkState::Working;
             }
             return gui::ChunkState::Owed;
+        case CellState::Awaited:
+            return gui::ChunkState::Owed;
         case CellState::OnDisk:
             // The world already has it and it is on its way off the card.
             // Not a generation state, but it is the same thing to a player:
@@ -2221,7 +3173,9 @@ void WorldStreamer::setMemoryBudget(usize bytes)
 
 void WorldStreamer::enforceMemoryBudget(ChunkRenderer& renderer)
 {
-    if (memoryBudget_ == 0 || !centreSet_) {
+    // A multiplayer world's columns cost the same whether the grid holds them or
+    // `remoteColumns_` does, so shrinking the grid would free nothing.
+    if (memoryBudget_ == 0 || !centreSet_ || remote_) {
         return;
     }
 
@@ -2296,7 +3250,8 @@ void WorldStreamer::countResidency()
             if (withBytes) {
                 stats_.blockBytes += cell.column->memoryUsage();
             }
-        } else if (cell.state == CellState::Absent || cell.state == CellState::Ungenerated) {
+        } else if (cell.state == CellState::Absent || cell.state == CellState::Ungenerated
+                   || cell.state == CellState::Awaited) {
             // Both are "not in memory". Which one it is says whether anything
             // is going to change that, and pendingGeneration is the count that
             // separates them.

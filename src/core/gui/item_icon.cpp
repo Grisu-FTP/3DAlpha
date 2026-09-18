@@ -51,12 +51,23 @@ u8 shade(u8 value, float factor)
 // icon-local screen coordinates, both in units of the icon's size:
 //
 //     sx = 0.5 + (x + z - 1) * 0.5
-//     sy = 0.25 + (x - z) * 0.25 + (1 - y) * 0.5
+//     sy = 0.25 + (z - x) * 0.25 + (1 - y) * 0.5
 //
 // Every coefficient is a quarter or a half, which is what keeps a unit cube's
 // silhouette on pixel boundaries at any even size. It puts the corner nearest
-// the viewer -- (1, 1, 0) -- at the middle of the icon, and the whole unit cube
+// the viewer -- (0, 1, 1) -- at the middle of the icon, and the whole unit cube
 // inside the box exactly.
+//
+// **Which corner is nearest is not a free choice**, and getting it wrong is how
+// a furnace in a slot came to show its back. `RenderItem` turns the block
+// `glRotatef(210, 1, 0, 0)` then `glRotatef(45, 0, 1, 0)` under a GUI ortho
+// whose y axis is flipped, and working the three visible faces out of that
+// gives **top, west and south** -- west on the left of the icon, south on the
+// right. South is face 3, which is the face `BlockFurnace`, `BlockChest`,
+// `BlockDispenser` and `BlockPumpkin` all put their front on, so it is the one
+// face of the six a slot must not hide. This projection used to be the same
+// picture a quarter turn round -- north on the left and east on the right --
+// which showed two plain sides of every one of them.
 //
 // **It replaces a table of three fixed parallelograms**, which could only ever
 // draw a full cube. A fence is a post and a cactus is inset, and both were
@@ -68,14 +79,14 @@ struct Screen {
 Screen project(float bx, float by, float bz)
 {
     return Screen{0.5f + (bx + bz - 1.0f) * 0.5f,
-                  0.25f + (bx - bz) * 0.25f + (1.0f - by) * 0.5f};
+                  0.25f + (bz - bx) * 0.25f + (1.0f - by) * 0.5f};
 }
 
 // Which of a box's six faces are towards the viewer, and which of the block's
 // tiles and shades each takes. Only three can be seen at once, and they are
-// always the same three: the viewer is above, to the +X side and on the -Z
-// side, so the light face is the north one at 0.8 and the dark face is the east
-// one at 0.6 -- exactly what the world mesher gives them.
+// always the same three: the viewer is above, to the -X side and on the +Z
+// side, so the left face is the west one at 0.6 and the right face is the south
+// one at 0.8 -- exactly what the world mesher gives them.
 struct IconFace {
     int meshFace;
     // The box corner the tile's (0, 0) sits on, and the two box-space edges its
@@ -87,14 +98,15 @@ struct IconFace {
 
 // Written to match `core/mesh/box.hpp`'s UV rule, which is the original's: the
 // top face takes u from x and v from z, and a side face takes v from y with the
-// box's *top* edge on the low end of the tile.
+// box's *top* edge on the low end of the tile. Neither side face here reverses
+// u -- that is +X's and -Z's doing, and neither of those is drawn.
 constexpr IconFace kVisibleFaces[3] = {
     // Top: origin at (minX, maxY, minZ), u to maxX, v to maxZ.
     {mesh::kFacePosY, 0, 1, 0, 0, 1, 2, 1},
-    // North (-Z): origin at (maxX, maxY, minZ), u to minX, v down to minY.
-    {mesh::kFaceNegZ, 1, 1, 0, 0, 0, 1, 0},
-    // East (+X): origin at (maxX, maxY, maxZ), u to minZ, v down to minY.
-    {mesh::kFacePosX, 1, 1, 1, 2, 0, 1, 0},
+    // West (-X), on the left: origin at (minX, maxY, minZ), u to maxZ, v down.
+    {mesh::kFaceNegX, 0, 1, 0, 2, 1, 1, 0},
+    // South (+Z), on the right: origin at (minX, maxY, maxZ), u to maxX, v down.
+    {mesh::kFacePosZ, 0, 1, 1, 0, 1, 1, 0},
 };
 
 float boxAxis(const AABB& box, int axis, int towards)
@@ -254,9 +266,9 @@ void drawFace(const Surface& surface, int x, int y, int size, const u8* sheet,
 
 // **Nearness, for the painter's order below.** The projection above leaves one
 // direction unrepresented, and it is the cross product of its two screen axes:
-// (0.5, 0, 0.5) x (0.25, -0.5, -0.25) is (0.25, 0.25, -0.25), so a point is
-// nearer the eye the larger `x + y - z`. That is the viewer being above, to the
-// +X side and on the -Z side, written as one number.
+// (0.5, 0, 0.5) x (-0.25, -0.5, 0.25) is (-0.25, 0.25, 0.25), so a point is
+// nearer the eye the larger `-x + y + z`. That is the viewer being above, to
+// the -X side and on the +Z side, written as one number.
 double nearness(const AABB& box, const IconFace& face)
 {
     // The face's own centre: its two spanning axes at their middle and its
@@ -266,10 +278,10 @@ double nearness(const AABB& box, const IconFace& face)
     double point[3] = {mid[0], mid[1], mid[2]};
     switch (face.meshFace) {
         case mesh::kFacePosY: point[1] = box.maxY; break;
-        case mesh::kFaceNegZ: point[2] = box.minZ; break;
-        default:              point[0] = box.maxX; break;  // +X
+        case mesh::kFacePosZ: point[2] = box.maxZ; break;
+        default:              point[0] = box.minX; break;  // -X
     }
-    return point[0] + point[1] - point[2];
+    return -point[0] + point[1] + point[2];
 }
 
 // Every visible face of every box of the block, drawn back to front.

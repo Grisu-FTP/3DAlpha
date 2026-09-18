@@ -24,6 +24,7 @@
     "`contact` is what `ly.b(Lcn;IIILkh;)V` -- onEntityCollidedWithBlock -- does to an entity whose box overlaps the block, called from the tail of `kh.c(DDD)V` for every cell it touches. Two classes override it in a1.1.2: `hy`, the cactus, whose whole body is attackEntityFrom(null, 1), and `al`, both pressure plates. Absent means the base class, which does nothing. See src/core/block/block_def.hpp.",
     "`stepSound` names one of `stepSounds`, by the field letter Block stores the singleton in -- the same shape `material` uses. `step` is what walking on the block plays and what *placing* it plays; `break` is what breaking it plays, and the two differ only for sand (which breaks like gravel) and glass.",
     "`model` is the block a block is built from (a Block-typed constructor argument): a staircase's planks or cobblestone, which it turns into with something solid on top of it.",
+    "`sideRule` names which `shouldSideBeRendered` (`ly.c(Lnm;IIII)Z`) the block has, and is absent for the sixty-five with the base class's -- `return !isBlockOpaqueCube(neighbour)`. Four classes override it: `fc` (glass, ice) and `hi` (leaves) also hide a face against the same block id, which is `own_kind`; `fd` (the snow layer) always draws its top and hides a face against the same material, which is `own_material`; and `oi` (the slabs) always draws its top and bottom and hides a side against the same id, which is `slab`. `km` (the staircase) overrides it with a call to super and is therefore not a rule. Ours and assigned by hand for the reason `worldTexture` is: the rule is a branch. See src/core/block/side_rule.hpp.",
     "`worldTexture` names the rule a block's faces follow when the tile depends on a *neighbouring* cell rather than on the block itself -- the one thing `faces` cannot carry, since it is a table and this is a question about the world. It is ours and assigned by hand, as `tick` is: the extractor can only report which faces need the world (`worldDependentFaces`), because the rule is a branch and not a value. The extractor names four ids (2, 53, 54, 67); the two staircases are there only because they forward to a model block whose world overload reads the metadata and then ignores it, so the blocks that genuinely read a *neighbour* are grass and the chest, and the chest is the one that is ported -- `b.a(Lnm;IIII)I` turns its front away from the blocks around it and joins a neighbouring chest into one two-cell picture. See src/core/block/world_texture.hpp."
   ],
   "version": "a1.1.2",
@@ -515,6 +516,7 @@
       "light": 0,
       "opacity": 1,
       "texture": 52,
+      "sideRule": "own_kind",
       "opaqueCube": true,
       "tickRandomly": true,
       "tick": "leaves",
@@ -559,6 +561,7 @@
       "light": 0,
       "opacity": 0,
       "texture": 49,
+      "sideRule": "own_kind",
       "opaqueCube": false,
       "stepSound": "k"
     },
@@ -746,6 +749,7 @@
         5,
         5
       ],
+      "sideRule": "slab",
       "opaqueCube": false,
       "tick": "slab",
       "stepSound": "i"
@@ -775,6 +779,7 @@
         5
       ],
       "$note": "isOpaqueCube branches on single vs double slab, so the extractor cannot see it; corrected by hand and excluded from --verify.",
+      "sideRule": "slab",
       "opaqueCube": false,
       "tick": "slab",
       "stepSound": "i"
@@ -1839,6 +1844,7 @@
       "light": 0,
       "opacity": 0,
       "texture": 66,
+      "sideRule": "own_material",
       "opaqueCube": false,
       "tickRandomly": true,
       "tick": "snow_layer",
@@ -1861,6 +1867,7 @@
       "light": 0,
       "opacity": 3,
       "texture": 67,
+      "sideRule": "own_kind",
       "opaqueCube": false,
       "tickRandomly": true,
       "tick": "ice",
@@ -1982,6 +1989,7 @@
         74
       ],
       "opaqueCube": true,
+      "tick": "jukebox",
       "canBurn": true,
       "stepSound": "i"
     },

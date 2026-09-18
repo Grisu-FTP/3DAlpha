@@ -32,11 +32,16 @@
 //     "what height is the track here", and the cart is placed at it. A cart on
 //     a slope is not falling.
 //
-// **Only the plain cart can be ridden.** `interact` mounts for type 0, opens a
-// chest for type 1 and takes coal for type 2 -- and the chest and the furnace
-// need an inventory and a fuel loop that this build has nowhere to put, so they
-// are placeable and drawable and do nothing else. That is stated rather than
-// hidden; see `MinecartType`.
+// **Only the plain cart can be ridden**, and the other two do the other two
+// things `oc.a(Ldm;)Z` does: type 1 opens its own 27-slot inventory and type 2
+// takes a piece of coal and is aimed away from whoever clicked it. See
+// `MinecartSystem::interact`.
+//
+// **The chest cart's slots do not live in `Minecart`.** The pool is a
+// `SegmentedPool`, which requires a trivially destructible element, and an
+// `ItemStack` is not one -- it carries the preserved-tag vector every stack in
+// this project carries. They live in a side store keyed by the cart's `id`, so
+// that a cart moved by the pool's swap-with-last removal keeps its contents.
 //
 // The pool survives world saves through core/entity/persistence.hpp. Native
 // Java chunk entity import/export remain unimplemented.
@@ -45,10 +50,14 @@
 // and the connection matrix below is those ten shapes written as offsets.
 
 #include "core/entity/rider.hpp"
+#include "core/item/item_def.hpp"
+#include "core/item/item_stack.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/segmented_pool.hpp"
 #include "core/util/types.hpp"
+
+#include <vector>
 
 namespace mc::tick {
 class TickWorld;
@@ -63,6 +72,16 @@ enum class MinecartType : u8 {
     Chest = 1,
     Furnace = 2,
 };
+
+// `oc.c()` -- getSizeInventory, a flat 27. The same number a chest has, and
+// deliberately the same constant is *not* shared with `world::kChestSlots`:
+// one is a tile entity's and one is an entity's, and a version that changed
+// either would not change both.
+inline constexpr int kMinecartChestSlots = 27;
+
+// **What one piece of coal is worth to a furnace cart** -- `fuel += 1200`,
+// which at the quarter-rate burn below is four minutes of pushing.
+inline constexpr int kMinecartCoalFuel = 1200;
 
 // `setSize(0.98F, 0.7F)`, and `yOffset = height / 2.0F`.
 //
@@ -166,6 +185,13 @@ struct Minecart {
     int timeSinceHit = 0;
     int forwardDirection = 1;
 
+    // **A handle that survives removal.** The pool removes by swapping the
+    // last element into the hole, so an index is only good until the next
+    // tick -- and a container screen open on a chest cart outlives several.
+    // Assigned once, from the system's own counter, and saved with the cart so
+    // that its contents find it again.
+    u32 id = 0;
+
     bool onGround = false;
     bool onRail = false;
     bool ridden = false;
@@ -214,6 +240,53 @@ public:
     // Only a plain cart can be ridden -- `interact` mounts for type 0 and does
     // something else for the other two. See the header.
     bool mount(int index);
+
+    // **`oc.a(Ldm;)Z` -- interact**, and it is one method with three bodies:
+    //
+    // ```
+    // if (type == 0) { player.mountEntity(this); }
+    // else if (type == 1) { player.displayGUIChest(this); }
+    // else if (type == 2) {
+    //     ItemStack held = player.inventory.getCurrentItem();
+    //     if (held != null && held.itemID == Item.coal.shiftedIndex) {
+    //         if (--held.stackSize == 0) inventory.setInventorySlotContents(currentItem, null);
+    //         fuel += 1200;
+    //     }
+    //     pushX = posX - player.posX;
+    //     pushZ = posZ - player.posZ;
+    // }
+    // return true;
+    // ```
+    //
+    // **The aim is taken whether or not the coal was.** Clicking a furnace cart
+    // with an empty hand still points it away from you, which is how one is
+    // turned round -- and it is the half of this method that reads as a bug
+    // until the two lines outside the `if` are noticed.
+    //
+    // The caller spends the coal: this build has no stack in core to decrement,
+    // exactly as the placement path has none. `spentFuel` is the cue.
+    struct Interaction {
+        enum class Kind : u8 { None, Mounted, Chest, Furnace };
+        Kind kind = Kind::None;
+        // The cart's `id`, for `Chest` -- what a screen is opened on.
+        u32 cart = 0;
+        // A piece of coal went in, so the caller takes one off the stack.
+        bool spentFuel = false;
+
+        bool taken() const { return kind != Kind::None; }
+    };
+    Interaction interact(int index, item::ItemId held, double playerX, double playerZ);
+
+    // **The 27 slots of a chest cart**, or null for a cart that is not one or
+    // an id that is not a live cart. The pointer is into a `std::vector` and is
+    // good only until the next `place` or `interact`; callers copy, exactly as
+    // `ContainerSession` copies a tile entity's stacks.
+    item::ItemStack* chestSlots(u32 cartId);
+    const item::ItemStack* chestSlots(u32 cartId) const;
+
+    // Which cart carries this id, or -1. A linear scan, which is what every
+    // other lookup over this pool is.
+    int indexOfId(u32 cartId) const;
     // Returns where the rider lands -- the cart's roof, which is
     // `mountEntity`'s own answer. Invalid when nothing was aboard.
     RiderSeat dismount();
@@ -235,8 +308,15 @@ public:
     void clear()
     {
         carts_.clear();
+        chests_.clear();
         ridden_ = -1;
+        nextId_ = 1;
     }
+
+    // **What a chest cart spills when it is broken** -- `oc.F()`, which is a
+    // chest's own spill by another name. Called by `attack`; exposed because
+    // the save path wants to know a cart has contents at all.
+    bool hasChest(u32 cartId) const { return chestSlots(cartId) != nullptr; }
 
     int count() const { return carts_.size(); }
     const Minecart& operator[](int i) const { return carts_[i]; }
@@ -253,16 +333,40 @@ public:
     static constexpr double kRenderRailProbe = 0.30000001192092896;
 
 private:
+    // The save path reads and rebuilds the chest store directly, and sets the
+    // id counter past every cart it restores; the chest store is the one thing
+    // about a cart that is not in the cart. See core/entity/persistence.hpp.
     friend struct PersistentEntities;
     void removeAt(int index);
+
+    // `oc.F()`'s spill: every stack in a chest cart, thrown the way a broken
+    // chest throws its own. Empties the store as it goes.
+    void spillChest(const tick::TickWorld& world, const Minecart& c);
 
     // Item 328 and whatever the type adds, spawned through the world's drop
     // sink exactly as a broken block's drop is.
     void dropAndRemove(const tick::TickWorld& world, int index);
 
+    // **The chest carts' contents, keyed by the cart's id rather than held in
+    // it.** See the header: a pool element has to be trivially destructible and
+    // an `ItemStack` is not. A `std::vector` because there are usually none and
+    // rarely more than a handful, and because the lookup is a scan either way.
+    struct CartChest {
+        u32 cart = 0;
+        item::ItemStack slots[kMinecartChestSlots];
+    };
+    std::vector<CartChest> chests_;
+
+    // Makes the entry for a chest cart if it does not have one, and returns it.
+    CartChest* openChestStore(u32 cartId);
+    void dropChestStore(u32 cartId);
+
     SegmentedPool<Minecart, kInitialCapacity> carts_;
     int ridden_ = -1;
     u32 refused_ = 0;
+    // The next `Minecart::id`. Never reused inside a session, and set past
+    // every loaded cart's when a world is restored.
+    u32 nextId_ = 1;
     JavaRandom rand_;
 };
 

@@ -130,10 +130,30 @@ public:
         // is reused for the next one, so a caller that wants to keep it must
         // move out of it or copy what it needs before returning.
         void (*deliver)(void* context, world::ChunkColumn& column) = nullptr;
+
+        // **Terrain somebody else already generated**, for `blocks` -- which
+        // holds `kChunkBlocks`. True when it filled the buffer; false to
+        // generate locally, which is what a null callback always means.
+        //
+        // This exists for one caller: a session where another console has
+        // generated the terrain for this column and sent it over. Terrain,
+        // the surface pass and caves are pure functions of the seed and the
+        // chunk's coordinates -- see caves.hpp, whose carver reads a 17x17
+        // neighbourhood *into* this column and never writes out of it -- so a
+        // column produced elsewhere is byte-identical to one produced here and
+        // arrives in any order without changing the world.
+        //
+        // **Population is deliberately not delegable.** It is the one stage
+        // that writes into its neighbours, so its order is the world (status.md
+        // §0g); keeping it on the console that owns the world is what lets the
+        // rest be handed out at all. It is also the cheap stage: measured at
+        // ~400 us a pass against ~1400 us for the terrain this replaces.
+        bool (*supplyTerrain)(void* context, i32 chunkX, i32 chunkZ, u8* blocks) = nullptr;
     };
 
     struct Stats {
         u32 generated = 0;   // columns whose terrain, surface and caves this ran
+        u32 terrainSupplied = 0;  // ...of which came from Store::supplyTerrain
         u32 loaded = 0;      // columns taken from the existing world instead
         u32 populated = 0;   // population passes run
         u32 lit = 0;         // columns handed out
@@ -282,6 +302,21 @@ public:
     // number of columns freed.
     u32 retire(i32 centreX, i32 centreZ, int radius);
 
+    // One place worth keeping, in chunk coordinates.
+    struct Centre {
+        i32 chunkX = 0;
+        i32 chunkZ = 0;
+    };
+
+    // **The same, for a world with more than one player in it.** A column is
+    // kept when it is within `radius` of *any* of the centres, so a host
+    // serving ground to a guest on the other side of the map does not retire
+    // the guest's neighbourhood every time it sweeps for its own -- which
+    // would be correct (a region always goes as a unit) and would generate
+    // everything twice. `count` may be zero, which is the single-centre call
+    // above. See WorldStreamer::setServedAreas.
+    u32 retire(const Centre* centres, int count, int radius);
+
     // What a sweep in progress needs kept: provide() touches (cx-3..cx+2) in
     // both axes, which is Chebyshev radius 3 around its own centre.
     static constexpr int kSweepKeepRadius = 3;
@@ -429,6 +464,10 @@ private:
 
     // The scratch column for (x, z), generating it if it is not held.
     u8* scratchColumn(i32 x, i32 z);
+
+    // Terrain for one column: the session's, when it has it, and this
+    // console's generator otherwise. See Store::supplyTerrain.
+    void makeTerrain(i32 x, i32 z, u8* blocks);
 
     // Scratch for the hand-over: the two light planes the engine writes in the
     // chunk file's own layout, and one section's worth of blocks gathered out

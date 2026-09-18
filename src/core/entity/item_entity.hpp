@@ -150,6 +150,15 @@ struct ItemEntity {
     int count = 0;
     i16 damage = 0;
 
+    // **The server's id for this item, and zero when there is no server.**
+    // Every `kh` in a1.1.2 carries an `entityId` in both kinds of game. A
+    // client only ever *reads* it -- every packet that moves or removes an item
+    // names it by this and nothing else -- and a console hosting a session
+    // writes it, stamping one onto each item as it tells the guests about it
+    // (core/net/world_server.hpp). Not saved: it belongs to the session, not to
+    // the world. See core/net/entities.hpp.
+    i32 entityId = 0;
+
     // `age`, `delayBeforeCanPickup`, and `hoverStart` -- the last being a
     // random phase in radians so a heap of items does not bob in lockstep.
     int age = 0;
@@ -271,6 +280,38 @@ public:
     // stacks are swept before returning, since a blast never runs inside
     // `tick`'s walk.
     void takeBlast(const tick::TickWorld& world, const Explosion& blast);
+
+    // ---- items a server owns -------------------------------------------
+    //
+    // **Spawned, moved and removed by id, and never picked up locally.** The
+    // server decides who picks up what -- it says so with Collect and Add To
+    // Inventory -- so one of these carries a pickup delay long enough that no
+    // local path can take it even if one is asked to. It falls and bobs like
+    // any other item, because `EntityItem` on a real client does too; the
+    // server's position updates correct it.
+    ItemEntity* spawnFromServer(const tick::TickWorld& world, i32 entityId, double px,
+                                double py, double pz, item::ItemId id, int count, i16 damage,
+                                double motionX, double motionY, double motionZ);
+
+    ItemEntity* findById(i32 entityId);
+
+    // **One item by position in the pool, to be written to.** The const
+    // `operator[]` below is what the renderer and the tick use; this is for the
+    // host of a session, which has to stamp a server id onto an item the
+    // single-player game spawned without one. See `ItemEntity::entityId`.
+    ItemEntity* at(int i) { return &items_[i]; }
+
+    bool removeById(i32 entityId);
+    bool placeById(i32 entityId, double px, double py, double pz);
+
+    // **Every stack in the pool that no server owns**, removed, and how many
+    // that was. In a session the pool holds two kinds of item at once: the
+    // ones this console threw, which are the server's to make, and the ones
+    // the server has already made, which carry its id. A client hands over the
+    // first kind and must not touch the second -- handing back what the server
+    // just sent is how one dropped stack becomes an endless supply of them.
+    // See `NetPlay::forwardDrops`.
+    int removeUnowned();
 
     void clear() { items_.clear(); }
 

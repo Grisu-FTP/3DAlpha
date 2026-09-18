@@ -1,7 +1,778 @@
 # Current work
 
-Last verified: 2026-09-13. A compact handoff, not a substitute for inspecting the current diff.
+Last verified: 2026-09-16. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
+
+## The bottom screen takes the stick, and the press that closes it (2026-09-17)
+
+Two fixes to focused screens, both about a control doing two things at once.
+
+**Closing the inventory no longer jumps.** B is the back button and B is jump; `uiFocused()` is
+already false by the time the body is ticked, and jump is a *held* button, so the press carried into
+the next few frames. Ownership is now decided at the press and held until release --
+`backHeldByScreen` in `runGame`'s loop. The pause menu answers its own press inside `runPause` /
+`stepPause`, so the claim is made there; **leaving the pause menu with B jumped too**, and always had.
+
+**The circle pad steps the focused cursor instead of walking.** It is what the d-pad does, and an
+open screen is what stops a1.1.2 reading the movement keys at all -- so the body now hears nothing
+while any page is focused. One guard on `uiFocused()` replaced three (`uiFocused`, `mapPanActive`,
+`containerOpen`) that all meant the same thing. `mapPanActive` also gained `&& !containerOpen()`: a
+chest opened on the Map tab was panning a map behind it.
+
+The rule -- how a diagonal resolves, when a held direction repeats -- is `core/gui/stick_cursor.hpp`;
+the overlay keeps `hidCircleRead` and the `KEY_D*` bit. Ten cases in `tests/stick_cursor_test.cpp`.
+**Not verified on hardware**: the 0.35 s / 0.11 s repeat is the part a console would argue with.
+
+## A Sensitivity row, on a1.1.2's own curve (2026-09-17)
+
+Options gained **Camera Sensitivity**, second row, next to Render Distance. It is on the pause menu's
+Options screen as well and takes effect the moment that menu closes.
+
+**The curve is the jar's**, read off `iq.a(F)`: `f = c * 0.6 + 0.2; gain = f³ * 8`, where `fr.c` is
+the slider, defaults to 0.5, and is labelled `(int)(c * 200)%` -- with `*yawn*` at 0 and
+`HYPERSPEED!!!` at 200, which are a1.1.2's own strings and are printed here too.
+
+**At 100% the gain is exactly 1.0**, which is what made this a multiplier rather than a retune: the
+0.012 rad/pixel touch drag and the 1.8 rad/s C-stick rate in `platform/ctr/main.cpp` were tuned on
+this console, and they are untouched until the row is moved. The ends are 6.4% and 409.6%.
+
+`core/settings/sensitivity.{hpp,cpp}` holds the curve, the clamp and the labels; `3ds.ini` gained
+`look_sensitivity`, on the "-1 means not chosen yet" convention -- **0 is a real value on this row**,
+so an absent key could not be zero.
+
+Seven cases in `tests/sensitivity_test.cpp` and two in `tests/settings_file_test.cpp`. **Not verified
+on hardware**: whether 100% still feels right, and whether 5% is the right step, are console
+questions.
+
+## Import and Export: a world crosses the room (2026-09-17)
+
+A world can be handed from one console to another over local wireless. **Import World** is a second
+pinned row on the world list, under Create New World; **Export** is a row under Copy on a world's own
+settings. Both ask the same Local-or-Internet question the multiplayer buttons ask, and Internet is
+the same disabled row it is there.
+
+**It is `copyWorld` with a radio in the middle**: files, not chunks, so a packed world arrives packed
+and the format is never touched. `core/world/world_transfer` walks the world into a manifest and owns
+the staging directory; `core/net/world_copy` is the exchange (`link::Msg` 20-24) and carries no
+sequence numbers of its own, because `link::Peer` already delivers reliably and in order.
+`src/platform/ctr/world_transfer` is the console's end of both halves.
+
+**The original is only ever read.** The sending half opens its world's files for reading and nothing
+else; the receiving half writes only inside `saves/.importing`, which is not a world until the last
+file lands, `detectFormat` agrees and the name is still free. An interrupted import leaves that
+directory and nothing else, cleared beside `recoverConversions`.
+
+**The receiver trusts nothing**: `world::safeRelativePath` refuses absolute paths, `..`, empty
+components, backslashes and control characters, and the check sits next to the write rather than only
+at the sending end.
+
+**`link::kProtocol` is 2 and the passphrase is `3dalpha-local-2`.** The beacon carries a `LocalKind`
+byte now, so an Import scan is not shown a game session and a Join list is not shown a folder
+transfer -- and that moved the appdata layout, which is exactly what the protocol constant is for.
+**Two consoles on different builds will not see each other.**
+
+Eight cases in `tests/world_copy_test.cpp`, including a 200 KB world crossing a wire that loses one
+frame in five with the source fingerprinted before and after, and a transfer cancelled half way that
+leaves nothing on either console. **Not verified on hardware**: that two
+consoles in a room find each other has not been tried.
+
+## The spider's eyes, and a sweep for documentation that had stopped being true (2026-09-17)
+
+### The eyes are a blended pass now, and the alpha comes out of the lightmap (2026-09-17)
+
+`ok.a(ax, int)` read off the class file rather than off a description of it:
+`loadTexture("/mob/spider_eyes.png")`, `f = (1 - getBrightness(1.0F)) * 0.5F`, `glEnable(GL_BLEND)`,
+`glDisable(GL_ALPHA_TEST)`, `glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)`, `glColor4f(1, 1, 1, f)`.
+
+It was an alpha cut here, which drew the eyes fully opaque at every light level -- twice as bright
+as the jar ever draws them, and still there in daylight where the jar's have faded to nothing.
+
+**The alpha is the combiner's, which is what makes it exact rather than per-draw.** `glColor4f` is
+one value per entity and a draw call is one value for every spider in it, so rather than split the
+draw the term is rebuilt per fragment: the lightmap texture is monochrome
+`lightBrightness(effectiveLightLevel(sky, block, subtracted))` (`ctr/textures.cpp`), which is what
+`Entity.getBrightness` returns, so `1 - lightmap.r` *is* that spider's own brightness term, sampled
+at the light coordinate its vertices already carry. Stage 1 multiplies alpha by it, stage 2 by 0.5 --
+which rides in the same stage's TEV constant as the fog colour, since one is rgb and the other is
+alpha. Every spider on screen gets its own value out of one draw call.
+
+`buildMobRun` takes a `MobPass` instead of a `bool shells` and there is a third buffer,
+`mobEyeVerts_` (6 KB). Depth writes stay **on**, unlike the slime shell's: the jar touches the depth
+mask in neither pass, and the shell turns it off for a reason of its own -- its face is inside the
+jelly. `Renderer::applyAtlasTexEnv` was factored out of `applyWorldState` so the eye pass, which
+borrows all three combiner stages, puts back exactly what it found. `tests/monster_test.cpp`,
+`a_spiders_eyes_are_their_own_blended_pass_and_not_in_the_solid_one`.
+
+**Not verified on hardware.** The split is host-tested; that the alpha *looks* right is a console
+question and has not been asked.
+
+### Four documented facts that had stopped being true (2026-09-17)
+
+Found by checking rather than by reading, and all four were load-bearing enough to mislead:
+
+- **`docs/architecture.md`'s threading table.** It promised meshing to the chunk worker (it is on
+  the main thread behind a per-frame budget, as the prose under the table already said), put the I/O
+  thread on **core 3** (it is on core 0 on both consoles, and core 3 is the system's and never
+  ours), and showed core 2 with one tenant when it has two -- the audio decoder sits one step above
+  generation there. Rewritten off `workerSpawn` rather than off the plan.
+- **`docs/3ds-performance.md`** costed the distance-8 re-meshing stress at "~1.7 ms of
+  *worker-thread* meshing per frame". The worker has never meshed. 1.7 ms of the main thread's 16.7
+  is a different number from 1.7 ms of a core nobody else is on.
+- **`docs/mobs-a1.1.2.md`** still described the per-tick path budget in *The pathfinder*, and the
+  spider's eyes as an alpha cut. Both now match the code.
+- **`docs/todo-m3.md`** still had "the player has no health yet" and the path budget as open facts.
+  Annotated as superseded rather than deleted, since the entries are a dated record of what landed.
+
+Suite 1792/1792; 3DSX build clean.
+
+## The frame that did not add up, and two mob rules put back (2026-09-17)
+
+### `CPU busy` was answering a question nobody asked (2026-09-17)
+
+Reported from play: 25 ms frames over a page where no line read above about 15. Every number was
+true and none of them reconciled, for three reasons.
+
+**The tick was counted twice.** `timing.streamMs` spanned `beforeStream` to `afterStream` and the
+tick runs inside that span, so the overlay's `walk + stream + tick + submit` added it again.
+`main.cpp` subtracts it out of the stream bucket now.
+
+**Nothing covered the whole loop.** The instrumented spans start well below the top of the frame
+loop and end before the bottom of it, so the input scan, the pause and death branches, block
+breaking, item use, the net pump, `Overlay::tickMap` (up to 3.2 ms while the map catches up at world
+entry) and the debug console's own printing were in no bucket at all -- the page was inside its own
+blind spot. `Accum::other` is `frame` minus everything measured, so the row now reconciles by
+construction and `CPU busy` includes it.
+
+**And 25 ms was never a frame time.** The top screen is 59.83 Hz; a frame costs 16.7 or 33.4 and
+nothing between, so a mean of 25 is half of each, and each bucket's spike lands in a different frame
+from the others' -- which is why no mean of a part could ever sum to the mean of the whole. The page
+carries `peak frm` and `peak tk` beside the means now.
+
+New row: `  other %d ms  peak frm %d tk %d`. `overlay.hpp`/`overlay.cpp`, `main.cpp`.
+
+### An arrow now misses its own archer by identity, not by address (2026-09-17)
+
+`Mob::handle` is a session identity -- issued on spawn, reissued on load, never reused, not saved
+(a1.1.2 does not write `shootingEntity` either). `Arrow::shooterMob` holds the firing mob's, so
+`kg.e_()`'s `entity != shootingEntity` is now exact for a mob's arrow as well as the player's.
+
+What it replaced was a footprint test: is a mob still standing over the place the shot was recorded
+at. That holds only while the shooter stays inside its own 0.6-wide box, and fails for anything that
+moved further in the tick it fired -- knockback, a shove from the mob beside it, a push out of a
+block. The arrow is still inside the box it was born in on its first tick, so the missed exclusion
+spent it on its own archer at zero range. The same shape of bug in the player's half was "arrows do
+nothing in Creative". `tests/monster_test.cpp`, `a_skeleton_that_moved_since_it_fired_still_does_not_shoot_itself`.
+
+### The one-path-search-a-tick budget is gone (2026-09-17)
+
+It never bound on fifteen animals (0.4 requests a tick between them) and bound hard on two hundred
+monsters: a chasing monster re-asks once in twenty ticks, so two hundred of them want ten searches a
+tick against a budget of one and nine in ten were handed no path at all.
+
+**The half that made it a correctness bug** is that the gate sat in front of the wander branch's ten
+candidate draws, which the jar makes whether or not a path comes of them -- so the second mob to want
+a path in a tick skipped thirty `nextInt` calls and every mob ticked after it saw a stream a1.1.2
+would not have given it. `MobSystem::peakSearchesPerTick` counts what the cap used to enforce and the
+Info page carries it as `pk`. `PathFinder::kMaxNodes` stays: an unbounded search allocates inside the
+tick.
+
+Suite 1792/1792; 3DSX build clean. Three stale claims in `docs/mobs-a1.1.2.md` corrected while
+checking them -- the mob water push (already three calls, because `LivingBody` *is* `PlayerBody`),
+the player's health (it exists), and the explosion order, which turns out to be JVM-dependent rather
+than merely untranscribed. See that file.
+
+## Two from play: pausing froze a session, and the map stopped at the render distance (2026-09-16)
+
+### START no longer stops a world somebody else is in (2026-09-16)
+
+`Menu::runPause` owned the frame loop, which is right for single player -- `Minecraft.runTick`
+pauses behind `!isMultiplayerWorld()` -- and wrong for a session: a guest that stops answering is
+dropped, and a host that stops takes every guest's world with it.
+
+`runPause` is now `beginPause` / `stepPause` / `endPause` with a loop around them, so single player
+is unchanged to the line. In a session `runGame`'s own loop calls one step a frame and draws the menu
+into its own frame through `Menu::pauseOverlayEntry` -- the `PauseBackdrop` arrangement inverted.
+The link is pumped, chunks stream, the clock runs and the body is still simulated; what stops is the
+input, by zeroing `down`/`held` and skipping the three paths that read the hardware themselves (the
+focused pad, the touch drag, the C-stick) plus the stick inside `readBodyInput`. That is the
+original's rule -- a screen being open is what stops the keys reaching the player, not what stops
+the world. The settings the menu hands back are applied through one shared `applyPause` lambda, so
+the two ways out cannot drift. `docs/status.md` §0d.
+
+The one remaining stop for everybody is the software keyboard behind the Chat row: it is an applet
+and suspends the application, which is why every keyboard in the build already calls
+`ctr::linkPausing` first.
+
+### The map fills in the band no column will ever arrive for (2026-09-16)
+
+The window is 14 chunks across at 1:1 and 27 zoomed out, against a grid of `2r + 1` chunks -- 21 at
+a New 3DS's default distance of 10, 13 at an old one's 6, 5 at the minimum. Wherever the window is
+the wider of the two the difference was blank for the session: there is no column and there never
+will be one. It is read off the card now, through a new **`ChunkCache::survey`** -- a column read for one
+look at it, at the lowest priority in the class (under the read-ahead ring, which is under every
+write), with the **sampling done in the visitor on the I/O thread** so what crosses to the main
+thread is the 1 KB sample rather than the 80 KB column. Nothing is installed and nothing is evicted:
+a survey that has to read reads into one scratch column the I/O thread reuses, so filling the map
+cannot push the player's own ring out of the cache.
+
+`MapScreen` offers a chunk only after the grid has refused it, keeps at most four requests out, and
+remembers what it has asked about -- which is what stops an unexplored world, where most of the
+window is ground nobody has generated, being re-offered on every block the player crosses. A sample
+from the card is stored with serial 0, so the ordinary change-list path replaces it with the live
+column the moment the grid adopts that chunk. A guest has no card and fills nothing.
+
+Host coverage is in `tests/chunk_cache_test.cpp` (five cases, including the priority against the
+read-ahead ring). The Info page's map row carries a `fill` column -- chunks waiting, chunks filled --
+because the cost on hardware has not been measured. `docs/map.md`, "The band the grid cannot fill".
+
+## Three from play: the music skipped, a guest's mining dropped nothing, and a ring of the world was served by nobody (2026-09-16)
+
+### The scheduler, not the decoder (2026-09-16)
+
+Reported from play. The decode thread was arranged around a claim that turns out to be false: that
+a deep enough ring means it never has to win a scheduling race. **The ARM11 kernel is SCHED_FIFO --
+no round-robin, no time slice** ([3dbrew](https://www.3dbrew.org/wiki/Multi-threading)) -- so equal
+priority is a queue, not a share, and a thread below the running one gets nothing until that one
+blocks. On a New 3DS the decoder sat at the generation worker's own priority on core 2, and
+`WorldStreamer::workerMain` takes its next job the moment it finishes one, so a full slate never let
+it in; on an Old 3DS it sat below a main thread that, over budget, never blocks.
+
+Fixed in four places, none of them the decoder: the ring is **sixteen buffers (~372 ms, 64 KB)**;
+**generation takes core 2 one step below the main thread** so the decoder outranks it without the
+kernel having to grant anything; the decoder asks for a step above on core 2 and falls back on the
+same core rather than to core 0; and on either console it **boosts its own priority above the main
+thread while the ring is low** (`kBoostBelow` 5, `kRestoreAt` 12), capped at four buffers a pass, so
+a catch-up costs the frame it interrupts one bounded slice. What it may ask for is probed once at
+thread start. Steady state is unchanged: below the main thread, costing a frame nothing.
+
+Two things found on the way: `prepare()` -- an open and a header parse, both card reads -- ran
+**under the lock the main thread takes** in `playMusic`/`stopMusic`, and a LightLock lends no
+priority, so starting a track parked the frame loop behind the decode thread; and `decode us /
+buffer` was a whole pass, undivided. The Info page now carries the ring's low-water mark and a boost
+count beside the underruns, which are the numbers that say whether this is now right on hardware.
+`docs/status.md` §0p has the derivation; `platform/ctr/audio.hpp` and `core/util/worker.hpp` carry
+the policy.
+
+### A guest mining dropped nothing, anywhere (2026-09-16)
+
+Reported from play. `HostPlay::breakBlock` -- a guest's finished dig, arriving at the host -- ran
+`item::destroyBlock`, which removes the block and **does not drop it**. The drop lives one level up,
+in `nj.b(IIII)Z`, and the host never ran that half for anybody but itself. It could not: the packet
+handler threw the digger's held item away, and the drop is the *tool's* -- stone under a bare hand
+leaves nothing.
+
+Nothing covered for it on the guest's side either, and that is correct rather than lucky:
+`setStackSink(net != nullptr ? nullptr : ...)` means a guest has no drop sink at all, which is
+a1.1.2's own arrangement -- `il`, the multiplayer controller, does not override `hq.b(IIII)Z`, and
+`hq.b` removes a block without dropping it. Items on the ground belong to the host and are streamed
+back. So a break that dropped nothing on the host dropped nothing anywhere.
+
+The host now runs `item::harvestBlockFor`, which is `in.c(III)Z` in `srv/a0.2.1.jar` --
+ItemInWorldManager.removeBlock -- read out of the jar: remove, then
+`if (removed && player.canHarvestBlock(block)) block.harvestBlock(...)`. **The wear is the one step
+left out**: 0.2.1 keeps the pack server-side and this port does not, so the tool is worn on the
+console holding it. `WorldServer::breakBlock` carries `player.heldItem`, kept current by the Holding
+Change the guest already sends ahead of a place and a dig-in-progress -- and now ahead of
+`digStart` too, which is the one dig a one-press break never sent a progress packet for. Covered by
+`a_dig_carries_what_the_guest_was_holding` and three cases in `block_breaking_test.cpp`.
+
+### A three-chunk ring at the end of the host's render distance where nothing generated (2026-09-16)
+
+Reported from play, and the number in the report is the number in the code. `buildGrid` makes the
+cell array **three rings wider than `loadRadius_`** so a generation sweep has cells to classify
+around its edge; nothing out there is ever read, generated, lit or adopted -- `drainGenerated` gates
+adoption on `admitRadius()`, which is at most `loadRadius_`, and `warmAndPrefetch` only reads ahead
+into the cache. The served-area walk skipped everything inside **`gridRadius_`**, the array's size,
+on the rule that "the grid is authoritative for every chunk it can reach". It is not authoritative
+out there; it is merely dimensioned out there. So a guest standing in those three rings was ground
+neither half of the world would make -- `ServerWorld::column` answered null from `residentColumn`
+*and* from `servedColumn` -- and the band moved with the host, because the grid does.
+
+`gridColumnRadius()` is that distinction, named: the three served tests that asked "can the grid
+reach this" now ask "would the grid ever hold this". **And the second half of the same bug**: the
+three dirty marks (`lightSectionLit`, `markColumnModified`, `tickBlockChanged`) chose between the
+grid and the served set by asking `find()`, which answers for any *classified* cell -- and in the
+band one exists. A served column edited there was left clean and never written, so the edit
+survived in memory and vanished on the next load. They ask `loadedCell()` now. Covered by
+`a_guest_just_past_the_hosts_render_distance_is_served_and_not_starved`, which closes and reopens
+the world to catch exactly that.
+
+The served frontier measurement moves with it: `a_served_area_at_a_full_view_distance_does_not_
+overrun_the_generator` peaks at **258 columns live** against a cache of 296, up from 254, which is
+the band now being somebody's.
+
+## Six from a session: dark mobs, a stepping herd, the slime's face, redstone, the wall a guest walked into, and a banner that moved screens (2026-09-15)
+
+All six are from play. Four are bugs against the jar, one is a feature the code said outright it
+did not have, and one is a choice about where a mode is reported.
+
+**Two things reported as bugs that turn out to be the jar's, checked and left alone.** A slime
+usually drops nothing: `ma.g()I` answers a slimeball only at size 1, and `ge.onDeath` then runs
+`for (i = 0; i < rand.nextInt(3); i++)`, so even the smallest gives **0, 1 or 2** and a big one
+gives none whatever kills it. And a slime usually does not split: `ma.F()`'s guard is `slimeSize >
+1 && health == 0` -- **exactly zero**, not "at or below" -- so a size-2 slime (4 health) killed by
+a 5-damage sword ends on -1 and dies whole. `ge`'s damage is `health -= amount` with no clamp, read
+out of the class file. Both are covered already and neither was changed.
+
+**A remote mob was drawn black and moved at 20 Hz.** Two separate holes, both in
+`MobSystem::tick`'s `remote` branch, which did nothing but snap `prev` and count a tick. The light
+byte was written once by `spawnFromServer` and never again -- so an animal that arrived before its
+column was lit stayed at zero for life. And the movement: `RemoteEntities::moveTo` wrote the
+packet's position straight into the body, which made `prev` and the live position equal on every
+frame and left the frame interpolation nothing to interpolate. The jar does neither. `gy` hands
+*every* entity move to `kh.a(DDDFFI)V` with **three** increments (`iconst_3`, verified in
+`gy.a(jl)` and `gy.a(lq)`), and `ge` -- every animal and every monster -- overrides it to store
+`newPosX/Y/Z`, `newRotationYaw/Pitch` and `newPosRotationIncrements`, which `ge.j()` then walks in
+thirds. `ge.B`, `isMultiplayerEntity`, suppresses `b_()` and **only** `b_()`: the interpolation,
+the legs, the body's heading and the light all still run over there. So `Mob` carries the five
+fields, `MobSystem::interpolateToServer` is `ge.j()`'s first block, and `headingAndLight` is
+`ge.e_()`'s tail, shared by the local path and the remote one.
+
+**The slime had no face, because a1.1.2 draws it twice and this drew it once.** `gq` is the only
+`RenderLiving` in the game with a render pass: `new gq(new hh(16), new hh(0), 0.25F)` is the inner
+body with the eyes and the mouth on it, and then the 8-unit shell over the top with `GL_BLEND` on
+and `SRC_ALPHA, ONE_MINUS_SRC_ALPHA`. The shell has to be blended because it really is translucent
+-- `mob/slime.png`'s outer quarter is **alpha 199 of 255**, measured -- and the world's alpha test
+at 0.1 passes all of it at full opacity, which is a slime with no face. `buildMobShells` is that
+pass, into a buffer of its own, drawn after the opaque models with depth writes off. The stand-in
+art was opaque too and now carries the jar's 199 over the shell's quarter of the page.
+
+**A slime was a random size on the other console, and that is the jar's.** `ez` carries a type byte
+and nothing else; `ma`'s constructor draws `1 << nextInt(3)` and `gy` never overwrites it, so
+against a real a1.1.2 server the two ends disagree about how big a slime is, how hard it hits and
+how far it hops. 55 still means exactly that. Between two 3DAlpha consoles it is only a hole, so
+94, 95 and 96 say size 1, 2 and 4 -- the same argument `kOurSheep` and `kOurCow` are already made
+on.
+
+**Redstone ore did not light for a guest, and the sparkle was missing for everybody.** The host
+dropped `packet::Place` whenever the item was -1, which is an empty hand -- but
+`activeBlockOrUseItem` asks `Block.blockActivated` *before* it looks at the stack, which is how a
+bare hand opens a chest, flips a lever and lights ore. -1 now arrives as item 0, which is what
+`item::rightClick` already calls "nothing held". And `ai.h(Lcn;III)V` is two statements: `i(...)`
+-- the six-mote sparkle -- and *then* the id swap, so the glitter comes off an ore that is still
+dull and off one that is already lit. `redstoneOreSparkle` is shared by that and by the display
+tick. **a1.1.2 does have redstone particles**: `ai.i` throws six on every touch and every display
+tick while lit, and `kf.b(Lcn;IIILjava/util/Random;)V` throws one off any wire whose metadata is
+above zero. Both were already right; what was missing was the burst on the click.
+
+**A guest could walk out of the world.** `WorldServer::streamColumns` asked `ServerWorld::column`
+for their ground and got null, because the streamer's grid wraps modulo its own width and is
+centred on the *host's* camera. `WorldStreamer::setServedAreas` is the end of that: a list of the
+other players' chunk positions, whose ground is held outside the grid -- read through the same
+`ChunkCache`, generated by the same generator on the same slate, reached by `tickColumn` so the
+same `TickWorld` edits it, and written by the same autosave. What a served column does not get is a
+mesh, which is the only part of a grid cell nobody on this console is looking at. Four rules keep
+it honest.
+
+1. The grid owns every chunk within `gridRadius_` **by distance and not by contents**, so there is
+   no window where a cell is still reading while the served copy is being written into.
+2. The slate takes served columns only after the camera's own spiral is clear, so a guest
+   exploring can never stall the ground under the player holding the console.
+3. **One served area generates at a time.** `cacheColumnsFor` is fitted to a *single* player's
+   frontier -- `kRetireSlackChunks` leaves a flat 32 columns of headroom -- and a finished square
+   leaves its whole perimeter live, because those columns never get their outward neighbours. Three
+   guests' frontiers at once is 11 MB of block pool the console has not got. So the cache grows by
+   `servedGeneratorSlack` -- `8 * radius + 64`, 120 columns and 3.8 MB at the host's view distance,
+   paid only by a session with a guest outside the grid -- and the turn passes to the next area
+   that wants ground only when the current one has stopped wanting any. Being *owed* and being *on
+   the slate* are two different flags; folding them into one deadlocked the rotation, because an
+   area that was never allowed to record what it wanted could never be seen to want anything.
+4. `publishRetireCentre` carries the camera's centre **and the area whose turn it is** into
+   `ChunkGenerator::retire`, which now takes a list. Retirement is by region and a region goes as a
+   unit, so an area losing its turn is re-derived when it gets one back -- which only happens once
+   its square is full and stays full.
+
+**And the cache is grown on the worker, not from the frame.** `setMeshDistance` grows it on the
+main thread and pays `waitForWorkerIdle()` for that; `setServedAreas` runs *every frame* of a hosted
+session and `growCacheTo` resizes the very vectors the worker is inside `provide()` reading. So the
+wanted size is published under `queueLock_` with the retire centres and `generateColumn` grows to it
+before its next sweep, where the generator belongs. The first version of this called `growCacheTo`
+from `setServedAreas` and TSan did not catch it, because the one call it ever makes happened to land
+while the worker was idle -- it is a race the test could not see rather than one it cleared.
+
+`Player::starved` still exists and now means "their ground is still being read or made" rather than
+"they are gone". Measured on the host by
+`a_served_area_at_a_full_view_distance_does_not_overrun_the_generator`, which fills a radius-7
+square 200 chunks from the camera and asserts `generatorEvictedLive`, `generationFailures`,
+`generationIncomplete` and `generationUnlightable` are all zero -- the four ways this can corrupt a
+world rather than slow one down. TSan is clean over the streamer and served tests.
+
+**The focus banner moved to the top screen.** The bottom screen's yellow "Bottom screen focused"
+row is gone; the reserved row at `hud::bannerTop()` is backdrop now. In its place
+`Renderer::drawFocusHint` draws a translucent grey band with a downward arrowhead along the bottom
+of the *world* view, which is where the player who needs telling is actually looking. No text, in
+any language.
+
+## Seven things the first two-console session found (2026-09-15)
+
+All seven are from a hardware session and all seven are fixed. One of them -- "don't see
+entities" -- turned out to be two separate holes and has two entries below.
+
+**Nametags were mirrored.** The billboard basis every entity pass shares is
+`EffectRenderer`'s -- `(cos yaw, 0, sin yaw)` -- and that vector points at the camera's **left**:
+at yaw 0 the camera looks along +Z, whose right hand is -X, and the basis gives +X. a1.1.2 knows
+it and pairs its low u with the `-right` corners (verified in the jar: `nq.a(ho,...)` writes
+`-A` with `f7`, the minimum u). A particle cannot tell; a word can. `buildNameTags` now writes
+against the basis rather than along it. Names are also drawn in the player's own colour now, which
+is the same colour their arrow is on everybody's map.
+
+**A joiner could arrive inside the floor.** `WorldServer::addPlayer` stood them at `spawnY`, and
+`spawnY` is a block coordinate -- `dm`'s constructor stands a fresh player at `spawnY + 1`. The
+lift that would have got them out of it, `kh.q()`'s walk upward, could not run at all because it
+needs the ground loaded. It is now `ServerWorld::settleFeet`, called at the one moment the ground
+under a joiner is known to be there: the frame their own column is sent, which is the frame their
+placement goes out.
+
+**A host could not see its guests.** A host is `players_[0]` and has no stream, so every packet
+describing a guest went out over the radio and none of it came back -- no body, no name, nothing to
+aim at. `WorldServer::setLocalSink` now hands the host the same packets it sends everybody else,
+for players only (the items and animals are already its own pool), and `HostPlay` runs them
+through an ordinary `RemoteEntities`. One interpolation path, not two.
+
+**Dropping one item dropped it for ever.** `NetPlay::forwardDrops` sent a Pickup Spawn for every
+stack in the pool and then cleared it -- but the pool also holds the *server's* items, spawned
+into it by `RemoteEntities` and carrying the server's id. Every tick, a client asked the server to
+make a second copy of everything the server had just sent it. It now forwards only stacks with no
+id (`ItemEntitySystem::removeUnowned`), which is what "the client keeps none of it" actually meant.
+
+**Players could not hit each other.** Two halves: nothing made another player targetable, and
+nothing carried a blow. `EntityTarget::Kind::Player` and `EntityPools::players` fix the first;
+`packet::UseEntity` travelling in *both* directions fixes the second. Towards a host it already
+meant "I hit that"; away from one it now means "that hit you". No health crosses -- protocol 2 has
+no packet for it and never will -- so what a blow costs is worked out by the console being hit,
+from the attacker's held item, with the same `damageVsEntity` lookup the attacker would have used.
+`DamageSource::Other` rather than `Monster`, because `dm.a(Lkh;I)Z` scales by difficulty only for a
+`dq` or a `kg` and a player is neither. The knockback falls out of `PlayerVitals::attack` because
+the attacker's position is known locally.
+
+**Every player has a colour now, and it is the same colour on every console.** Nothing on the wire
+says so. The host numbers its players with the session's own player ids and starts every other
+entity above them (`kFirstFreeEntityId`), so both ends reach the same answer out of the id they
+already have. It is on the nametag and on the map, where every player in the session is a marker --
+the thing `map::drawMarker` was written for and had never been given.
+
+**A keyboard got the guest thrown out.** A 3DS running a library applet is not slow, it is
+*stopped*: no thread runs, nothing is pulled off the radio, and no keep-alive goes out, for as long
+as somebody is typing. From the other console that is indistinguishable from walking out of range,
+and it outlasts `kTimeoutMs` without trying. Three changes. Every keyboard in the build now calls
+`ctr::linkPausing` before `swkbdInputText`, which puts `Msg::Away` on the wire and holds the peer's
+timeout open (`kMaxAwayMs`, an interval and not a switch -- a console that never comes back is
+still dropped, later). A pump gap longer than `kStallMs` is taken as *this* console having been
+stopped and is not counted against anybody, so coming back does not drop everyone on the first
+frame. And the UDS receive buffer went from `UDS_DEFAULT_RECVBUFSIZE` -- about eight of this link's
+datagrams -- to 40 KB, so a suspension costs a stutter rather than a visible reload.
+
+Coverage: `tests/remote_player_mesh_test.cpp` (new, 3), `tests/world_server_test.cpp` (+6),
+`tests/link_test.cpp` (+2, and the timeout test now pumps a frame at a time because that is the
+thing it is testing), `tests/item_entity_test.cpp` (+1), `tests/net_entities_test.cpp` (+1).
+**No hardware run of the fixes.**
+
+## A guest plays the host's game: rules, where they land, and what is alive (2026-09-15)
+
+**The joining player was a Spectator in somebody else's Survival world.** `MenuChoice::gamemode`
+defaults to Spectator -- the right answer for a world with no settings file and the wrong one for a
+world that has an owner -- and nothing overwrote it, because protocol 2 has nowhere to put a
+gamemode: a1.1.2 has exactly one way to play and its Login says nothing about rules. So it rides in
+the link's own messages instead: `WorldRules` (two bytes, `settings::Gamemode` and
+`settings::Difficulty`) in the `Welcome`, and again in a new `Msg::Rules` whenever the host changes
+it -- the pause menu can turn a Survival world Creative without anybody leaving it, and a guest
+still flying in a world that has gone back is the same bug one step later. The guest applies it
+mid-session through the same hand-over the pause menu makes, body-under-eye and all.
+
+**And a guest in a Survival world is now mortal.** `vitals.invulnerable` was `net != nullptr`, which
+is right for a Java server -- protocol 2 carries no health, so a fall could hurt a player the server
+would never hear about -- and wrong next door, where both ends are this port running the same
+`PlayerVitals` and where a1.1.2's damage is the client's anyway (`kHasServerSideDamage` is false).
+
+**Where a joiner lands is `ServerConfigurationManager`'s answer.** A player the host has seen before
+comes back to where they left; one it has not starts at the world's spawn point. The host holds that
+record (`WorldServer::SavedPlayer`) because a guest has no `level.dat` here -- their world is on the
+other console -- and it holds their pack with it: a1.1.2's multiplayer inventory is the *client's*,
+pushed every twentieth tick and adopted by the server, so the host adopts it and hands it back at
+their next login, which is the protocol's only server-side inventory push.
+
+**The one hazard in that, closed.** The placement only goes out once the column under it has, or the
+client closes Downloading Terrain and drops through the world -- and the spawn point may be
+somewhere this console has never loaded, where no amount of waiting helps because the grid has one
+centre. After twelve seconds such a guest is put down beside the host and both are told. A position
+they were *put* at is not remembered, so they are not pinned there once the real ground exists.
+
+**What is alive now crosses.** `WorldServer::syncMobs` announces each animal with `MobSpawn`, moves
+it with `EntityTeleport` at 20 Hz and destroys it when it leaves the pool -- the same diff the items
+already used. Two wire values are ours: a1.1.2 registers sheep, cow and chicken all as type 91 and
+the map keeps the last, so a real client draws a chicken for each, and between two copies of this
+port that is a hole rather than a behaviour. 92 and 93 say sheep and cow; 91 still means what the
+jar says.
+
+**A guest can hit them, which protocol 2 cannot say.** Use Entity arrives at protocol 4 -- this is
+why vanilla's monsters of the era "were only damaged by fire" -- so `packet::UseEntity` carries
+protocol 4's own shape at protocol 4's own id, **never to a Java server** (`NetPlay::allowUseEntity`
+is off by default, and an id 0.2.1's table does not have would end the connection). The guest sends
+the hit and does *not* apply it: the animal is the other console's, and a second world arguing with
+the first would take health off something the next position update overwrites. The host runs the
+same `item::attackEntity` its own left click does, so the shear, the knockback, the drop and the
+death are one implementation. See `protocol-a1.1.2.md` for the table of what a host adds and why.
+
+**Still not crossing.** Sign text (`0x3B` both ways, plus an NBT round trip), chests and furnaces
+(refused with a chat line, as on a Java server), boats, carts, paintings, arrows, falling blocks and
+primed TNT. None of this has run on hardware.
+
+## The world crosses the link: two consoles in one world (2026-09-15)
+
+**The guest half was already written, so the host speaks protocol 2.** This console has a complete
+protocol-2 *client* -- `core/net/packets.hpp` for the table, `core/net/chunk_payload.hpp` for Map
+Chunks, `WorldStreamer::openRemote` for a world nobody generates, `ctr::NetPlay` to join the two --
+all of it written for a Java server over TCP and none of it caring what carried the bytes. So the
+only thing that had to be built was the half that decides *what to say*: `core/net/world_server.hpp`.
+Inventing a link-native world protocol would have meant a second client as well.
+
+**`NetPlay` stopped naming the socket.** `core/net/packet_channel.hpp` is the interface it runs over
+(`send`, `poll`, `state`, byte counts) and `PacketChannel::Event` -- a parsed packet, a built
+`ChunkColumn`, an inflated region -- is part of it, because *both* implementations put a thread
+between the wire and the game for the same reason: docs/protocol-a1.1.2.md ruled the inflate off
+core 0's frame long before there was a second wire. `ClientSession` implements it for TCP;
+`core/net/local_channel.{hpp,cpp}` implements it for the radio.
+
+**The link is a byte stream, so the world crosses as one.** `Msg::GamePacket` is delivered reliably
+and in order, which is TCP's promise and the only one `parsePacket` needs -- a protocol-2 packet has
+no length prefix, so a parser that lost its place would stay lost. Packets are written end to end
+into a per-player buffer and cut into ~1 KB pieces (`kMaxMessage` is 1,388). `local_channel_test.cpp`
+feeds a stream **one byte at a time** and checks the same packets come out.
+
+**One thread on each side, both for the compression.** Guest: the channel's parse/inflate thread.
+Host: `ColumnOven`, two slots deep -- `serializeRegion` runs on the main thread where the grid is
+settled and a borrowed column pointer is safe, and only `zip::compress` (level 1, as server 0.2.1
+uses) crosses. Budget is one column per frame; the radio is slower than the oven anyway.
+
+**What crosses.** Columns around each guest (`PreChunk` + `MapChunk`), block changes
+(`BlockChange`, or `MultiBlockChange` past one in a column, or the whole column again past 64),
+time, spawn, the Position & Look that places a guest *after* the ground under them has gone, every
+player as a `NamedEntitySpawn` and then `EntityTeleport` at 20 Hz, items on the ground
+(`PickupSpawn`/`EntityTeleport`/`DestroyEntity`), pickups (`Collect` + `AddToInventory` -- **the host
+decides who picked up what**, because two players reaching for one stack would otherwise both take
+it), and chat. Coming back: position and look, `BlockDig` status 3, `Place`, `PickupSpawn` for a
+thrown stack, arm swings, chat.
+
+**Every block change, through one door.** `WorldStreamer::setBlockWatcher` hangs off
+`tickBlockChanged` -- the choke point a player's edit, a tick's fluid, a decaying leaf and falling
+sand all already go through -- so nothing has to remember to report a change and nothing reports one
+twice. It is on the fluid's path, so it pushes a coordinate and returns, and with nobody in the
+session it costs one compare.
+
+**The one window that could have gone quietly wrong.** A block written while its column is in the
+oven is in neither the photograph (too late) nor a Block Change (the guest does not hold the column
+yet, so nobody sends one). Such a column is marked (`Player::stale`), thrown away when it comes out,
+and asked for again. `a_block_changed_while_its_column_is_in_flight_still_reaches_the_guest` rebuilds
+the guest's view the way a guest does -- last whole column, then every change after it -- and checks
+the two consoles agree.
+
+**A joiner lands beside the host, not at the spawn point.** The grid follows the host's camera, so
+a host who has walked a thousand blocks from spawn would drop a joiner into a square with no columns
+in it -- and the placement is only sent once the column under it has arrived, so they would sit on
+"waiting for a position" forever. It is also what somebody joining the console next door expects.
+Before the host's own player has reported once there is nothing to land beside, and then the spawn
+point is the only answer there is.
+
+**What a guest can play is what the host has loaded.** *(Superseded -- see "Five from a session"
+at the top of this file: `WorldStreamer::setServedAreas` now holds the ground under every guest
+outside the grid, so this is a wait while their ground is read or made rather than a wall. The
+paragraph is kept because the rest of it still describes the wire.)* The grid wraps modulo its own
+width, so it has exactly one centre, and a column the host does not hold cannot be sent.
+`WorldServer::starved` is true when a guest is standing where this console has no column, and the
+host's chat says so once on each change. `WorldStreamer::setServerViewRadius` is the other half of
+it: ten is `ae`'s square in server 0.2.1, this host sends six, and the number decides whether a
+missing column is one to wait for (mesh nothing against it) or one that is never coming (mesh now).
+
+**Not yet** (at the time of this entry; the one above closes most of it): mobs, the guest's
+inventory, gamemode, and hitting anything. Doors, levers and pressure plates already worked -- a
+guest's right click reaches the host through `Place` and runs the host's own `rightClick`.
+
+## Terrain crosses the link: the expensive half of a chunk, made on somebody else's console (2026-09-14)
+
+**Measured first.** Instrumented the two generation stages and ran `--generate` on the Release
+build over three seeds: **terrain, surface and caves ~1400 us a column; population ~400 us a pass**
+(and a naive timer double-counts, because `populate` calls `ensure` which generates neighbours).
+So the stage that can be handed out is the expensive one by roughly eight to one, and the stage
+that must not be is the cheap one.
+
+**Only terrain is delegable, and that is a correctness argument before it is a performance one.**
+`caves.hpp`'s carver reads a 17x17 chunk neighbourhood *into* the column it is making and never
+writes out of it, and the density noise is a pure function of seed and coordinates -- so a column
+made on another 3DS is byte-identical and may arrive in any order. Population is the one stage that
+writes into its neighbours, so its order is the world (status.md §0g); it stays on the host and the
+determinism work stands untouched. `tests/terrain_share_test.cpp` pins the byte-identity claim,
+including over a link that drops every third frame.
+
+**The pieces.** `core/net/terrain_share.{hpp,cpp}`: `TerrainPool` (host side -- wants, requests,
+reassembly, zlib, and a small fixed set of slots, each 32 KB, taken under one short lock because
+the link is pumped on the main thread and the generator runs on the chunk worker) and
+`TerrainResponder` (guest side -- a `mcver::WorldGen` for the host's seed, one column per call).
+`Msg::TerrainRequest`/`TerrainPart` carry them; a column is deflated and cut into parts because one
+datagram holds ~1385 bytes. `GeneratorId` (seed, packed options, build name) rides in the Welcome,
+and a guest's own build name in the Hello: **a console whose generator we do not recognise plays
+normally and is simply never asked**, which is what stops a different build writing terrain that is
+not this world's into the host's save. Nothing is verified beyond that -- verifying a column means
+generating it, which is the work being avoided.
+
+**Nothing blocks.** `ChunkGenerator::Store::supplyTerrain` (new, null by default, byte-for-byte the
+old behaviour when unset) is consulted before the local generator; a miss generates as always and a
+late answer is dropped and counted (`TerrainPool::late`). The host asks for the ring around each
+guest's reported pose -- where it will shortly have to simulate and is least likely to have anything
+on the card. `WorldStreamer::setTerrainSource` installs it before `open`, through a trampoline
+because `Store::context` is the streamer's.
+
+**Where it runs today.** The guest answers from the lobby (`Screen::Session`), one column a frame,
+on a console that is sitting on a menu with nothing else to do; the screen counts the columns it has
+made, and once it is playing it answers one column every 500 ms instead -- a console with a world to
+draw is a player, not a render farm.
+
+## Two consoles in one room: the link, the session, and the menu that opens one (2026-09-14)
+
+**Multiplayer is two things on one screen now.** `Screen::Servers` became `Screen::Multiplayer`:
+Host and Join sit side by side at the top, a rule separates them, and the list -- the sessions a
+scan found, then `+ Add Server` and the saved Java servers -- starts below it at `kMpListTop`, four
+rows at a time. Either button asks Local or Internet first (`Screen::NetMode`); Internet is drawn
+disabled and says why. Host -> Local reuses the world list with `pickingHost_` set, which changes
+the title, where B goes and which action comes back; Join -> Local scans and refills the list.
+**The scan runs at the top of the next frame** (`scanPending_`), because it holds the radio for
+about a second and the message saying so has to be drawn first.
+
+**The link is datagrams, not a stream, and it is ours.** `core/net/link.{hpp,cpp}`: a 9-byte header
+(flags, seq, ack, 32 ack bits), messages of `kind, u16 size, body`, a 32-datagram window that is
+also the retransmit buffer, retransmission at `2 * rtt + 20` clamped to 60..800 ms, RTT by Karn's
+rule (never off a retransmitted datagram), in-order delivery of the reliable half with a reorder
+buffer, and unreliable messages that are never resent -- a pose that arrives late is worth less
+than the one behind it. `core/net/session.{hpp,cpp}` is the star on top of it: `HostSession` (up to
+`kMaxGuests` 3, ids from the UDS node numbering, Hello/Welcome/Reject, chat and pose relay, drops
+on timeout and on protocol violations) and `GuestSession`. Both are free of the console: they are
+handed a `Datagrams` and a clock, which is why `tests/link_test.cpp` can run both ends over a wire
+that loses every third frame and hands them over backwards.
+
+**The radio is UDS, which is not StreetPass.** `platform/ctr/local_link.{hpp,cpp}`:
+`udsCreateNetwork` with `wlancommID` 0x3DA11200, the beacon's appdata carrying magic, protocol,
+player count and the two names (cut on a UTF-8 boundary, 200 bytes), `udsScanBeacons` for the Join
+list, and `udsSendTo`/`udsPullPacket` for frames. **A full send buffer is not a broken link** --
+`UDS_CHECK_SENDTO_FATALERROR` tells the two apart, and the non-fatal one is left to the
+retransmission the link layer already has.
+
+**What hosting does and does not do.** `runHosted` opens the world exactly as Play does and puts a
+`ctr::HostPlay` beside it; `runGame` gained a `host` parameter and pumps it where it pumps
+`NetPlay`. Guests are welcomed, listed, counted on the beacon, and their chat reaches the host's
+chat log; the host's pose goes out at 20 Hz, not 60. **The world does not cross the link yet** --
+no columns, no block changes, no entities. `Msg::GamePacket` is the seam it will cross on: a
+protocol-2 packet verbatim, so the half of the client that already applies them can be pointed at
+this link. A guest that joins sits on `Screen::Session` -- the player list, the round trip, and a
+line saying exactly that.
+
+## Three from the jukebox: the disc was free, breaking it voided it, and the record outlived the world (2026-09-14)
+
+**A disc is spent now.** `spendOnUse` reads the item table -- `places`, `spawns` -- and a music
+disc has neither, so the disc stayed in the hand and taking it back out of the jukebox was a
+second one. `lg.a` decrements its stack like every other `onItemUse` that succeeds; it is now the
+one row in that function no column can be read off.
+
+**Breaking it gives the disc back and stops the sound, on every path.** `cv` puts its eject in
+`dropBlockAsItemWithChance`, which is a1.1.2's only player-driven removal -- but this port's
+Creative break is `item::destroyBlock` with no drop table after it, and a jukebox broken that way
+lost the disc and kept playing. The eject is in `blockRemoved` as well now, and **both copies read
+the metadata out of the world instead of from the argument**: a break reaches `blockRemoved` first
+and `dropBlockAsItem` afterwards with a stale saved copy, an explosion reaches them the other way
+round, and re-reading makes whichever runs first clear the cell and the other find nothing. The
+explosion's three draws stay where the jar takes them.
+
+**And a record stops with the world.** The `SoundEngine` is the process's and outlives every
+world, so a disc on the streaming voice played on over the title screen. `stopRecord` is separate
+from `stopMusic` because the two share that voice -- stopping the music would cut a menu track --
+and `runGame`'s tail calls it beside the other things the world borrowed.
+
+## Four more from play: DNS, a splash that repeated, a hollow door, and glass that was a stack of boxes (2026-09-14)
+
+**A name resolves through four things now, and the last one is ours.** DNS did not work on
+hardware: a numeric address connected and a host name never did. `TcpSocket::connect` asked
+`gethostbyname` -- SOC's `GetHostByName` -- and nothing else. It now tries a numeric address,
+then `getaddrinfo` (SOC's other resolver, the one most 3DS homebrew uses), then `gethostbyname`,
+and then **a DNS query of our own to the console's own name servers** -- the ones DHCP handed it,
+which on a home network is the router, read with `SOCU_GetNetworkOpt(SOL_CONFIG,
+NETOPT_DNS_TABLE)` and topped up with the default gateway off the routing table. That is the
+literal answer to "can it not just use the 3DS's or the router's DNS": `core/net/dns.hpp` is two
+hundred lines of UDP and a wire format frozen since 1987, and unlike a service call it can be
+debugged. The failure message now names the server that did not answer.
+
+**A dropped stack no longer splashes every few blocks on the way down.** `g_()` hands
+`handleMaterialAcceleration` the entity's box **shrunk by four tenths top and bottom**, so for
+anything shorter than 0.8 of a block -- an item (0.25), an arrow (0.5), a chicken (0.4), a boat
+(0.6) -- the probe box is *inverted*, and its y loop runs once or not at all depending on where
+between two cells the entity is: it sees water on **45 % of ticks**. `!inWater` is the whole of
+the splash's condition, so a sinking item splashed again, bubbles and all, every few blocks.
+That is a1.1.2's own arithmetic, and it is the one thing in `water_entry.hpp` this port now
+deviates from: **only the splash is latched**, on a probe of the entity's own uninset box, and
+that probe is only consulted on a tick that has already splashed and reads dry. `inWater` itself
+is still the jar's answer, so the current pushes, the fall distance clears and fire goes out on
+exactly the ticks the jar says.
+
+**A door stopped showing its own inside.** The opaque *detail* pass ran with `GPU_CULL_NONE`, on
+the argument that a flower is two crossed planes. The planes were never the reason: `addSheet` --
+which every non-box shape goes through -- already emits the plane *and* its mirror, and so does
+the cross. What the missing cull cost was the wooden door, whose top tile has a window in it (48
+transparent texels of terrain tile 81): looking through it, the far side of the door's box was
+drawn from behind. The pass is culled now, a torch stops drawing the two sides its own comment
+said were culled, and `tests/mesher_test.cpp` pins the invariant the cull now leans on.
+
+**Glass is a window rather than a stack of boxes.** The mesher's face test was
+`!def(neighbour).opaque` -- `ly.c(Lnm;IIII)Z`, the base class, and right for sixty-five blocks.
+Four classes override it. `fc` (glass, ice) and `hi` (leaves) also hide a face against **their own
+block id**; `fd` (the snow layer) always draws its top and hides a face against the same material;
+`oi` (the slabs) always draws its top, then applies the base test, then always draws its bottom,
+then hides a side against the same id. All four are a new hand-assigned `sideRule` column and one
+function, `core/block/side_rule.hpp`, asked by both the cube fast path and `addBoundedCube`.
+
+## Six reports from play: a port row, the fence and furnace icons, the jukebox, the special carts (2026-09-14)
+
+**The server list has a Port row, under Address.** `net::ServerEntry` carries a `u16 port`
+defaulting to 25565, `servers.txt` gains a `port=` line under each `address=`, and a `host:port`
+typed into the Address row -- or sitting in a list written before this -- is split into the two
+fields rather than refused. The list row shows `:port` only when it is not the default, and the
+keyboard for the row is the numpad.
+
+**A fence in the hand is a fence again.** `render::held_item`'s `addBox` and
+`item_entity_mesh`'s cube emitter mapped the *whole* tile onto every face whatever the box's
+extent, so a quarter-block post wore a full plank square. `renderBlockOnInventory` sets the
+block's bounds and then calls the same `bc.a`..`bc.f` the world uses, which clip their UVs to
+those bounds -- that clip is now `mesh::boxTileUv`, shared by the world mesher, the hand and the
+ground.
+
+**A furnace in a slot shows its mouth.** `gui/item_icon`'s isometric projection was a quarter
+turn out: it drew north and east, and every block with a front -- furnace, chest, dispenser,
+pumpkin -- puts it on face 3, *south*. Working `RenderItem`'s own `glRotatef(210, 1,0,0)` /
+`glRotatef(45, 0,1,0)` under the GUI's y-flipped ortho gives top, **west** and **south**, and
+that is what the projection draws now.
+
+**The jukebox works, records included.** `cv` keeps its disc in the block's metadata --
+`1 + (item - record13)` -- so there is no tile entity: `lg.a` puts one in, a click on a playing
+one ejects it (`cv.e`), and breaking the block ejects it first (`cv.a`, an override of
+`dropBlockAsItemWithChance`). **And the disc plays**: `.mus` is Mojang's own container and it is
+an Ogg Vorbis file behind a one-byte cipher keyed on the file's own name
+(`hk.read`: `b ^= key >> 8; key = key * 498729871 + 85731 * b`, the state advancing on the
+*plaintext*, so the stream is decoded forward-only and opened unseekable).
+`3dalpha --record-dump <resources> 13 out.wav` decodes a real one.
+
+**The special minecarts carry their block and do what they are for.** `kt.a` draws a chest or a
+furnace inside the cart -- `glScalef(0.75)`, `glTranslatef(0, 0.3125, 0)`, `glRotatef(90, 0,1,0)`
+then `renderBlockOnInventory` -- which is a second pass because it is a second sheet
+(terrain.png, not the cart page). `oc.a(Ldm;)Z`'s other two bodies are in: a chest cart opens its
+own 27 slots and a furnace cart takes a piece of coal (`fuel += 1200`) **and is aimed away from
+whoever clicked it whether or not there was any coal**, which is how one is turned round. A chest
+cart's stacks cannot live in the pool (`SegmentedPool` needs a trivially destructible element),
+so they live in a side store keyed by a new stable `Minecart::id` and are saved beside the carts
+as `minecartChests`; breaking one spills them the way a broken chest spills its own (`oc.F()`).
+
+**Create World has an Extra Settings button, and the gamemode order changed.** The three
+non-a1.1.2 rows that were on the Create screen (the two generation fixes and the fence placement)
+moved into an Extra Settings screen reached from the bottom of it, with World Texture Pack beside
+them -- the same screen World Settings opens, over `newWorld_.settings` and writing nothing until
+Create. The gamemode row now steps **Survival -> Creative -> Spectator** and a new world starts
+in Survival (`settings::kNewWorldGamemode`); a world with no settings file still reads as
+Spectator, which is what every world written before that file was played as.
 
 ## Checkout context
 
@@ -27,6 +798,127 @@ without the race.
 line 381) fails on roughly two runs in three and *aborts the process*, so every test registered
 after it is skipped. Run those files' cases separately until it is fixed; it is a timing
 assumption about the generation worker, not a regression in what it is testing.
+
+## Multiplayer is joinable (2026-09-13)
+
+**Title -> Multiplayer is a server list now**, not a greyed row: `+ Add Server`, then a row per
+server (A joins, X edits or deletes it). The list is `name=`/`address=` pairs in
+`sdmc:/3dalpha/servers.txt`, so it can be written on a PC; an address is `host`, `host:port` or
+`[v6]:port`, default 25565. The login name is the friend list's screen name (`ctr::loginName`, FRD
+`GetMyScreenName`) with everything the a1.1.2 font cannot draw -- and spaces, path separators and
+colons, which break the server's own commands and its player files -- turned into `_`, cut to 16
+characters, falling back to "Player". Only `online-mode=false` servers can be joined: the session
+servers this era authenticated against are gone, and the client says so rather than timing out.
+
+**Everything protocol-shaped is core and host-tested; the console's own glue is not.** The codec,
+the 0x33 layout, the session thread, the movement/inventory/dig reporting, the 80-tick revert list
+and the streamer's remote mode have tests in `tests/net_*_test.cpp`, and the packet table is read
+out of both jars with `javap` rather than off a wiki. `3dalpha --join` plays a scripted session
+against the real 0.2.1 jar -- login, the teleport echo, chat, a dig, a place, then every column it
+received compared block for block with the server's own save -- and passes. **The 3DS build links
+and nothing multiplayer has run on a console**: SOC and FRD coming up, the three new menu screens
+and the Downloading Terrain wait are all unseen.
+
+**Other players and dropped items are drawn now** (reported from hardware: "you can't see other
+entities"). `core/net/entities.hpp` is the tracker: `0x14` spawns a player, `0x15` an item, and the
+move, look, teleport, collect and destroy packets find whichever it is by the server's id.
+
+- **A player is the biped the zombie already is**, posed by `player_model.hpp` and appended to the
+  *mob pass's* buffer and draw call -- the arrangement the spawner miniatures already use, so
+  another player costs no extra bind and no extra draw. They walk toward the server's last word over
+  three ticks (`otherPlayerMPPosRotationIncrements`), and the limbs are driven by how far the body
+  actually moved, because nothing on the wire says whether someone is walking. **Everyone wears this
+  console's skin**: the skin behind a name lived on a Mojang service that has been gone for years.
+- **An item is the ordinary `ItemEntity`**, spawned into the pool the single-player game already
+  draws and ticks, carrying the server's id (a1.1.2 gives every entity one in both kinds of game).
+  Two things differ: its pickup delay is set past any session's length and the local collect is
+  skipped entirely, because the server decides who picked up what and says so with `0x16` and
+  `0x11`.
+- **Verified with two clients on the real 0.2.1 server**: one harness saw the other as a player at
+  its true position, and a second run tracked 64 ground items including the one its own dig dropped.
+  `--join` reports both now.
+
+**Four things hardware found, all fixed (2026-09-13).**
+
+- **Other players were upside down and buried.** `placeAt` places a mesh already built in world
+  orientation; a `ModelPart` body is in the frame `RenderLiving` flips with `glScalef(-1, -1, 1)`
+  before translating down by `24/16 + 0.0078125` *inside* that flip. The mob pass had it right and
+  the new pass did not. `render::placeModel` is that arrangement, named once and shared, and
+  `a_drawn_player_stands_on_their_own_feet_the_right_way_up` is the same assertion the animals have.
+- **Everyone wore this console's chosen skin.** `applyPlayerSkin` writes the `Player` page and only
+  that one, so a skin picked on the Skins screen was being worn by every stranger. There is a second
+  page now, `EntitySkin::OtherPlayer`, filled from the pack's own `char.png` like any other page and
+  never overwritten -- the free slot at (192, 0). Your skin is yours; everyone else is the pack's.
+- **Mobs are drawn.** `Mob` carries the server's id and a `remote` flag, and `MobSystem::tick` does
+  nothing for a remote one but the render bookkeeping: the AI, the physics and the despawn are all
+  the server's, and running them here would be a second mind arguing with the first. The type table
+  came off the jar and held a surprise: **sheep, cow and chicken are all id 91**, and because `ew`'s
+  map keeps the last registration, a real a1.1.2 client draws a *chicken* for all three. That is
+  reproduced rather than guessed around.
+- **Names are drawn over heads**, `renderLivingLabel`'s placement and 1/60 scale, turned to face the
+  camera. They ride the *sign* pass, which is the one that already draws world text with the font
+  bound, so a name costs no bind and no draw call; a world with no signs now still enters that pass
+  when there is somebody to name. No translucent plate behind the text -- that needs an untextured
+  pass this one has not got.
+
+Verified against the real server with two clients: 1 player, 18 mobs, 64 ground items and **zero
+spawns undrawn**. Vehicles (`0x17`) are the only entity packet still counted rather than drawn: a
+boat and a cart are two more pools, and a cart is tilted along the track it stands on rather than by
+anything the packet carries.
+
+**Deliberate limits, in `NetPlay` and in the protocol doc.** A multiplayer player is Survival and
+invulnerable, because protocol 2 carries no health in either direction. Vehicles are parsed and not
+drawn. Chests and furnaces refuse to open, with a chat line saying
+so -- in a1.1.2 their contents are the *client's*, sent back as `0x3B` NBT, which is not built, so
+opening one would quietly eat what was put in. Signs do not sync. The pause menu becomes Resume,
+Chat (a keyboard), Options, Disconnect. A server's block change is written without notifying
+neighbours: the server sends whatever those updates would have produced.
+
+**Reported from hardware: it would not download terrain and then timed out.** Two things were
+wrong, one of them mine and load-bearing. **The Downloading Terrain screen waited for the column
+under the player as well as for the server's position**, and nothing guarantees that column comes:
+0.2.1 sends columns from its own per-player tracker, so if the one under the feet is late the loop
+waits for something that is not coming and the session's 60-second read timeout is the only thing
+that ends it -- which is exactly "it never downloads, then it times out". a1.1.2 closes that screen
+on the position packet and on nothing else (`gy.a(eh)`), and the body's own `respawnPending` hold
+already keeps it still until its chunk is resident, with a bound. The screen now closes on the
+position, with a five-second grace for the ground. **And the wait says where it has got to**:
+stage, kilobytes in and columns, under the bar -- a download that stalls is the one failure with no
+symptom from outside. The session's login stage has its own 20-second timeout now, which names
+which half never happened, rather than sitting on the play-time 60.
+
+**Then hardware said "Failed to connect to the server", and three things in that path were
+guesses.** All three are gone, none of them testable from here:
+
+- **`getaddrinfo` is no longer used.** A numeric address is parsed with `inet_aton` and needs no
+  resolver at all; a name goes through `gethostbyname`, which is SOC's own `GetHostByName`. The
+  player typing their PC's address should not depend on the least-trodden call in the console's
+  socket layer.
+- **`SO_ERROR` no longer decides whether a connect worked, and this one is measured rather than
+  guessed.** The console reported "Failed to connect to the server" while *the server's own log
+  showed the console connecting and the connection being lost again*, four times, once per attempt:
+  SOC answered the `SO_ERROR` getsockopt with something non-zero on a socket that was fine, so the
+  client closed a working connection -- and `strerror` of that value was empty, which is why the
+  screen had no reason on it. `getpeername` succeeding is the question actually being asked (a
+  socket with no peer answers ENOTCONN), so that is the arbiter now; `SO_ERROR` is only consulted
+  to explain an error `poll` has already reported. **The same server, from the host client, joined
+  and played throughout** -- the fault was never the protocol, the server or the address.
+- **The read path no longer trusts `poll` either**: it polls for a sleep slice and then reads
+  regardless, because a non-blocking `recv` with nothing waiting is one syscall and the same answer.
+- **Socket errors carry their number.** `strerror` is newlib's on the console and does not know
+  every value the socket service produces, so a failure reported through it alone can arrive as an
+  empty string -- which is how a disconnect screen ends up saying nothing at all.
+- **`gethostid() == 0` no longer refuses the attempt.** The address arrives with the association
+  and DHCP, so checking it the instant SOC comes up can read the moment before rather than a
+  console with its Wi-Fi off. It only explains a failure now.
+
+The disconnect screen also names the address it tried and, when there is no address at all, says
+so -- a 3DS is 2.4 GHz and WPA2 at best, which is the other half of that answer.
+
+**Memory:** a column the grid drops is kept in `WorldStreamer::remoteColumns_` until the server's
+Pre-Chunk says to let it go, because the server will not send it twice. That is up to the server's
+own 21x21 view, which is more than the grid holds at a short render distance -- the one figure worth
+watching on hardware.
 
 ## Fences need ground again, and sign boards stopped sliding (2026-09-13)
 

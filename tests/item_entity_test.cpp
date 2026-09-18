@@ -590,3 +590,28 @@ TEST(a_blast_destroys_the_stacks_beside_it_and_throws_the_ones_further_out)
     CHECK_EQ(thrown, 1);
     CHECK_EQ(untouched, 1);
 }
+
+TEST(handing_thrown_items_to_a_server_leaves_the_servers_own_alone)
+{
+    // In a session the pool holds two kinds of stack at once: the ones this
+    // console threw, which are the server's to make, and the ones the server
+    // has already made and stamped with an id of its own. A client hands over
+    // the first kind and must not touch the second -- handing back what the
+    // server just sent is how one dropped stack became an endless supply of
+    // them. See `NetPlay::forwardDrops`.
+    Ground g;
+    CHECK(g.items.dropFromPlayer(g.world.w(), 0.5, 66.0, 0.5, 0.0f, 0.0f, stoneItem(), 1, 0));
+    CHECK(g.items.spawnFromServer(g.world.w(), 4242, 3.5, 66.0, 3.5, stoneItem(), 2, 0, 0.0,
+                                  0.0, 0.0)
+          != nullptr);
+    CHECK(g.items.dropFromPlayer(g.world.w(), 6.5, 66.0, 6.5, 0.0f, 0.0f, stoneItem(), 1, 0));
+    CHECK_EQ(g.items.count(), 3);
+
+    CHECK_EQ(g.items.removeUnowned(), 2);
+    CHECK_EQ(g.items.count(), 1);
+    CHECK_EQ(int(g.items[0].entityId), 4242);
+
+    // And again on a pool that has nothing of its own left to give.
+    CHECK_EQ(g.items.removeUnowned(), 0);
+    CHECK_EQ(g.items.count(), 1);
+}

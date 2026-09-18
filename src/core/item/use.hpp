@@ -44,6 +44,9 @@ class MobSystem;
 namespace mc::world {
 class SignStore;
 }
+namespace mc::net {
+class RemoteEntities;
+}
 namespace mc::audio {
 class SoundEngine;
 }
@@ -79,6 +82,13 @@ struct EntityPools {
     // one is a hit, a milking or a saddling, and which of those it is depends
     // on what is in the hand -- see `interactWithEntity`.
     entity::MobSystem* mobs = nullptr;
+
+    // **The other people in the session.** Null in single player, which is
+    // every caller that has no link. Unlike every other pool here these
+    // entities are not this console's to change: what a click on one does is
+    // decided wherever that player is actually running, so the pool is here to
+    // be *aimed at* and nothing more. See `EntityTarget::remote`.
+    net::RemoteEntities* players = nullptr;
 
     // **Not an entity**, but it lives here for the same reason: a sign's text
     // is a side effect of a click that most callers have nowhere to put. See
@@ -205,13 +215,19 @@ bool destroyBlock(tick::TickWorld& world, i32 x, int y, i32 z, const Effects& ef
 // original's `d < best || best == 0` rule. The ridden vehicle is not
 // excluded, as it is not in the original.
 struct EntityTarget {
-    enum class Kind : u8 { None, Painting, Boat, Minecart, Mob };
+    enum class Kind : u8 { None, Painting, Boat, Minecart, Mob, Player };
     Kind kind = Kind::None;
     int index = -1;
     // From the eye to where the ray meets the grown box.
     double distance = 0.0;
 
     bool found() const { return kind != Kind::None; }
+
+    // **The one kind this console must not resolve itself.** Another player
+    // belongs to whichever console is running them; a hit on one is sent, and
+    // what it costs them is decided there. `attackEntity` refuses it for that
+    // reason rather than by omission. See `packet::UseEntity`.
+    bool remote() const { return kind == Kind::Player; }
 };
 
 EntityTarget pickEntity(const EntityPools& pools, double eyeX, double eyeY, double eyeZ,
@@ -278,8 +294,10 @@ bool attackEntity(tick::TickWorld& world, const EntityTarget& target, ItemId hel
 // if (stack != null && entity instanceof EntityLiving) stack.useItemOnEntity(living);
 // ```
 //
-// A boat or a plain cart takes the player aboard; a chest or furnace cart, a
-// vehicle already ridden and a painting refuse. An animal answers the first step
+// A boat or a plain cart takes the player aboard; a **chest cart opens its 27
+// slots and a furnace cart takes a piece of coal and is aimed away from the
+// player**, both of which answer the first step and so never reach the second.
+// A vehicle already ridden and a painting refuse. An animal answers the first step
 // with a bucket (a cow gives milk) or a saddle already on (a pig carries you),
 // and the second step is where `ItemSaddle` puts a saddle on a pig -- which is
 // why a saddle held out to a *saddled* pig mounts it instead of being eaten.
@@ -291,9 +309,22 @@ bool attackEntity(tick::TickWorld& world, const EntityTarget& target, ItemId hel
 struct EntityInteraction {
     bool taken = false;
     ItemId becomes = 0;
+
+    // **A chest minecart opens a screen and has no block to open it on**, so
+    // it cannot go through `TickWorld::openContainer` like a chest does: that
+    // seam names a cell. The cart's own id comes back here instead, and the
+    // caller opens the screen on it. Zero when nothing was opened.
+    u32 opensMinecartChest = 0;
+
+    // A furnace cart swallowed the piece of coal in the hand, so Survival
+    // takes one off the stack -- the same cue `itemTook` is on the block path.
+    bool spentFuel = false;
 };
 
+// `playerX`/`playerZ` are where the click came from, which only the furnace
+// cart reads -- it is aimed away from whoever pushed it.
 EntityInteraction interactWithEntity(tick::TickWorld& world, const EntityTarget& target,
-                                     const EntityPools& pools, ItemId held);
+                                     const EntityPools& pools, ItemId held,
+                                     double playerX = 0.0, double playerZ = 0.0);
 
 }  // namespace mc::item

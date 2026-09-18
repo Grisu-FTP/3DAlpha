@@ -6,6 +6,7 @@
 #include "core/block/model.hpp"
 #include "core/block/registry.hpp"
 #include "core/item/registry.hpp"
+#include "core/mesh/box.hpp"
 #include "core/render/box_model.hpp"
 #include "core/util/math_helper.hpp"
 
@@ -186,6 +187,13 @@ int boxVertices(int faceMask)
 // `faceMask` is which of the six to emit, as `block::renderBoxes` fills it in.
 // Only the cactus asks for fewer than all of them, and it asks three times:
 // its item shape is one cell drawn as a cap box and two pairs of inset sides.
+//
+// **The tile is sampled over the box's own extent**, through the same
+// `mesh::boxTileUv` the world mesher draws a slab and a fence post with. It is
+// the original's rule -- `renderBlockOnInventory` sets the block's bounds and
+// then calls the very `bc.a`..`bc.f` the world uses, which clip their UVs to
+// those bounds -- and it is why a fence in the hand is the narrow strip of the
+// plank tile the post covers rather than the whole tile stretched across it.
 int addBox(const AABB& box, const Transform& t, const u16 tiles[6], int faceMask, u8 light,
            mesh::DetailVertex* out, int max)
 {
@@ -200,7 +208,7 @@ int addBox(const AABB& box, const Transform& t, const u16 tiles[6], int faceMask
         if ((faceMask & (1 << face)) == 0) {
             continue;
         }
-        const TileUv uv = tileUv(int(tiles[face]));
+        const mesh::BoxTileUv uv = mesh::boxTileUv(int(tiles[face]), box, face);
         for (int c = 0; c < 4; ++c) {
             const mesh::Corner& corner = mesh::kFaceCorner[face][c];
             const float x = float(corner.x != 0 ? hi[0] : lo[0]);

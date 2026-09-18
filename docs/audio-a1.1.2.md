@@ -411,13 +411,35 @@ install works unchanged. See [assets.md](assets.md#sounds).
    trade for the same reason.
 3. **Five voices of ndsp's twenty-four.** a1.1.2's SoundSystem carries far more sources
    than anything can use here. Channel 0 is music, 1–4 are one-shot effects, and the rest
-   are free for the records and positional sounds that arrive with their first emitter.
+   are free for the positional sounds that arrive with their first emitter.
+
+   **A record shares channel 0 with the music, and that is faithful rather than a
+   compromise.** `of.a(String,FFFFF)` — playStreaming — stops `BgMusic` the moment a disc
+   starts, and `of.c()` will not start a track while `playing("streaming")`, so the two never
+   overlap in a1.1.2 either. What the port keeps of the streaming source is its own volume
+   sum — `0.5F * options.soundVolume`, on **soundVolume** rather than musicVolume — and its
+   own range, `16.0F * 4.0F`: four times a one-shot's, re-attenuated every tick as the
+   listener moves.
 4. **The DSP resamples.** Files are 44.1 kHz and ndsp mixes at ~32,728 Hz.
    `ndspChnSetRate` is set to the file's rate with `NDSP_INTERP_LINEAR` and the hardware
    does the rest; a CPU resampler on top of Tremor would be the second-largest cost in the
    subsystem and would buy nothing.
-5. **`.mus` is not decoded.** Records use Mojang's own container (`ep`). `streaming/`
-   entries are indexed and counted, and cannot be played.
+5. **`.mus` is decoded.** Records use Mojang's own container, which is class `ep` wrapping
+   `hk` — an `InputStream` that XORs every byte with the high byte of a 32-bit state and
+   then advances that state on the byte it just produced:
+
+   ```
+   key = fileName.hashCode();          // "13.mus", extension included
+   b = buf[i] ^= (byte)(key >> 8);     // and b is the *decoded* byte
+   key = key * 498729871 + 85731 * b;  // b sign-extended
+   ```
+
+   So it is an Ogg Vorbis file behind a one-byte cipher, and the state advancing on the
+   plaintext is why a `.mus` is opened **unseekable**: byte n cannot be deciphered without
+   every byte before it. `VorbisStream::createMus` is the whole of it, and
+   `3dalpha --record-dump <resources> 13 out.wav` writes one out to listen to. The codec is
+   chosen off the extension rather than by the caller: a beta-era `streaming/` folder holds
+   `13.mus` *and* `13.ogg`, and the pool keys both as `13`.
 6. **An all-digit file name.** `1.ogg` sends Java's digit-strip loop past the front of the
    string — `charAt(-1)`, an exception. `poolKey` stops at the empty string instead. A card
    can hold that file and a player is not owed a hang for it.
@@ -434,7 +456,7 @@ an oversight:
 |---|---|
 | Everything not preloaded | A decode queue on the audio worker — see *Effects are loaded before they are asked for*. The list is `audio::preloadEffects` and it is **measured**, not estimated: `--audio-list` against a real resources folder decodes **110 samples / 6.9 MB** since the display tick landed (108 / 6.6 MB after the monsters, 72 / 3.4 MB before them), and `ctr::kMaxSamples` is 128 |
 | Ambient cave | Reachable now; the `soundCounter` is transcribed in [tick-a1.1.2.md](tick-a1.1.2.md) but not implemented |
-| Records | No jukebox; `.mus` is undecoded. A **skeleton killing a creeper drops one**, which is a1.1.2's only source of a record, so the item exists and nothing can play it |
+| Positional panning | A listener orientation the backend seam does not carry. Distance attenuation is transcribed; the stereo placement paulscode does around it is not |
 
 **Three more rows left this table when the particles landed** (status.md 29), all through the
 same door: `randomDisplayTick` is a real path now (`core/tick/display.cpp`), so the water
@@ -442,6 +464,11 @@ trickle (`jp.b`'s `liquid.water`, one dart in 64 over *flowing* water only) and 
 crackle (`og.b`'s `fire.fire`, one in 24) are played where the jar plays them. `jp.i`'s
 `random.fizz` -- the hiss when lava turns to stone -- went with the steam it belongs to, which
 closes the site `core/tick/fluid.cpp` had been naming.
+
+**The records row left this table on 2026-09-14**, and both halves of it went at once: `cv`
+is a real block behaviour now (`core/tick/behaviour.cpp`, `core/tick/drop.cpp`) and `.mus`
+decodes (`core/audio/vorbis_stream.cpp`). A skeleton killing a creeper is still a1.1.2's only
+source of a disc, and it plays.
 
 **Two more rows left it when TNT landed:** `random.fuse` now has a second caller that is not
 a creeper — `q.b(Lcn;IIII)V`, a block of TNT being broken, burnt or powered — and

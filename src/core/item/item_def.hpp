@@ -185,6 +185,18 @@ struct ItemDef {
     // and 0 also means "does nothing", which is what they did.
     bool tills;
 
+    // **`lg`'s own `a` field -- the track a music disc plays**, and the empty
+    // string for everything that is not one. `lg` (ItemRecord) is constructed
+    // `new lg(2000, "13")` and `new lg(2001, "cat")`, and that string is three
+    // things at once: the name handed to `World.playRecord`, the key the
+    // streaming pool files `streaming/13.mus` under, and the only thing that
+    // tells a disc from any other unstackable item.
+    //
+    // It is a column rather than a name match for the reason `spawns` is one:
+    // the item table has no class, and "record_13" is *our* name -- a1.1.2's
+    // `Item` carries no strings but this one.
+    const char* record;
+
     // Whether the Creative hand offers it. Two rules decide this and they are
     // applied in the generator, not here -- see tools/genref.java's emitItems.
     // The short version: an item that places nothing is not offered, an

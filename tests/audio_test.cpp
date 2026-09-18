@@ -422,6 +422,196 @@ TEST(creatingAStreamTouchesNoFileAndPrepareIsWhatFails)
     CHECK(!stream->prepare());
 }
 
+// ---- `.mus`, Mojang's own container ---------------------------------
+
+// **The key is the file's own name, hashed the way Java hashes a String.**
+// `hk`'s constructor takes `url.getPath().substring(lastIndexOf("/") + 1)`, so
+// the extension is part of it -- hashing "13" rather than "13.mus" is a
+// different keystream and a file of noise.
+TEST(theMusKeyIsTheFileNamesJavaHash)
+{
+    CHECK_EQ(musKey("13.mus"), i32(1451406847));
+    CHECK_EQ(musKey("cat.mus"), i32(554186163));
+    // The path in front of it is not part of the name.
+    CHECK_EQ(musKey("sdmc:/3dalpha/resources/streaming/13.mus"), i32(1451406847));
+    CHECK_EQ(musKey("streaming\\13.mus"), i32(1451406847));
+}
+
+// The first eight bytes of a real `streaming/13.mus`, which decode to an Ogg
+// page header. Two things in `hk.read` can be got wrong and both survive the
+// first byte: the state advances on the **decoded** byte, not the raw one, and
+// that byte is **sign-extended** into the multiply. Byte 5 of this vector is
+// 0xB3 raw and decodes past 0x7F, so the run is long enough to catch either.
+TEST(musDecodesToOggWithTheStateCarriedOnThePlaintext)
+{
+    u8 bytes[] = {0xFA, 0x99, 0x38, 0x0A, 0x43, 0xB3, 0x72, 0xCE};
+    i32 key = musKey("13.mus");
+    musDecode(bytes, sizeof(bytes), &key);
+
+    const u8 expected[] = {'O', 'g', 'g', 'S', 0x00, 0x02, 0x00, 0x00};
+    for (usize i = 0; i < sizeof(bytes); ++i) {
+        CHECK_EQ(int(bytes[i]), int(expected[i]));
+    }
+
+    // **The state carries across calls**, which is what lets the stream
+    // decipher a file it only ever reads forwards. One block of eight and two
+    // blocks of four must come out the same.
+    u8 split[] = {0xFA, 0x99, 0x38, 0x0A, 0x43, 0xB3, 0x72, 0xCE};
+    i32 first = musKey("13.mus");
+    musDecode(split, 4, &first);
+    musDecode(split + 4, 4, &first);
+    for (usize i = 0; i < sizeof(split); ++i) {
+        CHECK_EQ(int(split[i]), int(expected[i]));
+    }
+    CHECK_EQ(first, key);
+}
+
+// **The codec comes off the file name**, which is what lets a `streaming/`
+// folder hold `13.mus` and `13.ogg` -- a beta-era one does, and the pool keys
+// both as "13".
+TEST(theCipherIsPickedOffTheExtension)
+{
+    CHECK(VorbisStream::isMus("streaming/13.mus"));
+    CHECK(VorbisStream::isMus("13.MUS"));
+    CHECK(!VorbisStream::isMus("streaming/13.ogg"));
+    CHECK(!VorbisStream::isMus("mus"));
+    CHECK(!VorbisStream::isMus(""));
+}
+
+TEST(creatingAMusStreamTouchesNoFileEither)
+{
+    io::PosixFileSystem fs;
+    std::unique_ptr<VorbisStream> stream =
+        VorbisStream::createMus(fs, "/tmp/3dalpha_audio_no_such_record.mus");
+    if (!vorbisAvailable()) {
+        CHECK(stream == nullptr);
+        return;
+    }
+    CHECK(stream != nullptr);
+    CHECK(!stream->prepare());
+}
+
+// ---- the jukebox's voice -------------------------------------------
+
+// A backend that takes a stream and says it is playing one, which the
+// recording backend below deliberately does not: `playRecord` is a start, a
+// state and a stop, and none of the three can be seen through a `playMusic`
+// that always refuses.
+class StreamingBackend final : public Backend {
+public:
+    bool available() const override { return true; }
+    bool playMusic(std::unique_ptr<PcmSource>, float gain) override
+    {
+        ++starts;
+        playing = true;
+        lastGain = gain;
+        return true;
+    }
+    void stopMusic() override
+    {
+        if (playing) {
+            ++stops;
+        }
+        playing = false;
+    }
+    bool musicPlaying() const override { return playing; }
+    void setMusicGain(float gain) override { lastGain = gain; }
+    SampleId addSample(const Sample&) override { return kNoSample; }
+    void playSample(SampleId, float, float) override {}
+    void update() override {}
+
+    bool playing = false;
+    int starts = 0;
+    int stops = 0;
+    float lastGain = 0.0f;
+};
+
+// **A disc does not outlive the world it was put on.** The engine belongs to
+// the process here and a1.1.2's `SoundManager` belongs to the client, so
+// nothing in the original has to stop a record on the way out of a world --
+// quitting takes the whole mixer down. This port keeps one engine across every
+// world and the title screen, and a record left playing followed the player
+// back to the menu and went on playing over it. Reported from play.
+//
+// `stopRecord` is separate from `stopMusic` because the two share a voice: a
+// caller that silenced a jukebox with `stopMusic` would cut a menu track.
+TEST(aRecordIsStoppedOnTheWayOutOfAWorldAndTheMusicIsNot)
+{
+    TempDir dir;
+    CHECK(dir.path[0] != '\0');
+    io::PosixFileSystem fs;
+    touch(fs, dir.at("streaming/13.mus"));
+
+    StreamingBackend backend;
+    SoundEngine engine(fs, backend, 1);
+    CHECK(engine.loadResources(dir.path) > 0);
+
+    engine.playRecord("13", 0.0, 0.0, 0.0);
+    CHECK(engine.recordPlaying());
+    CHECK_EQ(backend.starts, 1);
+
+    // The music slider is not the disc's, and moving it to zero must not stop
+    // one: a record is gated on `soundVolume`, which is `of.a`'s own first
+    // line.
+    engine.setMusicVolume(0.0f);
+    CHECK(engine.recordPlaying());
+    CHECK_EQ(backend.stops, 0);
+
+    // Leaving the world is.
+    engine.stopRecord();
+    CHECK(!engine.recordPlaying());
+    CHECK(!backend.musicPlaying());
+    CHECK_EQ(backend.stops, 1);
+
+    // And it is idempotent, because more than one path out of a world reaches
+    // it and none of them knows whether another already did.
+    engine.stopRecord();
+    CHECK_EQ(backend.stops, 1);
+}
+
+// The other half: `stopRecord` on a voice carrying background music leaves it
+// alone, so a menu track survives a world closing behind it.
+TEST(stoppingARecordLeavesBackgroundMusicPlaying)
+{
+    io::PosixFileSystem fs;
+    StreamingBackend backend;
+    SoundEngine engine(fs, backend, 1);
+
+    // Nothing here went through `playRecord`, so the voice is the music's.
+    backend.playMusic(nullptr, 1.0f);
+    CHECK(backend.musicPlaying());
+
+    engine.stopRecord();
+    CHECK(backend.musicPlaying());
+    CHECK_EQ(backend.stops, 0);
+}
+
+// A track this card has no file for is silence and not a stuck voice -- the
+// same degradation an absent resources folder gets.
+TEST(aRecordThisCardDoesNotHaveIsSilence)
+{
+    TempDir dir;
+    CHECK(dir.path[0] != '\0');
+    io::PosixFileSystem fs;
+    touch(fs, dir.at("streaming/13.mus"));
+
+    StreamingBackend backend;
+    SoundEngine engine(fs, backend, 1);
+    engine.loadResources(dir.path);
+
+    engine.playRecord("mellohi", 0.0, 0.0, 0.0);
+    CHECK(!engine.recordPlaying());
+    CHECK_EQ(backend.starts, 0);
+
+    // And a null track is the eject: it stops whatever is on the voice and
+    // starts nothing, which is `BlockJukeBox.ejectRecord`'s own call.
+    engine.playRecord("13", 0.0, 0.0, 0.0);
+    CHECK(engine.recordPlaying());
+    engine.playRecord(nullptr, 0.0, 0.0, 0.0);
+    CHECK(!engine.recordPlaying());
+    CHECK_EQ(backend.stops, 1);
+}
+
 // ---- interface sounds ----------------------------------------------
 
 // `of.a(String, float, float)`'s arithmetic, which is three lines and two of

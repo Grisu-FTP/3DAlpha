@@ -52,6 +52,14 @@ enum class Gamemode {
     Creative,
 };
 
+// **What Create World starts on, which is not what an absent file means.**
+// a1.1.2 has one way to play and this is it, so a world a player makes today
+// begins in Survival; `WorldSettings::gamemode` below stays Spectator because
+// that is what every world written before this file existed was played as, and
+// reading one of those as Survival would drop a player into terrain they had
+// been flying through. Two answers to two different questions.
+inline constexpr Gamemode kNewWorldGamemode = Gamemode::Survival;
+
 // **`cn.l` -- the world's difficulty**, and unlike gamemode this one *is* in
 // a1.1.2: `World.difficulty` is read by `dq.e_()` (which removes every monster
 // on Peaceful), by `ma.a()Z` (which refuses a big slime on it) and by

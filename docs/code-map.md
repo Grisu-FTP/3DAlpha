@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**22 directories, 220 modules, 110,330 lines.**
+**23 directories, 249 modules, 132,652 lines.**
 
 ## `src/core/audio/`
 
@@ -21,62 +21,64 @@ weight is, not what is important.
 | `pcm_source.hpp` | 63 | "Give me the next N frames." The one thing the platform's mixer needs from anything that makes sound, and the reason ndsp never learns what Vorbis is. |
 | `resource_index.{hpp,cpp}` | 237 | What the player dropped in `sdmc:/3dalpha/resources/`, sorted into the three pools a1.1.2 keeps. a1.1.2 never shipped its sounds. |
 | `sample.{hpp,cpp}` | 139 | A sound effect, decoded once and held whole in memory -- the other half of `PcmSource`, and deliberately not the same thing. |
-| `sound_engine.{hpp,cpp}` | 435 | a1.1.2's SoundManager, above the output seam: it owns the pools, the music counter and the volumes, and it is the one thing the game's frame loop talks to about sound. |
+| `sound_engine.{hpp,cpp}` | 608 | a1.1.2's SoundManager, above the output seam: it owns the pools, the music counter and the volumes, and it is the one thing the game's frame loop talks to about sound. |
 | `sound_pool.{hpp,cpp}` | 217 | a1.1.2's SoundPool: the name a resource file collapses to, and the uniform draw the music ticker makes from it. |
-| `vorbis_stream.{hpp,cpp}` | 356 | Ogg Vorbis, decoded a packet at a time out of a file that is never fully read. a1.1.2's music is 44100 Hz stereo Vorbis, three to four minutes a track. |
+| `vorbis_stream.{hpp,cpp}` | 500 | Ogg Vorbis, decoded a packet at a time out of a file that is never fully read. a1.1.2's music is 44100 Hz stereo Vorbis, three to four minutes a track. |
 
 ## `src/core/block/` -- Block table and registry
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `block_def.{hpp,cpp}` | 595 | What the engine knows about a block. |
+| `block_def.{hpp,cpp}` | 660 | What the engine knows about a block. |
 | `collision.{hpp,cpp}` | 276 | What a block is shaped like to something walking into it -- the collision boxes for a (block, metadata) pair, with no world and no allocation. |
 | `fluid_flow.hpp` | 321 | **Which way a fluid is going, and what that does to anything standing in it.** `jp.e(nm,III)` -- BlockFluid.getFlowVector -- and the two callers that turn its answer into something visible. |
 | `model.{hpp,cpp}` | 273 | What shape a block is **to look at** -- as a list of boxes. |
 | `registry.hpp` | 84 | Block lookup. |
+| `side_rule.hpp` | 94 | **`ly.c(Lnm;IIII)Z` -- shouldSideBeRendered**, the question the mesher asks before it emits a face, as one function over the block table. |
 | `world_texture.hpp` | 186 | **Face textures that are a question about the neighbours**, which is the one thing the generated `faces` row cannot carry: it is a table, and this is a branch on the cells around the block. |
 
 ## `src/core/entity/` -- Entities
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `arrow.{hpp,cpp}` | 828 | **An arrow in flight** -- `kg`, which is `EntityArrow`, and the fourth entity in this project. "The bow doesn't work" was the same bug paintings had and the whole `spawns` column exists for: `jg.a(ev, cn, dm)` -- ItemBow.onItemRightClick -- runs to completion, plays its sound, builds a `kg` and hands it to the world. |
+| `arrow.{hpp,cpp}` | 847 | **An arrow in flight** -- `kg`, which is `EntityArrow`, and the fourth entity in this project. "The bow doesn't work" was the same bug paintings had and the whole `spawns` column exists for: `jg.a(ev, cn, dm)` -- ItemBow.onItemRightClick -- runs to completion, plays its sound, builds a `kg` and hands it to the world. |
 | `block_contact.hpp` | 92 | **What the block an entity is standing in does to it** -- the loop in the tail of `kh.c(DDD)V` (Entity.moveEntity) that runs just before the fire test core/entity/fire_entry.hpp already ports, and out of the same method: ```java int i = MathHelper.floor_double(boundingBox.minX); int j = MathHelper.floor_double(boundingBox.minY); int k = MathHelper.floor_double(boundingBox.minZ); int l = MathHelper.floor_double(boundingBox.maxX); int m = MathHelper.floor_double(boundingBox.maxY); int n = MathHelper.floor_double(boundingBox.maxZ); for (int x = i; x <= l; ++x) for (int y = j; y <= m; ++y) for (int z = k; z <= n; ++z) { int id = worldObj.getBlockId(x, y, z); if (id > 0) { Block.blocksList[id].onEntityCollidedWithBlock(worldObj, x, y, z, this); } } ``` **The bounds are plain floors of the box and the loops are inclusive**, with none of the thousandth-of-a-block inset later versions add -- so an entity resting exactly on the top of a cell is still *in* that cell as far as this loop is concerned. |
-| `boat.{hpp,cpp}` | 640 | **A boat** -- `dc`, which is `EntityBoat`. "Boats and minecarts don't work (not even placeable)" was the `spawns` bug again, and for the boat there is a second half to it: `me.a(...)` -- ItemBoat.onItemRightClick -- is not an `onItemUse` at all. |
+| `boat.{hpp,cpp}` | 644 | **A boat** -- `dc`, which is `EntityBoat`. "Boats and minecarts don't work (not even placeable)" was the `spawns` bug again, and for the boat there is a second half to it: `me.a(...)` -- ItemBoat.onItemRightClick -- is not an `onItemUse` at all. |
 | `damage_source.hpp` | 33 | **What dealt a hit to the player**, as far as a1.1.2 ever asks. |
 | `entity_boxes.{hpp,cpp}` | 221 | **The entity half of `cn.a(Lkh;Lcf;)Ljava/util/List;`** -- `World.getCollidingBoundingBoxes`, which is not only a block loop. |
 | `explosion.{hpp,cpp}` | 437 | **`je` -- Explosion**, and in a1.1.2 it is one class with one method: `je.a(Lcn;Lkh;DDDF)V`, reached through `cn.a(Lkh;DDDF)V`. |
 | `falling_block.{hpp,cpp}` | 371 | **A block on its way down** -- `ff`, which is EntityFallingSand, and the second entity in this project that is not a particle. |
 | `fire_entry.hpp` | 190 | **What sets an entity alight, and it is not the fire block** -- the tail of `kh.c(DDD)V` (Entity.moveEntity), which every moving entity in a1.1.2 runs and which this port had for the hiss alone. |
-| `item_entity.{hpp,cpp}` | 898 | **A dropped item lying in the world** -- `dx`, which is `EntityItem`, and the first entity in this project that is not a particle. |
-| `minecart.{hpp,cpp}` | 1026 | **A minecart** -- `oc`, which is `EntityMinecart`, and the largest single entity in a1.1.2. "Boats and minecarts don't work (not even placeable)" was two bugs for the minecart and only one of them is the `spawns` bug. |
-| `mob.{hpp,cpp}` | 2825 | **All nine mobs in a1.1.2** -- the four peaceful (`mv` pig, `bo` sheep, `am` cow, `mz` chicken) and the five hostile (`mb` zombie, `cw` skeleton, `dd` creeper, `ax` spider, `ma` slime) -- and the classes above them: `ag` (EntityAnimal), `dq` (EntityMob), `co` (IMob), `ek` (EntityCreature) and `ge` (EntityLiving). |
+| `item_entity.{hpp,cpp}` | 1024 | **A dropped item lying in the world** -- `dx`, which is `EntityItem`, and the first entity in this project that is not a particle. |
+| `minecart.{hpp,cpp}` | 1278 | **A minecart** -- `oc`, which is `EntityMinecart`, and the largest single entity in a1.1.2. "Boats and minecarts don't work (not even placeable)" was two bugs for the minecart and only one of them is the `spawns` bug. |
+| `mob.{hpp,cpp}` | 3171 | **All nine mobs in a1.1.2** -- the four peaceful (`mv` pig, `bo` sheep, `am` cow, `mz` chicken) and the five hostile (`mb` zombie, `cw` skeleton, `dd` creeper, `ax` spider, `ma` slime) -- and the classes above them: `ag` (EntityAnimal), `dq` (EntityMob), `co` (IMob), `ek` (EntityCreature) and `ge` (EntityLiving). |
 | `mob_spawn.{hpp,cpp}` | 769 | **Where mobs come from** -- `az` (SpawnerAnimals) and `k` (its monster subclass), transcribed. |
 | `mob_spawner.{hpp,cpp}` | 648 | **The block that makes monsters** -- `bd` (TileEntityMobSpawner), `r` (its renderer) and the half of `ic` they need. |
 | `painting.{hpp,cpp}` | 525 | **A painting on a wall** -- `jc`, which is `EntityPainting`, and the third entity in this project after the dropped item and the falling block. "Paintings don't work" turned out to mean something precise: item 321 has an `onItemUse` in this version and it does not place a block. |
 | `painting_art.hpp` | 36 | **What pictures exist**, which is `er` -- EnumArt -- and is a table rather than code. |
 | `particle.{hpp,cpp}` | 1064 | **Every particle a1.1.2 has**, as one pool. |
 | `path_finder.{hpp,cpp}` | 583 | **How a mob decides where to put its feet** -- `cz` (PathFinder), `bl` (PathEntity) and `a` (PathPoint), transcribed. a1.1.2's `EntityCreature.updatePlayerActionState` does not walk towards a point; it asks the world for a *path* to one and then follows it a node at a time. |
-| `persistence.{hpp,cpp}` | 1019 | A snapshot of the session's persistent entity pools. |
-| `player_body.{hpp,cpp}` | 1369 | The player's body: a 0.6 x 1.8 box that falls, walks, steps up and refuses to go through things. |
+| `persistence.{hpp,cpp}` | 1194 | A snapshot of the session's persistent entity pools. |
+| `player_body.{hpp,cpp}` | 1374 | The player's body: a 0.6 x 1.8 box that falls, walks, steps up and refuses to go through things. |
 | `player_vitals.{hpp,cpp}` | 698 | The player's health, and every rule in a1.1.2 that spends it or gives it back: `ge` (EntityLiving) and `dm` (EntityPlayer)'s counters, the damage entry point, fall damage, fire, lava, the void, suffocation, drowning, Peaceful's regeneration and death. |
 | `primed_tnt.{hpp,cpp}` | 393 | **`jd` -- EntityTNTPrimed**, the thing TNT becomes between being lit and going off, and the last piece of TNT this port was missing. |
 | `ray_trace.{hpp,cpp}` | 407 | What the crosshair is pointing at: a1.1.2's `World.rayTraceBlocks`, which walks the ray block by block and asks each one to intersect itself. |
 | `rider.hpp` | 69 | **The seam between a vehicle and whatever is sitting in it.** A boat and a minecart both carry the player, and both read the *rider's* motion rather than the player's input: `EntityBoat.onUpdate` is `motionX += riddenByEntity.motionX * 0.2` and nothing else. |
 | `sprint_gesture.hpp` | 105 | Double-tap the stick forward to sprint, and let go to stop. |
 | `sweep.{hpp,cpp}` | 222 | **The collision sweep every moving box shares** -- the half of `Entity.moveEntity` that asks the world what is in the way: the blocks in the swept volume, and then the two entities a1.1.2 makes solid. |
-| `water_entry.hpp` | 158 | **The splash an entity makes the moment it touches water** -- the water branch of `kh.y()` (Entity.onEntityUpdate). |
+| `water_entry.hpp` | 202 | **The splash an entity makes the moment it touches water** -- the water branch of `kh.y()` (Entity.onEntityUpdate). |
 
 ## `src/core/gui/` -- GUI primitives shared by the menu and the HUD
 
 | Module | Lines | What it is |
 |---|--:|---|
 | `chat_log.{hpp,cpp}` | 242 | **The lines of text in the bottom left of the game screen** -- `lu`'s chat list (`GuiIngame.chatMessageList`, field `e`) and the part of `lu.a(FZII)V` that draws it. |
-| `container_layout.{hpp,cpp}` | 464 | **Where an open container screen's slots are on the bottom screen**, as rectangles in the order `item::ContainerSession` numbers them -- so a touch, a d-pad step and a redraw all name a slot by the same index the click takes. a1.1.2 lays its four screens out in an 176-pixel-wide window with 18-pixel slots and a mouse to point at them (`hx`, `id`, `ea`, `lo`). |
-| `item_icon.{hpp,cpp}` | 494 | What one item looks like in a slot: a flat sprite for most things, and a **cube seen from the corner** for anything that is a plain block. |
+| `container_layout.{hpp,cpp}` | 468 | **Where an open container screen's slots are on the bottom screen**, as rectangles in the order `item::ContainerSession` numbers them -- so a touch, a d-pad step and a redraw all name a slot by the same index the click takes. a1.1.2 lays its four screens out in an 176-pixel-wide window with 18-pixel slots and a mouse to point at them (`hx`, `id`, `ea`, `lo`). |
+| `item_icon.{hpp,cpp}` | 508 | What one item looks like in a slot: a flat sprite for most things, and a **cube seen from the corner** for anything that is a plain block. |
 | `paint.{hpp,cpp}` | 369 | Drawing into a software framebuffer: the bottom screen's UI, and the arrow that marks a player on the map. |
 | `progress.{hpp,cpp}` | 255 | The two pictures the game draws while the player is waiting: a bar that fills, and the square that shows a world being made one chunk at a time. |
 | `settings_list.{hpp,cpp}` | 122 | **Where the rows of a settings screen go**: a list of buttons in groups, a few pixels of extra space between one group and the next, and a window over it that scrolls to keep the cursor in view. |
+| `stick_cursor.{hpp,cpp}` | 148 | A thumbstick read as a d-pad: which way it is pushed, and when that counts as another press. |
 | `text.{hpp,cpp}` | 160 | **Text in a pack's font, drawn into a software surface**: the tooltips on the bottom screen under the menu's settings lists. |
 
 ## `src/core/io/` -- Filesystem abstraction
@@ -91,17 +93,17 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `block_breaking.{hpp,cpp}` | 312 | **Survival's left button on a block** -- `nj`, the single-player PlayerController, which is the only place a1.1.2 decides that a block takes time to break. |
+| `block_breaking.{hpp,cpp}` | 354 | **Survival's left button on a block** -- `nj`, the single-player PlayerController, which is the only place a1.1.2 decides that a block takes time to break. |
 | `container.{hpp,cpp}` | 246 | **What one click on a container slot does** -- the slot half of `ee.a(III)V`, GuiContainer.mouseClicked, which is the whole of a1.1.2's inventory handling. |
-| `container_session.{hpp,cpp}` | 668 | **The container screen that is open** -- the model behind a1.1.2's four `ee` screens, without the drawing: `lo` the player's inventory with its 2 x 2 grid, `hx` the workbench, `id` the furnace and `ea` a chest. |
+| `container_session.{hpp,cpp}` | 748 | **The container screen that is open** -- the model behind a1.1.2's four `ee` screens, without the drawing: `lo` the player's inventory with its 2 x 2 grid, `hx` the workbench, `id` the furnace and `ea` a chest. |
 | `crafting.{hpp,cpp}` | 153 | **Crafting** -- CraftingManager (`dw`), the shaped recipe (`bv`), the two crafting containers (`n` the player's 2 x 2, `et` the workbench's 3 x 3) and the result slot (`an`). |
 | `creative_palette.{hpp,cpp}` | 107 | The Creative palette -- **and a1.1.2 has no Creative mode at all**. |
 | `inventory.{hpp,cpp}` | 643 | What the player is carrying: nine slots in the hand, twenty-seven behind them, four of armour, and the index of the one being held. |
-| `item_def.hpp` | 200 | What the engine knows about an item, and why there is an item table at all. |
+| `item_def.hpp` | 212 | What the engine knows about an item, and why there is an item table at all. |
 | `item_stack.hpp` | 34 | One stack of items. |
-| `registry.hpp` | 50 | Item lookup, and the same arrangement as core/block/registry.hpp: a constexpr array in .rodata generated from data/<version>/items.json, so a lookup is a bounds check and an index. |
-| `tool_rules.{hpp,cpp}` | 237 | **What a held item does to a block and to a body**, which is the whole of how a1.1.2 decides how long a break takes, whether it drops anything, how a tool wears, and what eating something is worth. |
-| `use.{hpp,cpp}` | 1389 | **What one right-click does**, in one place and on the host side of the split. |
+| `registry.hpp` | 83 | Item lookup, and the same arrangement as core/block/registry.hpp: a constexpr array in .rodata generated from data/<version>/items.json, so a lookup is a bounds check and an index. |
+| `tool_rules.{hpp,cpp}` | 247 | **What a held item does to a block and to a body**, which is the whole of how a1.1.2 decides how long a break takes, whether it drops anything, how a tool wears, and what eating something is worth. |
+| `use.{hpp,cpp}` | 1514 | **What one right-click does**, in one place and on the host side of the split. |
 
 ## `src/core/map/` -- The bottom-screen map
 
@@ -116,10 +118,10 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `box.{hpp,cpp}` | 191 | One axis-aligned box, textured the way `RenderBlocks` textures a standard block -- and the shared floor under every shape in the game that is not a full cube. |
+| `box.{hpp,cpp}` | 213 | One axis-aligned box, textured the way `RenderBlocks` textures a standard block -- and the shared floor under every shape in the game that is not a full cube. |
 | `cube_atlas.hpp` | 253 | The cube atlas: every tile a cube face can show, each stored as a 3x3 repeat of itself inside a gutter, so a merged face can repeat its tile without the GPU's help. |
 | `fluid.{hpp,cpp}` | 416 | Water and lava. 2.73 % of the blocks in the measured 660-chunk world and 99.8 % of everything that is not a cube, so this is the one non-cube render type a world visibly misses. |
-| `mesher.{hpp,cpp}` | 873 | Turning a section into quads. |
+| `mesher.{hpp,cpp}` | 888 | Turning a section into quads. |
 | `scratch.{hpp,cpp}` | 186 | The read window a section is meshed through. |
 | `shapes.{hpp,cpp}` | 1184 | The shapes that are not cubes, not crosses, not fluid and not torches: the ten render types that had no emitter at all and were therefore **drawn as nothing**. |
 | `torch.{hpp,cpp}` | 266 | Torches, and the two redstone torches that share their shape. |
@@ -134,6 +136,28 @@ weight is, not what is important.
 | `preserved.{hpp,cpp}` | 119 | Tags this build reads but does not model, carried verbatim across a save. |
 | `tree.{hpp,cpp}` | 391 | Generic whole-tree operations, built on Reader and Writer. copyValue() is the mechanism behind "loading a world never destroys what the client does not understand": the chunk loader copies tags it has no model for straight from the source buffer into the save buffer. |
 | `writer.{hpp,cpp}` | 410 | NBT writer. |
+
+## `src/core/net/` -- Protocol 2 networking
+
+| Module | Lines | What it is |
+|---|--:|---|
+| `chunk_payload.{hpp,cpp}` | 363 | Map Chunk (0x33) payloads: inflating them, writing them into columns, and making them, the last for tests and the host harness. |
+| `client_session.{hpp,cpp}` | 476 | One connection to a protocol-2 server, run on a thread of its own and talked to through two queues. |
+| `dns.{hpp,cpp}` | 363 | **A DNS resolver of our own**, because the console's is not reliably one. |
+| `entities.{hpp,cpp}` | 652 | The entities a server owns: the other players, and the items on the ground. |
+| `link.{hpp,cpp}` | 1151 | The link two 3DAlpha sessions talk over when they have found each other directly -- console to console -- rather than through a Java server. |
+| `local_channel.{hpp,cpp}` | 355 | The guest's end of a local session, as a protocol-2 stream. |
+| `packet_channel.hpp` | 77 | A protocol-2 stream, whichever wire it runs over. |
+| `packets.{hpp,cpp}` | 692 | The protocol-2 packet table: every packet a1.1.2 and server 0.2.1 register, its shape as a list of wire fields, and one parser and one encoder driven by that list. |
+| `pending_edits.{hpp,cpp}` | 124 | A multiplayer client's own block edits are provisional for four seconds: unless the server says something about that block in the meantime, the edit is put back. |
+| `player_sync.{hpp,cpp}` | 373 | What a multiplayer client tells the server about its own player every tick: where it is, which way it faces, and -- once a second -- what it carries. |
+| `server_list.{hpp,cpp}` | 279 | The multiplayer server list on the card, the address a player types, and the name the client logs in with. a1.1.2 has neither a list nor a name to choose: its Multiplayer screen (`gc`) is one text field whose last value goes to `options.txt` as `lastServer`, and the name is whatever the launcher passed. |
+| `session.{hpp,cpp}` | 1098 | A 3DAlpha session as the two ends see it: one console hosting a world it has open, and up to three others that found it and joined. |
+| `tcp_socket.{hpp,cpp}` | 357 | A non-blocking TCP connection over the BSD socket API, which is the one network interface both targets share. |
+| `terrain_share.{hpp,cpp}` | 490 | Terrain generated on one console for another's world. |
+| `wire.{hpp,cpp}` | 430 | Big-endian primitives and Java's modified UTF-8, which is everything a protocol-2 packet is built from. a1.1.2 writes packets through `DataOutputStream` and reads them back through `DataInputStream`, so the wire is Java's own: big-endian integers, IEEE-754 floats in the same order, and strings as `writeUTF` -- a *byte* length and **modified** UTF-8. |
+| `world_copy.{hpp,cpp}` | 810 | One world crossing a link, from the console that has it to one that wants a copy of it. |
+| `world_server.{hpp,cpp}` | 2118 | The host's half of a playable session: the world it has open, described to the other consoles in protocol-2 packets. |
 
 ## `src/core/preview/`
 
@@ -150,37 +174,39 @@ weight is, not what is important.
 |---|--:|---|
 | `arrow_mesh.{hpp,cpp}` | 307 | **An arrow in flight as geometry** -- `gk.a(Lkg;DDDFF)V`, which is `RenderArrow.doRender`. |
 | `boat_mesh.{hpp,cpp}` | 212 | **A boat as geometry** -- `cl` (ModelBoat) through `cp` (RenderBoat), and the first thing in this project drawn by core/render/box_model.hpp. |
-| `box_model.{hpp,cpp}` | 382 | **`ip` -- ModelRenderer -- transcribed**: a1.1.2's cuboid-with-texture-offset, which is what a boat, a minecart and a sign are made of. |
+| `box_model.{hpp,cpp}` | 422 | **`ip` -- ModelRenderer -- transcribed**: a1.1.2's cuboid-with-texture-offset, which is what a boat, a minecart and a sign are made of. |
 | `break_overlay.{hpp,cpp}` | 127 | **The crack over a block being broken** -- `RenderGlobal.drawBlockBreaking`, `e.a(Ldm;Lmf;ILev;F)V`'s first branch. |
 | `chat_mesh.{hpp,cpp}` | 162 | **The chat lines as glyph quads on the top screen** -- the drawing half of core/gui/chat_log.hpp, which is `lu.a(FZII)V`'s chat loop and `kd.a(String, int, int, int)`, drawStringWithShadow. |
 | `chunk_renderer.{hpp,cpp}` | 467 | One frame of the world renderer, with no GPU in it. |
 | `draw_budget.hpp` | 123 | **Nearest first, when there is more to draw than room to draw it.** The entity pools have no cap (core/util/segmented_pool.hpp), but each entity pass draws out of one vertex buffer taken once at init, and it has to: the GPU reads the buffer after the frame is submitted, so it cannot be grown or reused mid-frame, and linear memory is the chunk meshes' too. |
 | `entity_fire_mesh.{hpp,cpp}` | 504 | **A burning entity's flames** -- `ak.a(Lkh;DDDF)V`, the private half of `doRenderShadowAndFire` that every entity renderer inherits and that this port had never drawn. |
 | `falling_block_mesh.{hpp,cpp}` | 189 | **A falling block as geometry** -- `RenderFallingSand.doRender`, which is one call to `RenderBlocks.renderBlockFallingSand` and nothing else. |
-| `held_item.{hpp,cpp}` | 754 | **What is in your hand, in the bottom right of the top screen** -- `jh`, which is `ItemRenderer`, and the last thing `EntityRenderer.renderWorld` draws before the GUI. |
+| `held_item.{hpp,cpp}` | 762 | **What is in your hand, in the bottom right of the top screen** -- `jh`, which is `ItemRenderer`, and the last thing `EntityRenderer.renderWorld` draws before the GUI. |
 | `hud_mesh.{hpp,cpp}` | 237 | **The hearts, the armour row and the air bubbles** -- the Survival half of `lu.a(FZII)V`, GuiIngame's overlay, as quads on the top screen. |
-| `item_entity_mesh.{hpp,cpp}` | 460 | **A dropped item as geometry** -- `ab.a(Ldx;DDDFF)V`, which is `RenderItem.doRenderItem`, and the third thing in this project that turns an entity into quads. |
-| `minecart_mesh.{hpp,cpp}` | 289 | **A minecart as geometry** -- `hj` (ModelMinecart) through `kt` (RenderMinecart). |
-| `mob_mesh.{hpp,cpp}` | 886 | **All nine mobs as geometry** -- `hg` (ModelQuadruped) and its three subclasses, `kv` (ModelChicken), `cr`/`cb`/`fv` (biped, zombie, skeleton), `em` (creeper), `jy` (spider), `hh` (slime), and `dn` (RenderLiving) which poses all of them. |
+| `item_entity_mesh.{hpp,cpp}` | 464 | **A dropped item as geometry** -- `ab.a(Ldx;DDDFF)V`, which is `RenderItem.doRenderItem`, and the third thing in this project that turns an entity into quads. |
+| `minecart_mesh.{hpp,cpp}` | 497 | **A minecart as geometry** -- `hj` (ModelMinecart) through `kt` (RenderMinecart). |
+| `mob_mesh.{hpp,cpp}` | 1000 | **All nine mobs as geometry** -- `hg` (ModelQuadruped) and its three subclasses, `kv` (ModelChicken), `cr`/`cb`/`fv` (biped, zombie, skeleton), `em` (creeper), `jy` (spider), `hh` (slime), and `dn` (RenderLiving) which poses all of them. |
 | `outline.{hpp,cpp}` | 151 | The box drawn around whatever the crosshair is on, as triangles. |
 | `painting_mesh.{hpp,cpp}` | 279 | **A painting as geometry** -- `bw.a(Ljc;IIII)V`, which is `RenderPainting.renderPainting`. |
 | `particle_mesh.{hpp,cpp}` | 324 | **A cloud of particles as camera-facing quads** -- `EntityFX.renderParticle`, which is four vertices around an interpolated position and nothing else. |
 | `player_model.{hpp,cpp}` | 195 | **The player's body as a model**: `cr` -- ModelBiped -- built and posed the way `bu` (RenderPlayer) poses it, for the main menu's Skins screen. |
 | `primed_tnt_mesh.{hpp,cpp}` | 306 | **Primed TNT as geometry** -- `hw.a(Ljd;DDDFF)V`, RenderTNTPrimed, which is two draws of one cube and a `glScalef` between them. |
+| `remote_player_mesh.{hpp,cpp}` | 271 | Other players, drawn with the same biped the zombie and the skeleton are drawn with, because in a1.1.2 it is the same model: `cb` (ModelBiped) is what `RenderPlayer` poses, and `render/player_model.hpp` already holds it for the inventory's preview and for the mob pass. |
 | `sign_mesh.{hpp,cpp}` | 450 | **A sign as geometry** -- `jk` (ModelSign) through `in` (TileEntitySignRenderer), and the only thing in this project drawn from *two* textures in one logical object. |
 | `sky.{hpp,cpp}` | 369 | **The sky: two flat planes, a sun, a moon, and 780 stars.** `e.a(F)V` -- RenderGlobal.renderSky -- built once into a buffer that never changes again. a1.1.2's sky has no dome in it and no gradient baked into anything. |
-| `spawner_mesh.{hpp,cpp}` | 271 | **The mob turning inside the cage** -- `r`, which is a1.1.2's TileEntityMobSpawnerRenderer and one of exactly two tile-entity renderers in the game (`in`, the sign, is the other). |
+| `spawner_mesh.{hpp,cpp}` | 278 | **The mob turning inside the cage** -- `r`, which is a1.1.2's TileEntityMobSpawnerRenderer and one of exactly two tile-entity renderers in the game (`in`, the sign, is the other). |
 | `vbo_pool.{hpp,cpp}` | 742 | The bounded pool of vertex memory that section meshes live in. |
 | `visible_set.{hpp,cpp}` | 648 | Deciding what to draw, and -- the part the measurement forced -- what to mesh. |
-| `world_streamer.{hpp,cpp}` | 3566 |  |
+| `world_streamer.{hpp,cpp}` | 4914 |  |
 
 ## `src/core/settings/` -- INI settings, console-wide and per-world
 
 | Module | Lines | What it is |
 |---|--:|---|
 | `ini.{hpp,cpp}` | 102 | The `key=value` reader both settings files share. |
-| `settings_file.{hpp,cpp}` | 225 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
-| `world_settings.{hpp,cpp}` | 463 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
+| `sensitivity.{hpp,cpp}` | 102 | How fast the view turns, as a1.1.2's own slider. |
+| `settings_file.{hpp,cpp}` | 242 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
+| `world_settings.{hpp,cpp}` | 471 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
 
 ## `src/core/texture/` -- Texture packs, atlases, PNG and zip
 
@@ -190,7 +216,7 @@ weight is, not what is important.
 | `background.{hpp,cpp}` | 142 | The menu's backdrop: a1.1.2's own, which is `dirt.png` tiled and darkened. |
 | `compass_fx.{hpp,cpp}` | 289 | **The compass, which in a1.1.2 is a texture and not an item.** This one was reported as "the compass doesn't work", and the first place to look is the wrong one. |
 | `dev_art.{hpp,cpp}` | 344 | The generated placeholder atlas -- "Dev Art", which is now one selectable texture pack among whatever else is on the card rather than the only thing there is. |
-| `entity_skins.{hpp,cpp}` | 657 | **The four small entity textures, packed into one sheet.** The world is drawn out of `terrain.png` and a slot out of `gui/items.png`, and until now those were the only two images anything sampled. a1.1.2 draws its entities out of five *more* files, and the detail pass samples exactly one texture per draw -- so five files would be five binds and five draws for a handful of quads each. |
+| `entity_skins.{hpp,cpp}` | 693 | **The four small entity textures, packed into one sheet.** The world is drawn out of `terrain.png` and a slot out of `gui/items.png`, and until now those were the only two images anything sampled. a1.1.2 draws its entities out of five *more* files, and the detail pass samples exactly one texture per draw -- so five files would be five binds and five draws for a handful of quads each. |
 | `fluid_fx.{hpp,cpp}` | 578 | **Water and lava are generated too**, and for the same reason fire is. |
 | `font.{hpp,cpp}` | 486 | The pack's own font: `default.png`, the per-glyph widths derived from it, and the mapping from text to glyphs. |
 | `icon_sheet.{hpp,cpp}` | 208 | `gui/icons.png` -- **the sheet the hearts come off**, and what `lu` (GuiIngame) draws from it. a1.1.2's in-game overlay binds this sheet once and cuts 9 x 9 cells out of it by absolute texel: the heart's empty container and a flashing one, full and half hearts and their flashing outlines, the armour row's three states, and the air bubble whole and popping. |
@@ -208,17 +234,17 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `behaviour.{hpp,cpp}` | 1747 | What each kind of block does when the world ticks it, and when a neighbour changes under it. |
-| `display.{hpp,cpp}` | 413 | **`Block.randomDisplayTick`, and the loop that drives it** -- `cn.m(III)V`, which `Minecraft.i()` calls once a tick round the player. |
-| `drop.{hpp,cpp}` | 304 | **What a block leaves on the ground when it goes** -- `ly.b_(Lcn;IIIII)V`, which is `dropBlockAsItem`, and the two generated methods it reads. |
+| `behaviour.{hpp,cpp}` | 1844 | What each kind of block does when the world ticks it, and when a neighbour changes under it. |
+| `display.{hpp,cpp}` | 433 | **`Block.randomDisplayTick`, and the loop that drives it** -- `cn.m(III)V`, which `Minecraft.i()` calls once a tick round the player. |
+| `drop.{hpp,cpp}` | 323 | **What a block leaves on the ground when it goes** -- `ly.b_(Lcn;IIIII)V`, which is `dropBlockAsItem`, and the two generated methods it reads. |
 | `fire.{hpp,cpp}` | 218 | Fire: how it ages out, what it sets alight, and how far it jumps. |
 | `fluid.{hpp,cpp}` | 473 | Water and lava: how they spread, how they settle, and what they do to each other. |
 | `furnace.{hpp,cpp}` | 255 | **The furnace** -- TileEntityFurnace (`ke`), the one tile entity in the column's own list that ticks, and BlockFurnace's lit/unlit swap (`ku.a`). |
 | `rail.{hpp,cpp}` | 454 | **Which way a rail lies, and what it does when the track beside it changes** -- `if` (BlockMinecartTrack) and `mk` (RailLogic), the second of which is the largest single behaviour in a1.1.2's block set and the reason rails were the last shape in this port still drawn but not wired. |
-| `redstone.{hpp,cpp}` | 1045 | Redstone: the wire that carries a signal, and the torch that inverts one. |
+| `redstone.{hpp,cpp}` | 1055 | Redstone: the wire that carries a signal, and the torch that inverts one. |
 | `tick_scheduler.{hpp,cpp}` | 322 | Blocks that have asked to be updated at a stated tick, in the order the original would reach them. |
 | `tick_timer.{hpp,cpp}` | 116 | The 20 Hz clock: how many whole world ticks a rendered frame owes, and how far between two of them the frame is being drawn. |
-| `tick_world.{hpp,cpp}` | 1394 | The world as a block tick sees it: read a block, write a block, wake the neighbours, come back later. |
+| `tick_world.{hpp,cpp}` | 1432 | The world as a block tick sees it: read a block, write a block, wake the neighbours, come back later. |
 
 ## `src/core/util/` -- Small shared utilities
 
@@ -243,7 +269,7 @@ weight is, not what is important.
 | `span.hpp` | 50 | A minimal non-owning view over contiguous memory. |
 | `strict_math.hpp` | 175 | java.lang.StrictMath, for the parts that world generation depends on. |
 | `types.hpp` | 27 | Fixed-width types for core code. |
-| `worker.{hpp,cpp}` | 102 | Who creates a background thread, and on which core. |
+| `worker.{hpp,cpp}` | 111 | Who creates a background thread, and on which core. |
 
 ## `src/core/world/` -- Chunks, sections, lighting, storage
 
@@ -251,7 +277,7 @@ weight is, not what is important.
 |---|--:|---|
 | `any_storage.{hpp,cpp}` | 280 | One storage that is either of the two, decided by the world being opened. |
 | `chunk.{hpp,cpp}` | 181 | A chunk column: 16 x kWorldHeight x 16, stored as a stack of 16^3 sections. |
-| `chunk_cache.{hpp,cpp}` | 1846 | The world's chunks in RAM, and the only thing in the process that touches the storage slot. |
+| `chunk_cache.{hpp,cpp}` | 1989 | The world's chunks in RAM, and the only thing in the process that touches the storage slot. |
 | `daylight.{hpp,cpp}` | 316 | a1.1.2's day/night, transcribed from the client jar rather than eyeballed. |
 | `level_data.hpp` | 83 | World-level state: the contents of level.dat, minus its encoding. |
 | `light_update.{hpp,cpp}` | 598 | Sky and block light repaired after a block changes, a few cells at a time. |
@@ -266,6 +292,7 @@ weight is, not what is important.
 | `world_format.{hpp,cpp}` | 83 | Which of the two on-disk shapes a world folder is in. |
 | `world_list.{hpp,cpp}` | 461 | The saves folder as a list, for the world-select screen. |
 | `world_peek.{hpp,cpp}` | 471 | **Reading a world without opening it**: its level and its chunks, and never one byte written back. |
+| `world_transfer.{hpp,cpp}` | 400 | A world, flattened into files that can cross a link, and the staging directory the far end assembles one in. |
 
 ## `src/core/world/format/` -- The Packed container format
 
@@ -301,7 +328,7 @@ weight is, not what is important.
 |---|--:|---|
 | `alpha_nobiome/big_tree.{hpp,cpp}` | 560 | a1.1.2's `ej` -- WorldGenBigTree, the tall branching one the driver picks on a one-in-ten roll. |
 | `alpha_nobiome/caves.{hpp,cpp}` | 324 | a1.1.2's cave carver -- `kk` (MapGenCaves) over `cy` (MapGenBase). |
-| `alpha_nobiome/chunk_generator.{hpp,cpp}` | 1186 | `ft` -- ChunkProviderLoadOrGenerate -- the driver that turns "there is no chunk here" into a finished column, and the last piece of M4. |
+| `alpha_nobiome/chunk_generator.{hpp,cpp}` | 1251 | `ft` -- ChunkProviderLoadOrGenerate -- the driver that turns "there is no chunk here" into a finished column, and the last piece of M4. |
 | `alpha_nobiome/chunk_provider.{hpp,cpp}` | 538 | a1.1.2's ChunkProviderGenerate -- terrain shape and the surface pass. |
 | `alpha_nobiome/dungeon.{hpp,cpp}` | 384 | a1.1.2's `cg` -- WorldGenDungeons, the mossy room with a spawner and one or two chests. |
 | `alpha_nobiome/flowers.{hpp,cpp}` | 152 | a1.1.2's `ae` (WorldGenFlowers), which plants **four different things**: dandelions (37), roses (38), brown mushrooms (39) and red mushrooms (40). |
@@ -318,25 +345,32 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `audio.{hpp,cpp}` | 660 | ndsp behind `audio::Backend`: one streamed voice, a ring of wave buffers in linear memory, and a missing DSP firmware that costs the player silence rather than a boot failure. |
+| `audio.{hpp,cpp}` | 860 | ndsp behind `audio::Backend`: one streamed voice, a ring of wave buffers in linear memory, and a missing DSP firmware that costs the player silence rather than a boot failure. |
 | `gpu_memory.{hpp,cpp}` | 115 | The two kinds of memory the PICA can fetch vertices from, behind the pool's allocator seam. |
+| `guest_play.{hpp,cpp}` | 379 | The other console's end of a local session: everything a guest owns, from the radio up to the stream `NetPlay` plays out of. |
 | `gui_art.{hpp,cpp}` | 383 | What the menu draws with once a pack supplies it: the dirt backdrop and the bitmap font. |
 | `heap.{hpp,cpp}` | 376 | What is left of the heap this file's .cpp carved out at startup. |
-| `hud.{hpp,cpp}` | 1669 | The bottom screen's furniture: the hotbar along the top, the tab strip along the bottom, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
-| `main.cpp` | 3685 | The 3DS entry point. |
-| `map_screen.{hpp,cpp}` | 1188 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 5970 | The main menu: the title screen, the world list, and creating a world. |
-| `menu_preview.{hpp,cpp}` | 1766 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
-| `overlay.{hpp,cpp}` | 3461 | The bottom screen. |
+| `host_play.{hpp,cpp}` | 822 | Hosting, as the game loop sees it: the world is the player's own, open the way it always is, with a session running beside it and a server inside it. |
+| `hud.{hpp,cpp}` | 1647 | The bottom screen's furniture: the hotbar along the top, the tab strip along the bottom, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
+| `local_link.{hpp,cpp}` | 529 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
+| `main.cpp` | 4532 | The 3DS entry point. |
+| `map_screen.{hpp,cpp}` | 1531 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
+| `menu.{hpp,cpp}` | 7941 | The main menu: the title screen, the world list, and creating a world. |
+| `menu_preview.{hpp,cpp}` | 1770 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
+| `net_play.{hpp,cpp}` | 454 | A multiplayer session as the game loop sees it: what the server's packets do to the world and the player, and what the player's ticks and clicks become. |
+| `network.{hpp,cpp}` | 190 | The console's half of multiplayer: its socket service, and the name it logs in with. |
+| `overlay.{hpp,cpp}` | 3629 | The bottom screen. |
 | `probe.{hpp,cpp}` | 953 | The M0 hardware probe, reachable by holding SELECT at boot. |
-| `progress_screen.{hpp,cpp}` | 551 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
-| `renderer.{hpp,cpp}` | 4597 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
+| `progress_screen.{hpp,cpp}` | 556 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
+| `renderer.{hpp,cpp}` | 5014 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
 | `textures.{hpp,cpp}` | 1118 | The three things the world shader samples: the block atlas, the lightmap, and the fog LUT. |
+| `world_transfer.{hpp,cpp}` | 330 | One console handing a world to another, over the same local wireless a session runs on. |
 
 ## `src/platform/host/` -- Linux/SDL2 harness
 
 | Module | Lines | What it is |
 |---|--:|---|
 | `audio_wav.{hpp,cpp}` | 258 | A host `audio::Backend` that writes what it was handed to a .wav instead of to a speaker. |
-| `main.cpp` | 3405 | Host entry point. |
+| `join.{hpp,cpp}` | 479 | `--join`: the host plays a short scripted session on a real protocol-2 server. |
+| `main.cpp` | 3487 | Host entry point. |
 

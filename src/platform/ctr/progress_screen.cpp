@@ -260,7 +260,8 @@ void ProgressScreen::drawTop(C3D_RenderTarget* target)
     // Save and quit to title. The other is ours: a1.1.2 says "Building terrain"
     // there, which is a lie on a console that is generating rather than
     // building anything.
-    label(saving ? "Saving level.." : "Generating world", kTopWidth * 0.5f, 78.0f, 0.8f, kInk,
+    label(saving ? "Saving level.."
+                 : kind_ == Kind::Downloading ? "Downloading terrain" : "Generating world", kTopWidth * 0.5f, 78.0f, 0.8f, kInk,
           C2D_AlignCenter);
     if (worldName_[0] != '\0') {
         label(worldName_, kTopWidth * 0.5f, 104.0f, 0.5f, kInkDim, C2D_AlignCenter);
@@ -321,7 +322,8 @@ void ProgressScreen::drawBottomChrome(const gui::Surface& surface)
 
     const bool saving = kind_ == Kind::Saving;
     hud::text(1, 1, hud::kColumns, 0x80FF20u, hud::kBackdrop, "%s",
-              saving ? "Saving level.." : "Generating world");
+              saving ? "Saving level.."
+                 : kind_ == Kind::Downloading ? "Downloading terrain" : "Generating world");
     hud::text(2, 1, hud::kColumns, 0x9A9A9Au, hud::kBackdrop, "%s", worldName_);
 
     if (cells_ == nullptr) {

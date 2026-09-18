@@ -1230,3 +1230,224 @@ TEST(a_deferred_save_never_writes_on_the_calling_thread)
 
     cache.close(kNow);
 }
+
+// ---------------------------------------------------------------- surveys --
+//
+// **A column read for one look at it, and nothing kept.** The map is what wants
+// this: the window reaches past the render distance, so a band of it is ground
+// the grid will never hold and no amount of waiting will fill.
+//
+// The three promises are separate and all three are here: the visitor is told
+// what the card had, nothing is installed by it, and it waits behind the
+// world's own reads.
+
+namespace {
+
+struct SurveyLog {
+    int calls = 0;
+    int found = 0;
+    int missing = 0;
+    i32 lastX = 0;
+    i32 lastZ = 0;
+    BlockId block = 0;
+};
+
+void recordSurvey(void* context, i32 chunkX, i32 chunkZ, const ChunkColumn* column)
+{
+    SurveyLog& log = *static_cast<SurveyLog*>(context);
+    ++log.calls;
+    log.lastX = chunkX;
+    log.lastZ = chunkZ;
+    if (column == nullptr) {
+        ++log.missing;
+        return;
+    }
+    ++log.found;
+    log.block = column->block(3, 12, 9);
+}
+
+}  // namespace
+
+TEST(a_survey_reads_a_column_without_retaining_it)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    {
+        mcver::Storage storage(fs);
+        CHECK(storage.open(dir.c_str(), kNow) == OpenResult::Ok);
+        CHECK(storage.saveChunk(makeChunk(40, -17, 4)));
+        CHECK(storage.close(kNow));
+    }
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    SurveyLog log;
+    cache.setSurveyor(&recordSurvey, &log);
+    CHECK(cache.survey(40, -17));
+    // The same coordinate twice is one request: the caller counting what is
+    // outstanding has to be able to trust the answer.
+    CHECK(!cache.survey(40, -17));
+    drain(cache);
+
+    CHECK_EQ(log.calls, 1);
+    CHECK_EQ(log.found, 1);
+    CHECK_EQ(log.lastX, 40);
+    CHECK_EQ(log.lastZ, -17);
+    // The block makeChunk plants, which says the column really was decoded
+    // rather than merely handed over.
+    CHECK_EQ(int(log.block), 56);
+
+    // **Nothing was retained.** A survey that installed its column would push
+    // the ring the player is standing in out of a cache it never asked for
+    // space in.
+    CHECK_EQ(cache.stats().cleanColumns, 0u);
+    CHECK_EQ(cache.stats().cleanBytes, usize(0));
+
+    cache.close(kNow);
+}
+
+// Absent and damaged are one answer here, deliberately: a caller that only
+// wants to look at the ground has the same thing to do about both, which is
+// draw nothing and not ask again.
+TEST(a_survey_of_ground_that_was_never_generated_answers_with_nothing)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    SurveyLog log;
+    cache.setSurveyor(&recordSurvey, &log);
+    CHECK(cache.survey(1000, -1000));
+    drain(cache);
+
+    CHECK_EQ(log.calls, 1);
+    CHECK_EQ(log.found, 0);
+    CHECK_EQ(log.missing, 1);
+
+    cache.close(kNow);
+}
+
+// A column already in hand is a survey with no card in it at all -- and the
+// LRU stamp still moves, because something did look at it.
+TEST(a_survey_of_a_retained_column_touches_no_storage)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+    CHECK(cache.save(makeChunk(2, 3, 5)));
+
+    SurveyLog log;
+    cache.setSurveyor(&recordSurvey, &log);
+    fs.resetCounts();
+    CHECK(cache.survey(2, 3));
+    drain(cache);
+
+    CHECK_EQ(log.found, 1);
+    CHECK_EQ(int(log.block), 56);
+    CHECK_EQ(fs.reads, 0);
+    CHECK_EQ(fs.opens, 0);
+
+    cache.close(kNow);
+}
+
+// **The priority, which is the whole reason a survey is safe to offer at all.**
+// Unthreaded, `pump()` runs exactly one job per call in `takeJobLocked`'s
+// order, so this states the order directly: the read-ahead ring -- itself the
+// lowest thing the world asks for -- is served before the first survey is.
+TEST(a_survey_waits_behind_the_worlds_own_read_ahead)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    {
+        mcver::Storage storage(fs);
+        CHECK(storage.open(dir.c_str(), kNow) == OpenResult::Ok);
+        CHECK(storage.saveChunk(makeChunk(7, 7, 4)));
+        CHECK(storage.saveChunk(makeChunk(8, 8, 4)));
+        CHECK(storage.close(kNow));
+    }
+
+    ChunkCache cache(fs);
+    ChunkCache::Config config;
+    // Threaded, because `prefetch` declines outright without a worker: reading
+    // ahead on the thread that would consume it buys nothing. The queues are
+    // filled before the worker is given a chance to take either.
+    config.threaded = true;
+    cache.configure(config);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    SurveyLog log;
+    cache.setSurveyor(&recordSurvey, &log);
+    // The survey first, so that order alone cannot be what decides this.
+    CHECK(cache.survey(8, 8));
+    cache.prefetch(7, 7);
+
+    for (int i = 0; i < 2000 && !cache.idle(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(cache.idle());
+
+    // Both ran, and the read-ahead is the one that was retained -- the survey
+    // went through the cache without leaving anything in it.
+    CHECK_EQ(log.found, 1);
+    CHECK_EQ(cache.stats().cleanColumns, 1u);
+    std::unique_ptr<ChunkColumn> column;
+    fs.resetCounts();
+    CHECK(cache.tryTake(7, 7, &column) == ChunkCache::Take::Took);
+    CHECK_EQ(fs.total(), 0);
+
+    cache.close(kNow);
+}
+
+// A world closing forgets both the queue and the visitor, because what
+// registered it is a screen belonging to the session that is ending.
+TEST(closing_a_world_drops_the_surveys_it_had_not_answered)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    {
+        mcver::Storage storage(fs);
+        CHECK(storage.open(dir.c_str(), kNow) == OpenResult::Ok);
+        CHECK(storage.saveChunk(makeChunk(4, 4, 4)));
+        CHECK(storage.close(kNow));
+    }
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+
+    SurveyLog log;
+    cache.setSurveyor(&recordSurvey, &log);
+    CHECK(cache.survey(4, 4));
+    cache.cancelSurveys();
+    drain(cache);
+    CHECK_EQ(log.calls, 0);
+
+    // And with the visitor gone, nothing may be queued at all.
+    CHECK(!cache.survey(4, 4));
+    drain(cache);
+    CHECK_EQ(log.calls, 0);
+
+    cache.close(kNow);
+}

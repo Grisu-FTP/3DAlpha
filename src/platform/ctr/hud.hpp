@@ -27,7 +27,7 @@
 //     +----------------------------------------+  y = 0
 //     |  the hotbar, nine slots edge to edge    |  the hand
 //     +----------------------------------------+  y = 40
-//     |  " Bottom screen focused "              |  the focus banner, or backdrop
+//     |                                        |  a reserved row, backdrop
 //     +----------------------------------------+  y = 48
 //     |                                        |
 //     |               the page                 |
@@ -37,8 +37,8 @@
 //     +----------------------------------------+  y = 240
 //
 // ...in a gamemode that has a hotbar. **Spectator has none, and the whole
-// arrangement above it moves up forty pixels**: the banner goes to y = 0 and
-// the page starts at y = 8 with 208 rows instead of 168. See `pageTop`.
+// arrangement above it moves up forty pixels**: the reserved row goes to y = 0
+// and the page starts at y = 8 with 208 rows instead of 168. See `pageTop`.
 //
 // **The hotbar and the tab strip changed places**, and the hotbar grew to the
 // full width of the screen while it was at it. Both were asked for and both are
@@ -103,7 +103,8 @@ inline constexpr int kRows = kScreenHeight / kCell;     // 30
 // side, which is what a 24-pixel icon needs with a bevel that is still visible
 // on a 320-pixel screen.
 //
-// **It was 32, and the eight it grew are the eight the focus banner gave up.**
+// **It was 32, and the eight it grew are the eight the focus banner gave up**
+// when its gradient went (see `kBannerHeight`).
 // A slot is 35 or 36 pixels wide (see `hotbarSlotX`) and was 28 tall, which is
 // a landing strip rather than a cell: a1.1.2's own hotbar slot is square and
 // the one thing a player reads off this band at a glance is which square is
@@ -130,20 +131,16 @@ static_assert(hotbarSlotX(0) == 0, "the hotbar starts at the left edge");
 static_assert(hotbarSlotX(kHotbarColumns) == kScreenWidth,
               "the hotbar ends at the right edge");
 
-// **One character row under the hotbar that nothing but the backdrop and the
-// focus banner draw into**, and that reservation is a load-bearing promise
-// rather than spare margin: the banner is drawn on a page clear and the pages
-// redraw without one, so a page that painted into this row would erase it.
+// **One character row under the hotbar that nothing but the backdrop draws
+// into**: the margin between the hand and the page.
 //
-// Unfocused it is backdrop, and reads as the page having a margin.
-//
-// **It was sixteen pixels and half of it was a gradient.** The banner used to
-// fade from its label row back into the page by *darkening* the pixels it
-// found, which is an operation that cannot be applied twice -- so the band had
-// to be painted exactly once per clear, and eight pixels of screen were spent
-// on a nicety with a fragile rule attached. The label row alone says the same
-// thing, the rule goes with the gradient, and the eight pixels went to the
-// hotbar above. See `drawFocusBanner`.
+// **It used to be the focus banner**, sixteen pixels of it, half a gradient and
+// half a row of yellow text saying the screen was focused. The gradient went
+// first, because darkening the pixels it found is an operation that cannot be
+// applied twice and every page underneath had to know it; the text went after
+// it, to the top screen, where the player who needs telling is actually
+// looking. The row it all stood in is kept because the layout below hangs off
+// it and it reads as the page having a margin.
 inline constexpr int kBannerHeight = kCell;                    // 8
 
 // The tab strip, at the bottom. Three character rows so a label sits in the
@@ -157,7 +154,7 @@ inline constexpr int kTabTop = kScreenHeight - kTabHeight;     // 216
 inline constexpr int kBandedPageTop = kHotbarHeight + kBannerHeight;   // 48
 
 // **And the answer for a mode that has no hotbar**: the band is not reserved,
-// it is simply not there, and the banner and the page move up into it.
+// it is simply not there, and the reserved row and the page move up into it.
 inline constexpr int kBarePageTop = kBannerHeight;                     // 8
 
 // **Which of the two is in force**, set once per gamemode change by the Overlay
@@ -174,7 +171,7 @@ bool hotbarPresent();
 
 // 40 or 0 -- the band the hotbar occupies, and what everything else hangs off.
 int hotbarHeight();
-// The reserved row the focus banner is drawn in.
+// The reserved row between the hotbar and the page.
 int bannerTop();
 // The first row a page may paint.
 int pageTop();
@@ -401,24 +398,18 @@ void drawBlocksPage(const gui::Surface& surface, const gui::IconSheets& sheets, 
 // page-relative: add `page * kPalettePerPage` for a palette index.
 int paletteCellAt(int touchX, int touchY);
 
-// **The focus banner: one dark row under the hotbar with a line of text on
-// it.** Drawn while X has the bottom screen focused, and it exists because the
-// focus is otherwise invisible -- the d-pad quietly means something else and
-// nothing on the screen says so, which is the worst kind of mode.
+// **There is no focus banner here any more.** It was one dark row under the
+// hotbar with a line of yellow text saying the screen was focused and what the
+// buttons meant; the reserved row at `bannerTop()` is what is left of it, and
+// it is backdrop now whether the screen is focused or not.
 //
-// It lives in the reserved row at `bannerTop()`, which nothing but the backdrop
-// ever paints -- see the note there -- so a page redraw cannot erase it and
-// leaving the focus is a full page redraw rather than an attempt to undo it.
-//
-// The row is flat, and that is libctru's doing rather than a choice:
-// `consoleDrawChar` writes all 64 pixels of a cell, so a character row has
-// exactly one background colour. **There used to be a gradient under it** that
-// faded that colour back into the page by darkening the pixels it found; it
-// cost a second character row of screen and it carried a rule -- never draw it
-// twice over the same pixels -- that every page underneath had to respect. The
-// eight pixels are the hotbar's now.
-inline constexpr int kFocusBannerLabelHeight = kCell;
-void drawFocusBanner(const gui::Surface& surface, const char* text);
+// The mode still has to be reported -- the d-pad quietly means something else,
+// and an unannounced mode is the worst kind -- but not *here*. A player who has
+// focused the bottom screen is looking at the bottom screen; a line of text on
+// it is read by nobody, and a player still looking at the world got no signal
+// at all. The report is on the top screen now, as a translucent band with an
+// arrowhead pointing down at the screen that has the buttons: see
+// `Renderer::setFocusHint`.
 
 // The two page arrows on the palette's title row: -1 for the previous page, +1
 // for the next, 0 for neither. They exist because the shoulder buttons are
@@ -455,7 +446,7 @@ void drawGameOverPage(const gui::Surface& surface, int score, int cursor);
 int gameOverButtonAt(int touchX, int touchY);
 
 // The first pixel row of the look pad's drag area. A touch above it belongs to
-// the tab strip and to the banner band, neither of which is the camera's.
+// the tab strip and to the reserved row, neither of which is the camera's.
 inline int lookPadTop() { return pageTop(); }
 
 }  // namespace mc::ctr::hud

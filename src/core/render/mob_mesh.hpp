@@ -43,8 +43,13 @@
 // `mob/spider_eyes.png` and blends it at `(1 - brightness) * 0.5`; that page is
 // transparent everywhere but the head, so the other ten boxes would write 240
 // vertices for the alpha test to throw away. Redrawing the head alone is the
-// same picture. What is lost is the blend: the eyes are an alpha cut here and do
-// not dim in daylight.
+// same picture.
+//
+// **The blend is no longer lost** (2026-09-17). It was an alpha cut here, which
+// drew the eyes fully opaque at every light level -- twice as bright as the jar
+// ever draws them, and still visible in daylight where the jar's have faded to
+// nothing. They are a blended pass now, with the `(1 - brightness) * 0.5` alpha
+// coming out of the lightmap in the combiner. See `buildMobEyes`.
 //
 // **Where `RenderLiving` puts the model**, which is four transforms and an
 // eighth of a block that looks like a mistake and is not:
@@ -96,8 +101,44 @@ inline constexpr int kMobMaxVertices = kMobDrawBudget * kMobVerticesEach;
 
 // `dn.a(Lge;DDDFF)V` for every live animal, nearest first when the buffer
 // cannot hold them all. Returns how many vertices were written.
+//
+// **Everything except the slime's shell**, which is the one part of the one
+// model a1.1.2 draws in a second, blended pass -- see `buildMobShells`.
 int buildMobs(const entity::MobSystem& system, double originX, double originY, double originZ,
               float partial, mesh::DetailVertex* out, int max);
+
+// **`gq`'s render pass 0**: the slime's outer jelly, and nothing else in the
+// game. It is a separate call because it is a separate *pass* -- the shell's
+// texels are alpha 199 and have to be blended over the face inside it, where
+// every other box in every other model is cut out by the alpha test. Drawn
+// after `buildMobs` with `GL_BLEND` on, which is what `gq.a(Lma;I)Z` does.
+//
+// The same animals are admitted as `buildMobs` admits, so a shell is never
+// drawn around a face that was cut for want of room.
+int buildMobShells(const entity::MobSystem& system, double originX, double originY,
+                   double originZ, float partial, mesh::DetailVertex* out, int max);
+
+// One box per slime on screen, which is all this pass can ever hold.
+inline constexpr int kMobShellMaxVertices = kMobDrawBudget * kBoxVertices;
+
+// **`ok`'s render pass 0**: the spider's head, redrawn from
+// `mob/spider_eyes.png` and blended at `(1 - brightness) * 0.5`. Read out of the
+// class file rather than described: `glEnable(GL_BLEND)`,
+// `glDisable(GL_ALPHA_TEST)`, `glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)` and
+// `glColor4f(1, 1, 1, (1 - getBrightness(1.0F)) * 0.5F)`.
+//
+// **The alpha is computed by the combiner, not by this builder**, and that is
+// what makes it exact rather than a per-draw approximation: the lightmap texture
+// is monochrome `lightBrightness(effectiveLightLevel(sky, block, subtracted))`
+// (see ctr/textures.cpp), which is precisely what `Entity.getBrightness` returns
+// -- so `1 - lightmap.r` is that spider's own brightness term, sampled at the
+// light coordinate its own vertices already carry. Every spider on screen gets
+// its own value out of one draw call. See `Renderer::drawMobs`.
+int buildMobEyes(const entity::MobSystem& system, double originX, double originY,
+                 double originZ, float partial, mesh::DetailVertex* out, int max);
+
+// One box per spider on screen.
+inline constexpr int kMobEyeMaxVertices = kMobDrawBudget * kBoxVertices;
 
 // One animal's parts, posed, for the test suite -- the interesting half is the
 // pose and it is a pure function of the mob. `skins` takes one page per part.

@@ -65,9 +65,11 @@ int foodHeals(ItemId held);
 // writes `stackSize` or calls `damageItem` from a use method:
 //
 //   * `spendOnUse` is 1 for anything that puts a block down (`av`, `ec` the
-//     door, `gf` sugar cane, `jn` seeds, `ef` redstone, `md` the sign) and for
+//     door, `gf` sugar cane, `jn` seeds, `ef` redstone, `md` the sign), for
 //     the three that put an entity down (`od` the painting, `me` the boat,
-//     `jo` the minecart). Each decrements on its success path and nowhere else.
+//     `jo` the minecart), and for `lg` -- **the music disc, which puts down
+//     neither** and is the one row here that no column can be read off. Each
+//     decrements on its success path and nowhere else.
 //   * `wearOnUse` is 1 for the two that wear instead: `fu` the hoe and `nx`
 //     flint and steel, which `damageItem(1)` on success.
 //

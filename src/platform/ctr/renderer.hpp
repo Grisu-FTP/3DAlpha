@@ -8,6 +8,7 @@
 // come from, and skipping the second eye when the slider is at zero.
 
 #include "core/mesh/vertex.hpp"
+#include "core/net/entities.hpp"
 #include "core/render/break_overlay.hpp"
 #include "core/render/chat_mesh.hpp"
 #include "core/render/hud_mesh.hpp"
@@ -435,6 +436,14 @@ public:
     // with no spawner store, which draws the cages and nothing inside them.
     void setSpawners(const mc::entity::MobSpawnerStore* spawners) { spawners_ = spawners; }
 
+    // **The other people on a server.** Bipeds off the same entity sheet the
+    // mobs use, appended to the same buffer and the same draw call -- see
+    // core/render/remote_player_mesh.hpp. Null in single player.
+    void setRemotePlayers(const mc::net::RemoteEntities* entities)
+    {
+        remotePlayers_ = entities;
+    }
+
     // **What is on the rails.** Unlike every other entity pass this one needs
     // the world, because a cart is tilted along the *track* rather than along
     // its own motion -- see core/render/minecart_mesh.hpp.
@@ -493,6 +502,13 @@ public:
         hudVisible_ = true;
     }
     void clearHud() { hudVisible_ = false; }
+
+    // **The bottom screen has the buttons.** True while X has focused it, which
+    // is a mode the world view cannot otherwise show: a translucent grey band
+    // with an arrowhead pointing down is drawn along the bottom of the top
+    // screen for as long as this is set. See `drawFocusHint`, and
+    // `Overlay::focused`, which is where the flag comes from.
+    void setFocusHint(bool on) { focusHint_ = on; }
 
     void clearSelection() { hasSelection_ = false; }
 
@@ -593,6 +609,13 @@ private:
     // cube pass starts from. Hoisted out of drawFrame so it can run again
     // between eyes, after an overlay has drawn 2D over the first one.
     void applyWorldState();
+
+    // The three-stage combiner every atlas pass inherits: texture x vertex
+    // colour, x lightmap, then the fade to the fog colour, with alpha routed
+    // round all three because the vertex shader spends primary alpha on fog.
+    // `drawMobs`'s spider-eye pass replaces all three for one draw and calls
+    // this to put them back, so it lives in one place rather than two.
+    void applyAtlasTexEnv();
 
     // Which of a section's three ranges a pass draws. The order here is the
     // order they are drawn in and the order they sit in memory.
@@ -726,6 +749,10 @@ private:
     void drawArrows(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawBoats(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawMinecarts(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
+    // The chest or furnace a special cart carries, off the **block** atlas
+    // rather than the entity sheet -- which is why it is a pass of its own.
+    void drawMinecartBlocks(const C3D_Mtx& viewProjection, i32 originChunkX,
+                            i32 originChunkZ);
     void drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawEntityFire(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
     void drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ);
@@ -745,6 +772,7 @@ private:
     // **The Survival rows, last of all**: at the screen plane, off
     // `gui/icons.png`, alpha-tested and unlit.
     void drawHud();
+    void drawFocusHint();
 
     // Four vertices a quad, and the worst case is a stack of 21+ -- four
     // copies -- of a block, which is six faces. The pool has no cap, so no
@@ -770,6 +798,7 @@ private:
     // Thirty-two carts in range at six boxes each, 72 KB; past that, the
     // nearest.
     static constexpr int kMaxMinecartVertices = mc::render::kMinecartMaxVertices;
+    static constexpr int kMaxMinecartBlockVertices = mc::render::kMinecartBlockMaxVertices;
 
     // Sixteen animals in range at up to twelve boxes each -- a fleeced sheep is
     // two models -- which is 4,608 vertices and 72 KB; past that, the nearest.
@@ -823,12 +852,19 @@ private:
     void* boatVerts_ = nullptr;
     const mc::entity::BoatSystem* boats_ = nullptr;
     void* minecartVerts_ = nullptr;
+    void* minecartBlockVerts_ = nullptr;
     const mc::entity::MinecartSystem* minecarts_ = nullptr;
     void* mobVerts_ = nullptr;
     void* entityFireVerts_ = nullptr;
     const mc::entity::MobSystem* mobs_ = nullptr;
     const mc::entity::MobSpawnerStore* spawners_ = nullptr;
+    const mc::net::RemoteEntities* remotePlayers_ = nullptr;
     const mc::tick::TickWorld* minecartWorld_ = nullptr;
+    // `gq`'s render pass 0 and nothing else: one box per slime on screen.
+    void* mobShellVerts_ = nullptr;
+    // `ok`'s render pass 0: the spider's head again from the eye page, blended
+    // at the alpha the lightmap works out. One box per spider on screen.
+    void* mobEyeVerts_ = nullptr;
     void* signVerts_ = nullptr;
     const mc::world::SignStore* signs_ = nullptr;
     const mc::texture::FontImage* signFont_ = nullptr;
@@ -837,6 +873,8 @@ private:
     // lines, six corners each. Built before the first eye and read by both.
     void* chatVerts_ = nullptr;
     void* chatStrips_ = nullptr;
+    // Nine corners, written once at init: the focus band and its arrowhead.
+    void* focusHintVerts_ = nullptr;
     // The sky: 70 KB written once at init and never touched again, because
     // every part of it that changes with the time of day is a uniform or a
     // combiner constant. See core/render/sky.hpp.
@@ -850,6 +888,7 @@ private:
     void* hudVerts_ = nullptr;
     mc::render::HudInput hudInput_{};
     bool hudVisible_ = false;
+    bool focusHint_ = false;
     bool heldVisible_ = false;
     mc::item::ItemId heldItem_ = 0;
     float heldEquipped_ = 0.0f;

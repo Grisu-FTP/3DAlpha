@@ -2,6 +2,7 @@
 // an entity-only edit must survive both autosave and closing the world.
 #include "framework.hpp"
 #include "core/entity/mob.hpp"
+#include "core/item/registry.hpp"
 #include "core/entity/persistence.hpp"
 #include "core/entity/player_body.hpp"
 #include "core/block/registry.hpp"
@@ -59,8 +60,22 @@ std::shared_ptr<entity::PersistentEntities> sample()
         c.setPosition(-20 + i, 64, -30); c.alive = true;
         c.type = entity::MinecartType(i); c.fuel = i == 2 ? 1234 : 0;
         c.pushX = 0.5; c.motionZ = -0.15;
+        // Ids are the cart's handle and are what its contents are filed under.
+        c.id = u32(i) + 1;
         s->minecarts.push(c);
     }
+    // **What the chest cart is carrying**, which is the one thing about a cart
+    // that is not in the cart -- an `ItemStack` cannot live in the pool. See
+    // core/entity/minecart.hpp.
+    entity::SavedCartChest chest{};
+    chest.cart = 2;  // the second cart, which is the chest one
+    for (int slot = 0; slot < entity::kMinecartChestSlots; ++slot) {
+        chest.id[slot] = item::kEmptyItemId;
+    }
+    chest.id[0] = i16(mcver::Block::Stone); chest.count[0] = 31;
+    chest.id[26] = i16(mcver::Item::DiamondPickaxe); chest.count[26] = 1;
+    chest.damage[26] = 17;
+    s->minecartChests.push(chest);
     entity::ItemEntity item{};
     item.setPosition(1, 65, 2); item.item = item::ItemId(mcver::Block::Stone);
     item.count = 12; item.damage = 3; item.age = 300; item.pickupDelay = 9;
@@ -159,6 +174,17 @@ TEST(entity_persistence_restores_all_pools_and_simulation_state)
     CHECK(pools.minecarts[2].type == entity::MinecartType::Furnace);
     CHECK_EQ(pools.minecarts[2].fuel, 1234);
     CHECK_EQ(pools.minecarts[2].motionZ, -0.15);
+    // The chest cart's id survived, and its contents found it again.
+    CHECK_EQ(pools.minecarts[1].id, u32(2));
+    const item::ItemStack* cartSlots = pools.minecarts.chestSlots(u32(2));
+    CHECK(cartSlots != nullptr);
+    CHECK_EQ(int(cartSlots[0].id), int(mcver::Block::Stone));
+    CHECK_EQ(int(cartSlots[0].count), 31);
+    CHECK_EQ(int(cartSlots[26].id), int(mcver::Item::DiamondPickaxe));
+    CHECK_EQ(int(cartSlots[26].damage), 17);
+    CHECK(cartSlots[1].empty());
+    // A plain cart still has none.
+    CHECK(pools.minecarts.chestSlots(pools.minecarts[0].id) == nullptr);
     CHECK_EQ(pools.items[0].count, 12);
     CHECK_EQ(pools.items[0].damage, 3);
     CHECK_EQ(pools.items[0].age, 300);

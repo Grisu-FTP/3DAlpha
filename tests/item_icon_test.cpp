@@ -152,13 +152,49 @@ TEST(a_plain_block_draws_as_a_cube_with_three_brightnesses)
 
     const block::BlockDef& def = block::def(block::BlockId(item::def(stone).places));
     // The middle of the top diamond, the middle of the left face, and the
-    // middle of the right face.
+    // middle of the right face. **Left is west and right is south**, which is
+    // what `RenderItem`'s own transform works out to -- see `project` in
+    // core/gui/item_icon.cpp.
     CHECK_EQ(int(canvas.at(8, 4)),
              int(terrainColour(def.faces[mesh::kFacePosY], mesh::kFaceShadeFloat[mesh::kFacePosY])));
     CHECK_EQ(int(canvas.at(4, 10)),
-             int(terrainColour(def.faces[mesh::kFaceNegZ], mesh::kFaceShadeFloat[mesh::kFaceNegZ])));
+             int(terrainColour(def.faces[mesh::kFaceNegX], mesh::kFaceShadeFloat[mesh::kFaceNegX])));
     CHECK_EQ(int(canvas.at(11, 10)),
-             int(terrainColour(def.faces[mesh::kFacePosX], mesh::kFaceShadeFloat[mesh::kFacePosX])));
+             int(terrainColour(def.faces[mesh::kFacePosZ], mesh::kFaceShadeFloat[mesh::kFacePosZ])));
+}
+
+// **The furnace's mouth is on the face the icon shows, and that is the whole
+// point of getting the projection right.** `BlockFurnace.getBlockTextureFromSide`
+// puts the front on face 3 -- south -- and `renderBlockOnInventory` under
+// `RenderItem`'s transform shows top, west and south. A projection a quarter
+// turn out shows north and east, which are two plain sides, and a furnace in a
+// slot is then indistinguishable from its own back.
+//
+// The chest, the dispenser and the pumpkin all put their front on the same
+// face, so this is one test for four blocks.
+TEST(a_block_with_a_front_shows_it)
+{
+    std::vector<u8> terrain;
+    fillSheet(&terrain, 200, 100);
+    IconSheets sheets{terrain.data(), nullptr};
+
+    const ItemId furnace = itemNamed("furnace", item::IconSheet::Terrain);
+    CHECK(furnace != 0);
+    const block::BlockDef& def = block::def(block::BlockId(item::def(furnace).places));
+    // The jar's own table: face 3 is the mouth and it is not the side tile.
+    CHECK(def.faces[mesh::kFacePosZ] != def.faces[mesh::kFaceNegX]);
+
+    Canvas canvas;
+    gui::drawItemIcon(canvas.surface(), 0, 0, Canvas::kSize, sheets, furnace);
+
+    CHECK_EQ(int(canvas.at(11, 10)),
+             int(terrainColour(def.faces[mesh::kFacePosZ],
+                               mesh::kFaceShadeFloat[mesh::kFacePosZ])));
+    // And the left face is the plain side, so the two really are different
+    // tiles on screen rather than the same one twice.
+    CHECK_EQ(int(canvas.at(4, 10)),
+             int(terrainColour(def.faces[mesh::kFaceNegX],
+                               mesh::kFaceShadeFloat[mesh::kFaceNegX])));
 }
 
 TEST(the_cube_leaves_its_corners_alone)

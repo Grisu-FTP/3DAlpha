@@ -1,6 +1,7 @@
 #include "platform/ctr/renderer.hpp"
 
 #include "core/mesh/vertex.hpp"
+#include "core/render/remote_player_mesh.hpp"
 #include "core/render/sky.hpp"
 #include "core/texture/dev_art.hpp"
 #include "core/world/daylight.hpp"
@@ -213,6 +214,32 @@ constexpr float kDepthMapOffset = 0.0f;
 // set. Written as 25 rather than as a rounded 26 for that reason -- 26 would
 // discard a texel the original keeps.
 constexpr int kAlphaTestRef = 25;
+
+// **The focus hint**: the strip along the bottom of the top screen that says
+// the bottom screen has the buttons.
+//
+// It is here rather than on the bottom screen because that is where the player
+// is looking. The mode it reports is invisible from the world view -- the d-pad
+// quietly means something else -- and a line of text on the screen that has
+// just taken the focus is read by nobody, because the reason to focus the
+// bottom screen is to look at it and the reason to be told is that you are not.
+// So: a translucent grey band across the bottom of the world, with an
+// arrowhead pointing down at the screen that now owns the buttons. No text, in
+// any language, and nothing the eye has to leave the world to read.
+//
+// Grey and translucent rather than opaque so it dims the bottom rows of the
+// world instead of cutting them off, and 14 pixels so it clears the hearts,
+// which `render::buildHud` puts higher up.
+constexpr int kTopScreenWidth = 400;
+constexpr int kTopScreenHeight = 240;
+constexpr int kFocusHintHeight = 14;
+constexpr int kFocusArrowHeight = 6;
+constexpr float kFocusArrowHalfWidth = 6.0f;
+constexpr u32 kFocusHintVertices = 9;  // six corners of the band, three of the head
+constexpr float kFocusHintGrey = 0.62f;
+constexpr float kFocusHintAlpha = 0.42f;
+constexpr float kFocusArrowGrey = 0.95f;
+constexpr float kFocusArrowAlpha = 0.85f;
 
 // Stereo. The tunable is **on-screen disparity in pixels**, not an interocular
 // distance in blocks, because pixels are the thing the eye actually judges and
@@ -446,8 +473,20 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
     boatVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxBoatVertices));
     // 72 KB more: thirty-two minecarts of six boxes each.
     minecartVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMinecartVertices));
+    minecartBlockVerts_ =
+        linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMinecartBlockVertices));
     // 72 KB more: sixteen animals at up to twelve boxes each.
     mobVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMobVertices));
+    // 6 KB more, and a buffer of its own for the same reason the flames have
+    // one: the slime's shell is a *pass* and not a box, so it cannot share a
+    // draw with the models it is drawn over. See `drawMobs`.
+    mobShellVerts_ =
+        linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kMobShellMaxVertices));
+    // 6 KB more, and its own buffer for the same reason again: the spider's eye
+    // page is a *pass* with its own blend, its own alpha source and -- unlike
+    // the shell -- depth writes left on, so it cannot share a draw with either
+    // of the two above it.
+    mobEyeVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kMobEyeMaxVertices));
     // 16 KB more, and a buffer of its own rather than room at the end of the
     // one above: a mob's flames come off the *block* atlas and its body off the
     // entity sheet, so the two are different draws whatever they are built
@@ -476,6 +515,30 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
         }
     }
 
+    // **The focus hint**, 108 bytes: six corners of a bar and three of an
+    // arrowhead, in top-screen pixels, written here and never again. Nothing
+    // about it moves -- what changes is whether it is drawn at all.
+    focusHintVerts_ = linearAlloc(sizeof(render::OutlineVertex) * kFocusHintVertices);
+    if (focusHintVerts_ != nullptr) {
+        auto* hint = static_cast<render::OutlineVertex*>(focusHintVerts_);
+        const float top = float(kTopScreenHeight - kFocusHintHeight);
+        const float bottom = float(kTopScreenHeight);
+        const float right = float(kTopScreenWidth);
+        hint[0] = {0.0f, top, 0.0f};
+        hint[1] = {right, top, 0.0f};
+        hint[2] = {right, bottom, 0.0f};
+        hint[3] = {0.0f, top, 0.0f};
+        hint[4] = {right, bottom, 0.0f};
+        hint[5] = {0.0f, bottom, 0.0f};
+        // The arrowhead, centred, pointing at the screen below it.
+        const float middle = float(kTopScreenWidth) * 0.5f;
+        const float headTop = top + float(kFocusHintHeight - kFocusArrowHeight) * 0.5f;
+        hint[6] = {middle - kFocusArrowHalfWidth, headTop, 0.0f};
+        hint[7] = {middle + kFocusArrowHalfWidth, headTop, 0.0f};
+        hint[8] = {middle, headTop + float(kFocusArrowHeight), 0.0f};
+        GSPGPU_FlushDataCache(hint, sizeof(render::OutlineVertex) * kFocusHintVertices);
+    }
+
     // 64 KB of glyphs and under a kilobyte of strips, for the chat lines.
     chatVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kChatMaxVertices));
     chatStrips_ = linearAlloc(sizeof(render::OutlineVertex) * 6u
@@ -491,7 +554,8 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
            && itemVerts_ != nullptr && fallingVerts_ != nullptr && tntVerts_ != nullptr
            && tntFlashVerts_ != nullptr
            && paintingVerts_ != nullptr && arrowVerts_ != nullptr
-           && boatVerts_ != nullptr && minecartVerts_ != nullptr && mobVerts_ != nullptr
+           && boatVerts_ != nullptr && minecartVerts_ != nullptr
+           && minecartBlockVerts_ != nullptr && mobVerts_ != nullptr
            && entityFireVerts_ != nullptr
            && signVerts_ != nullptr && heldVerts_ != nullptr && chatVerts_ != nullptr
            && chatStrips_ != nullptr;
@@ -1133,7 +1197,8 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
 {
     const int liveMobs = mobs_ != nullptr ? mobs_->count() : 0;
     const int liveSpawners = spawners_ != nullptr ? spawners_->count() : 0;
-    if ((liveMobs == 0 && liveSpawners == 0) || mobVerts_ == nullptr
+    const int livePlayers = remotePlayers_ != nullptr ? remotePlayers_->playerCount() : 0;
+    if ((liveMobs == 0 && liveSpawners == 0 && livePlayers == 0) || mobVerts_ == nullptr
         || !atlas_.hasEntities()) {
         return;
     }
@@ -1156,10 +1221,46 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
                                             itemPartial_, verts + written,
                                             kMaxMobVertices - written);
     }
-    if (written < 4) {
+    // ...and the other players on the same terms again, for the same reason.
+    if (livePlayers > 0) {
+        written += render::buildRemotePlayers(*remotePlayers_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                              itemPartial_, verts + written,
+                                              kMaxMobVertices - written);
+    }
+    // **`gq`'s render pass 0, in its own buffer**: the slime's outer jelly,
+    // which is the one thing in the game that is neither opaque nor cut out.
+    // Built here so the pass below can draw it with blending after everything
+    // solid has gone down -- see core/render/mob_mesh.hpp.
+    int shellVertices = 0;
+    if (liveMobs > 0 && mobShellVerts_ != nullptr) {
+        shellVertices = render::buildMobShells(*mobs_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                               itemPartial_,
+                                               static_cast<mesh::DetailVertex*>(mobShellVerts_),
+                                               render::kMobShellMaxVertices);
+    }
+
+    // **`ok`'s render pass 0**: the spider's head from the eye page, in its own
+    // buffer for the same reason the shell has one. See core/render/mob_mesh.hpp.
+    int eyeVertices = 0;
+    if (liveMobs > 0 && mobEyeVerts_ != nullptr) {
+        eyeVertices = render::buildMobEyes(*mobs_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                           itemPartial_,
+                                           static_cast<mesh::DetailVertex*>(mobEyeVerts_),
+                                           render::kMobEyeMaxVertices);
+    }
+
+    if (written < 4 && shellVertices < 4 && eyeVertices < 4) {
         return;
     }
-    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+    if (written > 0) {
+        GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+    }
+    if (shellVertices > 0) {
+        GSPGPU_FlushDataCache(mobShellVerts_, sizeof(mesh::DetailVertex) * u32(shellVertices));
+    }
+    if (eyeVertices > 0) {
+        GSPGPU_FlushDataCache(mobEyeVerts_, sizeof(mesh::DetailVertex) * u32(eyeVertices));
+    }
 
     bindPipeline(detailPipeline_);
     atlas_.bindEntity(0);
@@ -1176,14 +1277,136 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
     C3D_BufInfo bufInfo;
-    BufInfo_Init(&bufInfo);
-    BufInfo_Add(&bufInfo, mobVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
-    C3D_SetBufInfo(&bufInfo);
+    if (written >= 4) {
+        BufInfo_Init(&bufInfo);
+        BufInfo_Add(&bufInfo, mobVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&bufInfo);
 
-    const int quads = written / 4;
-    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
-    ++frameStats_.drawCalls;
-    frameStats_.quads += usize(quads);
+        const int quads = written / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+    }
+
+    if (shellVertices >= 4) {
+        // **Blended, and with depth writes off.** `gq` turns `GL_BLEND` on for
+        // this pass and leaves the depth buffer alone, which is what lets the
+        // eyes inside the jelly -- drawn a moment ago and nearer to nothing --
+        // show through it, and what stops two slimes standing in front of one
+        // another from hiding each other's faces. The depth *test* stays on so
+        // the wall behind still occludes.
+        //
+        // The alpha test goes off with it: `mob/slime.png`'s shell is alpha 199
+        // everywhere, and the world's 0.1 reference passes all of it at full
+        // opacity, which was the whole bug.
+        C3D_AlphaTest(false, GPU_ALWAYS, 0);
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                       GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+        C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_COLOR);
+
+        BufInfo_Init(&bufInfo);
+        BufInfo_Add(&bufInfo, mobShellVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&bufInfo);
+
+        const int quads = shellVertices / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+
+        // Put back what the entity passes after this one expect to find: the
+        // alpha-tested, unblended, depth-writing state every other model is
+        // drawn in. `drawEye` hands the next pass the state this one leaves.
+        C3D_AlphaTest(true, GPU_GREATER, kAlphaTestRef);
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+        C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
+    }
+
+    if (eyeVertices >= 4) {
+        // **`ok.a(ax, int)`, transcribed.** Out of the class file rather than
+        // out of a description of it: `loadTexture("/mob/spider_eyes.png")`,
+        // `f = (1 - getBrightness(1.0F)) * 0.5F`, `glEnable(GL_BLEND)`,
+        // `glDisable(GL_ALPHA_TEST)`, `glBlendFunc(SRC_ALPHA,
+        // ONE_MINUS_SRC_ALPHA)` and `glColor4f(1, 1, 1, f)`.
+        //
+        // **Depth writes stay on, unlike the shell's.** The jar touches the
+        // depth mask in neither pass, and the shell turns it off here for a
+        // reason of its own -- the slime's face is *inside* the jelly and has
+        // to show through it. Nothing is inside a spider's head: the eye box is
+        // the head grown by 0.01, so it lands a hair in front of geometry that
+        // has already written depth and the two agree about everything behind
+        // them.
+        C3D_AlphaTest(false, GPU_ALWAYS, 0);
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                       GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+
+        // **The alpha is the combiner's, and that is what makes it exact.**
+        // `glColor4f(1, 1, 1, f)` is one value per entity; a draw call is one
+        // value for every spider in it. Rather than split the draw, the term is
+        // rebuilt per fragment out of the lightmap, which is monochrome
+        // `lightBrightness(effectiveLightLevel(sky, block, subtracted))` -- the
+        // same function `Entity.getBrightness` returns -- sampled at the light
+        // coordinate the spider's own vertices already carry. So `1 -
+        // lightmap.r` *is* `1 - getBrightness`, per spider, out of one draw.
+        //
+        //   stage 0: rgb = the eye page, replacing the model's vertex colour,
+        //            because `glColor4f(1, 1, 1, f)` is white and overrides it
+        //            -- a hurt spider's eyes do not go red;
+        //            alpha = the page's own, which is what keeps everything but
+        //            the eyes transparent now the alpha test is off;
+        //   stage 1: alpha x= 1 - lightmap.r;
+        //   stage 2: rgb = the fade to fog every other pass gets, so a distant
+        //            spider's eyes recede with the rest of it;
+        //            alpha x= 0.5, which rides in the same stage's constant as
+        //            the fog colour, since one is rgb and the other is alpha.
+        C3D_TexEnv* eye0 = C3D_GetTexEnv(0);
+        C3D_TexEnvInit(eye0);
+        C3D_TexEnvSrc(eye0, C3D_Both, GPU_TEXTURE0, GPU_TEXTURE0, GPU_TEXTURE0);
+        C3D_TexEnvFunc(eye0, C3D_Both, GPU_REPLACE);
+
+        // Both stages below are skipped in wireframe for the reason
+        // `applyAtlasTexEnv` skips them there: a debug view that dims into a
+        // cave and fades out at the render distance hides what it was turned on
+        // to show. Without them the eyes draw at the page's own alpha, which is
+        // what wireframe wants -- visible.
+        C3D_TexEnv* eye1 = C3D_GetTexEnv(1);
+        C3D_TexEnvInit(eye1);
+        C3D_TexEnv* eye2 = C3D_GetTexEnv(2);
+        C3D_TexEnvInit(eye2);
+        if (!wireframe_) {
+            C3D_TexEnvSrc(eye1, C3D_RGB, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PREVIOUS);
+            C3D_TexEnvFunc(eye1, C3D_RGB, GPU_REPLACE);
+            C3D_TexEnvSrc(eye1, C3D_Alpha, GPU_PREVIOUS, GPU_TEXTURE1, GPU_PREVIOUS);
+            C3D_TexEnvOpAlpha(eye1, GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_ONE_MINUS_SRC_R,
+                              GPU_TEVOP_A_SRC_ALPHA);
+            C3D_TexEnvFunc(eye1, C3D_Alpha, GPU_MODULATE);
+
+            C3D_TexEnvSrc(eye2, C3D_RGB, GPU_CONSTANT, GPU_PREVIOUS, GPU_PRIMARY_COLOR);
+            C3D_TexEnvOpRgb(eye2, GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR,
+                            GPU_TEVOP_RGB_SRC_ALPHA);
+            C3D_TexEnvFunc(eye2, C3D_RGB, GPU_INTERPOLATE);
+            // The fog colour with `f`'s other half in its alpha. 128 rather
+            // than 127 because 128/255 is 0.502 and the half it stands for is
+            // 0.5; the four thousandths are below a texel of difference.
+            C3D_TexEnvColor(eye2, (fogColour_ & 0x00FFFFFFu) | 0x80000000u);
+            C3D_TexEnvSrc(eye2, C3D_Alpha, GPU_PREVIOUS, GPU_CONSTANT, GPU_CONSTANT);
+            C3D_TexEnvFunc(eye2, C3D_Alpha, GPU_MODULATE);
+        }
+
+        BufInfo_Init(&bufInfo);
+        BufInfo_Add(&bufInfo, mobEyeVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&bufInfo);
+
+        const int quads = eyeVertices / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+
+        // Everything after this reads what this pass leaves, and it borrowed
+        // all three stages.
+        C3D_AlphaTest(true, GPU_GREATER, kAlphaTestRef);
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+        applyAtlasTexEnv();
+    }
 
     atlas_.bind(0, wireframe_);
 }
@@ -1294,11 +1517,68 @@ void Renderer::drawMinecarts(const C3D_Mtx& viewProjection, i32 originChunkX,
     frameStats_.quads += usize(quads);
 
     atlas_.bind(0, wireframe_);
+
+    // **The block a chest or furnace cart carries, and it is a second draw
+    // because it is a second sheet**: `kt.a` binds `/terrain.png` for it and
+    // `/item/cart.png` for the cart. The block atlas is already back on by the
+    // line above, which is why this runs after rather than before.
+    drawMinecartBlocks(viewProjection, originChunkX, originChunkZ);
+}
+
+void Renderer::drawMinecartBlocks(const C3D_Mtx& viewProjection, i32 originChunkX,
+                                  i32 originChunkZ)
+{
+    if (minecarts_ == nullptr || minecartWorld_ == nullptr || minecarts_->count() == 0
+        || minecartBlockVerts_ == nullptr) {
+        return;
+    }
+
+    const double eyeBlockX = std::floor(itemEyeX_);
+    const double eyeBlockY = std::floor(itemEyeY_);
+    const double eyeBlockZ = std::floor(itemEyeZ_);
+
+    auto* verts = static_cast<mesh::DetailVertex*>(minecartBlockVerts_);
+    const int written =
+        render::buildMinecartBlocks(*minecarts_, *minecartWorld_, eyeBlockX, eyeBlockY,
+                                    eyeBlockZ, itemPartial_, verts, kMaxMinecartBlockVertices);
+    if (written < 4) {
+        return;  // no chest or furnace cart in range, which is the usual answer
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+
+    bindPipeline(detailPipeline_);
+
+    const float tx = float(eyeBlockX - double(originChunkX) * 16.0);
+    const float ty = float(eyeBlockY);
+    const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
+
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, minecartBlockVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = written / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
 }
 
 void Renderer::drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ)
 {
-    if (signs_ == nullptr || signs_->count() == 0 || signVerts_ == nullptr) {
+    // **The names over other players' heads ride this pass**, because it is the
+    // one that already draws text in the world with the font bound -- so a
+    // world with no signs in it still comes here when there is somebody to
+    // name. See core/render/remote_player_mesh.hpp.
+    const int liveSigns = signs_ != nullptr ? signs_->count() : 0;
+    const int namedPlayers = remotePlayers_ != nullptr ? remotePlayers_->playerCount() : 0;
+    if ((liveSigns == 0 && namedPlayers == 0) || signVerts_ == nullptr) {
         return;
     }
 
@@ -1316,16 +1596,23 @@ void Renderer::drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 or
     // that made dropped items invisible; see drawItemEntities.
     render::DrawCutoff signCutoff;
     const int boardCount =
-        atlas_.hasEntities() ? render::buildSignBoards(*signs_, eyeBlockX, eyeBlockY,
-                                                       eyeBlockZ, verts, kMaxSignVertices,
-                                                       &signCutoff)
-                             : 0;
+        atlas_.hasEntities() && liveSigns > 0
+            ? render::buildSignBoards(*signs_, eyeBlockX, eyeBlockY, eyeBlockZ, verts,
+                                      kMaxSignVertices, &signCutoff)
+            : 0;
     const bool haveFont = atlas_.hasFont() && signFont_ != nullptr && !signFont_->empty();
-    const int textCount =
-        haveFont ? render::buildSignText(*signs_, *signFont_, eyeBlockX, eyeBlockY,
-                                         eyeBlockZ, verts + boardCount,
-                                         kMaxSignVertices - boardCount, &signCutoff)
-                 : 0;
+    int textCount =
+        haveFont && liveSigns > 0
+            ? render::buildSignText(*signs_, *signFont_, eyeBlockX, eyeBlockY, eyeBlockZ,
+                                    verts + boardCount, kMaxSignVertices - boardCount,
+                                    &signCutoff)
+            : 0;
+    if (haveFont && namedPlayers > 0) {
+        textCount += render::buildNameTags(*remotePlayers_, *signFont_, particleCamera_,
+                                           eyeBlockX, eyeBlockY, eyeBlockZ, itemPartial_,
+                                           verts + boardCount + textCount,
+                                           kMaxSignVertices - boardCount - textCount);
+    }
     if (boardCount + textCount < 4) {
         return;
     }
@@ -1796,6 +2083,55 @@ void Renderer::drawChat()
     }
 
     atlas_.bind(0, wireframe_);
+}
+
+// **The focus hint.** Two triangles and one more, at the screen plane in both
+// eyes, on the same terms as the chat: an orthographic matrix over the top
+// screen's 400 x 240 and no interocular offset, because a thing that is on the
+// glass has no depth to have.
+//
+// The outline program, whose colour is a uniform -- which is exactly what this
+// wants, since the band and the arrowhead are two flat colours and nothing
+// here is textured. Blended, no alpha test, no depth test, last of everything.
+// Nothing is restored: `applyWorldState` restates all of it before the next
+// eye, the same contract `drawChat` works under.
+void Renderer::drawFocusHint()
+{
+    if (!focusHint_ || focusHintVerts_ == nullptr) {
+        return;
+    }
+
+    C3D_Mtx screen;
+    Mtx_OrthoTilt(&screen, 0.0f, float(kTopScreenWidth), float(kTopScreenHeight), 0.0f, 1.0f,
+                  -1.0f, true);
+
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+
+    bindPipeline(outlinePipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, outlinePipeline_.uLocMvp, &screen);
+    C3D_TexEnv* env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR);
+    C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+    for (int i = 1; i < 3; ++i) {
+        C3D_TexEnvInit(C3D_GetTexEnv(i));
+    }
+
+    C3D_BufInfo* buf = C3D_GetBufInfo();
+    BufInfo_Init(buf);
+    BufInfo_Add(buf, focusHintVerts_, sizeof(render::OutlineVertex), 1, 0x0);
+
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, outlinePipeline_.uLocTint, kFocusHintGrey, kFocusHintGrey,
+                  kFocusHintGrey, kFocusHintAlpha);
+    C3D_DrawArrays(GPU_TRIANGLES, 0, 6);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, outlinePipeline_.uLocTint, kFocusArrowGrey,
+                  kFocusArrowGrey, kFocusArrowGrey, kFocusArrowAlpha);
+    C3D_DrawArrays(GPU_TRIANGLES, 6, 3);
+    frameStats_.drawCalls += 2;
 }
 
 void Renderer::drawBreakOverlay(const C3D_Mtx& viewProjection, i32 originChunkX,
@@ -2387,10 +2723,12 @@ void Renderer::shutdown()
     // These are per-renderer frame buffers, not process-lifetime resources.
     // Returning from a world to the menu and opening another must not exhaust
     // linear memory one renderer instance at a time.
-    for (void** buffer : {&outlineVerts_, &crosshairVerts_, &particleVerts_, &itemVerts_,
+    for (void** buffer : {&outlineVerts_, &crosshairVerts_, &focusHintVerts_,
+                          &mobShellVerts_, &mobEyeVerts_, &particleVerts_, &itemVerts_,
                           &fallingVerts_, &tntVerts_, &tntFlashVerts_, &paintingVerts_,
                           &arrowVerts_, &boatVerts_,
-                          &minecartVerts_, &mobVerts_, &entityFireVerts_, &signVerts_,
+                          &minecartVerts_, &minecartBlockVerts_, &mobVerts_,
+                          &entityFireVerts_, &signVerts_,
                           &heldVerts_,
                           &chatVerts_, &chatStrips_, &skyVerts_}) {
         if (*buffer != nullptr) {
@@ -3209,20 +3547,43 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
         return;
     }
 
-    // Opaque non-cube geometry is drawn without back-face culling: a flower is
-    // two crossed planes and the original has no culling to satisfy, so both
-    // sides of each plane are meant to be seen. The mesher emits both windings,
-    // and culling them would halve every cross.
-    C3D_CullFace(GPU_CULL_NONE);
+    // **Opaque non-cube geometry is culled, and the sheets carry their own
+    // second side.**
+    //
+    // This pass used to run with culling off, on the argument that a flower is
+    // two crossed planes and the original has no culling to satisfy. The first
+    // half of that is true and the conclusion was wrong: `mesh::addSheet` --
+    // which *every* non-box shape here is built from -- already emits the plane
+    // and its mirror, and so does the cross in `mesher.cpp`. Nothing in this
+    // pass depends on the cull state to be two-sided; the shapes that need two
+    // sides have two quads.
+    //
+    // What the missing cull cost was a **door showing its own inside**. The top
+    // tile of a wooden door has a window in it -- 48 transparent texels of
+    // terrain tile 81 -- and `renderBlockDoor` emits all six faces of the
+    // door's three-sixteenths box, as this does. Looking through that window
+    // with nothing culled, the face on the far side of the box is drawn from
+    // behind, and a door reads as hollow. Reported from play. With the cull on
+    // you see through the window, which is what the window is for.
+    //
+    // A torch is the other one that was already written for it: its four sides
+    // are wound outward on purpose, with a comment saying the two facing away
+    // are culled, and until now they were not.
+    C3D_CullFace(GPU_CULL_BACK_CCW);
     drawPass(vp, Pass::Detail, originChunkX, originChunkZ);
 
     // **Between the two terrain passes**, which is where
     // `EntityRenderer.renderWorld` runs `renderParticles`: after the opaque
     // pass so a fleck is occluded by the ground it is bouncing on, before the
     // translucent one so it is visible *through* water rather than sorted
-    // against it. Culling is still off from the detail pass, which suits a
-    // billboard -- it faces the camera, but which way it is wound depends on
-    // where the camera is.
+    // against it.
+    //
+    // **Culling off again for the entity passes**, which it used to inherit
+    // from the detail pass above: a billboard faces the camera, and which way
+    // it is wound depends on where the camera is. The entity models are
+    // two-sided for their own reasons -- a mob's skin has cutouts and a
+    // painting is seen from behind.
+    C3D_CullFace(GPU_CULL_NONE);
     drawParticles(vp, originChunkX, originChunkZ);
     drawItemEntities(vp, originChunkX, originChunkZ);
     drawFallingBlocks(vp, originChunkX, originChunkZ);
@@ -3269,6 +3630,10 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     drawHeldItem(iod);
     drawChat();
     drawHud();
+    // **After the hearts**, because it is over the world and over the HUD both:
+    // the point of the band is that nothing on the top screen is taking the
+    // buttons right now.
+    drawFocusHint();
 
     C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
@@ -3313,6 +3678,19 @@ void Renderer::applyWorldState()
     // fragment stage in quantity. The test is correct, faithful and free.
     C3D_AlphaTest(true, GPU_GREATER, kAlphaTestRef);
 
+    // The three-stage combiner every pass that draws off the atlas inherits.
+    // Factored out because `drawMobs`'s eye pass replaces it for one draw and
+    // has to put it back exactly -- see `Renderer::applyAtlasTexEnv`.
+    applyAtlasTexEnv();
+}
+
+// The combiner chain `applyWorldState` installs, and the one the spider's eye
+// pass restores when it has finished borrowing the stages. It is a method
+// rather than a copy in two places because the two must not drift: the eye pass
+// is a single draw in the middle of the frame and everything after it reads
+// whatever it left behind.
+void Renderer::applyAtlasTexEnv()
+{
     // Three combiner stages, and the alpha channel is deliberately routed round
     // all of them.
     //

@@ -696,8 +696,54 @@ int poseMob(const entity::Mob& mob, float partial, ModelPart* parts, texture::En
     return count;
 }
 
-int buildMobs(const entity::MobSystem& system, double originX, double originY, double originZ,
-              float partial, mesh::DetailVertex* out, int max)
+namespace {
+
+// **`gq.a(Lma;I)Z` -- the one render pass in a1.1.2, and the one model that
+// has one.** `RenderManager` builds the slime as `new gq(new hh(16), new hh(0),
+// 0.25F)`: the main model is the inner body with the eyes and the mouth on it,
+// and the *pass* model is the 8-unit shell. `shouldRenderPass(0)` enables
+// `GL_BLEND` with `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` and draws the shell over the
+// face; `shouldRenderPass(1)` turns it off again.
+//
+// The shell has to be blended and not alpha-tested, because the jelly really is
+// translucent in the texture -- `mob/slime.png`'s outer half is alpha 199 of
+// 255 -- and alpha-testing it at the world's 0.1 reference keeps every one of
+// those texels at full opacity, which is a slime with no face. That is exactly
+// what this port drew until the shell was given its own pass.
+//
+// So a mob mesh comes out in three runs: everything solid, the slime shells, and
+// the spider eyes. The last two are separate from each other and not merely from
+// the first because they are different *state* -- the shell blends the texture's
+// own alpha with depth writes off, and the eyes blend an alpha the lightmap
+// computes with depth writes on. One draw call each, and neither is ever more
+// than one box per mob.
+bool shellPart(entity::MobType type, int part)
+{
+    return type == entity::MobType::Slime && part == kSlimeShell;
+}
+
+// `ok.a(ax, int)`'s pass: the head redrawn from `mob/spider_eyes.png`. `poseMob`
+// appends it after the model's own eleven, so it is always the last part.
+bool eyePart(entity::MobType type, int part)
+{
+    return type == entity::MobType::Spider && part == kSpiderParts;
+}
+
+enum class MobPass { Solid, Shell, Eyes };
+
+bool partBelongsTo(entity::MobType type, int part, MobPass pass)
+{
+    if (shellPart(type, part)) {
+        return pass == MobPass::Shell;
+    }
+    if (eyePart(type, part)) {
+        return pass == MobPass::Eyes;
+    }
+    return pass == MobPass::Solid;
+}
+
+int buildMobRun(const entity::MobSystem& system, double originX, double originY,
+                double originZ, float partial, mesh::DetailVertex* out, int max, MobPass pass)
 {
     if (out == nullptr || max < kBoxVertices) {
         return 0;
@@ -756,6 +802,13 @@ int buildMobs(const entity::MobSystem& system, double originX, double originY, d
         const Placement placement = placeMob(mob, originX, originY, originZ, partial);
         const int before = written;
         for (int part = 0; part < count; ++part) {
+            // **Admitted on the whole animal and written a pass at a time**, so
+            // the two runs agree about which animals are drawn at all. A shell
+            // whose face was cut for want of room would be a blob of jelly with
+            // nothing inside it.
+            if (!partBelongsTo(mob.type, part, pass)) {
+                continue;
+            }
             written += buildBox(parts[part], placement, skins[part], mob.light, out + written,
                                 max - written);
         }
@@ -769,6 +822,26 @@ int buildMobs(const entity::MobSystem& system, double originX, double originY, d
         }
     }
     return written;
+}
+
+}  // namespace
+
+int buildMobs(const entity::MobSystem& system, double originX, double originY, double originZ,
+              float partial, mesh::DetailVertex* out, int max)
+{
+    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Solid);
+}
+
+int buildMobShells(const entity::MobSystem& system, double originX, double originY,
+                   double originZ, float partial, mesh::DetailVertex* out, int max)
+{
+    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Shell);
+}
+
+int buildMobEyes(const entity::MobSystem& system, double originX, double originY,
+                 double originZ, float partial, mesh::DetailVertex* out, int max)
+{
+    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Eyes);
 }
 
 }  // namespace mc::render

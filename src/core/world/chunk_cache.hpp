@@ -337,6 +337,42 @@ public:
     // three queues, and dropped if the cache already has the chunk.
     void prefetch(i32 x, i32 z);
 
+    // ----------------------------------------------------------- survey ------
+
+    // **A column read for something that only wants to look at it once**, and
+    // the map is the only thing in this build that does: ground outside the
+    // render distance is ground the grid will never hold, and a picture of it
+    // is a read, a look and nothing kept.
+    //
+    // The visitor runs **on the I/O thread**, with no lock of this class held,
+    // and gets a column that is the cache's for the length of the call: it must
+    // copy out whatever it wants and must not keep the pointer. A null column
+    // is a chunk that is not there or will not decode -- one answer, because a
+    // caller that only wants to look has the same thing to do about both.
+    //
+    // **Nothing is installed and nothing is evicted by it.** A survey that
+    // happened to find the column already in the cache is answered from it
+    // (free, and the LRU stamp moves, because something did look at it); a
+    // survey that has to read reads into one scratch column the I/O thread
+    // keeps, so a map filling in a thousand chunks cannot push the ring the
+    // player is standing in out of the cache.
+    //
+    // It is the **lowest priority there is** -- below the read-ahead ring, which
+    // is itself below every write -- so the card is never taken away from the
+    // world for a picture of it.
+    using SurveyFn = void (*)(void* context, i32 chunkX, i32 chunkZ, const ChunkColumn* column);
+    void setSurveyor(SurveyFn visit, void* context);
+
+    // Queue one. False when there is no surveyor, the world is shut, or this
+    // chunk is already queued -- all three mean "nothing was added", which is
+    // what a caller counting its outstanding requests needs to know.
+    bool survey(i32 x, i32 z);
+
+    // Drops every queued survey and forgets the visitor. **What a world being
+    // closed calls**, so a request cannot come back to an object that is on its
+    // way out. A survey already taken by the I/O thread still completes.
+    void cancelSurveys();
+
     // List the group containing (x, z), so a later existence check about any
     // chunk in it is free. Cheap to call repeatedly: a group that is listed or
     // already queued is ignored.
@@ -465,7 +501,7 @@ private:
         bool urgent = false;  // on urgentGroups_ rather than groupQueue_
     };
 
-    enum class JobKind : u8 { Read, Write, List, Housekeeping };
+    enum class JobKind : u8 { Read, Write, List, Housekeeping, Survey };
 
     // Defaulted member by member so a construction that names only the fields
     // a job kind uses is still complete. The 3DS build turns on
@@ -562,6 +598,17 @@ private:
     std::vector<i64> writeQueue_;
     std::vector<i64> prefetchQueue_;
     std::vector<u64> groupQueue_;
+
+    // **Below all four of them.** See survey(): a picture of ground nobody is
+    // standing in waits for everything the world itself is owed.
+    std::vector<i64> surveyQueue_;
+    std::set<i64> surveyQueued_;
+    SurveyFn surveyor_ = nullptr;
+    void* surveyorContext_ = nullptr;
+    // The one column a survey reads into, reused for every survey and touched
+    // only by the thread running the job. Made on the first survey, because a
+    // world that never draws a map should not carry 80 KB for one.
+    std::unique_ptr<ChunkColumn> surveyScratch_;
 
     // **Groups something is waiting on right now**, ahead of the speculative
     // ring in groupQueue_ and ahead of the writes. Both are FIFO and the order

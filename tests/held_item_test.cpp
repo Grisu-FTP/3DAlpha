@@ -366,3 +366,51 @@ TEST(a_button_in_the_hand_is_smaller_than_the_stone_it_is_made_of)
     CHECK(widest(button.verts) > 0);
     CHECK(widest(button.verts) < widest(stone.verts));
 }
+
+// **A fence post in the hand shows the slice of the plank tile it covers, not
+// the whole tile squeezed onto a quarter-block face.**
+//
+// `renderBlockOnInventory`'s fence branch sets the block's bounds and then
+// calls the very `bc.a`..`bc.f` the world mesher uses, and those clip their UVs
+// to the bounds -- so a post is a narrow strip of tile 4. Mapping the full tile
+// across it instead is what made a held fence read as a plain square of wood:
+// the shape was right and the texture was the whole plank.
+TEST(a_fence_post_samples_the_slice_of_its_tile_that_it_covers)
+{
+    const Built fence = build(ItemId(mcver::Block::Fence), 1.0f, 0.0f);
+    const Built planks = build(ItemId(mcver::Block::Planks), 1.0f, 0.0f);
+    CHECK(fence.mesh.sheet == HeldSheet::Terrain);
+    CHECK(fence.mesh.vertices > 0);
+
+    // Both are drawn from the same tile -- `BlockFence` is `super(i, 4)` -- so
+    // any difference in the u range is the box clipping and nothing else.
+    CHECK_EQ(int(block::def(block::BlockId(mcver::Block::Fence)).texture),
+             int(block::def(block::BlockId(mcver::Block::Planks)).texture));
+
+    const auto uSpan = [](const std::vector<mesh::DetailVertex>& verts) {
+        i16 lo = verts.front().u;
+        i16 hi = verts.front().u;
+        for (const mesh::DetailVertex& v : verts) {
+            lo = v.u < lo ? v.u : lo;
+            hi = v.u > hi ? v.u : hi;
+        }
+        return int(hi) - int(lo);
+    };
+    const auto vSpan = [](const std::vector<mesh::DetailVertex>& verts) {
+        i16 lo = verts.front().v;
+        i16 hi = verts.front().v;
+        for (const mesh::DetailVertex& v : verts) {
+            lo = v.v < lo ? v.v : lo;
+            hi = v.v > hi ? v.v : hi;
+        }
+        return int(hi) - int(lo);
+    };
+
+    // A full cube of the same tile spans the whole of it; the post is a quarter
+    // of a block across, so its u range is about a quarter of that.
+    CHECK(uSpan(fence.verts) > 0);
+    CHECK(uSpan(fence.verts) * 3 < uSpan(planks.verts));
+    // And its height is the block's, so v is not narrowed with it -- which is
+    // what says the clip is per-axis rather than a uniform shrink.
+    CHECK_EQ(vSpan(fence.verts), vSpan(planks.verts));
+}

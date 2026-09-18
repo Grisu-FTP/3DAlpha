@@ -61,6 +61,18 @@ TEST(hanging_launching_or_railing_an_entity_spends_one)
     CHECK_EQ(item::spendOnUse(i(Item::Minecart)), 1);  // jo
 }
 
+// **A music disc places nothing and spends anyway**, which is why it is a row
+// and not a column: `lg.a` ends with `itemstack.stackSize--` on its success
+// path exactly as the nine above do, and neither `places` nor `spawns` can say
+// so. Without it a disc put into a jukebox stayed in the hand and taking it
+// back out was a second one -- reported from play.
+TEST(a_music_disc_spends_one_when_it_goes_into_a_jukebox)
+{
+    CHECK_EQ(item::spendOnUse(item::ItemId(mcver::Item::Record13)), 1);   // lg
+    CHECK_EQ(item::spendOnUse(item::ItemId(mcver::Item::RecordCat)), 1);
+    CHECK_EQ(item::wearOnUse(item::ItemId(mcver::Item::Record13)), 0);
+}
+
 TEST(a_hoe_and_flint_and_steel_wear_instead_of_spending)
 {
     CHECK_EQ(item::spendOnUse(i(Item::WoodenHoe)), 0);

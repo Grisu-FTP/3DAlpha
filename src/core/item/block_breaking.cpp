@@ -100,6 +100,20 @@ bool harvestBlock(BreakContext& ctx, i32 x, int y, i32 z)
     return removed;
 }
 
+bool harvestBlockFor(tick::TickWorld& world, i32 x, int y, i32 z, ItemId held,
+                     const Effects& effects)
+{
+    // `in.c(III)Z`, read before the removal for the reason `destroyBlock` gives:
+    // the cell is about to be air and the drop is the block that was there.
+    const block::BlockId self = world.blockAt(x, y, z);
+    const u8 metadata = world.dataAt(x, y, z);
+    const bool removed = destroyBlock(world, x, y, z, effects);
+    if (removed && canHarvest(held, self)) {
+        tick::dropBlockAsItem(world, x, y, z, self, metadata);
+    }
+    return removed;
+}
+
 bool BlockBreaker::click(BreakContext& ctx, i32 x, int y, i32 z, int face)
 {
     (void)face;

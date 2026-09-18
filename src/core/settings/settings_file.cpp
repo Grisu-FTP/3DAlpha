@@ -72,6 +72,13 @@ bool loadSettings(io::FileSystem& fs, const char* path, GameSettings* out)
             }
             continue;
         }
+        if (key == "look_sensitivity") {
+            int percent = 0;
+            if (parseInt(value, &percent)) {
+                out->lookSensitivity = percent;
+            }
+            continue;
+        }
         if (key == "texture_pack") {
             // A pack name is a file name and must stay one: a value with a
             // separator in it would let an edited ini point the loader outside
@@ -117,6 +124,9 @@ bool saveSettings(io::FileSystem& fs, const char* path, const GameSettings& sett
     std::snprintf(line, sizeof(line), "music_volume=%d\n", settings.musicVolume);
     text += line;
     std::snprintf(line, sizeof(line), "sound_volume=%d\n", settings.soundVolume);
+    text += line;
+
+    std::snprintf(line, sizeof(line), "look_sensitivity=%d\n", settings.lookSensitivity);
     text += line;
 
     text += "texture_pack=";

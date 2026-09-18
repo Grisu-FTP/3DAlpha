@@ -101,6 +101,20 @@ bool ContainerSession::openChest(tick::TickWorld& world, i32 x, int y, i32 z)
     return pull(&world);
 }
 
+bool ContainerSession::openMinecartChest(entity::MinecartSystem& carts, u32 cartId)
+{
+    if (carts.chestSlots(cartId) == nullptr) {
+        return false;
+    }
+    kind_ = ScreenKind::MinecartChest;
+    carts_ = &carts;
+    cart_ = cartId;
+    // One cart, so one part -- the layout reads `chestRows()` and nothing else.
+    chestParts_ = 1;
+    clearStack(cursor_);
+    return pull(nullptr);
+}
+
 bool ContainerSession::pull(tick::TickWorld* world)
 {
     switch (kind_) {
@@ -126,6 +140,25 @@ bool ContainerSession::pull(tick::TickWorld* world)
         furnaceCurrentBurn_ = tile->currentBurnTime;
         return true;
     }
+    case ScreenKind::MinecartChest: {
+        // **The world is not asked here and must not be.** A chest cart has no
+        // cell; what says it is still there is the pool, which the session
+        // holds directly. It answers false the moment the cart has gone, and
+        // the caller closes -- the same answer a chest gives for a block that
+        // was blown up under its screen.
+        if (carts_ == nullptr) {
+            return false;
+        }
+        const item::ItemStack* slots = carts_->chestSlots(cart_);
+        if (slots == nullptr) {
+            return false;
+        }
+        for (int i = 0; i < entity::kMinecartChestSlots; ++i) {
+            changed_ = changed_ || !sameStack(slots[i], chest_[i]);
+            chest_[i] = slots[i];
+        }
+        return true;
+    }
     case ScreenKind::Chest: {
         if (world == nullptr) {
             return true;
@@ -148,6 +181,19 @@ bool ContainerSession::pull(tick::TickWorld* world)
 
 void ContainerSession::push(tick::TickWorld* world)
 {
+    // **The chest cart is written first and needs no world**, which is why this
+    // test is above the early return rather than below it: the stacks belong to
+    // an entity pool, not to a column.
+    if (kind_ == ScreenKind::MinecartChest) {
+        if (carts_ != nullptr) {
+            if (item::ItemStack* slots = carts_->chestSlots(cart_)) {
+                for (int i = 0; i < entity::kMinecartChestSlots; ++i) {
+                    slots[i] = chest_[i];
+                }
+            }
+        }
+        return;
+    }
     if (world == nullptr) {
         return;
     }
@@ -182,6 +228,8 @@ int ContainerSession::containerSlots() const
         return tick::kFurnaceSlotCount;
     case ScreenKind::Chest:
         return chestParts_ * world::kChestSlots;
+    case ScreenKind::MinecartChest:
+        return entity::kMinecartChestSlots;
     }
     return 0;
 }
@@ -226,7 +274,11 @@ ContainerSession::Resolved ContainerSession::resolve(Inventory& inventory, int i
         out.tileBacked = true;
         break;
     case ScreenKind::Chest:
+    case ScreenKind::MinecartChest:
         out.stack = &chest_[index];
+        // `tileBacked` is "this stack is a copy and has to be pushed back".
+        // A cart's is a copy for the same reason a chest's is, so it takes the
+        // same path out; only `push` knows where it goes.
         out.tileBacked = true;
         break;
     case ScreenKind::None:

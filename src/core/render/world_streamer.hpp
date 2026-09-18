@@ -29,6 +29,8 @@
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/scratch.hpp"
 #include "core/mesh/visibility.hpp"
+#include "core/net/chunk_payload.hpp"
+#include "core/net/pending_edits.hpp"
 #include "core/render/chunk_renderer.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/chunk_queue.hpp"
@@ -44,6 +46,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -154,6 +157,80 @@ public:
     using SaveProgressFn = void (*)(void* context, u32 written, u32 owed);
     void close(i64 nowMillis, void* progressContext = nullptr,
                SaveProgressFn progress = nullptr);
+
+    // ---- a multiplayer world -------------------------------------------
+    //
+    // **The same streamer, with a server where the card was.** Columns arrive
+    // from the session instead of from storage, nothing is generated and nothing
+    // is ever written, and the grid, the meshing, the tick world the body
+    // collides with and the relighting are all the single-player ones -- which is
+    // the point: a column from a server is the same object as a column from a
+    // file, so everything downstream of the grid needs to know nothing.
+    //
+    // What differs is what `gs`, WorldClient, differs in:
+    //
+    //   * **A column is waited for, not looked up.** A cell with no column is
+    //     `Awaited`, and meshing a neighbour waits for it only inside the
+    //     server's view radius -- past it the server will not send one, and
+    //     waiting would leave the edge of the view permanently unmeshed.
+    //   * **A column the grid lets go of is kept**, not saved: the server still
+    //     has it loaded and will not send it again until it unloads and reloads
+    //     it, so dropping it would be a hole to walk back into. It is freed when
+    //     the server's Pre-Chunk says so.
+    //   * **The world does not tick.** `gs.a(boolean)` is `return false` and
+    //     `gs.g()` never calls World's tick: time moves, and the revert list
+    //     counts down. Every block the client sees change arrives in a packet.
+    //   * **The client's own edits are provisional** -- see
+    //     core/net/pending_edits.hpp. Every write to the tick world that is not
+    //     the server's is recorded, and confirmed or put back.
+    //
+    // Call `open` or `openRemote`, never both; `close` ends either.
+    bool openRemote(int meshDistance);
+    bool remote() const { return remote_; }
+
+    // **How far the server sends, in chunks.** Ten is `ae`'s square in server
+    // 0.2.1 and is the default; another console hosting over local wireless
+    // sends a smaller one, because every column in it is a deflate and a
+    // handful of 1,400-byte datagrams on a shared radio.
+    //
+    // It is not a preference: it decides what a cell with no column *means*.
+    // Inside it, a missing column is one that has not arrived yet and meshing
+    // its neighbour has to wait, or the faces would be culled against air and
+    // never fixed. Outside it, no column is coming, and waiting would leave a
+    // permanently unmeshed ring at exactly the distance the player is looking.
+    // Set it before `openRemote`; a session that never sets it gets ten.
+    void setServerViewRadius(int chunks)
+    {
+        serverViewRadius_ = chunks > 0 ? chunks : kServerViewRadius;
+    }
+
+    // A whole column from a Map Chunk. Taken into the grid inside the next
+    // `update()`, or held until the grid has a cell for it.
+    void supplyColumn(std::unique_ptr<world::ChunkColumn> column);
+
+    // Pre-Chunk with mode 0: the server has let this column go, and so does
+    // the client. Also applied inside the next `update()`, in arrival order with
+    // the columns, so an unload followed by a fresh send of the same column
+    // keeps the fresh one.
+    void unloadColumn(i32 chunkX, i32 chunkZ);
+
+    // A partial Map Chunk. Its planes carry their own light, so nothing is
+    // relit; the columns it touched are re-meshed with their neighbours' faces.
+    void applyRegion(ChunkRenderer& renderer, const net::MapChunkRegion& region);
+
+    // A Block Change, or one entry of a Multi Block Change: `gs.c(IIIII)`.
+    // Confirms any pending edit of that block, then writes it without notifying
+    // neighbours -- the server sends whatever those would have changed. False
+    // when the server named a column the client does not hold.
+    bool applyServerBlock(ChunkRenderer& renderer, i32 x, int y, i32 z, block::BlockId id,
+                          u8 data);
+
+    // Time Update and Spawn Position.
+    void setRemoteTime(i64 time);
+    void setRemoteSpawn(i32 x, i32 y, i32 z);
+
+    int pendingEdits() const { return edits_.count(); }
+    usize remoteHeld() const { return remoteColumns_.size(); }
 
     // **Whether a chunk the world does not have gets made, and it is off by
     // default.**
@@ -337,6 +414,25 @@ public:
 
     bool isOpen() const { return open_; }
     const world::LevelData& level() const { return level_; }
+
+    // **Terrain from another console**, for a world this one is hosting. Set
+    // before `open`; the generator consults it before making a column of its
+    // own, and a null callback is exactly the single-player behaviour. See
+    // core/net/terrain_share.hpp for what may cross and why it is only the
+    // terrain.
+    struct TerrainSource {
+        void* context = nullptr;
+        bool (*supply)(void* context, i32 chunkX, i32 chunkZ, u8* blocks) = nullptr;
+    };
+
+    void setTerrainSource(const TerrainSource& source) { terrainSource_ = source; }
+
+private:
+    // The generator's own context is this streamer, so the source is reached
+    // through here rather than installed directly.
+    static bool generatorSupplyTerrain(void* context, i32 chunkX, i32 chunkZ, u8* blocks);
+
+public:
     const std::string& path() const { return path_; }
 
     // Where the player starts: their saved position, or the spawn point in a
@@ -380,6 +476,112 @@ public:
     // or from the generator, and both hand over finished work. That is the
     // honest gate.
     const world::ChunkColumn* residentColumn(i32 chunkX, i32 chunkZ) const;
+
+    // ---- ground somebody else is standing on ---------------------------
+    //
+    // **The grid has one centre, and a session has as many as it has
+    // players.** The grid wraps modulo its own width, so it can be centred on
+    // exactly one camera -- this console's -- and everything outside it used
+    // to be ground that did not exist as far as this process was concerned.
+    // For a host that is a hard limit on where its guests may walk: `ae`, the
+    // per-player chunk tracker, asks for a column, `ServerWorld::column`
+    // answers null because the grid does not reach that far, and the guest
+    // stands at the edge of the world watching nothing arrive
+    // (`WorldServer::Player::starved`).
+    //
+    // A **served area** is a second, third and fourth set of columns, held
+    // outside the grid for exactly that reason. They are read from the same
+    // cache, generated by the same generator on the same slate, edited through
+    // the same `TickWorld` -- `tickColumn` answers out of them when the grid
+    // misses -- and saved by the same autosave. What they are *not* is meshed:
+    // nothing on this console's screen is in them, so they cost no vertices,
+    // no card upload and no visibility work, which is most of what a grid cell
+    // costs.
+    //
+    // Set every frame from wherever the other players are; an empty list lets
+    // the whole set go on the next `update()`. Single player never calls this
+    // and pays one branch for it.
+    struct ServedArea {
+        i32 chunkX = 0;
+        i32 chunkZ = 0;
+        int radius = 0;
+    };
+    static constexpr int kMaxServedAreas = 8;
+
+    // **What the whole set may cost**, over every area together.
+    //
+    // 225 is one guest's whole view square at the host's own view distance
+    // (`WorldServer::kServedRadius`), so this is that with room to spare: a
+    // single guest exploring -- which is the case the whole feature is for --
+    // is never cut short by it. Several guests far apart *do* hit it, and what
+    // happens then is honest rather than clever: the walk fills in scan order,
+    // stops at the cap, and asks again about what it could not take as they
+    // move, so the ground under each of them arrives and ground behind them
+    // may not be held. There is no nearest-first fairness here and this comment
+    // is not claiming any.
+    //
+    // A hard count and not a byte budget, because `enforceMemoryBudget` shrinks
+    // the *grid* and knows nothing about these: a budget that could not act
+    // would be a number that lied. The host's own grid is 361 columns at render
+    // distance 8, so this is the same order again and no more.
+    static constexpr int kMaxServedColumns = 256;
+
+    // **How much more the generator has to remember for one served area, and
+    // why only one of them may generate at a time.**
+    //
+    // `ChunkGenerator::cacheColumnsFor` is fitted to a *single* centre: the
+    // measurement behind it is one player's frontier, and `kRetireSlackChunks`
+    // leaves a flat 32 columns of headroom on top of it. A second centre being
+    // swept has a frontier of its own -- a finished square of radius r leaves
+    // its whole perimeter live, because those columns never get their outward
+    // neighbours -- and 32 columns does not cover it. Overflowing is not a
+    // slowdown: `acquire` takes a live column when there is no delivered one,
+    // and a live column taken comes back as bare terrain with its neighbours'
+    // trees missing. `Stats::generatorEvictedLive` is the counter that says so
+    // and it must stay at zero.
+    //
+    // So the cache grows by the perimeter of one served square -- `8 * radius`
+    // -- plus a sweep's own 6x6 and the 8x8 window it pulls in, and **only one
+    // area is allowed on the slate at a time**. A guest's square fills once and
+    // then stops owing anything, at which point the next guest's turn comes
+    // round; their region is retired as a unit when it does, which is the one
+    // operation `ChunkGenerator::retire` is documented as safe.
+    //
+    // At the host's view distance this is 120 columns, which is 3.8 MB of the
+    // generator's block pool -- paid only by a session with a guest outside the
+    // host's grid, and never by single player.
+    //
+    // **Measured**, by `a_served_area_at_a_full_view_distance_does_not_overrun_
+    // the_generator`: filling a radius-7 square 200 chunks from a render
+    // distance of 4 peaks at **258 columns live** against a cache of 296 (176
+    // from `cacheColumnsFor(5)` plus the 120 here), with `evictedLive`,
+    // `generationFailures`, `generationIncomplete` and `generationUnlightable`
+    // all zero. It was 254 before the served walk stopped skipping the three
+    // rings between `gridColumnRadius()` and `gridRadius_` -- four more columns
+    // for a band that used to be served by nobody. Without the slack the same
+    // fill would want 258 slots out of 176, and every column `acquire` took to
+    // make room would come back as bare terrain with its neighbours' trees
+    // missing. Re-run that test before changing this formula, the way
+    // `cacheColumnsFor` says to re-run `--generate` before changing its own.
+    static constexpr int servedGeneratorSlack(int radius)
+    {
+        return 8 * (radius < 0 ? 0 : radius) + 64;
+    }
+
+    void setServedAreas(const ServedArea* areas, int count);
+
+    // A column from a served area, or null. Separate from `residentColumn`
+    // because the two answer different questions -- "is it on the screen" and
+    // "does this process have it" -- and only the second one is what a server
+    // is asking. `ServerWorld::column` wants either.
+    const world::ChunkColumn* servedColumn(i32 chunkX, i32 chunkZ) const;
+
+    // How many columns the served areas are holding, and how many of the
+    // chunks they want are still owed. The debug page reads both; so does the
+    // host, which is how it can say "still loading their ground" rather than
+    // leaving a guest guessing.
+    int servedColumns() const { return int(served_.size()); }
+    int servedOwed() const { return servedOwed_; }
 
     // **When a column joins the grid and when it leaves it.**
     //
@@ -512,6 +714,14 @@ public:
     bool breakBlock(ChunkRenderer& renderer, i32 x, int y, i32 z,
                     const item::Effects& effects = {});
 
+    // **The same, for a break whose player is on another console**: the host
+    // running a guest's finished dig. It is `item::harvestBlockFor` under this
+    // bracket -- the removal plus the drop the digger's tool earned -- and it is
+    // separate from `breakBlock` above because `breakBlock` is also Creative's,
+    // where nothing drops. See core/item/block_breaking.hpp.
+    bool harvestBlock(ChunkRenderer& renderer, i32 x, int y, i32 z, item::ItemId held,
+                      const item::Effects& effects = {});
+
     // **The bracket on its own, for the frame loop's own writes.**
     //
     // Everything above is one player action with a renderer held around it, and
@@ -611,6 +821,27 @@ public:
     bool takeChangedColumn(i32* chunkX, i32* chunkZ);
     int changedColumns() const { return mapDirty_.size(); }
 
+    // **Every block the world writes, one call each, for a host serving it to
+    // another console.**
+    //
+    // The same choke point `takeChangedColumn` is filled from, one layer finer:
+    // that one says which columns moved, and a session has to say which
+    // *blocks* did, because a Block Change is five bytes and a column is
+    // several kilobytes. It is the whole of the traffic either way -- a
+    // player's edit, a tick's fluid, a leaf decaying, sand falling -- because
+    // everything that writes a block in this game goes through `TickWorld`.
+    //
+    // **It is on the fluid's path**, so what it costs matters: a lake draining
+    // reaches this hundreds of times a tick. The watcher is expected to push a
+    // coordinate and return. Main thread only, like everything that writes a
+    // block, and null by default.
+    using BlockWatcher = void (*)(void* ctx, i32 x, int y, i32 z);
+    void setBlockWatcher(BlockWatcher watcher, void* ctx)
+    {
+        blockWatcher_ = watcher;
+        blockWatcherCtx_ = ctx;
+    }
+
     // **True when more columns changed than the list could hold**, so a reader
     // that must miss nothing has to fall back to looking at everything. Reading
     // it clears it: the answer to losing any number of coordinates is to
@@ -666,6 +897,35 @@ public:
     // Whether offering is worth trying at all: there is a worker thread, and it
     // is not this one.
     bool columnWorkAvailable() const;
+
+    // ------------------------------------------------------------------
+    // **Ground the grid will never hold, read off the card for a look at it.**
+    //
+    // The map reaches further than the renderer does -- always at a render
+    // distance below 7, and at every distance once it is zoomed out -- so there
+    // is a band of the window that no resident column can ever fill. This is
+    // how it gets filled: the I/O thread reads the column, the visitor samples
+    // it there, and nothing is kept. See `world::ChunkCache::survey`, which
+    // owns every rule about it; this is the pass-through, plus the two things
+    // only the streamer knows.
+    //
+    // **The first is that a remote world has no card.** A guest's columns come
+    // from its host and there is no storage under this object at all, so a
+    // survey could never answer and must not be offered.
+    //
+    // **The second is that the world's own reads come first.** That is the
+    // queue's own rule -- a survey sits under every read, write, listing and
+    // read-ahead -- so nothing here has to hold the map back; it simply waits.
+    bool surveyAvailable() const { return open_ && !remote_; }
+    void setColumnSurveyor(world::ChunkCache::SurveyFn visit, void* context)
+    {
+        cache_.setSurveyor(visit, context);
+    }
+    bool surveyColumn(i32 chunkX, i32 chunkZ)
+    {
+        return surveyAvailable() && cache_.survey(chunkX, chunkZ);
+    }
+    void cancelSurveys() { cache_.cancelSurveys(); }
 
     // **The world coming into being, as a picture.** One `gui::ChunkState` per
     // cell of a square centred on `centreX`/`centreZ`, row-major from the
@@ -739,6 +999,7 @@ private:
         Loaded,       // block data in memory
         Absent,       // the world has no such chunk and none is coming
         Ungenerated,  // the world has no such chunk *yet*: it is the work queue
+        Awaited,      // multiplayer: the server has not sent this column (yet)
     };
 
     // **The two "not here" states are not interchangeable.** `Absent` is the
@@ -935,6 +1196,93 @@ private:
     // column.
     void adoptColumn(Cell& cell, std::unique_ptr<world::ChunkColumn> column);
 
+    // ---- multiplayer ---------------------------------------------------
+
+    // `ae`, server 0.2.1's per-player chunk tracker, sends every column within
+    // ten chunks of the player's and unloads what leaves that square. A cell
+    // further out than this is not coming, so it is not waited for.
+    static constexpr int kServerViewRadius = 10;
+
+    // What the server this session is actually talking to sends. Ten for a
+    // Java server; see `setServerViewRadius` for why it is not always ten.
+    int serverViewRadius_ = kServerViewRadius;
+
+    struct RemoteOp {
+        i32 x;
+        i32 z;
+        bool unload;
+    };
+
+    static i64 remoteKey(i32 chunkX, i32 chunkZ)
+    {
+        return i64((u64(u32(chunkX)) << 32) | u64(u32(chunkZ)));
+    }
+    void drainRemote(ChunkRenderer& renderer);
+    static void recordEdit(void* ctx, i32 x, int y, i32 z, block::BlockId oldBlock, u8 oldData);
+    static void revertEdit(void* ctx, i32 x, int y, i32 z, u16 block, u8 data);
+    static world::ChunkColumn* regionColumn(void* ctx, i32 chunkX, i32 chunkZ);
+
+    bool remote_ = false;
+    // True while a write is the server's own, so it is not recorded as an edit.
+    bool applyingServer_ = false;
+    std::unordered_map<i64, std::unique_ptr<world::ChunkColumn>> remoteColumns_;
+    std::vector<RemoteOp> remoteOps_;
+    net::PendingEdits edits_;
+    std::vector<u8> regionScratch_;
+
+    // ---- served areas ---------------------------------------------------
+    //
+    // One entry per column held for somebody else. `dirty` is the same flag
+    // `Cell::tickDirty` is and is flushed the same way; `owed` marks a chunk
+    // the world does not have yet, which is what puts it on the slate.
+    struct ServedColumn {
+        std::unique_ptr<world::ChunkColumn> column;
+        bool dirty = false;
+        bool owed = false;
+    };
+    std::unordered_map<i64, ServedColumn> served_;
+    ServedArea servedAreas_[kMaxServedAreas] = {};
+    int servedAreaCount_ = 0;
+    int servedOwed_ = 0;
+    // Counted over the current pass; published into `servedOwed_` when it wraps.
+    int servedOwedScan_ = 0;
+    // **Which served area may put columns on the slate**, and the only one
+    // whose centre is published to `ChunkGenerator::retire`. See
+    // `servedGeneratorSlack`. -1 is none.
+    int servedGenerating_ = -1;
+    // Per area, how many of its chunks this console does not hold yet --
+    // counted over a whole pass and published with `servedOwed_`. The turn
+    // passes only when the area holding it wants **nothing**: not merely no
+    // column the generator owes, but none it has still to ask storage about.
+    // Passing on the narrower test made two guests swap the turn every few
+    // frames early on, and every swap retires and re-derives a frontier.
+    int servedAreaPending_[kMaxServedAreas] = {};
+    int servedAreaPendingScan_[kMaxServedAreas] = {};
+    // The slack the served areas currently want, in columns. Folded into
+    // `wantedGeneratorColumns_` by `publishRetireCentre`.
+    int servedGeneratorGrown_ = 0;
+    // Where the ring walk got to last frame, so a frame's budget picks up where
+    // the last one left off instead of re-asking about the same near columns.
+    int servedCursor_ = 0;
+
+    // Whether (chunkX, chunkZ) is inside any served area.
+    bool inServedArea(i32 chunkX, i32 chunkZ) const;
+    // Chebyshev distance to the nearest served centre, or -1 for none.
+    int servedDistance(i32 chunkX, i32 chunkZ) const;
+    // One frame's share of reading, generating, evicting and capping.
+    void pumpServed(int budget);
+    // `Cell::tickDirty` for a served column.
+    void markServedModified(i32 chunkX, i32 chunkZ);
+    // Whether this area still wants ground this console does not hold. Drives
+    // whose turn it is to generate; see `servedGeneratorSlack`.
+    bool servedAreaWants(int index) const;
+    // Hands a served column back: its session state written in, the column
+    // saved if it changed, and the whole entry dropped.
+    void releaseServed(ServedColumn& entry, bool save);
+    // Every dirty served column queued for the card. The served half of
+    // `flushTickDirty`.
+    void flushServedDirty();
+
     // ChunkGenerator::Store, bound to this streamer.
     static const world::ChunkColumn* generatorLoad(void* context, i32 chunkX, i32 chunkZ,
                                                    world::ChunkColumn* scratch);
@@ -966,6 +1314,7 @@ private:
     // sized to the load radius -- see ChunkGenerator::cacheColumnsFor -- so it
     // is built at open() and only when it is wanted.
     std::unique_ptr<mcver::ChunkGenerator> generator_;
+    TerrainSource terrainSource_;
     bool generateMissing_ = false;
 
     // The column a generated one is built into before it is adopted. Held here
@@ -1099,10 +1448,25 @@ private:
     // The radius travels with the centre rather than being read off
     // loadRadius_, for the same reason: the render distance is a live setting
     // and the worker must not read a number the main thread is changing.
+    //
+    // **A session has more than one centre**, and every one of them has to be
+    // kept: retiring is by *region*, so a centre left out of the list has its
+    // whole neighbourhood dropped and re-derived on the next sweep that reaches
+    // it -- correct, because a region always goes as a unit, but it is the
+    // generator doing the same work twice for as long as two players stand
+    // apart. The served areas travel with the camera's, published together
+    // under the same lock. See `ChunkGenerator::retire`.
     i32 retireCentreX_ = 0;
     i32 retireCentreZ_ = 0;
     int retireRadius_ = 0;
     bool retireCentreSet_ = false;
+    mcver::ChunkGenerator::Centre retireExtra_[kMaxServedAreas] = {};
+    int retireExtraCount_ = 0;
+    // **How large the generator's cache has to be**, published here rather than
+    // grown from the main thread: `growCacheTo` resizes the vectors the worker
+    // reads inside `provide()`, and the served areas are set every frame of a
+    // hosted session. `generateColumn` grows to this before its next sweep.
+    int wantedGeneratorColumns_ = 0;
 
     world::LevelData level_;
     std::string path_;
@@ -1159,6 +1523,10 @@ private:
     // `takeChangedColumn`.
     ChunkQueue mapDirty_;
 
+    // See setBlockWatcher.
+    BlockWatcher blockWatcher_ = nullptr;
+    void* blockWatcherCtx_ = nullptr;
+
     // How often countResidency() adds up per-column memory usage, which is the
     // expensive half of it; see countResidency().
     static constexpr u32 kResidencyStride = 16;
@@ -1196,6 +1564,31 @@ private:
     // loadRadius_ is still zero, and setMeshDistance moves loadRadius_ under a
     // radius that was chosen against the old one. Neither may be allowed to
     // admit nothing.
+    // **How far out the grid actually holds columns**, which is *not* how big
+    // the grid is. `buildGrid` makes the cell array three rings wider than
+    // `loadRadius_` so a generation sweep has cells to classify around its
+    // edge, but nothing out there is ever read, generated, lit or adopted:
+    // `drainGenerated` gates adoption on `admitRadius()`, which is at most
+    // `loadRadius_`, and `warmAndPrefetch` only reads ahead into the cache.
+    //
+    // **The served areas asked the wrong one of these and it showed in play.**
+    // A guest standing in those three rings was in ground the grid would never
+    // fill and the served walk refused to take -- `ServerWorld::column`
+    // answered null from both halves -- so there was a three-chunk band at the
+    // end of the host's render distance where nothing generated, and it moved
+    // with the host because the grid does. Reported from a session.
+    //
+    // Under memory pressure `admitRadius()` can be smaller again; the band
+    // between it and `loadRadius_` is ground the budget is actively dropping
+    // from the host's own grid, so it is left to the grid rather than served.
+    int gridColumnRadius() const { return loadRadius_; }
+
+    // The cell at these coordinates **only when it holds a column**. The served
+    // half of the world starts exactly where this stops: a cell that exists but
+    // has not been read is not the grid answering for that ground, which is the
+    // distinction `gridColumnRadius` above is about. See `tickColumn`.
+    Cell* loadedCell(i32 chunkX, i32 chunkZ);
+
     int admitRadius() const
     {
         if (memoryBudget_ == 0) {

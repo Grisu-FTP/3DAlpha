@@ -44,7 +44,12 @@
 // there is one render distance, one pack list and one atlas, and both entry
 // points read and write them.
 
+#include "core/net/server_list.hpp"
 #include "core/io/posix_file_system.hpp"
+#include "core/settings/sensitivity.hpp"
+#include "platform/ctr/guest_play.hpp"
+#include "platform/ctr/world_transfer.hpp"
+#include "platform/ctr/local_link.hpp"
 #include "core/audio/sound_engine.hpp"
 #include "core/settings/settings_file.hpp"
 #include "platform/ctr/audio.hpp"
@@ -65,6 +70,7 @@
 
 #include <citro2d.h>
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -88,9 +94,22 @@ struct MenuChoice {
     enum class Action {
         Quit,  // the player chose Quit, or the system asked us to exit
         Play,
+        Join,  // a server off the multiplayer list, or a session next door
+        Host,  // one of this console's own worlds, opened for others to join
+    };
+
+    // Which wire a Join or a Host uses. **Internet is the Java server on the
+    // list; Local is another 3DS in the room** -- see platform/ctr/local_link.hpp
+    // for what "local" means on this console and why it is not StreetPass.
+    enum class Link {
+        Internet,
+        Local,
     };
 
     Action action = Action::Quit;
+    Link link = Link::Internet;
+
+
 
     // The world to open, and its directory name for the overlay's header.
     // **Both are read as pointers by the overlay**, so this struct has to
@@ -125,6 +144,11 @@ struct MenuChoice {
     int autosaveSeconds = 0;
     int chunkCacheMB = 0;
 
+    // How fast the view turns, as the percentage the Sensitivity row shows.
+    // The shell turns it into a multiplier with `settings::sensitivityGain`
+    // and applies it to both look devices.
+    int lookSensitivity = settings::kDefaultSensitivity;
+
     // The block atlas for the chosen texture pack, already assembled and
     // already known to decode -- the pack screen builds it at the moment of
     // selection so a broken pack is refused there, in front of the player,
@@ -132,6 +156,15 @@ struct MenuChoice {
     // world. `runGame` points Renderer::Config at it, so **it must outlive the
     // game loop**, like worldPath and worldName above.
     texture::AtlasImage atlas;
+
+    // **For Join**: the row's name, which the overlay's header and the
+    // Downloading Terrain screen show where a world's name would go; where it
+    // is, already parsed -- the list will not join an address that does not
+    // parse; and whom to log in as. `worldName` is set to the server's name too.
+    std::string serverName;
+    std::string serverHost;
+    u16 serverPort = 0;
+    std::string username;
 };
 
 // What the pause menu decided, and what changed while it was up.
@@ -160,6 +193,12 @@ struct PauseChoice {
     // the running world -- unlike the cache size, which is fixed at open().
     int autosaveSeconds = 0;
 
+    // The same for the Sensitivity row. **It is one of the rows that can be
+    // changed without leaving the world**, which is the whole point of it being
+    // on this screen: a rate is something you set by feeling it, and feeling it
+    // means looking around.
+    int lookSensitivity = settings::kDefaultSensitivity;
+
     // The player chose a different texture pack. The image is Menu::atlas();
     // the caller hands it to Renderer::setAtlas.
     bool atlasChanged = false;
@@ -171,6 +210,10 @@ struct PauseChoice {
     settings::Difficulty difficulty = settings::Difficulty::Normal;
     // The one Extra Setting that changes play rather than generation.
     bool improvedFencePlacement = false;
+
+    // Multiplayer's Chat row: what was typed, for the caller to send. Empty
+    // when nothing was.
+    std::string chat;
 };
 
 // How the pause menu gets the world behind it.
@@ -228,10 +271,22 @@ public:
     // because this is the only entry point that shows either.
     MenuChoice run();
 
+    // **The local session the player just joined**, once `run` has returned a
+    // Join over Link::Local. The menu lets go of it entirely: the link, the
+    // session and the parse thread belong to the game loop from here, and
+    // leaving the world ends them -- coming back means joining again, which is
+    // what a session the host may have closed in the meantime has to mean.
+    std::unique_ptr<GuestPlay> takeGuest() { return std::move(guest_); }
+
     // The pause menu: Resume, World Settings, Options, Exit World, over a world
     // that is still open behind it. Owns the frame loop the same way `run`
     // does, so the game is genuinely paused while this is up -- nothing is
     // streamed, nothing is meshed and the sun does not move.
+    //
+    // **That is single player's answer and only single player's.** A session
+    // cannot stop, because one console does not get to decide that for the
+    // others: see `beginPause`/`stepPause`/`endPause` below, which are this
+    // function taken apart so the game loop can keep running around it.
     //
     // `renderDistance` is the live one rather than the saved one; see
     // PauseChoice. `worldName` is drawn under the heading and is only read
@@ -246,6 +301,34 @@ public:
     // the dirt backdrop and needs a target of its own from init().
     PauseChoice runPause(const char* worldName, const char* worldPath, int renderDistance,
                          const PauseBackdrop& backdrop = PauseBackdrop{});
+
+    // **The same pause menu, a frame at a time, inside a loop somebody else
+    // owns** -- which is what a session that must not stop looks like.
+    //
+    // `runPause` above is these three with a frame loop around them, so the
+    // screens, the cursor and every decision they make are literally the same
+    // code down both paths. What differs is who owns the frame: there the menu
+    // draws the world through a `PauseBackdrop` and nothing else in the process
+    // runs, and here the game loop keeps running -- streaming, ticking, pumping
+    // the link -- and draws the menu into its own frame with
+    // `pauseOverlayEntry` below.
+    //
+    // `beginPause` takes the same three arguments as `runPause` and on the same
+    // terms; `stepPause` is one frame and answers true when the player has
+    // chosen; `endPause` puts the menu back where it was and hands over the
+    // choice, exactly as the tail of `runPause` does. **The caller reads no
+    // input into the world while this is up**: a screen being open is what
+    // stops the player moving, the same way `au` does to a dead one.
+    void beginPause(const char* worldName, const char* worldPath, int renderDistance);
+    bool stepPause(u32 down);
+    PauseChoice endPause();
+
+    // `Renderer::drawFrame`'s overlay callback, for a caller drawing the menu
+    // into its own frame. The context is the Menu.
+    static void pauseOverlayEntry(void* context, C3D_RenderTarget* target)
+    {
+        drawOverlayEntry(context, target);
+    }
 
     // The live block atlas. Borrowed -- it belongs to the Menu, which outlives
     // every game session in the shell. Read after runPause when
@@ -271,6 +354,21 @@ public:
     // failure, so this is always `kParticleSheetBytes` long. See
     // core/texture/particle_sheet.hpp.
     const std::vector<u8>& particleSheet() const { return particleSheet_; }
+
+    // **Multiplayer's pause menu**, which is a1.1.2's `ie` with a server behind
+    // it: Resume, Chat, Options, Disconnect. World Settings is not offered,
+    // because a server's world is not this console's to change. The caller
+    // that owns the session sets it around `runPause`.
+    void setMultiplayer(bool multiplayer) { multiplayer_ = multiplayer; }
+
+    // Where the next `run()` opens after a session: `cj`, a1.1.2's
+    // GuiDisconnected, with its title and the reason -- or, for a player who
+    // left on their own, straight back to the server list.
+    void showDisconnected(const std::string& title, const std::string& detail);
+
+    // Back to the multiplayer screen, which is where a session that ended
+    // leaves the player.
+    void showMultiplayer();
 
     // Handed the process's audio before the first menu is drawn. Both pointers
     // are borrowed and must outlive the menu; the shell owns them. Optional --
@@ -330,6 +428,49 @@ private:
         // to back: a name, then a seed, and no way to see either again or to
         // reach anything else. See kCreateRows.
         CreateWorld,
+        // **Everything multiplayer**, which a1.1.2 does not have at all -- its
+        // `gc` is one address field, remembered as `lastServer`. Two buttons
+        // for starting or finding a session between two consoles, and below
+        // them, kept apart from both, the list: the sessions a scan found in
+        // the room and the Java servers saved on the card. See
+        // core/net/server_list.hpp and platform/ctr/local_link.hpp.
+        Multiplayer,
+        // Local or Internet, asked once for whichever of the two buttons was
+        // pressed. Internet is the existing server list and is not offered for
+        // hosting; Local is the console's own wireless.
+        NetMode,
+        // One server's name and address, with Delete for a row that exists.
+        // Nothing reaches the list or the card until Save.
+        EditServer,
+        ConfirmDeleteServer,
+        // **Joined, and waiting for the world.** Where a guest sits between the
+        // handshake and the game: who else is here, how the link is doing, and
+        // B to leave. It is also where the world's arrival will be shown when
+        // the host learns to send one -- see core/net/session.hpp.
+        Session,
+        // Why a session ended.
+        Disconnected,
+        // **The world offers a scan found**, which is the Join list's shape
+        // asked about something else: consoles in the room that have pressed
+        // Export and are waiting for somebody to take the world. Import only;
+        // an export puts the beacon up and has nothing to look at.
+        ImportScan,
+        // **A world crossing the room**, from either end. One screen for both,
+        // because a transfer looks the same from both sides -- a name, a bar
+        // and a way out -- and the two halves differ only in which of them is
+        // reading the card. See platform/ctr/world_transfer.hpp.
+        Transfer,
+    };
+
+    // **Which of the four buttons asked the Local-or-Internet question.** It
+    // used to be a bool for Host, and four answers do not fit in one: Import
+    // and Export ask the same question for a reason that is not multiplayer at
+    // all, and the screen's own wording has to say which.
+    enum class NetPurpose {
+        Join,
+        Host,
+        Import,
+        Export,
     };
 
     // The shared half of init() and initOverlay(): citro2d, the text buffer,
@@ -428,6 +569,68 @@ private:
     bool handleTitle(u32 down, MenuChoice* choice);
     bool handlePause(u32 down, PauseChoice* choice);
     bool handleWorlds(u32 down, MenuChoice* choice);
+    bool handleMultiplayer(u32 down, MenuChoice* choice);
+    bool handleNetMode(u32 down, MenuChoice* choice);
+    void handleEditServer(u32 down);
+    void handleConfirmDeleteServer(u32 down);
+    void handleDisconnected(u32 down);
+
+    // The lobby: connecting to the session at `index` in `sessions_`, carrying
+    // it forward once a frame, and leaving it.
+    void beginLocalJoin(int index);
+    void pumpSession();
+    bool handleSession(u32 down, MenuChoice* choice);
+    void endSession(const std::string& reason);
+
+    void refreshServers();
+
+    // Searches the room for sessions, which takes about a second on the radio.
+    // Called from the frame *after* the one that says it is searching, so the
+    // message is on screen while it happens -- see `scanPending_`.
+    void refreshLocalSessions();
+
+    // **Import and Export, which are one feature asked from two screens.**
+    // Import is a row on the world list and Export a row on a world's own
+    // settings; both end up at the same Local-or-Internet question and then at
+    // the same progress screen. See platform/ctr/world_transfer.hpp.
+    //
+    // Asks what the incoming world should be called and, if that is answered,
+    // opens the Local-or-Internet question. The keyboard is first on purpose:
+    // it suspends the console, and every applet in this build happens before a
+    // link rather than during one.
+    void openImport();
+    bool askImportName(std::string* out);
+
+    // The scan that fills `offers_`, run on the frame after the one that drew
+    // "Searching", for the reason `scanPending_` gives.
+    void refreshWorldOffers();
+
+    // Puts this console's chosen world on the air and opens the progress
+    // screen. Nothing is read off the card until somebody connects.
+    void startExport();
+
+    // Connects to `offers_[index]` and opens the progress screen.
+    void startImport(int index);
+
+    // Once a frame, whatever the player is pressing: a link that is not read is
+    // a link that times out.
+    void pumpTransfer();
+
+    // Ends whatever is running, telling the other console if it still can, and
+    // goes back to wherever the transfer was started from.
+    void endTransfer(const char* why);
+
+    void handleImportScan(u32 down);
+    void handleTransfer(u32 down);
+
+    // How many rows the multiplayer list has under its two buttons, and what
+    // the row at `index` is.
+    int multiplayerRows() const;
+    // The keyboard for a server's name, its address, its port, or a line of
+    // chat. `numeric` swaps the letters for the numpad, which is the whole of
+    // what a port row wants from a keyboard.
+    bool askServerText(const char* hint, const std::string& current, int maxChars,
+                       std::string* out, bool numeric = false);
     void handleOptions(u32 down);
     void handleWorldSettings(u32 down);
     void handleExtraSettings(u32 down);
@@ -501,6 +704,18 @@ private:
     // and both rows then draw as unavailable rather than as a value that is
     // really a default.
     void openExtraSettings();
+    // **The same screen, over the world being made rather than one on the
+    // card.** Reached from Create World's Extra Settings row; see
+    // `kExtraRowsNew` for the three rows it does not offer.
+    void openExtraSettingsForNewWorld();
+    // Which settings the Extra Settings screen -- and the World Texture Pack
+    // list under it -- is editing: `newWorld_`'s while a world is being made,
+    // and the selected world's otherwise.
+    settings::WorldSettings& extraSettings();
+    const settings::WorldSettings& extraSettings() const;
+    // Writes them to the card, or does nothing at all when the world they
+    // belong to has not been made yet -- `createWorld` saves those.
+    void saveExtraSettings();
 
     // Opens the world, applies whatever `openExtraSettings` last read plus the
     // caller's change, saves the level and closes again. **The one place this
@@ -639,6 +854,9 @@ private:
     // One turn of either frame loop: the console help for whichever screen is
     // up, then the top screen. Shared so `run` and `runPause` cannot drift.
     void present();
+    // Everything `present` does except draw the top screen, for the caller that
+    // owns the frame itself. See `stepPause`.
+    void presentState();
     // The main menu's bottom-screen previews: which of them the current screen
     // wants, the cursors and the pack they follow, and what they say under
     // the picture. All three do nothing in game, where there is no preview.
@@ -671,6 +889,14 @@ private:
     void drawTitle();
     void drawPause();
     void drawWorlds();
+    void drawMultiplayer();
+    void drawNetMode();
+    void drawSession();
+    void drawImportScan();
+    void drawTransfer();
+    void drawEditServer();
+    void drawConfirmDeleteServer();
+    void drawDisconnected();
     void drawOptions();
     void drawWorldSettings();
     void drawExtraSettings();
@@ -768,6 +994,10 @@ private:
     int worldSettingsScroll_ = 0;
     int extraCursor_ = 0;
     int extraScroll_ = 0;
+    // True while Extra Settings is standing over `newWorld_` -- which is what
+    // decides the row list, which settings the rows edit, whether a change is
+    // written to the card at all, and where B goes back to.
+    bool extraForNewWorld_ = false;
     int worldPackCursor_ = 0;
     int worldPackScroll_ = 0;
     int createCursor_ = 0;
@@ -923,6 +1153,12 @@ private:
     // has to know about the sentinel.
     int musicVolume_ = 100;
     int soundVolume_ = 100;
+
+    // The Sensitivity row, as the percentage a1.1.2's slider prints. 100 is
+    // this port's own look rate, so a console that has never touched the row
+    // turns exactly as it did before the row existed. See
+    // core/settings/sensitivity.hpp.
+    int lookSensitivity_ = settings::kDefaultSensitivity;
     bool audioEnabled_ = true;
 
     // Borrowed, process-lifetime, and both null in the overlay's copy of this
@@ -947,6 +1183,15 @@ private:
     // The world behind the pause menu, for the line under the heading. Borrowed
     // from the caller for the length of runPause.
     const char* pauseWorldName_ = "";
+
+    // **What the pause menu has decided so far**, because a stepped pause
+    // outlives the frame that started it. `beginPause` seeds it, `stepPause`
+    // fills it in and `endPause` completes and returns it; `runPause` goes
+    // through all three and so reads it the same way.
+    PauseChoice pauseChoice_;
+    // `packRevision_` as `beginPause` found it, which is what tells the caller
+    // the pack was swapped while the menu was up.
+    u32 pauseRevisionAtEntry_ = 0;
     // init() runs around every visit to the menu; the card is read once.
     bool settingsLoaded_ = false;
 
@@ -959,6 +1204,72 @@ private:
     // Held so a message can survive a frame or two on the console: a failed
     // create is the one thing here that can go wrong silently.
     const char* message_ = nullptr;
+
+    // ---- multiplayer ----------------------------------------------------
+
+    std::vector<net::ServerEntry> servers_;
+
+    // The multiplayer screen's cursor covers the two buttons and the list
+    // under them: 0 is Host, 1 is Join, 2 is "+ Add Server", and the rest are
+    // the sessions found nearby followed by the saved servers. `serverScroll_`
+    // is the list's own first visible row, counted from 2.
+    int serverCursor_ = 0;
+    int serverScroll_ = 0;
+
+    // What a scan found, newest answer wins. Empty until Join -> Local has
+    // been chosen once, which is why the screen says so rather than showing an
+    // empty list and leaving it at that.
+    std::vector<LocalSession> sessions_;
+    bool scanned_ = false;
+    bool scanPending_ = false;
+    std::string localError_;
+
+    // Which button opened the Local/Internet question, and its cursor.
+    NetPurpose netPurpose_ = NetPurpose::Join;
+    int netModeCursor_ = 0;
+
+    // **A world on its way between two consoles**, and everything the two
+    // screens above need to draw it. Null except while one is running; see
+    // platform/ctr/world_transfer.hpp.
+    std::unique_ptr<WorldTransfer> transfer_;
+
+    // What an incoming world will be called on this card. Asked on a keyboard
+    // before the radio is touched, because a keyboard suspends the console --
+    // see `ctr::linkPausing` -- and a link cannot be told about a suspension
+    // that starts before it does.
+    std::string importName_;
+
+    // The consoles offering a world, and where the cursor is in them. Separate
+    // from `sessions_` because the two lists answer different questions and a
+    // player looking for a game should not be shown a folder transfer.
+    std::vector<LocalSession> offers_;
+    int offerCursor_ = 0;
+    bool offerScanPending_ = false;
+
+    // The world list is being used to pick a world to host rather than one to
+    // play. It changes the title, where B goes back to, and which action the
+    // choice carries.
+    bool pickingHost_ = false;
+
+    // The joined session, while the lobby is up. On the heap for the reason
+    // everything else here is: a `Peer` carries 90 KB of window and the menu
+    // lives on a 32 KB stack.
+    // **The guest half of a local session, from the radio up.** Held by the
+    // menu because that is where a join starts and where it goes back to when
+    // it ends; handed to the game with `takeGuest` when the host starts
+    // sending a world, and not owned here again after that.
+    std::unique_ptr<GuestPlay> guest_;
+    // The row EditServer is changing, -1 for a new one, and its working copy.
+    int editServerIndex_ = -1;
+    net::ServerEntry editServer_;
+    int editServerCursor_ = 0;
+    // The friend list's name, asked for on the first visit to the list rather
+    // than at boot: the friend service is one more thing to start, and most
+    // sessions never open this screen.
+    std::string username_;
+    bool multiplayer_ = false;
+    std::string disconnectTitle_;
+    std::string disconnectDetail_;
 };
 
 }  // namespace mc::ctr

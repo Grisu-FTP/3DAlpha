@@ -8,6 +8,7 @@
 #include "core/block/registry.hpp"
 #include "core/entity/particle.hpp"
 #include "core/tick/display.hpp"
+#include "core/tick/redstone.hpp"
 #include "core/tick/tick_world.hpp"
 #include "framework.hpp"
 #include "scene_world.hpp"
@@ -184,6 +185,31 @@ TEST(only_the_glowing_redstone_ore_glitters_and_only_on_its_open_faces)
     dull.world.place(0, 64, 0, bid(mcver::Block::RedstoneOre), 0);
     dull.run();
     CHECK_EQ(dull.fx.count(), 0);
+}
+
+TEST(a_touch_sparkles_the_ore_before_it_lights_and_again_once_it_is_lit)
+{
+    // `ai.h` is `i(...)` and *then* the id swap, so the six motes come off a
+    // dull ore on the click that lights it -- the one thing the display tick
+    // above can never show, because by the time it runs the ore is already the
+    // lit one.
+    Scene dull;
+    dull.world.place(0, 64, 0, bid(mcver::Block::RedstoneOre), 0);
+    tick::redstoneOreActivated(dull.world.w(), 0, 64, 0,
+                               dull.world.w().blockAt(0, 64, 0));
+    CHECK_EQ((long long) dull.world.w().blockAt(0, 64, 0),
+             (long long) bid(mcver::Block::LitRedstoneOre));
+    CHECK_EQ(dull.countOf(ParticleKind::Reddust), 5);
+
+    // **And touching one that is already lit still glitters**, because `h` runs
+    // the sparkle unconditionally and only the swap is guarded. Nothing changes
+    // about the block.
+    Scene lit;
+    lit.world.place(0, 64, 0, bid(mcver::Block::LitRedstoneOre), 0);
+    tick::redstoneOreActivated(lit.world.w(), 0, 64, 0, lit.world.w().blockAt(0, 64, 0));
+    CHECK_EQ((long long) lit.world.w().blockAt(0, 64, 0),
+             (long long) bid(mcver::Block::LitRedstoneOre));
+    CHECK_EQ(lit.countOf(ParticleKind::Reddust), 5);
 }
 
 TEST(a_fire_on_a_floor_smokes_upward_only)

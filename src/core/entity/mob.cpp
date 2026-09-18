@@ -235,6 +235,109 @@ const MobDef& mobDef(MobType type)
     return kMobDefs[index >= 0 && index < kMobTypeCount ? index : 0];
 }
 
+Mob* MobSystem::spawnFromServer(const tick::TickWorld& world, i32 entityId, MobType type,
+                                double x, double y, double z, float yaw, float pitch,
+                                int slimeSize)
+{
+    removeById(entityId);
+    if (!spawn(world, type, x, y, z, yaw)) {
+        return nullptr;
+    }
+    Mob& mob = mobs_[mobs_.size() - 1];
+    mob.entityId = entityId;
+    mob.remote = true;
+    mob.pitch = pitch;
+    mob.prevPitch = pitch;
+    // **The size the server named, if it named one.** `spawn` has already drawn
+    // one out of this pool's generator, as `ma`'s constructor does, and the
+    // draw is kept whether or not it is used -- the stream downstream of it is
+    // the same either way. `setSlimeSize` is a resize and not a field write:
+    // the box, the health and the placement all follow.
+    if (type == MobType::Slime && slimeSize > 0) {
+        setSlimeSize(mob, slimeSize);
+        mob.body.setFeet(x, y, z);
+    }
+    mob.body.snapRenderPosition();
+    // `gy.a(ez)` seeds `bd/be/bf` from the spawn packet and *then* places the
+    // body there, so the first relative move that arrives is measured against
+    // the spawn point and not against zero. Nothing is owed yet, so the clock
+    // is at rest.
+    mob.serverX = x;
+    mob.serverY = y;
+    mob.serverZ = z;
+    mob.serverYaw = double(yaw);
+    mob.serverPitch = double(pitch);
+    mob.smoothTicks = 0;
+    return &mob;
+}
+
+Mob* MobSystem::findById(i32 entityId)
+{
+    if (entityId == 0) {
+        return nullptr;
+    }
+    for (int i = 0; i < mobs_.size(); ++i) {
+        if (mobs_[i].entityId == entityId) {
+            return &mobs_[i];
+        }
+    }
+    return nullptr;
+}
+
+bool MobSystem::removeById(i32 entityId)
+{
+    if (entityId == 0) {
+        return false;
+    }
+    for (int i = 0; i < mobs_.size(); ++i) {
+        if (mobs_[i].entityId == entityId) {
+            removeAt(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MobSystem::placeById(i32 entityId, double x, double y, double z, bool hasLook, float yaw,
+                          float pitch)
+{
+    Mob* mob = findById(entityId);
+    if (mob == nullptr) {
+        return false;
+    }
+
+    // **Nothing moves here.** `setPositionAndRotation2` writes the target and
+    // the clock and returns; the walk is `ge.j()`'s, in `tick` below. Writing
+    // the body straight to the packet's position -- which is what this used to
+    // do -- is what made a remote animal step twenty times a second: `prev`
+    // and the live position were equal on every frame of the gap between two
+    // packets, so there was nothing for the frame interpolation to interpolate.
+    mob->serverX = x;
+    mob->serverY = y;
+    mob->serverZ = z;
+    if (hasLook) {
+        mob->serverYaw = double(yaw);
+        mob->serverPitch = double(pitch);
+    }
+    mob->smoothTicks = i16(kServerSmoothTicks);
+    return true;
+}
+
+bool MobSystem::turnById(i32 entityId, float yaw, float pitch)
+{
+    Mob* mob = findById(entityId);
+    if (mob == nullptr) {
+        return false;
+    }
+    // `gy.a(ju)` -- an Entity Look is `setPositionAndRotation2` with the
+    // entity's own position, so the head turns over three ticks and the body
+    // stands where it is.
+    mob->serverYaw = double(yaw);
+    mob->serverPitch = double(pitch);
+    mob->smoothTicks = i16(kServerSmoothTicks);
+    return true;
+}
+
 bool MobSystem::spawn(const tick::TickWorld& world, MobType type, double x, double y, double z,
                       float yaw)
 {
@@ -278,6 +381,11 @@ bool MobSystem::spawn(const tick::TickWorld& world, MobType type, double x, doub
         ++refused_;
         return false;
     }
+    // **Issued last, so a refused spawn does not burn one.** The number only
+    // has to be unique, not dense, but a counter that moved on a failure would
+    // make the handle depend on how full the pool was -- and this is compared
+    // against a saved-off value in the arrow sweep.
+    mob.handle = nextHandle_++;
     *slot = mob;
     return true;
 }
@@ -837,7 +945,7 @@ bool MobSystem::updateCreatureActionState(tick::TickWorld& world, int index,
     if (def.hostile) {
         if (!mob.targetingPlayer) {
             mob.targetingPlayer = findTarget(world, mob, around);
-            if (mob.targetingPlayer && searchesThisTick_ < kPathSearchesPerTick) {
+            if (mob.targetingPlayer) {
                 ++searchesThisTick_;
                 PathRoute route;
                 if (paths_.find(world, mob.body.box, mob.body.width, mob.body.height,
@@ -883,7 +991,7 @@ bool MobSystem::updateCreatureActionState(tick::TickWorld& world, int index,
     // the path one tick in twenty and never draws the ten wander cells at all.
     const bool chasing = !mob.hasAttacked && mob.targetingPlayer && around.player.present;
     if (chasing && (mob.path.empty() || rand_.nextInt(kRetargetOdds) == 0)) {
-        if (searchesThisTick_ < kPathSearchesPerTick) {
+        {
             ++searchesThisTick_;
             PathRoute route;
             if (paths_.find(world, mob.body.box, mob.body.width, mob.body.height,
@@ -897,7 +1005,7 @@ bool MobSystem::updateCreatureActionState(tick::TickWorld& world, int index,
     } else if (!chasing) {
         const bool wantsPath = (mob.path.empty() && rand_.nextInt(kWanderOdds) == 0)
                                || rand_.nextInt(kWanderOdds) == 0;
-        if (wantsPath && searchesThisTick_ < kPathSearchesPerTick) {
+        if (wantsPath) {
             // Ten candidate cells within six blocks, scored, best wins. The
             // draws happen whether or not a path is asked for afterwards, which
             // keeps the random stream the same shape as the original's.
@@ -1061,7 +1169,8 @@ void MobSystem::attackTarget(tick::TickWorld& world, int index, const MobSurroun
                               1.0f / (rand_.nextFloat() * 0.4f + 0.8f));
             if (around.shootArrow != nullptr) {
                 around.shootArrow(around.shootArrowCtx, startX, startY, startZ, dx,
-                                  dy + double(arc), dz, kBowVelocity, kBowInaccuracy);
+                                  dy + double(arc), dz, kBowVelocity, kBowInaccuracy,
+                                  mob.handle);
             }
             mob.attackTime = i16(kBowCooldown);
         }
@@ -1475,12 +1584,139 @@ void MobSystem::shove(Mob& mob, double otherX, double otherZ, double* otherMotio
     }
 }
 
+// **`ge.j()`'s first block** -- the walk towards where the server last said.
+//
+// ```java
+// if (newPosRotationIncrements > 0) {
+//     double d  = posX + (newPosX - posX) / (double)newPosRotationIncrements;
+//     ...                                  // and the same for y, z and pitch
+//     double d3 = MathHelper.wrapAngleTo180(newRotationYaw - (double)rotationYaw);
+//     rotationYaw = (float)((double)rotationYaw + d3 / (double)newPosRotationIncrements);
+//     newPosRotationIncrements--;
+//     setPosition(d, d1, d2);
+//     setRotation(rotationYaw, rotationPitch);
+// }
+// ```
+//
+// The divisor is what is *left* on the clock, not what it started at, so the
+// gap is closed by a third, then a half, then wholly -- a body that hears
+// nothing more lands exactly on the last thing it was told and stops. Identical
+// in shape to `net::RemoteEntities::tick`, because it is the same method in the
+// jar one class further up.
+//
+// **`setPosition`, not `moveEntity`.** Nothing is swept and nothing collides:
+// the server has already decided where this animal is, and a client that
+// clipped the walk would argue with it.
+void MobSystem::interpolateToServer(Mob& mob) const
+{
+    if (mob.smoothTicks <= 0) {
+        return;
+    }
+    const double steps = double(mob.smoothTicks);
+    const double x = mob.body.x + (mob.serverX - mob.body.x) / steps;
+    const double y = mob.body.y + (mob.serverY - mob.body.y) / steps;
+    const double z = mob.body.z + (mob.serverZ - mob.body.z) / steps;
+
+    const double turn = double(wrapDegrees(float(mob.serverYaw - double(mob.yaw))));
+    mob.yaw = float(double(mob.yaw) + turn / steps);
+    mob.pitch = float(double(mob.pitch) + (mob.serverPitch - double(mob.pitch)) / steps);
+    --mob.smoothTicks;
+
+    mob.body.setFeet(x, y, z);
+    // A server's animal is placed, never pushed, so whatever motion it had is
+    // not carried into the next tick -- there is no next tick for it here.
+    mob.body.motionX = 0.0;
+    mob.body.motionY = 0.0;
+    mob.body.motionZ = 0.0;
+}
+
+// **`ge.e_()`'s tail**, which every animal runs -- the server's as much as this
+// console's. The legs swing with the distance actually covered (that half is in
+// `moveEntityWithHeading` in the jar and is here because the body does not know
+// it is a mob), and the body turns towards the direction of travel at 30 % a
+// tick while the head keeps its own yaw.
+//
+// It is a function of its own because a remote animal needs it too and needs
+// nothing else in the tick: `ge.B` -- `isMultiplayerEntity`, which `gy.a(ez)`
+// sets on every mob it spawns -- suppresses `b_()`, the AI, and **only** `b_()`.
+// Everything below this line still runs over there, which is why a cow walking
+// past on somebody else's console has legs and turns to face where it is going
+// rather than sliding sideways.
+void MobSystem::headingAndLight(const tick::TickWorld& world, Mob& mob, double beforeX,
+                                double beforeZ) const
+{
+    const double movedX = mob.body.x - beforeX;
+    const double movedZ = mob.body.z - beforeZ;
+    mob.prevLimbYaw = mob.limbYaw;
+    float travelled = MathHelper::sqrtDouble(movedX * movedX + movedZ * movedZ) * 4.0f;
+    if (travelled > 1.0f) {
+        travelled = 1.0f;
+    }
+    mob.limbYaw += (travelled - mob.limbYaw) * 0.4f;
+    mob.limbSwing += mob.limbYaw;
+
+    float heading = mob.renderYaw;
+    const double flat = std::sqrt(movedX * movedX + movedZ * movedZ);
+    if (flat > 0.05) {
+        heading = float(std::atan2(movedZ, movedX) * 180.0 / kPi) - 90.0f;
+    }
+    float delta = wrapDegrees(heading - mob.renderYaw);
+    mob.renderYaw += delta * 0.3f;
+    float headTurn = wrapDegrees(mob.yaw - mob.renderYaw);
+    if (headTurn < -75.0f) {
+        headTurn = -75.0f;
+    }
+    if (headTurn > 75.0f) {
+        headTurn = 75.0f;
+    }
+    mob.renderYaw = mob.yaw - headTurn;
+    if (headTurn * headTurn > 2500.0f) {
+        mob.renderYaw += headTurn * 0.2f;
+    }
+
+    // **Every tick, and this is what a remote animal was missing.** The light
+    // byte a mob is drawn with used to be written once, by the spawn, and never
+    // again for one the server owns -- so an animal that arrived before the
+    // column it stands in was lit stayed at zero for its whole life and was
+    // drawn black, and one that walked out of a cave stayed cave-dark in the
+    // sun. `nq`/`dn` read the world's light at the entity on every frame; this
+    // is the tick's share of that.
+    mob.light = packedLightAt(world, mob.body.x,
+                              mob.body.y + double(mob.body.height) * 0.5, mob.body.z);
+}
+
 void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
 {
+    // **What the tick actually cost, kept rather than enforced.** This used to
+    // be a budget: one search a tick across every mob in the world. See
+    // `MobSystem::peakSearchesPerTick`.
+    if (searchesThisTick_ > peakSearchesPerTick_) {
+        peakSearchesPerTick_ = searchesThisTick_;
+    }
     searchesThisTick_ = 0;
 
     for (int i = 0; i < mobs_.size();) {
         Mob& mob = mobs_[i];
+
+        // **A mob the server owns has no mind here**, and that is the whole of
+        // what `ge.B` suppresses in the jar: `j()` skips `b_()` and runs
+        // everything else. No AI, no physics, no despawn -- all three belong to
+        // the server -- but the walk towards what the server last said, the
+        // legs, the heading and the light are this console's, because they are
+        // what a frame is drawn from. See MobSystem::spawnFromServer.
+        if (mob.remote) {
+            const double beforeX = mob.body.x;
+            const double beforeZ = mob.body.z;
+            mob.body.snapRenderPosition();
+            mob.prevYaw = mob.yaw;
+            mob.prevRenderYaw = mob.renderYaw;
+            mob.prevPitch = mob.pitch;
+            ++mob.ticksExisted;
+            interpolateToServer(mob);
+            headingAndLight(world, mob, beforeX, beforeZ);
+            ++i;
+            continue;
+        }
 
         // Ours, and every pool here has it: a mob outlives the column under it,
         // so one at the edge of the render distance would otherwise fall
@@ -1763,42 +1999,7 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
         }
 
         // ---- the body's heading, `ge.e_()`'s tail -----------------------
-        //
-        // The legs swing with the distance actually covered (that half is in
-        // `moveEntityWithHeading` in the jar and is here because the body does
-        // not know it is a mob), and the body turns towards the direction of
-        // travel at 30 % a tick while the head keeps its own yaw.
-        const double movedX = mob.body.x - beforeX;
-        const double movedZ = mob.body.z - beforeZ;
-        mob.prevLimbYaw = mob.limbYaw;
-        float travelled = MathHelper::sqrtDouble(movedX * movedX + movedZ * movedZ) * 4.0f;
-        if (travelled > 1.0f) {
-            travelled = 1.0f;
-        }
-        mob.limbYaw += (travelled - mob.limbYaw) * 0.4f;
-        mob.limbSwing += mob.limbYaw;
-
-        float heading = mob.renderYaw;
-        const double flat = std::sqrt(movedX * movedX + movedZ * movedZ);
-        if (flat > 0.05) {
-            heading = float(std::atan2(movedZ, movedX) * 180.0 / kPi) - 90.0f;
-        }
-        float delta = wrapDegrees(heading - mob.renderYaw);
-        mob.renderYaw += delta * 0.3f;
-        float headTurn = wrapDegrees(mob.yaw - mob.renderYaw);
-        if (headTurn < -75.0f) {
-            headTurn = -75.0f;
-        }
-        if (headTurn > 75.0f) {
-            headTurn = 75.0f;
-        }
-        mob.renderYaw = mob.yaw - headTurn;
-        if (headTurn * headTurn > 2500.0f) {
-            mob.renderYaw += headTurn * 0.2f;
-        }
-
-        mob.light = packedLightAt(world, mob.body.x,
-                                  mob.body.y + double(mob.body.height) * 0.5, mob.body.z);
+        headingAndLight(world, mob, beforeX, beforeZ);
 
         // `dq.e_()`'s last line: **`if (world.difficulty == 0) setEntityDead()`**,
         // after the whole tick and not before it. So on Peaceful a monster is

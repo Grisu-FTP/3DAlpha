@@ -3,6 +3,7 @@
 #include "core/render/chunk_renderer.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/settings/world_settings.hpp"
+#include "core/tick/tick_world.hpp"
 #include "core/util/frustum.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/chunk_cache.hpp"
@@ -913,4 +914,463 @@ TEST(the_generator_reads_the_worlds_own_extra_settings)
     int fixed = -1;
     holesIn("Fixed", true, &fixed);
     CHECK_EQ(fixed, 0);
+}
+
+// ---- served areas ----------------------------------------------------------
+//
+// **What the host can serve used to be what the host had loaded.** The grid is
+// a square around this console's camera and wraps modulo its own width, so a
+// guest who walked out of it was a player standing at the edge of nothing --
+// `WorldServer::streamColumns` asked `ServerWorld::column` for their ground,
+// got null, and marked them starved for the rest of the session.
+//
+// A served area is the fix: ground held outside the grid for somebody else, on
+// the same cache and the same generator, edited through the same TickWorld and
+// saved by the same autosave. What is checked here is all four of those, plus
+// the one invariant that would quietly corrupt a world if it were wrong --
+// that the grid and the served set never both hold the same column.
+// Two guests at once, which is the case the flat cursor in `pumpServed` exists
+// for: one budget and one pass over both squares, so neither guest can starve
+// the other and a slow frame does not leave one of them permanently behind.
+TEST(two_served_areas_are_both_filled_from_one_budget)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("TwoGuests");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 24680LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 2;
+    config.budget = {0, 4 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+    CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 20000) < 20000);
+
+    WorldStreamer::ServedArea areas[2];
+    areas[0].chunkX = 60;
+    areas[0].chunkZ = 60;
+    areas[0].radius = 1;
+    areas[1].chunkX = -60;
+    areas[1].chunkZ = -60;
+    areas[1].radius = 1;
+    streamer.setServedAreas(areas, 2);
+
+    int frames = 0;
+    for (; frames < 20000; ++frames) {
+        frame(streamer, renderer, u32(frames), 0, 0, budget);
+        // Both, and nothing still owed -- `servedOwed` is published on a whole
+        // pass, so it settles a frame or two after the last column lands.
+        if (streamer.servedColumns() == 18 && streamer.servedOwed() == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(frames < 20000);
+    CHECK(streamer.servedColumn(60, 60) != nullptr);
+    CHECK(streamer.servedColumn(-60, -60) != nullptr);
+    CHECK_EQ(streamer.servedOwed(), 0);
+
+    streamer.close(kNow);
+}
+
+// Closing while a served area is still being generated. The worker may be
+// halfway through a sweep for a chunk no cell will ever hold, and `close()` has
+// to join it and put the work away like any other -- so this is here as the
+// one ordering the served path adds to a function that already had several.
+// **The one thing about serving a second centre that can corrupt a world.**
+//
+// `ChunkGenerator::cacheColumnsFor` is fitted to a single player's frontier and
+// `kRetireSlackChunks` leaves a flat 32 columns of headroom on it. A guest's
+// square being swept has a frontier of its own -- a finished square leaves its
+// whole perimeter live, those columns never getting their outward neighbours --
+// and when the cache runs out `acquire` takes a *live* column, which comes back
+// as bare terrain with its neighbours' trees missing and never becomes final
+// again. `generatorEvictedLive` is the counter that says so; it must be zero.
+//
+// So this fills a served square at the host's own view distance and reads the
+// counters out. It is the measurement `servedGeneratorSlack` is answerable to,
+// and it runs on the host, where the generator is exactly the console's.
+TEST(a_served_area_at_a_full_view_distance_does_not_overrun_the_generator)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("Frontier");
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 777001LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 4;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 4, kNow));
+
+    WorldStreamer::Budget budget;
+    // **Eight columns a frame, not one.** 225 chunks asked about at one a frame
+    // is 225 frames of nothing but asking before a single sweep starts, and
+    // what this measures is the generator's live set rather than the streamer's
+    // pacing. The generator still takes one job at a time whatever this says.
+    budget.columnsPerFrame = 8;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+    CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 40000) < 40000);
+
+    // A guest at the host's own view distance, far enough out that not one
+    // column of it is the grid's.
+    WorldStreamer::ServedArea area;
+    area.chunkX = 200;
+    area.chunkZ = 200;
+    area.radius = 7;
+    streamer.setServedAreas(&area, 1);
+
+    const int wanted = (area.radius * 2 + 1) * (area.radius * 2 + 1);
+    int frames = 0;
+    for (; frames < 200000; ++frames) {
+        frame(streamer, renderer, u32(frames), 0, 0, budget);
+        if (streamer.servedColumns() >= wanted && streamer.servedOwed() == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(frames < 200000);
+    CHECK_EQ(streamer.servedColumns(), wanted);
+
+    // **The three counters that must all be zero**, and the peak the slack is
+    // sized against. A non-zero `generatorEvictedLive` here is a corrupted
+    // world, not a slow one.
+    const WorldStreamer::Stats& stats = streamer.stats();
+    std::printf("      served frontier: peakLive=%u evictedLive=%u failures=%u\n",
+                stats.generatorPeakLive, stats.generatorEvictedLive,
+                stats.generationFailures);
+    CHECK_EQ(int(stats.generatorEvictedLive), 0);
+    CHECK_EQ(int(stats.generationFailures), 0);
+    CHECK_EQ(int(stats.generationIncomplete), 0);
+    CHECK_EQ(int(stats.generationUnlightable), 0);
+
+    // And the ground really is there, at the far corner as well as the middle.
+    CHECK(streamer.servedColumn(200, 200) != nullptr);
+    CHECK(streamer.servedColumn(207, 207) != nullptr);
+    CHECK(streamer.servedColumn(193, 193) != nullptr);
+
+    streamer.close(kNow);
+}
+
+TEST(closing_while_a_served_area_is_still_arriving_is_safe)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("ClosedEarly");
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 5150LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 2;
+    config.budget = {0, 4 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    WorldStreamer::ServedArea area;
+    area.chunkX = 100;
+    area.chunkZ = 100;
+    area.radius = 3;
+    streamer.setServedAreas(&area, 1);
+
+    // A handful of frames and no more: the area is 49 columns of ground that
+    // has never existed, so this is certain to be in the middle of it.
+    for (int i = 0; i < 12; ++i) {
+        frame(streamer, renderer, u32(i), 0, 0, budget);
+    }
+    CHECK(streamer.servedOwed() > 0 || streamer.servedColumns() > 0);
+    streamer.close(kNow);
+}
+
+// **The three rings between the grid's reach and the grid's size.**
+//
+// `buildGrid` makes the cell array `loadRadius_ + 3` wide so a generation sweep
+// has cells to classify around its edge, and nothing out there is ever read,
+// generated or adopted. The served walk used to skip everything inside the
+// *array*, so a guest standing in those rings was ground neither half of the
+// world would make: `ServerWorld::column` answered null from `residentColumn`
+// and from `servedColumn` both, and a session had a three-chunk band at the end
+// of the host's render distance where nothing generated. Reported from play.
+//
+// The second half of the same bug is the save. The dirty marks chose between
+// the grid and the served set by asking whether a *cell* existed, and in these
+// three rings one does -- so a served column edited here was left clean and
+// never written. That is what the reopen at the end is for.
+TEST(a_guest_just_past_the_hosts_render_distance_is_served_and_not_starved)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("Band");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 24680LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 2;
+    config.budget = {0, 4 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    // A mesh distance of 2 is a load radius of 3 and a cell array of 6, so
+    // chunk 5 is inside the array and outside anything the grid will ever fill.
+    constexpr i32 kBandX = 5;
+    constexpr i32 kBandZ = 0;
+    constexpr i32 kBlockX = kBandX * 16 + 7;
+    constexpr i32 kBlockZ = kBandZ * 16 + 7;
+
+    WorldStreamer::ServedArea area;
+    area.chunkX = kBandX;
+    area.chunkZ = kBandZ;
+    area.radius = 0;
+
+    {
+        WorldStreamer streamer;
+        streamer.setGenerateMissing(true);
+        CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+        // The camera settles first, as it does in the test below: `refreshSlate`
+        // serves nobody on a frame where the camera's own walk is blocked.
+        CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 20000) < 20000);
+
+        // The grid does not have it and never will. This is the band.
+        CHECK(streamer.residentColumn(kBandX, kBandZ) == nullptr);
+        CHECK(streamer.servedColumn(kBandX, kBandZ) == nullptr);
+
+        streamer.setServedAreas(&area, 1);
+
+        int frames = 0;
+        for (; frames < 20000; ++frames) {
+            frame(streamer, renderer, u32(frames), 0, 0, budget);
+            if (streamer.servedColumn(kBandX, kBandZ) != nullptr) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(frames < 20000);
+
+        const world::ChunkColumn* served = streamer.servedColumn(kBandX, kBandZ);
+        CHECK(served != nullptr);
+        if (served == nullptr) {
+            streamer.close(kNow);
+            return;
+        }
+        // Real ground rather than an empty column: swept and populated, with
+        // a1.1.2's bedrock under the corner. (Only the corner: the floor's own
+        // thickness is `y <= nextInt(5)`, so the rest of y = 0 is stone as
+        // often as not.)
+        CHECK(served->terrainPopulated);
+        CHECK(served->block(0, 0, 0) == block::BlockId(mcver::Block::Bedrock));
+
+        // A guest's dig, which reaches the world through `tickColumn`.
+        tick::TickWorld* world = streamer.worldTick();
+        CHECK(world != nullptr);
+        if (world != nullptr) {
+            CHECK(world->setBlockWithNotify(kBlockX, 40, kBlockZ,
+                                            block::BlockId(mcver::Block::Glass)));
+            CHECK(world->blockAt(kBlockX, 40, kBlockZ)
+                  == block::BlockId(mcver::Block::Glass));
+        }
+        streamer.close(kNow);
+    }
+
+    // **And it was written.** Nothing is settled first: the column is on the
+    // card now, so serving it is a read rather than a sweep.
+    WorldStreamer reopened;
+    reopened.setGenerateMissing(true);
+    CHECK(reopened.open(dir.c_str(), 2, kNow));
+    reopened.setServedAreas(&area, 1);
+
+    int frames = 0;
+    for (; frames < 20000; ++frames) {
+        frame(reopened, renderer, u32(frames), 0, 0, budget);
+        if (reopened.servedColumn(kBandX, kBandZ) != nullptr) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(frames < 20000);
+
+    const world::ChunkColumn* back = reopened.servedColumn(kBandX, kBandZ);
+    CHECK(back != nullptr);
+    if (back != nullptr) {
+        CHECK(back->block(7, 40, 7) == block::BlockId(mcver::Block::Glass));
+    }
+    reopened.close(kNow);
+}
+
+TEST(a_served_area_loads_ground_the_camera_cannot_reach)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("Served");
+
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 987654321LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = 2;
+    config.budget = {0, 4 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 1;
+    budget.generatedPerFrame = 1;
+    budget.meshesPerFrame = 8;
+
+    // The camera settles at the origin first, so nothing below is competing
+    // with the ground under the player holding the console -- which is the
+    // order `refreshSlate` enforces and this test relies on.
+    CHECK(runUntilSettled(streamer, renderer, 0, 0, budget, 20000) < 20000);
+
+    // Forty chunks away: far outside a load radius of three, and ground the
+    // world has never had.
+    constexpr i32 kGuestX = 40;
+    constexpr i32 kGuestZ = -25;
+    CHECK(streamer.residentColumn(kGuestX, kGuestZ) == nullptr);
+    CHECK(streamer.servedColumn(kGuestX, kGuestZ) == nullptr);
+
+    WorldStreamer::ServedArea area;
+    area.chunkX = kGuestX;
+    area.chunkZ = kGuestZ;
+    area.radius = 1;
+    streamer.setServedAreas(&area, 1);
+
+    // It is generated, not merely asked for. Nine columns, and the frames are
+    // a deadlock guard rather than a measurement.
+    int frames = 0;
+    for (; frames < 20000; ++frames) {
+        frame(streamer, renderer, u32(frames), 0, 0, budget);
+        if (streamer.servedColumns() == 9 && streamer.servedOwed() == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(frames < 20000);
+    CHECK_EQ(streamer.servedColumns(), 9);
+
+    const world::ChunkColumn* served = streamer.servedColumn(kGuestX, kGuestZ);
+    CHECK(served != nullptr);
+    if (served == nullptr) {
+        streamer.close(kNow);
+        return;
+    }
+    // Real ground rather than an empty column: a1.1.2 puts bedrock at y 0.
+    CHECK(served->block(0, 0, 0) == block::BlockId(mcver::Block::Bedrock));
+
+    // **And the tick can see it**, which is the line that makes a served column
+    // part of the world rather than a buffer of bytes to post. A guest's dig
+    // forty chunks from the host goes through exactly this.
+    tick::TickWorld* world = streamer.worldTick();
+    CHECK(world != nullptr);
+    if (world != nullptr) {
+        const i32 bx = kGuestX * 16 + 3;
+        const i32 bz = kGuestZ * 16 + 3;
+        CHECK(world->blockAt(bx, 0, bz) == block::BlockId(mcver::Block::Bedrock));
+        CHECK(world->setBlockWithNotify(bx, 40, bz, block::BlockId(mcver::Block::Glass)));
+        CHECK(world->blockAt(bx, 40, bz) == block::BlockId(mcver::Block::Glass));
+    }
+
+    // **The camera and the guest never both own a column.** Standing the camera
+    // on top of the served area hands every one of them back; the grid is
+    // authoritative for everything it can reach.
+    CHECK(runUntilSettled(streamer, renderer, kGuestX, kGuestZ, budget, 20000) < 20000);
+    CHECK_EQ(streamer.servedColumns(), 0);
+    CHECK(streamer.residentColumn(kGuestX, kGuestZ) != nullptr);
+
+    // ...and the edit made through the served copy survived the hand-over, so
+    // nothing a guest did was read back over by the grid.
+    const world::ChunkColumn* resident = streamer.residentColumn(kGuestX, kGuestZ);
+    CHECK(resident != nullptr);
+    if (resident != nullptr) {
+        CHECK(resident->block(3, 40, 3) == block::BlockId(mcver::Block::Glass));
+    }
+
+    // An empty list lets the rest go.
+    streamer.setServedAreas(nullptr, 0);
+    frame(streamer, renderer, 1, kGuestX, kGuestZ, budget);
+    CHECK_EQ(streamer.servedColumns(), 0);
+
+    streamer.close(kNow);
+
+    // **Saved, not just held.** Reopening is the only honest check: the grid
+    // would answer either way.
+    {
+        WorldStreamer again;
+        again.setGenerateMissing(false);
+        CHECK(again.open(dir.c_str(), 2, kNow));
+        ChunkRenderer second;
+        second.reset(&allocator, config);
+        CHECK(runUntilSettled(again, second, kGuestX, kGuestZ, budget, 20000) < 20000);
+        const world::ChunkColumn* back = again.residentColumn(kGuestX, kGuestZ);
+        CHECK(back != nullptr);
+        if (back != nullptr) {
+            CHECK(back->block(3, 40, 3) == block::BlockId(mcver::Block::Glass));
+        }
+        again.close(kNow);
+    }
 }

@@ -166,14 +166,20 @@ struct Arrow {
     // different**: the muzzle offset backs the arrow up by 0.16 against a
     // half-width of 0.3, so it too is born inside its shooter.
     //
-    // **Which candidate that excludes depends on who fired, and only one of the
-    // two is found by place.** A player's arrow skips the player *by identity*
-    // -- there is one of them and `ArrowTargets::playerPresent` is the handle,
-    // so the jar's reference comparison is available exactly. A skeleton's
-    // skips the mob still standing over `(shooterX, shooterZ)`, which is a
-    // proxy and has to be: the mob pool swap-removes and has no stable handle.
-    // A skeleton walks well under its own half-width in a tick, so there the
-    // two agree.
+    // **Both candidates are excluded by identity now.** A player's arrow skips
+    // the player -- there is one of them and `ArrowTargets::playerPresent` is
+    // the handle -- and a mob's arrow skips the mob whose `Mob::handle` matches
+    // `shooterMob`. Neither is a proxy, so both are the jar's reference
+    // comparison exactly.
+    //
+    // **The mob half used to be found by place**, over `(shooterX, shooterZ)`,
+    // because the pool swap-removes and there was no stable handle to compare.
+    // It was close enough for a skeleton, which walks well under its own
+    // half-width in a tick -- but only for a skeleton standing still enough,
+    // and it broke outright for anything knocked back on the tick it fired:
+    // the arrow it had just loosed found it a hair outside its recorded
+    // footprint and struck it at a distance of zero. `Mob::handle` is what
+    // removed the guess.
     //
     // **The player could not be found by place**, and that is why this is
     // split. The footprint test holds only while the shooter stays inside its
@@ -187,7 +193,13 @@ struct Arrow {
     // Not saved -- the jar does not save `shootingEntity` either -- so an arrow
     // reloaded mid-flight has no grace left, which is what a five-tick window
     // means after a world close anyway.
-    double shooterX = 0.0, shooterZ = 0.0;
+    //
+    // **Which mob fired it, by identity.** Zero when nobody did, which is every
+    // arrow the player loosed and every arrow read back off the card. See
+    // `Mob::handle`: the pool swap-removes, so this is a session handle rather
+    // than a slot, and a mob that dies never lends its number to the animal
+    // that takes its place.
+    u32 shooterMob = 0;
     i8 shooterGrace = 0;
 
     void setPosition(double px, double py, double pz)
@@ -261,9 +273,13 @@ public:
     // `velocity` is 0.6 and `inaccuracy` 12.0 for a skeleton, against the
     // player's 1.5 and 1.0: a skeleton's arrow is slower and far less accurate,
     // which is why one at range misses and one at three blocks does not.
+    //
+    // `shooterMob` is the firing mob's `Mob::handle`, which is what keeps the
+    // arrow off its own archer for five ticks. Zero means nobody, and a shot
+    // with no shooter is a target for everything from the tick it is loosed.
     bool shootFrom(const tick::TickWorld& world, double x, double y, double z, double dx,
                    double dy, double dz, float velocity, float inaccuracy,
-                   ArrowShooter shooter);
+                   ArrowShooter shooter, u32 shooterMob = 0);
 
     // One 20 Hz tick of `kg.e_()` for every live arrow.
     // **Mutable**, since an arrow can now kill a mob and a mob's death drops

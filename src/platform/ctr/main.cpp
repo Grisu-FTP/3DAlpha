@@ -33,7 +33,13 @@
 // that makes it survivable is measurable, and moving it to core1 without a
 // frame time to measure against would be building on a guess.
 
+#include "core/settings/sensitivity.hpp"
+#include "core/net/client_session.hpp"
 #include "platform/ctr/audio.hpp"
+#include "platform/ctr/guest_play.hpp"
+#include "platform/ctr/host_play.hpp"
+#include "platform/ctr/net_play.hpp"
+#include "platform/ctr/network.hpp"
 #include "platform/ctr/heap.hpp"
 #include "platform/ctr/menu.hpp"
 #include "platform/ctr/overlay.hpp"
@@ -455,6 +461,12 @@ struct PendingContainer {
     mc::i32 x = 0;
     int y = 0;
     mc::i32 z = 0;
+
+    // **A chest minecart instead of a cell**, when it is not zero. It is a
+    // second field rather than a fourth `ContainerKind` because that enum is
+    // the world's seam and a cart is not a block; see
+    // `item::EntityInteraction::opensMinecartChest`.
+    mc::u32 cart = 0;
 };
 
 void requestContainer(void* ctx, mc::tick::TickWorld::ContainerKind kind, mc::i32 x, int y,
@@ -466,6 +478,7 @@ void requestContainer(void* ctx, mc::tick::TickWorld::ContainerKind kind, mc::i3
     pending.x = x;
     pending.y = y;
     pending.z = z;
+    pending.cart = 0;
 }
 
 // `TickWorld::spawnItemStack`.
@@ -494,6 +507,16 @@ void playTickSound(void* ctx, const char* key, double x, double y, double z, flo
                    float pitch)
 {
     static_cast<mc::audio::SoundEngine*>(ctx)->playSoundAt(key, x, y, z, volume, pitch);
+}
+
+// `cn.a(Ljava/lang/String;III)V` -- World.playRecord, the jukebox's one seam.
+// A null track is the stop, which is `BlockJukeBox.ejectRecord`'s own call; the
+// engine takes both. The cell's centre is where the source stands, as
+// `RenderGlobal.playRecord` passes `i, j, k` straight through.
+void playRecordSound(void* ctx, const char* track, mc::i32 x, int y, mc::i32 z)
+{
+    static_cast<mc::audio::SoundEngine*>(ctx)->playRecord(track, double(x), double(y),
+                                                          double(z));
 }
 
 // `dh.h(Lcn;III)V`'s `new ff(...)`, refused when the pool is full -- and a
@@ -666,7 +689,8 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                 ctr::Overlay& overlay, u32 down, u32 heldButtons, i64 nowTick,
                 i64* lastEditTick, const mc::item::Effects& effects,
                 mc::render::HeldItemState* hand, const ChatSink& chat,
-                mc::item::BlockBreaker* breaker, mc::entity::PlayerVitals* vitals)
+                mc::item::BlockBreaker* breaker, mc::entity::PlayerVitals* vitals,
+                ctr::NetPlay* net, ctr::HostPlay* host, PendingContainer* pendingContainer)
 {
     // An empty hotbar slot still breaks; it just has nothing to place. Checked
     // at the placement branch rather than here.
@@ -711,12 +735,54 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
         // before it looks at what is under the crosshair -- and before it
         // knows whether there is anything under it at all.
         hand->swing();
+        if (net != nullptr) {
+            net->swing();
+        }
         // **An entity in the way is hit instead of the block behind it**, the
         // same precedence the right-click branch below already gives one. This
         // is the only way to break a boat, a cart or a painting, which is why
         // none of the three left anything on the ground before it existed. See
         // core/item/use.hpp.
         if (target.found()) {
+            // **On a session next door the hit is sent, not applied.** The
+            // animal belongs to the other console: running the damage here as
+            // well would be a second world arguing with the first, and the
+            // host's next position update would overwrite everything except
+            // the health it had already taken off. See `packet::UseEntity`.
+            if (net != nullptr && net->useEntityAllowed()
+                && target.kind == mc::item::EntityTarget::Kind::Mob
+                && effects.entities.mobs != nullptr) {
+                const i32 targetId = effects.entities.mobs->at(target.index).entityId;
+                if (targetId != 0) {
+                    net->attackEntity(targetId, int(heldItem));
+                    // The tool still wears here: this console owns its own pack
+                    // in a1.1.2's multiplayer and pushes it back every second.
+                    if (overlay.gamemode() == mc::settings::Gamemode::Survival) {
+                        wearHeld(overlay, mc::item::wearOnHit(heldItem));
+                    }
+                    return;
+                }
+            }
+            // **Another player, which no console resolves for itself.** The
+            // blow is sent to whoever is running them and their own vitals
+            // decide what it costs -- there is no health on this wire. A host
+            // sends it through its server; a guest sends it up the stream it
+            // is already on. See `packet::UseEntity` and `net::IncomingHit`.
+            if (target.kind == mc::item::EntityTarget::Kind::Player
+                && effects.entities.players != nullptr) {
+                const i32 targetId = effects.entities.players->player(target.index).id;
+                bool sent = false;
+                if (net != nullptr && net->useEntityAllowed()) {
+                    net->attackEntity(targetId, int(heldItem));
+                    sent = true;
+                } else if (host != nullptr) {
+                    sent = host->attackPlayer(targetId, int(heldItem));
+                }
+                if (sent && overlay.gamemode() == mc::settings::Gamemode::Survival) {
+                    wearHeld(overlay, mc::item::wearOnHit(heldItem));
+                }
+                return;
+            }
             // The attacker's position, which only a living target reads: a
             // struck animal is knocked away from whoever hit it.
             mc::item::Attacker attacker;
@@ -764,8 +830,14 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
             mc::item::BreakContext ctx{*tickWorld, overlay.editInventory(), effects};
             ctx.eyeInWater = mc::entity::playerEyeInWater(*tickWorld, body);
             ctx.onGround = body.onGround;
+            const auto clicked = tickWorld->blockAt(hit.x, hit.y, hit.z);
             if (breaker->click(ctx, hit.x, hit.y, hit.z, int(hit.face))) {
                 overlay.inventoryEdited();
+            }
+            if (net != nullptr) {
+                net->digStart(hit.x, hit.y, hit.z, int(hit.face),
+                              tickWorld->blockAt(hit.x, hit.y, hit.z) != clicked,
+                              int(heldItem));
             }
             return;
         }
@@ -779,12 +851,27 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // **An entity in the way is asked instead of the block**, which is
     // `Minecraft.clickMouse`'s own order: `objectMouseOver` is the entity, so
     // `interact` runs and the block behind it is never clicked -- even when
-    // `interact` refuses, as a chest cart does here. A boat or a plain cart
-    // takes the player aboard, and that ends the click.
+    // `interact` refuses. A boat or a plain cart takes the player aboard, a
+    // chest cart opens its slots and a furnace cart takes coal, and any of
+    // those ends the click.
     if (target.found()) {
-        const mc::item::EntityInteraction answer =
-            mc::item::interactWithEntity(*tickWorld, target, effects.entities, heldItem);
+        const mc::item::EntityInteraction answer = mc::item::interactWithEntity(
+            *tickWorld, target, effects.entities, heldItem, body.x, body.z);
         if (answer.taken) {
+            // **A chest cart's screen cannot come through the container sink**,
+            // which names a cell; the cart hands back its own id instead. Held
+            // rather than opened here, for the reason `PendingContainer` gives:
+            // this runs inside the edit path with the Overlay's screen state
+            // halfway through a frame.
+            if (answer.opensMinecartChest != 0 && pendingContainer != nullptr) {
+                pendingContainer->open = true;
+                pendingContainer->cart = answer.opensMinecartChest;
+            }
+            // **A furnace cart swallowed the coal**, and Survival pays for it
+            // the same way a placement does.
+            if (answer.spentFuel && overlay.gamemode() == mc::settings::Gamemode::Survival) {
+                spendHeld(overlay, 1);
+            }
             // **A bucket becomes a milk bucket and a saddle becomes nothing**,
             // which is the same "what did the stack turn into" the item path
             // below already handles -- see `ItemUse::becomes`.
@@ -823,6 +910,14 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // item::RefusalMark.
     const mc::item::RefusalMark refusals = mc::item::markRefusals(effects.entities);
     const bool survival = overlay.gamemode() == mc::settings::Gamemode::Survival;
+
+    // `nj.a(dm, cn, ev, ...)`: every right click on a block goes to the server
+    // before the client tries it, whether or not the client makes anything of
+    // it. The server's placing is the one that counts; see
+    // core/net/pending_edits.hpp.
+    if (net != nullptr && hit.hit && !target.found()) {
+        net->place(int(heldItem), hit.x, hit.y, hit.z, int(hit.face));
+    }
 
     bool itemTook = false;
     if (hit.hit && !target.found()
@@ -943,7 +1038,8 @@ void clampPitch(ctr::Camera& camera)
 // clockwise -- Camera::look sends yaw 0 to +Z and positive yaw toward -X, which
 // is south turning to west -- so dragging right *adds* to it. It used to
 // subtract, which meant the view turned the opposite way from the finger.
-void lookWithTouch(ctr::Camera& camera, bool* dragging, touchPosition* last, int top)
+void lookWithTouch(ctr::Camera& camera, bool* dragging, touchPosition* last, int top,
+                   float gain)
 {
     const u32 held = hidKeysHeld();
     if (!(held & KEY_TOUCH) || top < 0) {
@@ -961,9 +1057,13 @@ void lookWithTouch(ctr::Camera& camera, bool* dragging, touchPosition* last, int
     }
 
     if (*dragging) {
+        // Radians per pixel of drag at the default sensitivity. `gain` is the
+        // Options row, and it is 1.0 there -- see core/settings/sensitivity.hpp
+        // for why a1.1.2's own curve lands exactly on unity at 100%, which is
+        // what lets this constant stay the number it was tuned to.
         constexpr float kSensitivity = 0.012f;
-        camera.yaw += float(int(touch.px) - int(last->px)) * kSensitivity;
-        camera.pitch += float(int(touch.py) - int(last->py)) * kSensitivity;
+        camera.yaw += float(int(touch.px) - int(last->px)) * kSensitivity * gain;
+        camera.pitch += float(int(touch.py) - int(last->py)) * kSensitivity * gain;
         clampPitch(camera);
     }
 
@@ -978,7 +1078,7 @@ void lookWithTouch(ctr::Camera& camera, bool* dragging, touchPosition* last, int
 // Pro reports through, so an old 3DS with one attached gets this for free. Both
 // axes are rate rather than position: the further it is pushed the faster the
 // view turns, which is what a stick with a return spring wants.
-void lookWithCstick(ctr::Camera& camera, float dt)
+void lookWithCstick(ctr::Camera& camera, float dt, float gain)
 {
     circlePosition stick;
     hidCstickRead(&stick);
@@ -988,9 +1088,9 @@ void lookWithCstick(ctr::Camera& camera, float dt)
     // on a stick this short.
     constexpr float kTurnRate = 1.8f;
 
-    camera.yaw += axis(stick.dx) * kTurnRate * dt;
+    camera.yaw += axis(stick.dx) * kTurnRate * gain * dt;
     // Push up, look up. Positive pitch looks down, so this subtracts.
-    camera.pitch -= axis(stick.dy) * kTurnRate * dt;
+    camera.pitch -= axis(stick.dy) * kTurnRate * gain * dt;
     clampPitch(camera);
 }
 
@@ -1080,24 +1180,38 @@ void* spawnWorker(void (*entry)(void*), void* arg, mc::WorkerRole role)
         // The generation worker loses a few percent of a core it is not
         // frame-coupled to.
         if (gWorkerIsNew3DS) {
-            // **Core 2 at the main thread's own priority, sharing with the
-            // generation worker** -- deliberately *not* a step above it.
+            // **Core 2, one step above the generation worker already there.**
             //
-            // Preempting generation was the first instinct, and it is the wrong
-            // trade. The kernel refuses a priority numerically below what the
-            // process was granted, and a refused `threadCreate` here is silent:
-            // it would fall through to the Old 3DS path and put the decoder on
-            // core 0 on a console that has a spare core, with nothing to say so.
-            // Paying that risk buys almost nothing, because the decoder does not
-            // need to win a race it is not in -- it needs ~15% of a core against
-            // a third of a second of buffer, and at equal priority the scheduler
-            // round-robins it against generation, which is far more than enough.
+            // It used to be the same priority as generation, on the argument
+            // that the decoder does not need to win a race it is not in: it
+            // wants ~15% of a core against a deep ring, and the scheduler would
+            // round-robin the two. **That last clause was wrong, and it is why
+            // the music skipped under load.** The ARM11 kernel is SCHED_FIFO --
+            // no round-robin, no time slice (3dbrew, Multi-threading) -- so a
+            // runnable thread never displaces one of equal priority, and
+            // `WorldStreamer::workerMain` takes its own next job the moment it
+            // finishes one. A full slate is a thread that does not block, and
+            // the decoder got only the gaps generation's card reads left.
             //
-            // This is also the one priority known to work on this hardware:
-            // the generation worker has used exactly it on core 2 since M4.
-            // **Depth is what covers the deadline here, not priority.**
+            // So it asks for a step up. The risk that argued against it is real
+            // and is handled rather than avoided: the kernel refuses a priority
+            // numerically below what the process was granted, and a refused
+            // `threadCreate` is silent -- so the refusal falls back to the main
+            // thread's own priority on the *same core* before it falls through
+            // to core 0, which is the outcome that would actually have hurt.
+            //
+            // **The fallback still wins**, because the other half of the change
+            // is that generation now takes core 2 one step *below* the main
+            // thread rather than at it (see the Generation branch below). On a
+            // core with nothing else on it that costs generation nothing, and it
+            // means the decoder outranks it whether or not this console grants
+            // the step up. Generation pays a few percent of a core it is not
+            // frame-coupled to, and only while a track is decoding.
             Thread thread =
-                threadCreate(entry, arg, kAudioStackBytes, mainPriority, 2, false);
+                threadCreate(entry, arg, kAudioStackBytes, mainPriority - 1, 2, false);
+            if (thread == nullptr) {
+                thread = threadCreate(entry, arg, kAudioStackBytes, mainPriority, 2, false);
+            }
             if (thread != nullptr) {
                 return thread;
             }
@@ -1105,13 +1219,26 @@ void* spawnWorker(void (*entry)(void*), void* arg, mc::WorkerRole role)
             // the Old 3DS policy, exactly as generation does.
         }
 
-        // **Old 3DS: core 0, one step below the main thread**, which is the I/O
-        // thread's slot and for a related reason -- it runs in the slack the
-        // main thread leaves while blocked on VBlank, so it cannot cost a
-        // frame. A 3DSX has no other core to move it to, so CONTRIBUTING's
+        // **Old 3DS: core 0, one step below the main thread** -- and one step
+        // *above* the I/O and net threads, which used to share this slot.
+        //
+        // Below the main thread because the steady state must cost a frame
+        // nothing: it runs in the slack the main thread leaves while blocked on
+        // VBlank. Above the other two because under SCHED_FIFO a tie is not
+        // shared -- whichever of them is already running keeps core 0 until it
+        // blocks, so a chunk being inflated could hold the whole of that slack
+        // while the only thread here with a deadline waited behind it.
+        //
+        // That still leaves the case the slack itself runs out, which is a
+        // frame already over budget and is what made the music skip. Nothing
+        // that lives below the main thread can fix that, so the decode thread
+        // lifts itself above the main thread for as long as it takes to refill
+        // and drops straight back; see kBoostBelow in ctr/audio.hpp.
+        //
+        // A 3DSX has no other core to move any of this to, so CONTRIBUTING's
         // "no decompression on core 0" is met in substance rather than
-        // literally: never on the main thread, one buffer per wake, and a ring
-        // deep enough that a missed frame is inaudible. See ctr/audio.hpp.
+        // literally: never on the main thread, bounded per wake, and a ring
+        // deep enough that a missed frame is inaudible.
         const s32 priority = mainPriority + 1 > 0x3F ? 0x3F : mainPriority + 1;
         return threadCreate(entry, arg, kAudioStackBytes, priority, 0, false);
     }
@@ -1129,17 +1256,53 @@ void* spawnWorker(void (*entry)(void*), void* arg, mc::WorkerRole role)
         // every frame, it runs in exactly that slack. SD reads therefore
         // overlap with the GPU, which is where they belong.
         //
-        // One step rather than 0x3F so it is not sitting behind every other
-        // low-priority thread in the process for the slack it is meant to use.
-        const s32 priority = mainPriority + 1 > 0x3F ? 0x3F : mainPriority + 1;
+        // Two steps rather than 0x3F so it is not sitting behind every other
+        // low-priority thread in the process for the slack it is meant to use --
+        // and two rather than one so the audio decoder, which is the only thread
+        // on this core with a deadline, is in front of it. Under SCHED_FIFO the
+        // two cannot share a priority: whichever started first would hold core 0
+        // until it blocked. This thread is blocked in IPC nearly always, so the
+        // step costs it nothing it can measure.
+        const s32 priority = mainPriority + 2 > 0x3F ? 0x3F : mainPriority + 2;
         return threadCreate(entry, arg, kIoStackBytes, priority, 0, false);
     }
 
+    if (role == mc::WorkerRole::Net) {
+        // **A multiplayer session sits where the I/O thread does**, one step
+        // under the main thread on core 0, and for the same reason: it spends
+        // its life blocked in `poll`. What it does when it wakes -- parsing, and
+        // inflating a column -- has to keep pace with the server, which a
+        // bottom-priority thread living on the frame's leftovers would not. Core
+        // 2 stays the generator's, so `gWorkerOnCore2` still describes the
+        // generator. The generation worker's stack size, because building a
+        // column puts a section's worth of scratch on it.
+        //
+        // Two steps down rather than one, for the reason the I/O thread is:
+        // inflating a column must not hold core 0 in front of the audio
+        // decoder's deadline, and a session waiting on the network is not
+        // waiting on the CPU.
+        const s32 priority = mainPriority + 2 > 0x3F ? 0x3F : mainPriority + 2;
+        return threadCreate(entry, arg, kWorkerStackBytes, priority, 0, false);
+    }
+
     if (gWorkerIsNew3DS) {
-        // Core 2 has nothing else on it, so there is no one to be polite to:
-        // the worker runs at the main thread's own priority and still costs the
-        // render thread nothing.
-        Thread thread = threadCreate(entry, arg, kWorkerStackBytes, mainPriority, 2, false);
+        // Core 2 has one other thread on it and generation is the one that can
+        // afford to be polite: the audio decoder is there too, and under
+        // SCHED_FIFO equal priority is not a share -- `workerMain` takes its own
+        // next job the moment it finishes one, so a full slate is a thread that
+        // never blocks and never lets the decoder in. That is what made the
+        // music skip under load.
+        //
+        // **One step below the main thread, and it costs nothing.** Nothing else
+        // is on this core, so a lower number would buy generation no more of it
+        // than it already gets; all the step does is put the thread with the
+        // deadline in front. It also means the fix does not depend on the
+        // kernel granting a priority above the process's own, which is the half
+        // of the arrangement that can be refused. See ctr/audio.hpp.
+        const s32 generationPriority =
+            mainPriority + 1 > 0x3F ? 0x3F : mainPriority + 1;
+        Thread thread =
+            threadCreate(entry, arg, kWorkerStackBytes, generationPriority, 2, false);
         if (thread != nullptr) {
             gWorkerOnCore2 = true;
             return thread;
@@ -1171,8 +1334,13 @@ void joinWorker(void* handle)
 // thing that chose this world -- that was `choice`, which is a copy -- but it
 // is where the render distance, the pack list and the live atlas live, and the
 // pause menu edits all three.
+// `net` is the session this console *joined*, and `host` the one it is
+// running. They are never both set: a world is either somebody else's or this
+// console's, and hosting changes nothing about how the world is played -- see
+// platform/ctr/host_play.hpp.
 int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngine& sound,
-            ctr::NdspBackend& audio, bool isNew3DS, bool haveCstick)
+            ctr::NdspBackend& audio, bool isNew3DS, bool haveCstick, ctr::NetPlay* net,
+            ctr::HostPlay* host, ctr::GuestPlay* guest)
 {
     ctr::Renderer::Config config;
     // What the options screen last settled on, which starts at the two
@@ -1275,13 +1443,72 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     world.setPrefetchRings(2);
     world.setAutosaveSeconds(choice.autosaveSeconds);
 
-    if (!world.open(choice.worldPath.c_str(), config.meshDistance, ctr::nowMillis())) {
+    // **Before the world opens**, because the generator is built inside open()
+    // and reads this once. A guest's terrain then reaches it without the
+    // streamer or the generator knowing a session exists.
+    if (host != nullptr) {
+        world.setTerrainSource(host->terrainSource());
+    }
+
+    // **What the other end actually sends.** A Java server sends ten chunks
+    // each way; the console next door sends fewer, and the difference is not a
+    // preference -- it decides whether a cell with no column is one to wait for
+    // or one to mesh against. See WorldStreamer::setServerViewRadius.
+    if (guest != nullptr) {
+        world.setServerViewRadius(mc::net::WorldServer::kViewDistance);
+    }
+
+    // **A multiplayer world opens with nothing in it**: the server fills it. See
+    // WorldStreamer::openRemote and platform/ctr/net_play.hpp.
+    const bool opened = net != nullptr
+                            ? world.openRemote(config.meshDistance)
+                            : world.open(choice.worldPath.c_str(), config.meshDistance,
+                                         ctr::nowMillis());
+    if (!opened) {
         // A world that will not open is not a reason to end the process: the
         // player picked it from a list and can pick another. The message goes
         // to the console under the menu that is about to come back up.
         std::printf("\x1b[31mcannot open %s\x1b[0m\n", choice.worldPath.c_str());
         renderer.shutdown();
         return 0;
+    }
+
+    // **The session opens after the world does**, because what a guest needs
+    // in order to make terrain for it -- the seed and the world's own
+    // generation switches -- is not known until level.dat has been read.
+    if (host != nullptr) {
+        mc::io::PosixFileSystem hostFs;
+        mc::settings::WorldSettings hostWorldSettings;
+        mc::settings::loadWorldSettings(hostFs, choice.worldPath.c_str(), &hostWorldSettings);
+        mcver::WorldGenOptions options;
+        options.snowCovered = world.level().snowCovered;
+        options.fixOreVeinBounds = hostWorldSettings.fixOreGeneration;
+        options.fixBedrockHole = hostWorldSettings.fixBedrockHole;
+
+        mc::net::link::GeneratorId id;
+        id.seed = world.level().randomSeed;
+        id.options = mc::net::link::packOptions(options);
+        id.version = mc::net::link::generatorVersion();
+
+        // **Every block this world writes, so the guests can be told.** The
+        // one choke point every edit goes through -- the player's, the tick's,
+        // a fluid's -- so a session never has to be told about a change twice
+        // and never misses one. See WorldStreamer::setBlockWatcher.
+        world.setBlockWatcher(&ctr::HostPlay::blockWatcher, host);
+
+        std::string sessionError;
+        if (!host->open(choice.worldName, ctr::loginName(), id, &sessionError)) {
+            // The world is open and playable; only the session failed. Say so
+            // where the player is about to be looking rather than dropping
+            // them back to a menu with a world half-loaded behind it.
+            std::printf("\x1b[33mlocal session: %s\x1b[0m\n", sessionError.c_str());
+        }
+
+        // **How this world is played, before anybody can join it.** A guest has
+        // no other way to learn it -- protocol 2 has nowhere to put it, and a
+        // joining console must not simply keep its own. See
+        // `net::link::WorldRules`.
+        host->setWorldRules(choice.gamemode, choice.difficulty);
     }
 
     // **The bound under the render distance**, sized from the heap that the
@@ -1492,14 +1719,14 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         const mc::tick::TickWorld* world = nullptr;
 
         static void shoot(void* ctx, double x, double y, double z, double dx, double dy,
-                          double dz, float velocity, float inaccuracy)
+                          double dz, float velocity, float inaccuracy, u32 shooterMob)
         {
             SkeletonBow& self = *static_cast<SkeletonBow*>(ctx);
             if (self.arrows == nullptr || self.world == nullptr) {
                 return;
             }
             self.arrows->shootFrom(*self.world, x, y, z, dx, dy, dz, velocity, inaccuracy,
-                                   mc::entity::ArrowShooter::Skeleton);
+                                   mc::entity::ArrowShooter::Skeleton, shooterMob);
         }
     };
     SkeletonBow skeletonBow;
@@ -1541,10 +1768,20 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // reported. Two kilobytes, on the heap for the stack reason below.
     auto chat = std::make_unique<mc::gui::ChatLog>();
 
-    const mc::item::Effects effects{
-        particles.get(), &sound,
-        mc::item::EntityPools{paintings.get(), arrows.get(), boats.get(),
-                              minecarts.get(), mobs.get(), signs.get()}};
+    mc::item::EntityPools pools;
+    pools.paintings = paintings.get();
+    pools.arrows = arrows.get();
+    pools.boats = boats.get();
+    pools.minecarts = minecarts.get();
+    pools.mobs = mobs.get();
+    pools.signs = signs.get();
+    // **The other people in the room, for the crosshair to find.** Whichever
+    // end of a session this console is; null in single player. A click on one
+    // is never resolved here -- see `EntityTarget::remote`.
+    pools.players = net != nullptr    ? &net->entities()
+                    : host != nullptr ? &host->entities()
+                                      : nullptr;
+    const mc::item::Effects effects{particles.get(), &sound, pools};
 
     // **What is lying on the ground.** Sixty-four entities, on the heap for the
     // same stack reason the particles are, and time-seeded for the same reason
@@ -1563,6 +1800,13 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // the block-tick stream. See core/entity/primed_tnt.hpp.
     auto primedTnt = std::make_unique<mc::entity::PrimedTntSystem>(
         i64(ctr::nowMillis()) ^ 0x746e74);
+
+    // **A server's items live in the same pool the single-player ones do**, so
+    // one render pass and one tick serve both. See core/net/entities.hpp.
+    if (net != nullptr) {
+        net->entities().bind(droppedItems.get());
+        net->entities().bindMobs(mobs.get());
+    }
 
     world.bindEntities(mc::entity::EntityPools{paintings.get(), arrows.get(), boats.get(),
         minecarts.get(), droppedItems.get(), fallingBlocks.get(), primedTnt.get(),
@@ -1656,8 +1900,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // this every `dropBlockAsItem` in core is a draw from the world's random
         // and nothing else, which is what it was before there was a pool to put
         // the answer in. See core/tick/drop.hpp.
-        entityWorld->setDropSink(spawnDroppedItem, &scene);
-        entityWorld->setStackSink(spawnItemStack, &scene);
+        // `dropBlockAsItem` returns at once on a multiplayer world -- the
+        // server drops the item and sends it -- so a session leaves both unset.
+        entityWorld->setDropSink(net != nullptr ? nullptr : &spawnDroppedItem, &scene);
+        entityWorld->setStackSink(net != nullptr ? nullptr : &spawnItemStack, &scene);
         entityWorld->setColumnModifiedSink(markTileEntityColumn, &world);
         // **And the screens a chest, a workbench and a furnace open.** Without
         // it `blockActivated` still takes the click, which is what headless
@@ -1681,6 +1927,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // being silent. The lever, the button and the door were in the same
         // position. See core/tick/tick_world.hpp.
         entityWorld->setSoundSink(playTickSound, &sound);
+        // **And the disc a jukebox is playing.** Unlike every other sound in
+        // the game this one keeps going after the call and has to be stopped
+        // again, so it is its own seam -- see `TickWorld::playRecord`. A
+        // headless caller with no sink gets a jukebox that takes and gives back
+        // discs in silence.
+        entityWorld->setRecordSink(playRecordSound, &sound);
         // **And the text that goes with a sign.** Every removal of a sign
         // block reaches this -- the player's break, and a sign dropped because
         // the block it stood or hung on went. See core/tick/tick_world.hpp.
@@ -1775,9 +2027,23 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // there does, exactly as a1.1.2's does, and that lift is the whole of what
     // stops a new world starting the player inside a hill.
     respawnPending = true;
-    spawnLiftOwed = !world.level().player.present;
+    // The server places a multiplayer player, and a1.1.2 lets it fall from there.
+    spawnLiftOwed = net == nullptr && !world.level().player.present;
     // Only Survival can be hurt. See core/entity/player_vitals.hpp.
-    vitals.invulnerable = choice.gamemode != settings::Gamemode::Survival;
+    //
+    // **Nor can anyone on a Java server**: protocol 2 carries no health, so a
+    // fall could hurt a player the server would never hear was hurt, and the
+    // two ends would disagree with no packet able to settle it.
+    //
+    // A session next door is the exception, and deliberately. Nothing carries
+    // health there either -- it is the same protocol -- but both ends are this
+    // port, both run the same `PlayerVitals`, and the damage a player takes is
+    // their own console's business in a1.1.2 anyway (`kHasServerSideDamage` is
+    // false for this version). So a guest in a Survival world is mortal, which
+    // is the whole of what makes it a Survival world.
+    const bool localGuest = guest != nullptr;
+    vitals.invulnerable = (net != nullptr && !localGuest)
+                          || choice.gamemode != settings::Gamemode::Survival;
 
     ctr::Camera camera;
     camera.x = body.x;
@@ -1889,6 +2155,21 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
 
     bool dragging = false;
     touchPosition lastTouch{};
+
+    // **Whose B press this is.** Jump is a *held* button and the back button is
+    // a *pressed* one, so the press that closes the inventory was still on B a
+    // frame later and the player left the screen in mid-air. Ownership is
+    // decided while the screen is still up and held until the finger comes off:
+    // a B that belonged to a screen never becomes a jump, however long it is
+    // held afterwards.
+    bool backHeldByScreen = false;
+
+    // **The Options row, as the number the look actually multiplies by.** Held
+    // as the gain rather than the percentage so the curve is evaluated when the
+    // row moves and not twice a frame; `applyPause` puts a new one here without
+    // the world being closed. See core/settings/sensitivity.hpp.
+    float lookGain = settings::sensitivityGain(choice.lookSensitivity);
+
     u64 lastTick = svcGetSystemTick();
 
     // The pool's eviction rule is "nothing drawn in this frame", so the counter
@@ -1929,6 +2210,100 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // 45 seconds rather than something tighter because the first published
     // column is the slowest: nothing can be published until a 3x3 of columns
     // exists, and on an old 3DS the worker shares core 0 with this loop.
+    // **A multiplayer world arrives rather than being there**, and a1.1.2 covers
+    // that with `dg`, "Downloading terrain", until the server's first Player
+    // Position & Look has put the player somewhere -- `gy.a(eh)` closes the
+    // screen on that packet and on nothing else.
+    //
+    // **Waiting for the ground under the player as well was a mistake, and it
+    // is the shape of hang a player would report as "it never downloads".**
+    // Nothing guarantees that column arrives: 0.2.1 sends columns around the
+    // player from its own tracker, and if the one under the feet is late, or
+    // the player is standing where the tracker has already sent and unloaded,
+    // the loop waits for something that is not coming and the session's own
+    // read timeout is the only thing that ends it. The body does not need it
+    // anyway -- `respawnPending` already holds it still until its chunk is
+    // resident, for a bounded number of ticks, which is the same guard with an
+    // end to it. So the ground is waited for briefly and then given up on.
+    // START leaves, as a closed connection does.
+    constexpr i64 kGroundGraceMs = 5000;
+    i64 placedAtMs = 0;
+    bool leaveBeforePlay = false;
+    if (net != nullptr) {
+        int radius = renderer.config().meshDistance;
+        if (radius > kMaxProgressRadius) {
+            radius = kMaxProgressRadius;
+        }
+        if (radius > ctr::ProgressScreen::maxGridRadius()) {
+            radius = ctr::ProgressScreen::maxGridRadius();
+        }
+
+        ctr::ProgressScreen progress;
+        const bool haveScreen = progress.init();
+        if (haveScreen) {
+            progress.begin(ctr::ProgressScreen::Kind::Downloading, choice.worldName.c_str());
+            progress.setNote("START to disconnect");
+        }
+        const mc::u8* widths = menu.fontImage().empty() ? nullptr : menu.fontImage().widths;
+        char note[96];
+
+        while (aptMainLoop()) {
+            hidScanInput();
+            if (hidKeysDown() & KEY_START) {
+                leaveBeforePlay = true;
+                break;
+            }
+
+            const Frustum frustum = renderer.cullFrustum(camera);
+            renderer.chunks().beginFrame(++frameCounter, frustum, camera.chunkX(),
+                                         camera.sectionY(), camera.chunkZ());
+            // The radio, for a session next door: the bytes have to come off it
+            // before the channel behind it has anything to hand over.
+            if (guest != nullptr) {
+                guest->pump();
+            }
+            net->pump(world, renderer.chunks(), overlay, *chat, widths, body, camera);
+            if (net->closed()) {
+                leaveBeforePlay = true;
+                break;
+            }
+            world.update(renderer.chunks(), camera.chunkX(), camera.chunkZ(), budget);
+
+            const render::WorldStreamer::ProgressCount made =
+                world.progressWithin(camera.chunkX(), camera.chunkZ(), radius);
+            if (haveScreen) {
+                world.progressGrid(camera.chunkX(), camera.chunkZ(), radius, gProgressCells);
+                progress.setGrid(gProgressCells, radius * 2 + 1);
+                progress.setCounts(u32(made.done), u32(made.total));
+                std::snprintf(note, sizeof(note), "%s  %lu KB  %d columns   START to leave",
+                              net->stage(),
+                              (unsigned long)(net->bytesIn() / 1024), net->columns());
+                progress.setNote(note);
+                progress.present(renderer, camera);
+            } else {
+                renderer.drawFrame(camera);
+            }
+
+            if (!net->placed()) {
+                continue;
+            }
+            if (placedAtMs == 0) {
+                placedAtMs = ctr::nowMillis();
+            }
+            const mc::tick::TickWorld* ground = world.worldTick();
+            if ((ground != nullptr && ground->chunkResident(body.chunkX(), body.chunkZ()))
+                || ctr::nowMillis() - placedAtMs > kGroundGraceMs) {
+                break;
+            }
+        }
+
+        if (haveScreen) {
+            progress.shutdown();
+        }
+        overlay.invalidate();
+        lastTick = svcGetSystemTick();
+    }
+
     if (choice.created) {
         constexpr int kMaxWaitFrames = 60 * 60 * 6;
         constexpr int kStallFrames = 60 * 45;
@@ -2001,16 +2376,167 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         lastTick = svcGetSystemTick();
     }
 
-    while (aptMainLoop()) {
+    // **What the pause menu changed, applied to the world it was opened over.**
+    // Shared because there are two ways out of that menu now -- the blocking
+    // one single player takes and the stepped one a session takes -- and the
+    // settings they hand back are the same settings either way. True means the
+    // player chose Exit World and the caller is to leave the loop.
+    const auto applyPause = [&](const ctr::PauseChoice& paused) -> bool {
+        if (net != nullptr && !paused.chat.empty()) {
+            net->chat(paused.chat);
+        }
+        if (host != nullptr && !paused.chat.empty()) {
+            host->say(paused.chat);
+            chat->add(menu.fontImage().empty() ? nullptr : menu.fontImage().widths,
+                      paused.chat);
+        }
+
+        // Two things the menu took, where there used to be three. The top
+        // screen is no longer one of them: the menu never created a target
+        // of its own and never called gfxSet3D, so citro3d's output table
+        // still holds both eyes and there is nothing to reclaim.
+        //
+        //   * The bottom-screen console, which the menu cleared and wrote
+        //     its own help onto.
+        //   * The clock. `dt` is measured from the last frame, and the last
+        //     frame was however long ago the player pressed START.
+        overlay.invalidate();
+        lastTick = svcGetSystemTick();
+
+        // Nothing below is worth doing for a world that is closing: the
+        // pack and the distance are already saved in 3ds.ini and held by
+        // the Menu, and applying either here would upload an atlas and
+        // rebuild the whole VBO pool a few frames before both are thrown
+        // away.
+        if (paused.action == ctr::PauseChoice::Action::ExitWorld) {
+            return true;
+        }
+
+        // The world settings screen can change the gamemode without leaving
+        // the world, and the gamemode is which bottom screen this is.
+        //
+        // **It is also which of the two movers owns the position**, and
+        // that hand-over has to be made explicitly. Spectator flies a bare
+        // camera and never touches the body; every other mode reads the
+        // camera straight off the body. So a mode change that did not carry
+        // the position across left the body wherever it was last ticked --
+        // at the spawn point, usually -- and re-entering Creative teleported
+        // the player back to it, frequently inside terrain. That is the
+        // "changing gamemode puts you in the ground" bug.
+        //
+        // Only one direction needs work. Leaving Spectator puts the body
+        // under the camera; entering it needs nothing, because the camera is
+        // already at the eye the body was handing it.
+        const settings::Gamemode previousMode = overlay.gamemode();
+        // A server's world has no World Settings row, so what the menu
+        // hands back is some other world's gamemode: a session keeps its own.
+        const settings::Gamemode pausedMode = net != nullptr ? previousMode : paused.gamemode;
+        overlay.setGamemode(pausedMode);
+        if (net == nullptr) {
+            difficulty = paused.difficulty;
+        }
+        if (world.worldTick() != nullptr) {
+            world.worldTick()->setImprovedFencePlacement(paused.improvedFencePlacement);
+        }
+        vitals.invulnerable = (net != nullptr && !localGuest)
+                              || pausedMode != settings::Gamemode::Survival;
+        // **And the guests, who are playing this world's way.** The pause
+        // menu can turn a Survival world Creative without anybody leaving
+        // it, and a guest still flying in a world that has gone back to
+        // Survival is the same bug as a guest who never learned it was
+        // Survival in the first place.
+        if (host != nullptr) {
+            host->setWorldRules(pausedMode, difficulty);
+        }
+        breaker.reset();
+        if (previousMode == settings::Gamemode::Spectator
+            && pausedMode != settings::Gamemode::Spectator) {
+            // Spectator's camera is a bare eye with no crouch in it, so
+            // the body it hands over to is standing up.
+            sneaking = false;
+            placeBodyAtEye(body, camera, sneaking);
+            sprintGesture.cancel();
+        }
+
+        if (paused.atlasChanged) {
+            if (!renderer.setAtlas(menu.atlas())) {
+                std::printf("\x1b[31mcould not upload that pack\x1b[0m\n");
+                overlay.invalidate();
+            }
+            // The font is its own file with its own absence, so it is
+            // uploaded separately -- a pack with no `default.png` leaves
+            // signs blank rather than leaving the world untextured.
+            renderer.setFont(menu.fontImage());
+            // ...and `particles.png` beside it, on the same terms: a pack
+            // without one gets the stand-in, not a blank particle.
+            renderer.setParticleSheet(menu.particleSheet());
+            // The map is drawn from the same pack as the world, so ground
+            // sampled under the old one is recoloured rather than redrawn:
+            // the store holds block ids, not pixels.
+            overlay.setAtlas(menu.atlas());
+            overlay.setBackdropTile(menu.backgroundTile());
+            // The needle is drawn over the pack's own compass face, so a
+            // new pack means a new base. Without this the compass keeps the
+            // old pack's dial for the rest of the session.
+            seedCompass(menu.atlas());
+            // The outline atlas went with the old one and may not have come
+            // back, so the debug page is told what is actually on rather
+            // than what was asked for -- the same read-back the page does
+            // when it sets this itself.
+            settings.wireframe = renderer.wireframe();
+        }
+
+        // The same order and the same reason as the debug page below: the
+        // pool goes first, and the streamer republishes into whatever field
+        // it finds. Routed through `settings` so the debug page and the
+        // pause menu cannot end up disagreeing about what the distance is.
+        if (paused.renderDistance != settings.renderDistance) {
+            settings.renderDistance = paused.renderDistance;
+            renderer.setMeshDistance(settings.renderDistance);
+            world.setMeshDistance(settings.renderDistance, renderer.chunks());
+        }
+
+        world.setAutosaveSeconds(paused.autosaveSeconds);
+        // **Applied to the running world, like the distance above it.** The row
+        // is on the pause menu precisely so it can be: a look rate is set by
+        // feeling it, and feeling it means going back to the world and turning.
+        lookGain = settings::sensitivityGain(paused.lookSensitivity);
+
+        return false;
+    };
+
+    // **The pause menu is up and the world is still running**, which is what
+    // START does in a session. See the note on the START branch below.
+    bool pauseMenuUp = false;
+
+    while (!leaveBeforePlay && aptMainLoop()) {
         hidScanInput();
         if (haveCstick) {
             // ir:rst has its own scan; hidScanInput knows nothing about the
             // C-stick.
             irrstScanInput();
         }
-        const u32 down = hidKeysDown();
-        const u32 held = hidKeysHeld();
-        if (down & KEY_START) {
+        // **Not const: a screen that is open takes them.** See the pause
+        // branch below.
+        u32 down = hidKeysDown();
+        u32 held = hidKeysHeld();
+        // **START: the pause menu, and whether the world stops for it.**
+        //
+        // Single player stops dead -- `runPause` takes the frame loop and the
+        // world is a still picture behind it, which is `Minecraft.runTick`'s
+        // own rule: a screen that `doesGuiPauseGame` stops the clock, and in
+        // a1.1.2 that is checked behind `!isMultiplayerWorld()`.
+        //
+        // **A session cannot stop, because stopping is not a thing one console
+        // gets to decide for the others.** A guest that froze would stop
+        // answering its host and be dropped; a host that froze would take every
+        // guest's world with it. So the menu is stepped inside this loop
+        // instead: the link is pumped, chunks stream, the clock runs, mobs and
+        // the other players move, and the body goes on being simulated with
+        // nothing pressed -- which is the original's answer too, since a screen
+        // being open is what stops the keys reaching the player, not what stops
+        // the world.
+        if (!pauseMenuUp && (down & KEY_START) != 0) {
             // Entity changes do not dirty block columns. Snapshot them on
             // pause too, including removal of the last entity in the world.
             world.saveNow(ctr::nowMillis());
@@ -2026,115 +2552,71 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 break;
             }
 
-            // The world as it stood when START was pressed, redrawn every frame
-            // the menu is up. Nothing is ticked, streamed or meshed while it is
-            // -- the camera does not move and the sun does not either -- so
-            // every one of those frames is the same picture with the menu over
-            // it.
-            PausedWorld backdropWorld{&renderer, &camera};
-            ctr::PauseBackdrop backdrop;
-            backdrop.context = &backdropWorld;
-            backdrop.drawFrame = drawPausedWorld;
+            const bool online = net != nullptr || host != nullptr;
+            menu.setMultiplayer(online);
+            if (!online) {
+                // The world as it stood when START was pressed, redrawn every
+                // frame the menu is up. Nothing is ticked, streamed or meshed
+                // while it is -- the camera does not move and the sun does not
+                // either -- so every one of those frames is the same picture
+                // with the menu over it.
+                PausedWorld backdropWorld{&renderer, &camera};
+                ctr::PauseBackdrop backdrop;
+                backdrop.context = &backdropWorld;
+                backdrop.drawFrame = drawPausedWorld;
 
-            const ctr::PauseChoice paused =
-                menu.runPause(choice.worldName.c_str(), choice.worldPath.c_str(),
-                              settings.renderDistance, backdrop);
-            menu.shutdown();
-
-            // Two things the menu took, where there used to be three. The top
-            // screen is no longer one of them: the menu never created a target
-            // of its own and never called gfxSet3D, so citro3d's output table
-            // still holds both eyes and there is nothing to reclaim.
-            //
-            //   * The bottom-screen console, which the menu cleared and wrote
-            //     its own help onto.
-            //   * The clock. `dt` is measured from the last frame, and the last
-            //     frame was however long ago the player pressed START.
-            overlay.invalidate();
-            lastTick = svcGetSystemTick();
-
-            // Nothing below is worth doing for a world that is closing: the
-            // pack and the distance are already saved in 3ds.ini and held by
-            // the Menu, and applying either here would upload an atlas and
-            // rebuild the whole VBO pool a few frames before both are thrown
-            // away.
-            if (paused.action == ctr::PauseChoice::Action::ExitWorld) {
-                break;
-            }
-
-            // The world settings screen can change the gamemode without leaving
-            // the world, and the gamemode is which bottom screen this is.
-            //
-            // **It is also which of the two movers owns the position**, and
-            // that hand-over has to be made explicitly. Spectator flies a bare
-            // camera and never touches the body; every other mode reads the
-            // camera straight off the body. So a mode change that did not carry
-            // the position across left the body wherever it was last ticked --
-            // at the spawn point, usually -- and re-entering Creative teleported
-            // the player back to it, frequently inside terrain. That is the
-            // "changing gamemode puts you in the ground" bug.
-            //
-            // Only one direction needs work. Leaving Spectator puts the body
-            // under the camera; entering it needs nothing, because the camera is
-            // already at the eye the body was handing it.
-            const settings::Gamemode previousMode = overlay.gamemode();
-            overlay.setGamemode(paused.gamemode);
-            difficulty = paused.difficulty;
-            if (world.worldTick() != nullptr) {
-                world.worldTick()->setImprovedFencePlacement(paused.improvedFencePlacement);
-            }
-            vitals.invulnerable = paused.gamemode != settings::Gamemode::Survival;
-            breaker.reset();
-            if (previousMode == settings::Gamemode::Spectator
-                && paused.gamemode != settings::Gamemode::Spectator) {
-                // Spectator's camera is a bare eye with no crouch in it, so
-                // the body it hands over to is standing up.
-                sneaking = false;
-                placeBodyAtEye(body, camera, sneaking);
-                sprintGesture.cancel();
-            }
-
-            if (paused.atlasChanged) {
-                if (!renderer.setAtlas(menu.atlas())) {
-                    std::printf("\x1b[31mcould not upload that pack\x1b[0m\n");
-                    overlay.invalidate();
+                const ctr::PauseChoice paused =
+                    menu.runPause(choice.worldName.c_str(), choice.worldPath.c_str(),
+                                  settings.renderDistance, backdrop);
+                menu.setMultiplayer(false);
+                menu.shutdown();
+                if (applyPause(paused)) {
+                    break;
                 }
-                // The font is its own file with its own absence, so it is
-                // uploaded separately -- a pack with no `default.png` leaves
-                // signs blank rather than leaving the world untextured.
-                renderer.setFont(menu.fontImage());
-                // ...and `particles.png` beside it, on the same terms: a pack
-                // without one gets the stand-in, not a blank particle.
-                renderer.setParticleSheet(menu.particleSheet());
-                // The map is drawn from the same pack as the world, so ground
-                // sampled under the old one is recoloured rather than redrawn:
-                // the store holds block ids, not pixels.
-                overlay.setAtlas(menu.atlas());
-                overlay.setBackdropTile(menu.backgroundTile());
-                // The needle is drawn over the pack's own compass face, so a
-                // new pack means a new base. Without this the compass keeps the
-                // old pack's dial for the rest of the session.
-                seedCompass(menu.atlas());
-                // The outline atlas went with the old one and may not have come
-                // back, so the debug page is told what is actually on rather
-                // than what was asked for -- the same read-back the page does
-                // when it sets this itself.
-                settings.wireframe = renderer.wireframe();
+                // **The press that closed the menu was never seen by this
+                // loop** -- `runPause` has its own -- so the claim above cannot
+                // be made from `screenHadB` and is made here instead. Without
+                // it, leaving the pause menu with B jumps on the way out.
+                backHeldByScreen = true;
+                continue;
             }
 
-            // The same order and the same reason as the debug page below: the
-            // pool goes first, and the streamer republishes into whatever field
-            // it finds. Routed through `settings` so the debug page and the
-            // pause menu cannot end up disagreeing about what the distance is.
-            if (paused.renderDistance != settings.renderDistance) {
-                settings.renderDistance = paused.renderDistance;
-                renderer.setMeshDistance(settings.renderDistance);
-                world.setMeshDistance(settings.renderDistance, renderer.chunks());
+            menu.beginPause(choice.worldName.c_str(), choice.worldPath.c_str(),
+                            settings.renderDistance);
+            pauseMenuUp = true;
+            // **This frame's press opened the menu and is not also an answer to
+            // it.** START is Resume as well as Pause, so a step that still had
+            // it in hand would close the menu in the frame that opened it. The
+            // blocking path gets this for free, because `runPause` scans the
+            // pad again before its first step.
+            down = 0;
+            held = 0;
+        }
+
+        if (pauseMenuUp) {
+            if (menu.stepPause(down)) {
+                pauseMenuUp = false;
+                const ctr::PauseChoice paused = menu.endPause();
+                menu.setMultiplayer(false);
+                menu.shutdown();
+                if (applyPause(paused)) {
+                    break;
+                }
+                // The same as the blocking path below: `held` is zeroed while
+                // the menu is up, so the claim has to be made where the press
+                // was answered.
+                backHeldByScreen = true;
+                continue;
             }
-
-            world.setAutosaveSeconds(paused.autosaveSeconds);
-
-            continue;
+            // **The buttons belong to the menu, so the world hears nothing.**
+            // a1.1.2 releases every key when a screen opens and reads the
+            // movement state from keys that are therefore all up; this is that,
+            // and it is why the body below can go on being ticked without any
+            // of it having to know a menu is open. The two look paths read the
+            // pad and the C-stick for themselves rather than from `held`, so
+            // they are told separately -- see the calls below.
+            down = 0;
+            held = 0;
         }
 
         // The bottom screen owns SELECT, so nothing below fires while it is
@@ -2144,7 +2626,28 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         const double cameraWasX = camera.x;
         const double cameraWasY = camera.y;
         const double cameraWasZ = camera.z;
+
+        // **Read before the screen is stepped, because stepping it is what
+        // takes it away.** A B press that lands on a focused bottom screen
+        // closes it, and by the time the body is ticked further down there is
+        // no focus left to say the press was not a jump.
+        //
+        // The pause menu is not here: it answers its own press, inside
+        // `runPause` or `stepPause`, and `held` is already zero by this line
+        // while it is up -- so its two claims are made where the press is
+        // answered instead. See `backHeldByScreen`.
+        const bool focusHadB = overlay.uiFocused();
+
         const bool settingsChanged = overlay.handleInput(down, held, &settings, &camera);
+
+        // Cleared by letting go, claimed by any frame a screen was up for. The
+        // release is checked first, so a claim is never carried past the press
+        // it was made for.
+        if ((held & KEY_B) == 0) {
+            backHeldByScreen = false;
+        } else if (focusHadB) {
+            backHeldByScreen = true;
+        }
 
         // **A teleport moves the camera, and outside Spectator the camera is
         // not where the position lives.** Every body mode overwrites it from the
@@ -2337,11 +2840,18 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // **The focused circle pad, before the look.** It scrolls the map when
         // the map is the focused page and does nothing otherwise; the body's
         // heading is zeroed to match, further down.
-        overlay.tickFocus(dt);
+        // **The three that read the hardware for themselves**, and so cannot
+        // be told a menu is open by having `held` taken away from them: the
+        // focused pad, the touch drag and the C-stick all go straight to
+        // libctru. A drag on the bottom screen while the pause menu is up is a
+        // press meant for the menu, not a look.
+        if (!pauseMenuUp) {
+            overlay.tickFocus(dt);
 
-        lookWithTouch(camera, &dragging, &lastTouch, overlay.touchLookTop());
-        if (haveCstick) {
-            lookWithCstick(camera, dt);
+            lookWithTouch(camera, &dragging, &lastTouch, overlay.touchLookTop(), lookGain);
+            if (haveCstick) {
+                lookWithCstick(camera, dt, lookGain);
+            }
         }
         tuneStereo(renderer);
 
@@ -2489,6 +2999,21 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // The animals, which interpolate like a boat and pose like nothing
             // else in the build -- see core/render/mob_mesh.hpp.
             renderer.setMobs(mobs.get());
+            // Whichever end of the session this console is: a guest reads the
+            // stream it is sent, a host reads what it is sending everybody
+            // else. Both are `RemoteEntities`.
+            renderer.setRemotePlayers(net != nullptr    ? &net->entities()
+                                      : host != nullptr ? &host->entities()
+                                                        : nullptr);
+            // The same pool again, for the markers on the bottom screen. The
+            // host's own entity id is fixed -- it is the first of the reserved
+            // ones -- and a guest is told theirs by the Login packet.
+            overlay.setSession(net != nullptr    ? &net->entities()
+                               : host != nullptr ? &host->entities()
+                                                 : nullptr,
+                               net != nullptr    ? net->selfEntityId()
+                               : host != nullptr ? mc::net::kFirstPlayerEntityId
+                                                 : 0);
             renderer.setSpawners(spawners.get());
             // The only entity pass that needs the world: a cart leans along the
             // track rather than along its own motion.
@@ -2509,6 +3034,53 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         const Frustum frustum = renderer.cullFrustum(camera);
         renderer.chunks().beginFrame(++frameCounter, frustum, camera.chunkX(), camera.sectionY(),
                                      camera.chunkZ());
+
+        // **What the server sent, before the streamer looks at the grid**, which
+        // is where `gs.g()` polls its handler: columns join, blocks change and
+        // the player is put where the server says before anything reads them.
+        if (net != nullptr) {
+            // For a session next door, the radio first: `NetPlay` reads a
+            // channel and the channel is fed from the link.
+            if (guest != nullptr) {
+                guest->pump();
+
+                // **The host changed how the world is played.** The same
+                // hand-over the pause menu makes below, for the same reason:
+                // Spectator flies a bare camera and every other mode reads the
+                // camera off the body, so leaving Spectator has to put the body
+                // under the eye or the next tick teleports the player back to
+                // wherever it was last ticked.
+                if (guest->takeRulesChange()) {
+                    const settings::Gamemode previousMode = overlay.gamemode();
+                    const settings::Gamemode mode = guest->gamemode();
+                    overlay.setGamemode(mode);
+                    difficulty = guest->difficulty();
+                    vitals.invulnerable = mode != settings::Gamemode::Survival;
+                    breaker.reset();
+                    if (previousMode == settings::Gamemode::Spectator
+                        && mode != settings::Gamemode::Spectator) {
+                        sneaking = false;
+                        placeBodyAtEye(body, camera, sneaking);
+                        sprintGesture.cancel();
+                    }
+                }
+            }
+            net->pump(world, renderer.chunks(), overlay, *chat,
+                      menu.fontImage().empty() ? nullptr : menu.fontImage().widths, body,
+                      camera);
+            if (net->closed()) {
+                break;
+            }
+        }
+
+        // The other half of the same moment, for a console that is hosting:
+        // what the guests said, answered before anything reads the world, and
+        // then the world itself on its way out to them.
+        if (host != nullptr) {
+            host->pump(world, renderer.chunks(), effects, *droppedItems, *chat,
+                       menu.fontImage().empty() ? nullptr : menu.fontImage().widths);
+            host->reportPose(body, camera);
+        }
 
         const u64 beforeStream = svcGetSystemTick();
         world.update(renderer.chunks(), camera.chunkX(), camera.chunkZ(), budget);
@@ -2552,13 +3124,35 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     chat.get(), menu.fontImage().empty() ? nullptr : menu.fontImage().widths};
                 editBlocks(world, renderer.chunks(), camera, body, overlay, down, held,
                            editTick, &lastEditTick, effects, &hand, chatSink, &breaker,
-                           &vitals);
+                           &vitals, net, host, &pendingContainer);
                 if (pendingContainer.open) {
                     pendingContainer.open = false;
-                    if (mc::tick::TickWorld* screenWorld = world.worldTick()) {
-                        overlay.openContainer(*screenWorld, pendingContainer.kind,
-                                              pendingContainer.x, pendingContainer.y,
-                                              pendingContainer.z);
+                    const mc::u32 cart = pendingContainer.cart;
+                    pendingContainer.cart = 0;
+                    // **A chest's and a furnace's contents are the client's in
+                    // a1.1.2 multiplayer**, sent back to the server as Complex
+                    // Entity NBT -- which is not built yet, so opening one here
+                    // would lose whatever was put in. A workbench holds nothing.
+                    // A chest cart is refused for the same reason and is not
+                    // even spawned by a server this build can talk to.
+                    const bool refused =
+                        net != nullptr
+                        && (cart != 0
+                            || pendingContainer.kind
+                                   != mc::tick::TickWorld::ContainerKind::Workbench);
+                    if (refused) {
+                        chat->post(chatSink.widths,
+                                   "Chests and furnaces do not work in multiplayer yet.");
+                    }
+                    if (mc::tick::TickWorld* screenWorld =
+                            refused ? nullptr : world.worldTick()) {
+                        if (cart != 0) {
+                            overlay.openMinecartChest(*screenWorld, *minecarts, cart);
+                        } else {
+                            overlay.openContainer(*screenWorld, pendingContainer.kind,
+                                                  pendingContainer.x, pendingContainer.y,
+                                                  pendingContainer.z);
+                        }
                     }
                 }
 
@@ -2640,6 +3234,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 overlay.finishClosedStack(spawned);
             }
 
+            // `la.a(dx)`: everything the player threw this frame is the
+            // server's to make, and the client keeps none of it.
+            if (net != nullptr) {
+                net->forwardDrops(*droppedItems);
+            }
+
             tick::TickWorld* tickWorld = world.worldTick();
             if (tickWorld != nullptr) {
                 // **The body's ticks write blocks**, and they do it outside
@@ -2652,34 +3252,40 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 mc::entity::PlayerInput bodyInput = readBodyInput(camera, held, sneaking);
                 // **A dead player does not move**: the game-over screen owns
                 // the buttons, and the body falls where it lies.
-                if (!vitals.alive()) {
+                //
+                // **And neither does a player with the pause menu open**, for
+                // the same reason and by the same rule -- a screen is open, so
+                // nothing reaches the player. `held` is already zero by here;
+                // the stick is not, because `readBodyInput` reads the pad off
+                // the hardware itself.
+                if (!vitals.alive() || pauseMenuUp) {
                     bodyInput.strafe = 0.0f;
                     bodyInput.forward = 0.0f;
                     bodyInput.jump = false;
                     bodyInput.sneak = false;
                     bodyInput.sprint = false;
                 }
-                // **B belongs to the bottom screen while it is focused**, where
-                // it is the back button. Jumping on the same press would be one
-                // button doing two things, which is the thing the focus exists
-                // to avoid. Y is left alone: nothing focused reads it.
+                // **A focused bottom screen has the stick and B**, which is
+                // a1.1.2's own rule rather than an addition: an open
+                // `GuiScreen` is what stops the original reading the movement
+                // keys at all, and every focused page here is a screen in that
+                // sense. The stick is panning a map or walking a cursor -- see
+                // `Overlay::uiCursorActive` -- and B is the back button;
+                // walking and jumping off the same press would be one control
+                // doing two things, which is what the focus exists to prevent.
+                //
+                // Y is left alone: nothing focused reads it.
                 if (overlay.uiFocused()) {
+                    bodyInput.strafe = 0.0f;
+                    bodyInput.forward = 0.0f;
                     bodyInput.jump = false;
                 }
-                // ...and the stick belongs to the map while the map is the
-                // focused page. Walking and panning at once would be two things
-                // fighting over one window, and the map would be dragged back
-                // under the player every step.
-                if (overlay.mapPanActive()) {
-                    bodyInput.strafe = 0.0f;
-                    bodyInput.forward = 0.0f;
-                }
-                // **And nothing walks while a container screen is up**: an open
-                // `GuiScreen` is what stops a1.1.2 reading the movement keys at
-                // all, and the stick is not the screen's to lend.
-                if (overlay.containerOpen()) {
-                    bodyInput.strafe = 0.0f;
-                    bodyInput.forward = 0.0f;
+                // **And the press that closed a screen is still not a jump.**
+                // The screen went on the press; the finger is still on B for a
+                // few frames after it, by which time `uiFocused` is false and
+                // the guard above has nothing left to say. See
+                // `backHeldByScreen`.
+                if (backHeldByScreen) {
                     bodyInput.jump = false;
                 }
                 // **The double-tap sprint**, read once a frame off the same
@@ -2694,10 +3300,13 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 // Suppressed wherever the stick is not the player's -- a
                 // focused bottom screen, a panned map -- and while flying,
                 // which has one flat speed and nothing for a gesture to change.
+                // `uiFocused` now covers the panned map as well -- it is one
+                // of the screens the stick belongs to -- so the second flag it
+                // used to need is gone rather than merely redundant.
                 bodyInput.sprint = readSprint(
                     sprintGesture, bodyInput, sinceStart,
                     overlay.gamemode() != settings::Gamemode::Creative || flying
-                        || overlay.uiFocused() || overlay.mapPanActive());
+                        || overlay.uiFocused());
                 for (int i = 0; i < ticksDue; ++i) {
                     // **The hand, first and unconditionally.** `Minecraft.i()`
                     // runs `ItemRenderer.updateEquippedItem` once a tick with a
@@ -2825,14 +3434,24 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                                                            effects};
                                 dig.eyeInWater = mc::entity::playerEyeInWater(*tickWorld, body);
                                 dig.onGround = body.onGround;
+                                const auto dug = tickWorld->blockAt(aim.x, aim.y, aim.z);
                                 if (breaker.damage(dig, aim.x, aim.y, aim.z, int(aim.face))) {
                                     overlay.inventoryEdited();
+                                }
+                                if (net != nullptr) {
+                                    net->digProgress(
+                                        aim.x, aim.y, aim.z, int(aim.face),
+                                        tickWorld->blockAt(aim.x, aim.y, aim.z) != dug,
+                                        int(overlay.inventory().selectedItem()));
                                 }
                                 digging = true;
                             }
                         }
                         if (!digging) {
                             breaker.reset();
+                            if (net != nullptr) {
+                                net->digStop();
+                            }
                         }
                     }
 
@@ -2990,8 +3609,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // vacuums its own grave back up and the player respawns
                     // holding everything, which is what "dying did not drop my
                     // items" looks like from the outside.
+                    // **Nobody picks anything up on a multiplayer client.** The
+                    // server decides who collected what and says so with
+                    // Collect and Add To Inventory; a client that also took it
+                    // would be holding an item the server never gave it.
                     const AABB reach = body.box.expand(1.0, 0.0, 1.0);
-                    const int picked = vitals.alive()
+                    const int picked = vitals.alive() && net == nullptr
                                            ? overlay.collectItems(*droppedItems, reach)
                                            : 0;
                     for (int p = 0; p < picked; ++p) {
@@ -3019,6 +3642,44 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                         sound.playSoundAt(step.key, body.x,
                                           body.posY - double(mc::entity::kEyeHeight),
                                           body.z, step.volume, step.pitch);
+                    }
+
+                    // `la.J()`, at the end of the player's tick, and the other
+                    // entities' own.
+                    if (net != nullptr) {
+                        net->tick(body, camera, overlay.inventory(), tickWorld);
+                    }
+                    // **A host has the same bodies to walk and no session to
+                    // do it.** Its guests are entities exactly as they are on
+                    // a guest's screen; the only difference is where the
+                    // packets describing them came from. See
+                    // `WorldServer::setLocalSink`.
+                    if (host != nullptr) {
+                        host->tickEntities(tickWorld);
+                    }
+
+                    // **A blow from another console, on the tick it arrived.**
+                    // No health crosses the link -- protocol 2 has no packet
+                    // for it -- so the wire carries only who swung and with
+                    // what, and the cost is worked out here by the same
+                    // `damageVsEntity` lookup the attacker's own console would
+                    // have used. `Other` rather than `Monster`: `dm.a(Lkh;I)Z`
+                    // scales by difficulty only for a `dq` or a `kg`, and a
+                    // player is neither. See core/net/entities.hpp.
+                    mc::net::IncomingHit hit;
+                    const bool struck = net != nullptr    ? net->takeHit(&hit)
+                                        : host != nullptr ? host->takeHit(&hit)
+                                                          : false;
+                    if (struck) {
+                        const int amount =
+                            int(mc::item::def(mc::item::ItemId(hit.item)).damageVsEntity);
+                        if (amount > 0) {
+                            harm.world = tickWorld;
+                            harm.difficulty = int(difficulty);
+                            harm.yawDegrees = camera.yaw * 180.0f / kPi;
+                            harm.deal(amount, mc::entity::DamageSource::Other, hit.fromX,
+                                      hit.fromZ);
+                        }
                     }
                 }
             }
@@ -3090,6 +3751,11 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             } else {
                 renderer.clearHud();
             }
+
+            // **The band that says the bottom screen has the buttons.** Set
+            // every frame rather than on the edge, because it costs a bool and
+            // the alternative is two places that have to agree about a mode.
+            renderer.setFocusHint(overlay.uiFocused());
         }
 
         // **The ears go where the camera is**, once a frame, as
@@ -3243,9 +3909,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // `ia.c()` runs both spawners every tick, monsters first,
                     // out of the same random. The order is observable -- the
                     // two share `world.rand` -- so it is the jar's.
-                    mc::entity::spawnMonsters(*fxWorld, *mobs, spawnRand, spawnAt,
-                                              &monsterSpawns);
-                    mc::entity::spawnAnimals(*fxWorld, *mobs, spawnRand, spawnAt);
+                    // A multiplayer client spawns nothing: the server does.
+                    if (net == nullptr) {
+                        mc::entity::spawnMonsters(*fxWorld, *mobs, spawnRand, spawnAt,
+                                                  &monsterSpawns);
+                        mc::entity::spawnAnimals(*fxWorld, *mobs, spawnRand, spawnAt);
+                    }
 
                     // **The tile-entity tick list, and it has one member.**
                     // `cn`'s own loop walks every tile entity and calls
@@ -3279,6 +3948,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     stats.monsters = mobs->monsterCount();
                     stats.searches = mobs->pathFinder().searches();
                     stats.exhausted = mobs->pathFinder().exhausted();
+                    stats.peakSearches = mobs->peakSearchesPerTick();
                     stats.taken = harm.taken;
                     stats.hits = harm.hits;
                     stats.spawned = monsterSpawns.spawned;
@@ -3396,7 +4066,14 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         const u64 afterStream = svcGetSystemTick();
 
         timing.walkMs = ctr::millisFromTicks(beforeStream - beforeWalk);
-        timing.streamMs = ctr::millisFromTicks(afterStream - beforeStream);
+        // **The tick comes back out of the stream number.** `beforeStream` to
+        // `afterStream` spans the whole of the streaming half of the frame, and
+        // the tick runs inside that span -- so adding `tickMs` to `streamMs`, as
+        // the overlay's `CPU busy` does, counted the tick twice and made the
+        // busy figure larger than the work. The buckets are meant to partition
+        // the frame, not overlap it.
+        const float streamSpanMs = ctr::millisFromTicks(afterStream - beforeStream);
+        timing.streamMs = streamSpanMs > timing.tickMs ? streamSpanMs - timing.tickMs : 0.0f;
 
         // **After the streamer and before the draw**, because it reads columns
         // out of the grid and the grid is settled for the frame by now. It
@@ -3404,9 +4081,19 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // whose bottom screen has no map on it.
         overlay.tickMap(world, camera);
 
-        renderer.drawFrame(camera);
+        if (pauseMenuUp) {
+            // **The world, and the menu drawn into the same frame** -- the same
+            // arrangement `PauseBackdrop` makes for single player, with the two
+            // halves the other way round: there the menu owns the frame and
+            // calls back for the world, here the world owns it and calls back
+            // for the menu. The bottom screen is the menu's while it is up, so
+            // the HUD is not drawn over its console.
+            renderer.drawFrame(camera, &menu, &ctr::Menu::pauseOverlayEntry);
+        } else {
+            renderer.drawFrame(camera);
 
-        overlay.draw(renderer, world, camera, timing, dt * 1000.0f, timeOfDay, settings);
+            overlay.draw(renderer, world, camera, timing, dt * 1000.0f, timeOfDay, settings);
+        }
 
         // **The figures the out-of-memory reporter prints, refreshed here and
         // nowhere else.** They are copied rather than fetched at the moment of
@@ -3432,6 +4119,28 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         }
     }
 
+    // **The stepped pause menu can be left standing by the exits it does not
+    // own.** A link that closed under the player, and the system taking the
+    // application away, both leave this loop from below the pause branch -- and
+    // a Menu still holding `inGame_`, the Pause screen and citro2d would meet
+    // the main menu in that state. The blocking path cannot reach here at all;
+    // this is the pair of it. The choice is dropped on purpose: there is no
+    // world left to apply a render distance to.
+    if (pauseMenuUp) {
+        pauseMenuUp = false;
+        menu.endPause();
+        menu.setMultiplayer(false);
+        menu.shutdown();
+    }
+
+    // **A disc stops with the world it was in.** The engine is the process's
+    // and outlives every world, which is right for background music and wrong
+    // for a jukebox: a record left playing followed the player back to the
+    // title screen and went on playing over the menu. Reported from play.
+    // `stopRecord` touches the voice only if a disc is on it, so a menu track
+    // is not cut by this.
+    sound.stopRecord();
+
     // **Anything still in a crafting grid or on the cursor goes back in the
     // inventory**, since the ground it would have dropped on is about to be
     // saved without it. Then the inventory is handed over one last time.
@@ -3456,7 +4165,8 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // -- close() is told to report to nobody, which is what it did before this
     // screen existed.
     ctr::ProgressScreen saving;
-    if (saving.init()) {
+    // A multiplayer world owes this console nothing, so there is no screen.
+    if (net == nullptr && saving.init()) {
         saving.begin(ctr::ProgressScreen::Kind::Saving, choice.worldName.c_str());
         SaveScreen saveScreen{&saving, &renderer, &camera};
         world.close(ctr::nowMillis(), &saveScreen, drawSaveProgress);
@@ -3473,6 +4183,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // until after the last frame the save screen draws. See
     // crashlogs/009-save-with-a-minecart/.
     renderer.setMinecarts(nullptr, nullptr);
+    renderer.setRemotePlayers(nullptr);
     // **And the one the *streamer* borrows.** `world` is static and outlives
     // this call (see the note on its declaration), while the spawner store is a
     // local; leaving the sinks bound would point the next world's first
@@ -3521,6 +4232,122 @@ void preloadInterfaceSounds(mc::audio::SoundEngine& sound)
     if (join != nullptr) {
         join(handle);
     }
+}
+
+// **A multiplayer game is the single-player loop with a session beside it.**
+// The socket service comes up the first time it is wanted, the session thread
+// connects and logs in, and `runGame` plays the world the server sends; when it
+// returns, the menu is told why -- a1.1.2's disconnect screen when the server or
+// the network ended it, the server list when the player did.
+int runMultiplayer(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngine& sound,
+                   ctr::NdspBackend& audio, bool isNew3DS, bool haveCstick)
+{
+    std::string error;
+    if (!ctr::startNetwork(&error)) {
+        menu.showDisconnected("Failed to connect to the server", error);
+        return 0;
+    }
+
+    // On the heap: the session's parser buffers and queue, and NetPlay's
+    // scratch packets, have no business on a 32 KB main-thread stack.
+    auto session = std::make_unique<mc::net::ClientSession>();
+    if (!session->start(choice.serverHost, choice.serverPort, choice.username)) {
+        menu.showDisconnected("Failed to connect to the server",
+                              "The network thread could not be started.");
+        return 0;
+    }
+    auto net = std::make_unique<ctr::NetPlay>(*session);
+
+    const int result =
+        runGame(choice, menu, sound, audio, isNew3DS, haveCstick, net.get(), nullptr, nullptr);
+
+    session->stop("Quitting");
+    if (net->closed()) {
+        std::string detail = net->closeDetail();
+        if (!net->placed()) {
+            // Which address it actually used, because the one thing a player
+            // cannot check from this screen is whether the row says what they
+            // think it says.
+            char tried[96];
+            std::snprintf(tried, sizeof(tried), "  (tried %s port %u)",
+                          choice.serverHost.c_str(), unsigned(choice.serverPort));
+            detail += tried;
+        }
+        if (!ctr::haveAddress()) {
+            detail += "  The console has no network address at all: check that Wi-Fi is on and "
+                      "connected (WPA2 at most -- a 3DS cannot join WPA3).";
+        }
+        menu.showDisconnected(net->closeTitle(), detail);
+    } else {
+        menu.showMultiplayer();
+    }
+    return result;
+}
+
+// **A local game is the same loop again, with the radio where the socket was.**
+//
+// Nothing about `runGame` changes for it: `NetPlay` is handed a
+// `PacketChannel` and does not ask what is behind it, and the channel behind
+// this one is `core/net/local_channel.hpp` over the link the menu already
+// joined. The one extra call is `guest->pump()`, which moves bytes between the
+// radio and that channel at the top of each frame.
+//
+// **The session outlives this function either way.** It is taken from the menu
+// on the way in and given back on the way out, so leaving a world does not
+// drop a link the player may be about to rejoin through.
+int runJoinedLocal(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngine& sound,
+                   ctr::NdspBackend& audio, bool isNew3DS, bool haveCstick)
+{
+    std::unique_ptr<ctr::GuestPlay> guest = menu.takeGuest();
+    if (!guest) {
+        menu.showMultiplayer();
+        return 0;
+    }
+
+    // On the heap for the same reason the server one is: NetPlay's scratch
+    // packets have no business on a 32 KB main-thread stack.
+    auto net = std::make_unique<ctr::NetPlay>(guest->channel());
+    // The other end is this port, so it understands the one packet protocol 2
+    // does not have. See `packet::UseEntity`.
+    net->allowUseEntity(true);
+
+    const int result = runGame(choice, menu, sound, audio, isNew3DS, haveCstick, net.get(),
+                               nullptr, guest.get());
+
+    guest->leave("left the world");
+    if (net->closed()) {
+        menu.showDisconnected(net->closeTitle(), net->closeDetail());
+    } else {
+        menu.showMultiplayer();
+    }
+    return result;
+}
+
+// **Hosting is single player with the radio on.** The world is opened exactly
+// as Play opens it -- same loop, same authority, same save -- and the session
+// beside it lets other consoles in. A failure to open the session is not a
+// failure to open the world, but it is reported before the world opens rather
+// than after: a player who chose Host and got single player without being told
+// would have no way to know why nobody could find them.
+int runHosted(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngine& sound,
+              ctr::NdspBackend& audio, bool isNew3DS, bool haveCstick)
+{
+    // **Opened inside runGame, once the world is.** The session has to tell a
+    // guest which world it is joining -- seed and generation switches -- and
+    // none of that is known until level.dat has been read.
+    auto host = std::make_unique<ctr::HostPlay>();
+
+    const int result =
+        runGame(choice, menu, sound, audio, isNew3DS, haveCstick, nullptr, host.get(), nullptr);
+
+    host->close("the host closed the world");
+    if (!host->everOpened()) {
+        menu.showDisconnected("Could not open the session",
+                              "Local wireless would not start. Check the wireless switch.");
+    } else {
+        menu.showMultiplayer();
+    }
+    return result;
 }
 
 int runShell(bool isNew3DS, bool haveCstick)
@@ -3597,15 +4424,35 @@ int runShell(bool isNew3DS, bool haveCstick)
         const ctr::MenuChoice choice = menu.run();
         menu.shutdown();
 
+        if (choice.action == ctr::MenuChoice::Action::Join) {
+            result = choice.link == ctr::MenuChoice::Link::Local
+                         ? runJoinedLocal(choice, menu, sound, audio, isNew3DS, haveCstick)
+                         : runMultiplayer(choice, menu, sound, audio, isNew3DS, haveCstick);
+            if (result != 0) {
+                break;
+            }
+            continue;
+        }
+        if (choice.action == ctr::MenuChoice::Action::Host) {
+            result = runHosted(choice, menu, sound, audio, isNew3DS, haveCstick);
+            if (result != 0) {
+                break;
+            }
+            continue;
+        }
         if (choice.action != ctr::MenuChoice::Action::Play) {
             break;
         }
 
-        result = runGame(choice, menu, sound, audio, isNew3DS, haveCstick);
+        result = runGame(choice, menu, sound, audio, isNew3DS, haveCstick, nullptr, nullptr,
+                         nullptr);
         if (result != 0) {
             break;
         }
     }
+
+    ctr::stopNetwork();
+    ctr::stopLocalWireless();
 
     // Before C3D_Fini and before main() tears the rest down: the decode thread
     // has to be joined while the heap it reads from is still there.

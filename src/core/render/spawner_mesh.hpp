@@ -50,6 +50,13 @@
 //     slime is whatever the first draw gave it and stays that for the session.
 //     There is no seed to reproduce and no saved state to read; the smallest is
 //     the one that fits in the cage.
+//   * **...and that slime's shell is opaque here.** `gq`'s render pass is the
+//     real slime's (see `buildMobShells`); a miniature is built into the mob
+//     buffer and drawn in the one alpha-tested pass with everything else, so a
+//     caged slime is a featureless blob rather than a face inside jelly.
+//     a1.1.2 never puts one in a cage -- its dungeons are zombie, skeleton and
+//     spider -- so this is only reachable from a hand-edited world, and a
+//     second blended pass for eight spinning miniatures is not worth a buffer.
 
 #include "core/entity/mob_spawner.hpp"
 #include "core/mesh/vertex.hpp"

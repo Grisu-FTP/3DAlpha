@@ -82,6 +82,15 @@ struct Pool {
 // The branch itself, with no world and no pool around it.
 // ---------------------------------------------------------------------------
 
+// "Nothing of this entity is touching water", which is the predicate
+// `updateWaterEntry` latches its splash on -- see core/entity/water_entry.hpp.
+// With no world here, an entity the jar's own probe calls dry really is dry.
+const auto dry = [] { return false; };
+
+// ...and its opposite, for the case the latch exists for: the jar's probe says
+// dry on a tick where the entity is plainly still under the surface.
+const auto submerged = [] { return true; };
+
 TEST(the_splash_is_an_edge_and_not_a_state)
 {
     WaterEntry state;
@@ -89,20 +98,52 @@ TEST(the_splash_is_an_edge_and_not_a_state)
     // `firstUpdate` swallows the first tick, whatever it says. That is what
     // keeps a world from splashing on the frame it opens, and a boat from
     // announcing itself on the tick it is placed.
-    CHECK(!mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0).splash);
+    CHECK(!mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0, dry).splash);
 
     // Still in it: no second splash, however long it stays.
     for (int i = 0; i < 40; ++i) {
-        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0);
+        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0, dry);
         CHECK(wet.inWater);
         CHECK(!wet.splash);
     }
 
     // Out, and back in: that is an edge and it sounds.
-    CHECK(!mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0).inWater);
-    const WaterEntryResult again = mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0);
+    CHECK(!mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0, dry).inWater);
+    const WaterEntryResult again = mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0, dry);
     CHECK(again.splash);
     CHECK(again.inWater);
+}
+
+// **The latch, which is this port's and not the jar's.**
+//
+// `g_()` shrinks the box by four tenths top and bottom, so for anything shorter
+// than 0.8 of a block the box it probes with is inverted and its answer
+// flickers -- 45 % of ticks over a cell of positions. Left alone, a sinking
+// item splashes again every few blocks. See core/entity/water_entry.hpp.
+TEST(a_flickering_probe_does_not_splash_twice)
+{
+    WaterEntry state;
+    mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0, dry);
+
+    // Into the water: one splash.
+    CHECK(mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0, submerged).splash);
+
+    // Now the flicker: the jar's probe says dry on alternate ticks while the
+    // entity is still under the surface. Not one further splash.
+    for (int i = 0; i < 40; ++i) {
+        CHECK(!mc::entity::updateWaterEntry(state, false, 0.0, -1.0, 0.0, submerged).splash);
+        CHECK(!mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0, submerged).splash);
+    }
+
+    // **`inWater` is still the jar's answer**, which is the half that is not
+    // deviated from: the current pushes and the fall distance clears on exactly
+    // the ticks the jar says.
+    CHECK(!mc::entity::updateWaterEntry(state, false, 0.0, -1.0, 0.0, submerged).inWater);
+    CHECK(mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0, submerged).inWater);
+
+    // Out of the water for real, and the next entry sounds again.
+    CHECK(!mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0, dry).splash);
+    CHECK(mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0, submerged).splash);
 }
 
 TEST(the_splash_volume_is_the_motion_and_is_clamped_at_one)
@@ -113,8 +154,8 @@ TEST(the_splash_volume_is_the_motion_and_is_clamped_at_one)
     // the jar's: `playSoundAtEntity` is called either way.
     {
         WaterEntry state;
-        mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0);
-        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 0.0, 0.0, 0.0);
+        mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0, dry);
+        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 0.0, 0.0, 0.0, dry);
         CHECK(wet.splash);
         CHECK(wet.volume == 0.0f);
     }
@@ -122,8 +163,8 @@ TEST(the_splash_volume_is_the_motion_and_is_clamped_at_one)
     // A one-block-a-tick drop: sqrt(1) * 0.2 = 0.2.
     {
         WaterEntry state;
-        mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0);
-        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0);
+        mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0, dry);
+        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 0.0, -1.0, 0.0, dry);
         CHECK(std::fabs(double(wet.volume) - 0.2) < 1e-6);
     }
 
@@ -132,16 +173,16 @@ TEST(the_splash_volume_is_the_motion_and_is_clamped_at_one)
     // as above, sideways: sqrt(0.2) * 0.2 = 0.0894...
     {
         WaterEntry state;
-        mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0);
-        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 1.0, 0.0, 0.0);
+        mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0, dry);
+        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 1.0, 0.0, 0.0, dry);
         CHECK(std::fabs(double(wet.volume) - std::sqrt(0.2) * 0.2) < 1e-6);
     }
 
     // Terminal velocity many times over still clamps to 1.
     {
         WaterEntry state;
-        mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0);
-        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 0.0, -80.0, 0.0);
+        mc::entity::updateWaterEntry(state, false, 0.0, 0.0, 0.0, dry);
+        const WaterEntryResult wet = mc::entity::updateWaterEntry(state, true, 0.0, -80.0, 0.0, dry);
         CHECK(wet.volume == 1.0f);
     }
 }

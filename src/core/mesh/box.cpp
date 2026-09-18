@@ -62,6 +62,21 @@ i16 insetHigh(i16 v) { return static_cast<i16>(v - kUvInset); }
 
 }  // namespace
 
+BoxTileUv boxTileUv(int tile, const AABB& bounds, int face)
+{
+    const int clamped = tile >= 0 && tile < kAtlasTileCount ? tile : 0;
+    const int tileU = clamped % kAtlasTilesPerEdge;
+    const int tileV = clamped / kAtlasTilesPerEdge;
+    const FaceUv& map = kFaceUv[face < 0 || face >= kFaceCount ? 0 : face];
+
+    // The two ends of each axis. `u0` is what a corner whose `kFaceCornerUV`
+    // entry is 0 takes, and that table is where the per-face flips live.
+    return BoxTileUv{insetLow(uvAt(tileU, boundLow(bounds, map.u))),
+                     insetLow(uvAt(tileV, boundLow(bounds, map.v))),
+                     insetHigh(uvAt(tileU, boundHigh(bounds, map.u))),
+                     insetHigh(uvAt(tileV, boundHigh(bounds, map.v)))};
+}
+
 void addBox(int x, int y, int z, const AABB& bounds, const u16 tiles[6], u8 light, bool shaded,
             int faceMask, MeshBuilder& out, DetailPass pass, int mirrorMask)
 {
@@ -70,21 +85,10 @@ void addBox(int x, int y, int z, const AABB& bounds, const u16 tiles[6], u8 ligh
             continue;
         }
 
-        const int tile = tiles[face] < kAtlasTileCount ? int(tiles[face]) : 0;
-        const int tileU = tile % kAtlasTilesPerEdge;
-        const int tileV = tile / kAtlasTilesPerEdge;
-        const FaceUv& map = kFaceUv[face];
+        const BoxTileUv slice = boxTileUv(int(tiles[face]), bounds, face);
 
-        // The two ends of each axis. `uLo` is what a corner whose
-        // `kFaceCornerUV` entry is 0 takes, and that table is where the
-        // per-face flips live.
-        const double uMin = boundLow(bounds, map.u);
-        const double uMax = boundHigh(bounds, map.u);
-        const double vMin = boundLow(bounds, map.v);
-        const double vMax = boundHigh(bounds, map.v);
-
-        i16 uLo = insetLow(uvAt(tileU, uMin));
-        i16 uHi = insetHigh(uvAt(tileU, uMax));
+        i16 uLo = slice.u0;
+        i16 uHi = slice.u1;
         // The original swaps its two u ends after computing them, so the
         // mirror is of the face's own slice of the tile, not of the whole tile.
         if ((mirrorMask & (1 << face)) != 0) {
@@ -92,8 +96,8 @@ void addBox(int x, int y, int z, const AABB& bounds, const u16 tiles[6], u8 ligh
             uLo = uHi;
             uHi = swap;
         }
-        const i16 vLo = insetLow(uvAt(tileV, vMin));
-        const i16 vHi = insetHigh(uvAt(tileV, vMax));
+        const i16 vLo = slice.v0;
+        const i16 vHi = slice.v1;
 
         i16 corner[4][3];
         i16 uv[4][2];

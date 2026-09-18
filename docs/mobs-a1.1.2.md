@@ -220,9 +220,17 @@ The rest is an ordinary A*: four neighbours, no diagonals, a step up of one **on
 above the node being left is clear**, a drop of at most four, and a `maxDistance` (10 for an
 animal) measured from the **target**, not from the mob.
 
-Two budgets are ours and are named in `core/entity/path_finder.hpp`: 1,024 nodes per search and one
-search per tick across all animals. Neither binds in ordinary play -- fifteen animals asking about
-once every forty ticks each is 0.4 searches a tick.
+**One budget is ours** and it is named in `core/entity/path_finder.hpp`: 1,024 nodes per search.
+It stays because the jar's `IntHashMap` grows without bound and an unbounded arena means allocating
+inside the 20 Hz tick, which the platform forbids; `PathFinder::exhausted()` says when it binds.
+
+There was a second -- one search per tick across every mob in the world -- and it was **removed on
+2026-09-17**. It never bound on fifteen animals (0.4 searches a tick between them) and bound hard
+once the monsters landed: two hundred of them, a chasing one re-asking once in twenty ticks, is ten
+requests a tick against a budget of one. Worse, the gate sat in front of the wander branch's ten
+candidate draws, which the jar makes whether or not a path comes of them, so the second mob to want
+a path in a tick skipped thirty `nextInt` calls and shifted the stream for every mob ticked after
+it. `MobSystem::peakSearchesPerTick` counts what it used to cap.
 
 ## Where animals come from
 
@@ -550,8 +558,9 @@ onDeath(killer) { super.onDeath(killer); if (killer instanceof EntitySkeleton) d
   skeleton to shoot a creeper. The two ids are 2256 and 2257, **1,910 past the end of the item
   run**, so they reach `item::def` through a side table rather than through the contiguous array --
   see `core/item/registry.hpp` and status.md 26. `lg.a(...)` puts one in a jukebox (`ly.aZ`, id 84)
-  and plays it; there is no jukebox behaviour here and `.mus` is undecoded, so a disc is an item you
-  can hold and nothing more.
+  and plays it, **and both halves of that work here**: the disc is kept in the jukebox's own block
+  metadata (`1 + (item - record13)`, no tile entity) and `.mus` decodes. See
+  `core/tick/behaviour.cpp`'s `ejectRecord` and `core/audio/vorbis_stream.hpp`.
 
 ### `ax` -- the spider
 
@@ -631,6 +640,21 @@ Five things follow from that, and four of them are absences:
   ends on -4 and does not split. Reproduced rather than rounded.
 - **Damage is by standing on you.** `onCollideWithPlayer`, not `attackEntity`, and a size-1 slime
   does nothing at all.
+
+Two more that are not in `ma` at all, and both of them are why a slime looks wrong if you only read
+this class:
+
+- **It drops nothing most of the time, and that is the jar's.** `getDropItemId` answers a slimeball
+  only at size 1; `ge.onDeath` then runs `for (i = 0; i < rand.nextInt(3); i++) dropItem(...)`, so
+  even the smallest slime gives **0, 1 or 2** and a big one gives nothing whatever kills it. Nothing
+  here is missing: a slime that dropped nothing is the common case.
+- **`gq` is the one renderer in the game with a render pass**, and the slime is the one model that
+  is not opaque. `RenderManager` builds it as `new gq(new hh(16), new hh(0), 0.25F)`: `shouldRender
+  Pass(0)` enables `GL_BLEND` with `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` and draws the 8-unit shell over
+  the inner body, and `shouldRenderPass(1)` turns it off again. The shell **has** to be blended --
+  `mob/slime.png`'s outer quarter is alpha 199 of 255, and the game's own alpha test at 0.1 passes
+  every one of those texels at full opacity, which draws a slime with no face. See
+  `core/render/mob_mesh.hpp`'s `buildMobShells`.
 
 `getRandomWithSeed` -- `cu.a(J)` -- is what makes slime chunks a property of the *world*:
 
@@ -732,22 +756,46 @@ and the model's own lift:
 
 ## What is this port's and not a1.1.2's
 
-- The **pathfinder's budgets** (1,024 nodes, one search a tick) and its coordinate identity. **The
-  monsters share the one search a tick with the animals**, and they use it harder: a chasing
-  monster asks once in twenty ticks where a wandering animal asks once in forty.
+- The **pathfinder's node ceiling** (1,024 per search) and its coordinate identity. The ceiling
+  stays because an unbounded search allocates inside the 20 Hz tick, which the platform forbids;
+  `PathFinder::exhausted()` says when it binds.
+  **The one-search-a-tick budget is gone** (2026-09-17). It never bound on fifteen animals and
+  bound hard on two hundred monsters -- ten requests a tick against a budget of one, so nine mobs
+  in ten got no path and fell back to the aimless wander -- and it sat in *front* of the wander's
+  ten candidate draws, so a second mob wanting a path in one tick skipped thirty `nextInt` calls
+  the jar makes. `MobSystem::peakSearchesPerTick` counts what it used to cap; the Info page's
+  `path` row carries it as `pk`.
 - **`entityToAttack` is a boolean here**, because the only entity a monster can target in this
   build is the player: `dq.i()` asks `getClosestPlayer` and the only other writer is
   `attackEntityFrom`, whose source is also only ever the player.
 - **The spider jockey's mount is an index** into a pool that swap-removes, fixed up on every
   removal. a1.1.2 holds a reference.
-- **An arrow excludes its shooter by place rather than by identity**, for the same reason: it skips
-  a mob still standing over where it was fired from, for the five ticks the jar skips the shooting
-  entity itself.
+- ~~An arrow excludes its shooter by place rather than by identity~~ -- **fixed** (2026-09-17).
+  `Mob::handle` is a session identity the pool's swap-remove cannot disturb, so `kg.e_()`'s
+  `entity != shootingEntity` is now the comparison for a mob's arrow as well as the player's. The
+  footprint test it replaced failed for any shooter that moved more than its own half-width on the
+  tick it fired -- knockback, a shove, a push out of a block -- and spent the arrow on its own
+  archer at a distance of zero. The handle is not saved, which is the jar's behaviour: a1.1.2 does
+  not write `shootingEntity` either, so a reloaded arrow excludes nobody.
 - **The difficulty lives in `<world>/3dalpha.ini`.** a1.1.2 keeps it in `options.txt`, which is a
   file this port does not have, and it is a per-world setting here.
 - **The explosion's cell record is a bitset over a cube of radius 8** rather than a `HashSet` of
-  `ChunkPosition`. The set is the same set; what a set has no order to match is the order the jar
-  iterates it in, so the destruction runs back-to-front over the cube instead.
+  `ChunkPosition`. The set is the same set; the order is not, and the order is observable.
+
+  **Derived 2026-09-17, and the finding is that there is no single order to match.** `je` is one
+  method. It fills a `HashSet<mt>`, copies it with `new ArrayList(); addAll(set)`, then walks that
+  list **backwards** (`for (i = size - 1; i >= 0; --i)`), drawing **three `world.rand.nextFloat()`
+  per destroyed cell** for the smoke. So the set's iteration order picks the RNG stream for the
+  rest of the tick, not just the order blocks vanish in.
+
+  `mt.hashCode()` is `a * 8976890 + b * 981131 + c` (fields `a`, `b`, `c`; `equals` compares all
+  three). That is exact. What is not exact is what `HashSet` does with it: the bucket a hash lands
+  in depends on `HashMap`'s spread function, and that **changed between Java 7 and Java 8** -- `h ^=
+  (h >>> 20) ^ (h >>> 12); h ^ (h >>> 7) ^ (h >>> 4)` against `h ^ (h >>> 16)` -- as did whether a
+  resize reverses a bucket chain. a1.1.2 shipped on Java 6; a player running it today is on 8 or
+  later and gets a different explosion. Reproducing "the jar's order" therefore means choosing a
+  JVM and saying so, which is a decision this port has not taken yet rather than a transcription
+  it has skipped.
 - **Mobs in `level.dat`.** a1.1.2 writes animals into each chunk's `Entities` list; this port has
   no `entitydata` slot yet, so they ride in the port's own `Data/3DAlphaEntities` compound with the
   other six pools. Native chunk `Entities` stay preserved and unread. A world carried back to the
@@ -778,21 +826,32 @@ not have it rather than because the port skipped it. **None of them is implement
 
 ## What is not done
 
-- **The player has no health**, so a monster's fist leaves through a seam
-  (`MobSurroundings::hurtPlayer`) rather than landing: `platform/ctr/main.cpp` takes the two parts
-  that exist -- `ge.a(Lkh;IDD)V`'s knockback and `random.hurt` -- with `ge`'s ten-tick
-  invulnerability window in front of them, and counts the damage instead of subtracting it.
+- ~~The player has no health~~ -- **stale** (checked 2026-09-17). `PlayerVitals`
+  (`core/entity/player_vitals`) carries `health`, the damage path and the Peaceful regen, and
+  `MobSurroundings::hurtPlayer` reaches it through `PlayerHarm::hurt` in `platform/ctr/main.cpp`.
+  A monster's fist lands.
   Survival is M3 step 4 and `dm.a(Lkh;I)Z`'s difficulty and armour scaling belongs with it.
 - **`hl` -- the Giant.** Registered in `ew` at id 53, drawn by `nz` at six times scale, and
   constructed by nothing in the game. Not ported, and not a gap.
-- **The spider's eye overlay is one part rather than a second model.** `ok` draws the whole of
-  `jy` again from `mob/spider_eyes.png` and blends it at `(1 - brightness) * 0.5`; the eye page is
-  transparent everywhere but the head, so this redraws the head alone and lets the detail pass's
-  alpha test do the rest. The blend becomes an alpha cut, so the eyes do not dim in daylight.
-- A mob's **water push** is asked once a tick here and three times in the jar (`onEntityUpdate`,
-  `onLivingUpdate`, `moveEntityWithHeading`), each adding four thousandths of the current. The same
-  is true of the player body and is noted in `docs/physics-a1.1.2.md`.
-- **The jukebox.** `ly.aZ` is placeable and drawable and does nothing with a record put on it.
+- **The spider's eye overlay is one part rather than a second model**, and that is now the whole
+  of the deviation. `ok` draws all of `jy` again from `mob/spider_eyes.png`; the eye page is
+  transparent everywhere but the head, so redrawing the head alone is the same picture for a tenth
+  of the vertices.
+  **The blend is no longer lost** (2026-09-17). It was an alpha cut, which drew the eyes opaque at
+  every light level -- twice as bright as the jar ever draws them, and still visible in daylight
+  where the jar's have faded out. They are their own blended pass now. The alpha is
+  `(1 - getBrightness) * 0.5` exactly, and it is computed in the combiner rather than per draw: the
+  lightmap texture is monochrome `lightBrightness(effectiveLightLevel(...))`, which is what
+  `Entity.getBrightness` returns, so `1 - lightmap.r` is that spider's own term sampled at the
+  light coordinate its vertices already carry. Every spider on screen gets its own value out of one
+  draw call. `Renderer::drawMobs`, `render::buildMobEyes`.
+- ~~A mob's water push is asked once a tick here and three times in the jar~~ -- **this was never
+  true and the line was wrong** (checked 2026-09-17). `LivingBody` *is* `PlayerBody`
+  (`player_body.hpp`), so a mob already gets `updateWaterEntry`'s call and both of the calls inside
+  `PlayerBody::tick` -- `ge.j()`'s jump branch and `ge.b(FF)`'s water test. That is the jar's count
+  exactly: twice a tick, three times while the jump button is held.
+- **The jukebox works** (2026-09-14): a disc goes in, plays, and comes back out on a click or a
+  break. It was on this list until the `.mus` cipher was read out of `hk`.
 - **No hardware run.** Every number in the rendering notes above is a vertex count, not a frame
   time -- and the monsters are the first thing here that can put two hundred models and a
   1,352-ray explosion in front of a 268 MHz ARM11 at the same moment. The first hardware report on

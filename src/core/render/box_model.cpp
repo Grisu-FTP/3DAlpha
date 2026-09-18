@@ -74,6 +74,35 @@ i16 sheetV(int originTexels, float pageFractionRaw)
 
 }  // namespace
 
+Placement placeModel(double x, double y, double z, float yawRadians)
+{
+    // The same two steps `placeMob` takes with no death spin and no per-axis
+    // scale: the flip, and then the lift expressed in the flipped frame so a
+    // downward shift in the model's own axes is an upward one in the world.
+    constexpr float kModelHeight = 24.0f;
+    constexpr float kFootLift = 0.0078125f;
+
+    const float s = MathHelper::sin(yawRadians);
+    const float c = MathHelper::cos(yawRadians);
+    const auto turn = [&](float mx, float my, float mz, float* out) {
+        out[0] = mx * c + mz * s;
+        out[1] = my;
+        out[2] = mz * c - mx * s;
+    };
+
+    Placement place;
+    turn(-kModelUnit, 0.0f, 0.0f, place.ax);
+    turn(0.0f, -kModelUnit, 0.0f, place.ay);
+    turn(0.0f, 0.0f, kModelUnit, place.az);
+
+    float lift[3];
+    turn(0.0f, kModelHeight * kModelUnit + kFootLift, 0.0f, lift);
+    place.x = x + double(lift[0]);
+    place.y = y + double(lift[1]);
+    place.z = z + double(lift[2]);
+    return place;
+}
+
 Placement placeAt(double x, double y, double z, float yawRadians, float scale)
 {
     const float s = MathHelper::sin(yawRadians);

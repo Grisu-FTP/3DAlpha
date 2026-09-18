@@ -152,9 +152,90 @@ ItemEntity* ItemEntitySystem::allocate(bool mayEvict)
     return &e;
 }
 
+ItemEntity* ItemEntitySystem::spawnFromServer(const tick::TickWorld& world, i32 entityId,
+                                              double px, double py, double pz, item::ItemId id,
+                                              int count, i16 damage, double motionX,
+                                              double motionY, double motionZ)
+{
+    // An id the session already has is that item arriving twice, which the
+    // server does after a chunk is re-sent. The second one replaces the first
+    // rather than becoming a twin of it.
+    removeById(entityId);
+
+    ItemEntity* spawned = place(world, px, py, pz, id, count, damage, kItemPickupDelay, true);
+    if (spawned == nullptr) {
+        return nullptr;
+    }
+    spawned->entityId = entityId;
+    spawned->motionX = motionX;
+    spawned->motionY = motionY;
+    spawned->motionZ = motionZ;
+    // Out of reach of every local pickup path for the length of any session.
+    spawned->pickupDelay = 0x7FFF;
+    return spawned;
+}
+
+ItemEntity* ItemEntitySystem::findById(i32 entityId)
+{
+    if (entityId == 0) {
+        return nullptr;
+    }
+    for (int i = 0; i < items_.size(); ++i) {
+        if (items_[i].entityId == entityId) {
+            return &items_[i];
+        }
+    }
+    return nullptr;
+}
+
+bool ItemEntitySystem::removeById(i32 entityId)
+{
+    if (entityId == 0) {
+        return false;
+    }
+    for (int i = 0; i < items_.size(); ++i) {
+        if (items_[i].entityId == entityId) {
+            removeAt(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ItemEntitySystem::placeById(i32 entityId, double px, double py, double pz)
+{
+    ItemEntity* item = findById(entityId);
+    if (item == nullptr) {
+        return false;
+    }
+    // The server's word for where it is, and the motion it had is spent: what
+    // the next tick does from here is the fall, not the throw.
+    item->setPosition(px, py, pz);
+    item->prevX = px;
+    item->prevY = py;
+    item->prevZ = pz;
+    item->motionX = 0.0;
+    item->motionY = 0.0;
+    item->motionZ = 0.0;
+    return true;
+}
+
 void ItemEntitySystem::removeAt(int index)
 {
     items_.swapRemove(index);
+}
+
+int ItemEntitySystem::removeUnowned()
+{
+    int removed = 0;
+    // Backwards, because `swapRemove` moves the last entry into the hole.
+    for (int i = items_.size() - 1; i >= 0; --i) {
+        if (items_[i].entityId == 0) {
+            removeAt(i);
+            ++removed;
+        }
+    }
+    return removed;
 }
 
 void ItemEntitySystem::takeBlast(const tick::TickWorld& world, const Explosion& blast)
@@ -347,7 +428,11 @@ void ItemEntitySystem::tick(const tick::TickWorld& world)
             const bool inWater = block::handleWaterMovement(world, e.box, kWaterMaterial,
                                                             &e.motionX, &e.motionY, &e.motionZ);
             const WaterEntryResult wet =
-                updateWaterEntry(e.water, inWater, e.motionX, e.motionY, e.motionZ);
+                updateWaterEntry(e.water, inWater, e.motionX, e.motionY, e.motionZ,
+                                 [&] {
+                                     return block::isMaterialInBox(world, e.box,
+                                                                   kWaterMaterial);
+                                 });
             if (wet.splash) {
                 world.playSoundAt(kSplashSound, e.x, e.y - kItemHalf, e.z, wet.volume,
                                   splashPitch(rand_));

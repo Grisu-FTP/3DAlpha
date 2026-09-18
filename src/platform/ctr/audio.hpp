@@ -21,16 +21,41 @@
 // does the decoding. See core/util/worker.hpp for why that worker cannot be a
 // `std::thread`.
 //
-// **Depth, not priority, is what makes it work.** The decode thread runs
-// *below* the main thread, so it cannot cost a frame; the price is that it only
-// runs in the slack the main thread leaves while blocked on VBlank, and on an
-// Old 3DS that slack is all there is -- a 3DSX has core 0 and nothing else, so
-// CONTRIBUTING's "no decompression on core 0" cannot be honoured literally and
-// is honoured in substance instead: never on the main thread, bounded to one
-// buffer per wake, and buffered deeply enough that a missed frame is inaudible.
-// kRingBuffers x kFramesPerBuffer is a third of a second of audio; a console
-// that cannot decode 23 ms of Vorbis in a third of a second has a bigger
-// problem than music.
+// **Depth alone does not make it work, and hardware said so: the music skipped
+// once the load got high enough.** The reason is the scheduler, not the
+// decoder. The ARM11 kernel is strictly priority-ordered with *no* round-robin
+// and *no* time slice -- 3dbrew's Multi-threading page calls it SCHED_FIFO --
+// so a runnable thread never preempts one of equal priority, and a thread below
+// the running one gets nothing at all until that one blocks. This file and
+// core/util/worker.hpp were both written against the opposite assumption, and
+// it cost the same bug on either console:
+//
+//   * **New 3DS.** The decoder shared core 2 with the generation worker at the
+//     *same* priority, and `WorldStreamer::workerMain` takes its own next job
+//     the moment it finishes one. A full slate is a thread that never blocks,
+//     so the decoder ran only in the gaps the generator's card reads left.
+//   * **Old 3DS.** The decoder sits below the main thread on core 0, so it
+//     lives on the slack the main thread leaves at VBlank -- and a frame that
+//     is already over budget leaves none of that either.
+//
+// So depth buys time and priority is what spends it, and both are needed. The
+// ring is ~370 ms rather than ~190; the decoder is now a step *above* the
+// generation worker on a New 3DS (platform/ctr/main.cpp); and on either console
+// it **raises its own priority above the main thread's when the ring runs low**
+// and puts it back the moment the ring is full again -- see `queuedBuffers`,
+// kBoostBelow and kRestoreAt.
+//
+// The steady state is therefore exactly what it was: below the main thread,
+// costing no frame anything. The boost is bounded to kBoostBuffersPerPass
+// buffers per wake, so the most a catch-up can take from the frame it
+// interrupts is four buffers' decode -- and `boosts()` counts how often that
+// happened, because a console where it never happens has lost nothing and a
+// console where it happens constantly is one the priorities are still wrong on.
+//
+// CONTRIBUTING's "no decompression on core 0" is still honoured in substance
+// rather than literally on an Old 3DS, which has no other core to offer: never
+// on the main thread, bounded per wake, and deep enough that the boost has
+// hundreds of milliseconds to notice and react.
 //
 // **The effect voices are the opposite arrangement, on purpose.** A one-shot is
 // already decoded when it gets here (see core/audio/sample.hpp), so it is
@@ -54,16 +79,35 @@
 
 namespace mc::ctr {
 
-// 1024 frames is ~23 ms at 44.1 kHz. Small on purpose: the longest a single
-// decode can hold core 0 against the main thread is one buffer's worth, so a
-// bigger block would trade an inaudible benefit for a visible stall.
+// 1024 frames is ~23 ms at 44.1 kHz. Small on purpose: it is the grain
+// everything else here is counted in, and the unit a boosted pass is capped in
+// -- so it is also the shortest a decode can hold core 0 for. A bigger block
+// would trade an inaudible benefit for a coarser stall.
 inline constexpr int kFramesPerBuffer = 1024;
 
-// Eight buffers is ~186 ms, or six frames at 30 fps. That is the jitter budget
-// that lets the decode thread sit below the main thread.
-inline constexpr int kRingBuffers = 8;
+// Sixteen buffers is ~372 ms, or eleven frames at 30 fps. It was eight, and on
+// hardware eight was not enough: it is the window the boost below has to notice
+// a stall and catch up inside, so it is sized for the stall and not for the
+// decoder. 32 KB more of linear memory is the whole of the price.
+inline constexpr int kRingBuffers = 16;
 
-// 1024 frames x 2 channels x 2 bytes x 8 = 32 KB of linear memory, taken once.
+// **When the decoder decides it is losing.** Both are counts of wave buffers the
+// DSP still has in hand at the top of a pass: below kBoostBelow (~116 ms left)
+// the decode thread raises its own priority above the main thread's, and at
+// kRestoreAt (~279 ms) it puts it back. The gap between the two is hysteresis --
+// a track that sat on the threshold would otherwise re-prioritise itself on
+// every one of ndsp's ~5 ms wakes.
+inline constexpr int kBoostBelow = 5;
+inline constexpr int kRestoreAt = 12;
+
+// How much a *boosted* pass may decode before it goes back to sleep. Boosted,
+// this thread outranks the main thread, so an unbounded pass over an empty ring
+// would hold a frame for sixteen buffers' worth of Vorbis. ndsp wakes it again
+// in about 5 ms, so four buffers -- ~93 ms of audio -- catches up fast and is
+// invisible in a frame time.
+inline constexpr int kBoostBuffersPerPass = 4;
+
+// 1024 frames x 2 channels x 2 bytes x 16 = 64 KB of linear memory, taken once.
 inline constexpr usize kRingBytes =
     usize(kFramesPerBuffer) * 2 * sizeof(mc::i16) * usize(kRingBuffers);
 
@@ -157,10 +201,33 @@ public:
     mc::u32 underruns() const { return underruns_.load(std::memory_order_relaxed); }
     mc::u32 decodeMicros() const { return decodeMicros_.load(std::memory_order_relaxed); }
 
+    // How often the decode thread had to outrank the main thread to stay ahead,
+    // and the fewest wave buffers the DSP had in hand at the top of a pass since
+    // the track started. Together they are the answer to "is the ring deep
+    // enough and is the priority right on this console": a low-water mark that
+    // never approaches kBoostBelow means neither was ever tested, and boosts
+    // climbing on every track means the steady-state priority is still wrong.
+    mc::u32 boosts() const { return boosts_.load(std::memory_order_relaxed); }
+    int ringLow() const { return ringLow_.load(std::memory_order_relaxed); }
+
 private:
     static void threadEntry(void* self);
     void run();
-    void fillBuffers();
+
+    // Refills every free wave buffer, up to `maxBuffers` of them -- the cap is
+    // what bounds a boosted pass against the frame it is interrupting.
+    void fillBuffers(int maxBuffers);
+
+    // How many buffers the DSP still has queued or is playing. Read off the ring
+    // the hardware writes back into, so it is the real figure rather than a
+    // count of what was handed over.
+    int queuedBuffers() const;
+
+    // Raise this thread above the main thread, or put it back. A no-op when the
+    // kernel refused the probe in `run()` -- an exheader that grants no headroom
+    // is a console that keeps the old behaviour, not a console that fails.
+    void setBoosted(bool boosted);
+
     void applyGain();
 
     // The music channel. Channel 0 of 24; 1..4 are the effect voices below and
@@ -225,6 +292,21 @@ private:
     std::atomic<float> gain_{1.0f};
     std::atomic<mc::u32> underruns_{0};
     std::atomic<mc::u32> decodeMicros_{0};
+    std::atomic<mc::u32> boosts_{0};
+    std::atomic<int> ringLow_{kRingBuffers};
+
+    // Decode thread only. `boostPriority_` is negative when the kernel would not
+    // grant one: it is probed once, at the top of `run()`, because the only
+    // honest way to find out what a process may ask for is to ask.
+    // libctru's own `s32`, not mc::i32: it is what svcSetThreadPriority takes.
+    s32 normalPriority_ = 0;
+    s32 boostPriority_ = -1;
+    bool boosted_ = false;
+
+    // True once this track has had a full ring behind it. Until then an empty
+    // ring is a track starting rather than a decoder losing, and neither
+    // `ringLow_` nor `boosts_` should count it.
+    bool primed_ = false;
 };
 
 }  // namespace mc::ctr

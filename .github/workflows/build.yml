@@ -1,4 +1,10 @@
-# Builds a .3dsx and a .cia for every version manifest in versions/.
+# Runs the host unit suite and then builds a .3dsx and a .cia for every version
+# manifest in versions/. Both fan out over the same matrix, so adding a manifest
+# adds a test run and a build with no edit here.
+#
+# The tests gate the binaries: a red suite for any version produces no artifacts
+# at all. That is deliberate -- an artifact that boots but silently broke shared
+# world or entity code for another version is worse than no artifact.
 #
 # Artifacts are named 3DAlphaR<n><version>, e.g. 3DAlphaR1a1.1.2.3dsx -- <n> is
 # this workflow's run number, which increments on every push. Nothing else in
@@ -33,8 +39,83 @@ jobs:
           echo "versions: $matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
-  build:
+  # The host unit suite, once per version manifest.
+  #
+  # This job is the thing that makes configure-time version selection safe to
+  # extend. The argument for it over one fork per version is that shared code
+  # stays checked against *every* version on every push -- and compiling only
+  # proves the code parses. Running the suite is what proves that a change made
+  # for one version did not quietly alter entity, world, net or tick behaviour
+  # for the others. Without this the answer arrives on a console, by hand, weeks
+  # later. See docs/build-versions.md.
+  #
+  # `src/core/` is platform-independent by construction (docs/architecture.md),
+  # so none of this needs devkitARM or a console -- an ordinary runner with a
+  # compiler builds it. The 3DS jobs below wait on it.
+  test:
     needs: versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.versions.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # `find_package(ZLIB REQUIRED)` is the host build's only external
+      # dependency (chunk files are gzip, Map Chunk payloads are zlib). The
+      # runner image ships zlib1g-dev, so this is a guard against an image
+      # change rather than a routine install -- hence the check first, which
+      # keeps the usual run at a second or so.
+      - name: Ensure zlib headers are present
+        run: |
+          if ! pkg-config --exists zlib; then
+            sudo apt-get update && sudo apt-get install -y zlib1g-dev
+          fi
+          pkg-config --modversion zlib
+
+      # Debug with SANITIZE=ON, matching the build-host configuration the
+      # working guide tells contributors to use, so a failure here reproduces
+      # locally with the same command rather than only under CI's flags.
+      #
+      # ASan/UBSan are the entire point of the host target -- a bounds bug in
+      # the NBT parser is an unexplained crash on hardware and a diagnosed line
+      # here -- and the CMakeLists attaches them PUBLIC on 3dalpha_core so the
+      # code under test carries them, not just the test files. They cost build
+      # and run time; that is the trade this job exists to make.
+      - name: Configure host build
+        run: |
+          cmake -S . -B "build-ci-host/${{ matrix.version }}" \
+            -DMCVER="${{ matrix.version }}" -DCMAKE_BUILD_TYPE=Debug -DSANITIZE=ON
+
+      - name: Build tests
+        run: |
+          cmake --build "build-ci-host/${{ matrix.version }}" \
+            --target 3dalpha_tests -j"$(nproc)"
+
+      # The binary is run directly rather than through ctest: `add_test` wraps
+      # the whole suite as a single test, so ctest reports one pass or one
+      # failure, while the binary names the case that failed and prints the
+      # counts. Its exit status is what fails the job.
+      - name: Run tests
+        run: |
+          set -o pipefail
+          "./build-ci-host/${{ matrix.version }}/3dalpha_tests" 2>&1 | tee test.log
+
+      # Runs on failure too -- the tail is the useful part when it is red.
+      - name: Report results
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.version }} host tests"
+            echo '```'
+            tail -n 20 test.log 2>/dev/null || echo "no output captured"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: [versions, test]
     runs-on: ubuntu-latest
     # devkitARM, libctru, citro3d, citro2d, picasso, 3dsxtool and 3ds-zlib all
     # come with the image; Debian 12 underneath supplies python3 and cmake.

@@ -80,6 +80,49 @@ bool gamemodeFromToken(std::string_view token, Gamemode* out)
     return false;
 }
 
+const char* panoramaAnchorToken(PanoramaAnchor anchor)
+{
+    switch (anchor) {
+    case PanoramaAnchor::Origin:
+        return "origin";
+    case PanoramaAnchor::Player:
+        return "player";
+    case PanoramaAnchor::Spawn:
+        break;
+    }
+    return "spawn";
+}
+
+const char* panoramaAnchorLabel(PanoramaAnchor anchor)
+{
+    switch (anchor) {
+    case PanoramaAnchor::Origin:
+        return "Block 0, 0";
+    case PanoramaAnchor::Player:
+        return "Where you logged out";
+    case PanoramaAnchor::Spawn:
+        break;
+    }
+    return "World spawn";
+}
+
+bool panoramaAnchorFromToken(std::string_view token, PanoramaAnchor* out)
+{
+    if (token == "spawn") {
+        *out = PanoramaAnchor::Spawn;
+        return true;
+    }
+    if (token == "origin") {
+        *out = PanoramaAnchor::Origin;
+        return true;
+    }
+    if (token == "player") {
+        *out = PanoramaAnchor::Player;
+        return true;
+    }
+    return false;
+}
+
 const char* difficultyToken(Difficulty level)
 {
     switch (level) {
@@ -210,6 +253,10 @@ bool loadWorldSettings(io::FileSystem& fs, std::string_view worldDir, WorldSetti
             out->texturePack.assign(value);
             continue;
         }
+        if (key == "panorama_anchor") {
+            panoramaAnchorFromToken(value, &out->panoramaAnchor);
+            continue;
+        }
         if (key == "panorama_tile_x") {
             int tile = 0;
             if (parseInt(value, &tile)) {
@@ -258,6 +305,9 @@ bool saveWorldSettings(io::FileSystem& fs, std::string_view worldDir,
     text += '\n';
     text += "texture_pack=";
     text += settings.texturePack;
+    text += '\n';
+    text += "panorama_anchor=";
+    text += panoramaAnchorToken(settings.panoramaAnchor);
     text += '\n';
     text += "panorama_tile_x=";
     text += std::to_string((long long)settings.panoramaTileX);

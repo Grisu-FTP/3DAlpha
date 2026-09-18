@@ -64,6 +64,7 @@
 #include "core/map/map_sample.hpp"
 #include "core/map/map_store.hpp"
 #include "core/mesh/vertex.hpp"
+#include "core/settings/world_settings.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/world/chunk.hpp"
 #include "core/world/world_peek.hpp"
@@ -166,14 +167,58 @@ int dioramaTableTop();
 // Its bottom, a whole table's width further down: the table is a cube.
 int dioramaTableBottom();
 
-// The table's north-west corner: the tile holding block 0, 0, less one tile
-// each way, and then `tileX`/`tileZ` map tiles further out.
+// The table's north-west corner: the tile holding the anchor block, less one
+// tile each way, and then `tileX`/`tileZ` map tiles further out.
 //
-// **The offset is what World Settings' Move Panorama writes.** Zero is where
-// the table has always stood and is what every world that has never been moved
-// reads as, so the default argument is not a convenience -- it is the original
-// behaviour, and the tests that pin it pass none.
-void dioramaOrigin(i32* blockX, i32* blockZ, i32 tileX = 0, i32 tileZ = 0);
+// **The anchor is the world's spawn, not block 0, 0.** The table is 384 blocks
+// a side and a1.1.2 puts spawn wherever its sand walk lands -- 341, 255 in one
+// of the worlds this was measured on, 35, -511 in another -- so a table fixed
+// at the origin stands next to the world rather than on it. Measured over four
+// real a1.1.2 saves, the origin-centred table held 148, 188, 158 and 185 of its
+// 576 chunks; anchored on spawn the same four hold 576, 576, 397 and 572. The
+// ragged quarter-full tables that produced were the whole of "some worlds only
+// load some chunks": every chunk the table asked for was read, and most of what
+// it asked for had never been generated.
+//
+// **The offset is what World Settings' Move Panorama writes**, and it is
+// relative to the anchor, so a world that has never been moved reads as zero.
+// Both defaults are the old behaviour, which is what the tests that pass
+// neither are pinning.
+void dioramaOrigin(i32* blockX, i32* blockZ, i32 tileX = 0, i32 tileZ = 0,
+                   i32 anchorBlockX = 0, i32 anchorBlockZ = 0);
+
+// **The places one world offers to stand the table on**, read out of its level
+// once so the menu and the worker can both answer `settings::PanoramaAnchor`
+// without holding a whole `LevelData` between them.
+struct DioramaAnchors {
+    i32 spawnX = 0;
+    i32 spawnZ = 0;
+    // False for a level.dat with no Player compound -- a server-made world has
+    // none -- and then `PanoramaAnchor::Player` is not an anchor this world has.
+    bool hasPlayer = false;
+    i32 playerX = 0;
+    i32 playerZ = 0;
+};
+
+DioramaAnchors dioramaAnchorsOf(const world::LevelData& level);
+
+// Whether this world can stand its table on `anchor`. Only Player is ever
+// refused, and only for a world that has no player in it.
+bool dioramaAnchorAvailable(settings::PanoramaAnchor anchor, const DioramaAnchors& anchors);
+
+// Where `anchor` puts the table, in blocks. **An anchor the world does not have
+// falls back to Spawn rather than to 0, 0, 0**: a world with no Player compound
+// asked for the player's corner would otherwise put the table at the origin and
+// call it "where you logged out". Returns false when it fell back, so a caller
+// that is offering the choice can stop offering that one.
+bool dioramaAnchorBlock(settings::PanoramaAnchor anchor, const DioramaAnchors& anchors,
+                        i32* blockX, i32* blockZ);
+
+// The next anchor in the menu's cycle that this world actually has, `step` of
+// +1 or -1 from `anchor`. Spawn and Origin are always there, so this always
+// terminates.
+settings::PanoramaAnchor nextDioramaAnchor(settings::PanoramaAnchor anchor, int step,
+                                           const DioramaAnchors& anchors);
 
 // Folds one chunk into its cells and their light, every height of it.
 // `chunkX`/`chunkZ` are relative to the origin, 0..kDioramaChunks-1. Leaves

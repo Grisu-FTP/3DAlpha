@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 249 modules, 132,652 lines.**
+**23 directories, 249 modules, 133,066 lines.**
 
 ## `src/core/audio/`
 
@@ -163,7 +163,7 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `diorama.{hpp,cpp}` | 1112 | **The World screen's diorama**: the nine later-version map tiles around the world's origin, as a miniature standing on a double slab. |
+| `diorama.{hpp,cpp}` | 1228 | **The World screen's diorama**: the nine later-version map tiles around the world's origin, as a miniature standing on a double slab. |
 | `pack_scene.{hpp,cpp}` | 152 | **The little scene the Texture Pack screen draws**: a patch of grass with a tree, a sand corner, a workbench and a few of the blocks a pack is judged by, meshed once and drawn with whichever pack the cursor is on. |
 | `preview_window.{hpp,cpp}` | 89 | **Which rows of a menu list are worth having ready**, for the bottom-screen previews on the main menu's Skins, Texture Pack and World screens. |
 | `preview_worker.{hpp,cpp}` | 362 | **The one background thread behind the main menu's bottom-screen previews.** A skin is a PNG on the card, a pack's scene needs its terrain.png out of a zip, and a world's diorama is 576 chunk inflates over a batched handful of card reads. |
@@ -206,7 +206,7 @@ weight is, not what is important.
 | `ini.{hpp,cpp}` | 102 | The `key=value` reader both settings files share. |
 | `sensitivity.{hpp,cpp}` | 102 | How fast the view turns, as a1.1.2's own slider. |
 | `settings_file.{hpp,cpp}` | 242 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
-| `world_settings.{hpp,cpp}` | 471 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
+| `world_settings.{hpp,cpp}` | 560 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
 
 ## `src/core/texture/` -- Texture packs, atlases, PNG and zip
 
@@ -355,11 +355,11 @@ weight is, not what is important.
 | `local_link.{hpp,cpp}` | 529 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
 | `main.cpp` | 4532 | The 3DS entry point. |
 | `map_screen.{hpp,cpp}` | 1531 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 7941 | The main menu: the title screen, the world list, and creating a world. |
-| `menu_preview.{hpp,cpp}` | 1770 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
+| `menu.{hpp,cpp}` | 8067 | The main menu: the title screen, the world list, and creating a world. |
+| `menu_preview.{hpp,cpp}` | 1786 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
 | `net_play.{hpp,cpp}` | 454 | A multiplayer session as the game loop sees it: what the server's packets do to the world and the player, and what the player's ticks and clicks become. |
 | `network.{hpp,cpp}` | 190 | The console's half of multiplayer: its socket service, and the name it logs in with. |
-| `overlay.{hpp,cpp}` | 3629 | The bottom screen. |
+| `overlay.{hpp,cpp}` | 3696 | The bottom screen. |
 | `probe.{hpp,cpp}` | 953 | The M0 hardware probe, reachable by holding SELECT at boot. |
 | `progress_screen.{hpp,cpp}` | 556 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
 | `renderer.{hpp,cpp}` | 5014 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |

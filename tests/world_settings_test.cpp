@@ -216,6 +216,7 @@ TEST(the_extra_settings_round_trip_and_default_to_vanilla)
     CHECK(fresh.texturePack.empty());
     CHECK_EQ(int(fresh.panoramaTileX), 0);
     CHECK_EQ(int(fresh.panoramaTileZ), 0);
+    CHECK(fresh.panoramaAnchor == settings::PanoramaAnchor::Spawn);
 
     settings::WorldSettings written;
     written.fixOreGeneration = true;
@@ -224,6 +225,7 @@ TEST(the_extra_settings_round_trip_and_default_to_vanilla)
     written.texturePack = "Faithful.zip";
     written.panoramaTileX = -7;
     written.panoramaTileZ = 13;
+    written.panoramaAnchor = settings::PanoramaAnchor::Player;
     CHECK(settings::saveWorldSettings(fs, temp.path, written));
 
     settings::WorldSettings read;
@@ -234,6 +236,7 @@ TEST(the_extra_settings_round_trip_and_default_to_vanilla)
     CHECK_EQ(read.texturePack, std::string("Faithful.zip"));
     CHECK_EQ(int(read.panoramaTileX), -7);
     CHECK_EQ(int(read.panoramaTileZ), 13);
+    CHECK(read.panoramaAnchor == settings::PanoramaAnchor::Player);
 
     // The gamemode and difficulty rows are untouched by any of it.
     CHECK(read.gamemode == settings::Gamemode::Spectator);
@@ -261,6 +264,45 @@ TEST(a_settings_file_without_the_extra_keys_reads_as_vanilla)
     CHECK(read.texturePack.empty());
     CHECK_EQ(int(read.panoramaTileX), 0);
     CHECK_EQ(int(read.panoramaTileZ), 0);
+    // **Spawn, not Origin.** A world written before the anchor key existed had
+    // its table on block 0, 0 because that was the only place there was -- but
+    // the table has since moved to spawn for every such world, and reading the
+    // old file as Origin would put it back where it could see nothing.
+    CHECK(read.panoramaAnchor == settings::PanoramaAnchor::Spawn);
+}
+
+// The anchor is a word in the file for the reason gamemode and difficulty are:
+// a file a later build wrote, with an anchor this build has never heard of,
+// keeps the default here instead of being an ordinal that means something else.
+TEST(the_panorama_anchor_is_a_word_and_an_unknown_one_keeps_the_default)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+
+    settings::PanoramaAnchor anchor = settings::PanoramaAnchor::Spawn;
+    CHECK(settings::panoramaAnchorFromToken("origin", &anchor));
+    CHECK(anchor == settings::PanoramaAnchor::Origin);
+    CHECK(settings::panoramaAnchorFromToken("player", &anchor));
+    CHECK(anchor == settings::PanoramaAnchor::Player);
+    CHECK(settings::panoramaAnchorFromToken("spawn", &anchor));
+    CHECK(anchor == settings::PanoramaAnchor::Spawn);
+
+    // Every token round-trips through its own label-free spelling.
+    const settings::PanoramaAnchor all[3] = {settings::PanoramaAnchor::Spawn,
+                                             settings::PanoramaAnchor::Origin,
+                                             settings::PanoramaAnchor::Player};
+    for (settings::PanoramaAnchor one : all) {
+        settings::PanoramaAnchor back = settings::PanoramaAnchor::Spawn;
+        CHECK(settings::panoramaAnchorFromToken(settings::panoramaAnchorToken(one), &back));
+        CHECK(back == one);
+    }
+
+    writeText(fs, settings::worldSettingsPath(temp.path),
+              "gamemode=creative\npanorama_anchor=the_nether_portal\npanorama_tile_x=2\n");
+    settings::WorldSettings read;
+    CHECK(settings::loadWorldSettings(fs, temp.path, &read));
+    CHECK(read.panoramaAnchor == settings::PanoramaAnchor::Spawn);
+    CHECK_EQ(int(read.panoramaTileX), 2);
 }
 
 // `true`/`false` is what the game writes; the other four spellings are there

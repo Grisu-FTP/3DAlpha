@@ -1137,10 +1137,26 @@ void MenuPreview::runWorldJob(preview::PreviewWorker& worker, const preview::Pre
             settings::WorldSettings worldSettings;
             settings::loadWorldSettings(workerFs_, job.path, &worldSettings);
 
+            // **Anchored on a place the world actually has**, which by
+            // default is spawn: that is where a1.1.2 put the player and
+            // therefore where the generated chunks are. The table used to stand
+            // on block 0, 0 whatever the world said, and on a real save that is
+            // usually somewhere nobody has been -- four measured a1.1.2 worlds
+            // spawn at 341, 255 / 98, 314 / -193, 151 / 35, -511, and held 148,
+            // 188, 158 and 185 of the table's 576 chunks. Anchored on spawn the
+            // same four hold 576, 576, 397 and 572.
+            //
+            // Which anchor is the world's own setting, and the tiles step away
+            // from it; see settings::PanoramaAnchor.
+            i32 anchorX = 0;
+            i32 anchorZ = 0;
+            preview::dioramaAnchorBlock(worldSettings.panoramaAnchor,
+                                        preview::dioramaAnchorsOf(peek.level()), &anchorX,
+                                        &anchorZ);
             i32 x = 0;
             i32 z = 0;
             preview::dioramaOrigin(&x, &z, worldSettings.panoramaTileX,
-                                   worldSettings.panoramaTileZ);
+                                   worldSettings.panoramaTileZ, anchorX, anchorZ);
             grid->reset(x, z);
         } else {
             // Not a world this can read: a whole table and nothing on it.

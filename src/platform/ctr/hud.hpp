@@ -33,7 +33,7 @@
 //     |               the page                 |
 //     |                                        |
 //     +----------------------------------------+  y = 216
-//     |  [ Map ] [ Items ] [ Blocks ] [ Look ] |  the tab strip
+//     |  [ Inv. ] [ Items ] [ Map ] [ Look ]   |  the tab strip
 //     +----------------------------------------+  y = 240
 //
 // ...in a gamemode that has a hotbar. **Spectator has none, and the whole

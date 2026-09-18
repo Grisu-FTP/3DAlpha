@@ -226,14 +226,85 @@ int dioramaTableBottom()
     return dioramaTableTop() - kDioramaBlocks;
 }
 
-void dioramaOrigin(i32* blockX, i32* blockZ, i32 tileX, i32 tileZ)
+DioramaAnchors dioramaAnchorsOf(const world::LevelData& level)
 {
-    // `- 1` centres the three tiles on the one holding block 0, 0; the offset
+    DioramaAnchors out;
+    out.spawnX = level.spawnX;
+    out.spawnZ = level.spawnZ;
+    out.hasPlayer = level.player.present;
+    // **Floored, not truncated.** The position is a double and half the world
+    // is negative, so `(i32)-0.5` would put a player standing just west of the
+    // origin one block east of where they are -- and at a tile boundary that is
+    // a whole table in the wrong place.
+    out.playerX = i32(std::floor(level.player.pos[0]));
+    out.playerZ = i32(std::floor(level.player.pos[2]));
+    return out;
+}
+
+bool dioramaAnchorAvailable(settings::PanoramaAnchor anchor, const DioramaAnchors& anchors)
+{
+    return anchor != settings::PanoramaAnchor::Player || anchors.hasPlayer;
+}
+
+bool dioramaAnchorBlock(settings::PanoramaAnchor anchor, const DioramaAnchors& anchors,
+                        i32* blockX, i32* blockZ)
+{
+    const bool have = dioramaAnchorAvailable(anchor, anchors);
+    const settings::PanoramaAnchor used = have ? anchor : settings::PanoramaAnchor::Spawn;
+    switch (used) {
+    case settings::PanoramaAnchor::Origin:
+        *blockX = 0;
+        *blockZ = 0;
+        break;
+    case settings::PanoramaAnchor::Player:
+        *blockX = anchors.playerX;
+        *blockZ = anchors.playerZ;
+        break;
+    case settings::PanoramaAnchor::Spawn:
+        *blockX = anchors.spawnX;
+        *blockZ = anchors.spawnZ;
+        break;
+    }
+    return have;
+}
+
+settings::PanoramaAnchor nextDioramaAnchor(settings::PanoramaAnchor anchor, int step,
+                                           const DioramaAnchors& anchors)
+{
+    constexpr settings::PanoramaAnchor kOrder[] = {
+        settings::PanoramaAnchor::Spawn,
+        settings::PanoramaAnchor::Origin,
+        settings::PanoramaAnchor::Player,
+    };
+    constexpr int kCount = int(sizeof kOrder / sizeof kOrder[0]);
+
+    int at = 0;
+    for (int i = 0; i < kCount; ++i) {
+        if (kOrder[i] == anchor) {
+            at = i;
+        }
+    }
+    const int delta = step >= 0 ? 1 : kCount - 1;
+    // At most `kCount` steps: Spawn is always available, so the loop cannot run
+    // past the row it started on without landing on something.
+    for (int i = 0; i < kCount; ++i) {
+        at = (at + delta) % kCount;
+        if (dioramaAnchorAvailable(kOrder[at], anchors)) {
+            return kOrder[at];
+        }
+    }
+    return anchor;
+}
+
+void dioramaOrigin(i32* blockX, i32* blockZ, i32 tileX, i32 tileZ, i32 anchorBlockX,
+                   i32 anchorBlockZ)
+{
+    // `- 1` centres the three tiles on the one holding the anchor; the offset
     // is in the same units, so one step of it slides the table by a third of
     // its own width and the tile grid the bottom map draws in red stays the
     // grid the table's edges land on.
-    *blockX = map::tileOriginBlock(map::tileOfBlock(0) - 1 + tileX);
-    *blockZ = map::tileOriginBlock(map::tileOfBlock(0) - 1 + tileZ);
+    *blockX = map::tileOriginBlock(map::tileOfBlock(anchorBlockX) - 1 + tileX);
+    *blockZ = map::tileOriginBlock(map::tileOfBlock(anchorBlockZ) - 1 + tileZ);
 }
 
 void foldChunk(const world::ChunkColumn& column, int chunkX, int chunkZ, DioramaGrid* grid)

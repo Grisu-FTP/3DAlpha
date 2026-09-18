@@ -27,6 +27,7 @@
 
 #include "core/net/link.hpp"
 #include "core/util/types.hpp"
+#include "platform/ctr/session_link.hpp"
 
 #include <3ds.h>
 
@@ -102,7 +103,7 @@ bool scanLocalSessions(std::vector<LocalSession>* out, std::string* error);
 // One console's end of a local session. Hosting creates the network and puts
 // the beacon up; joining connects to one. Either way what comes out is a
 // `Datagrams` for core/net/session.hpp to run over.
-class LocalLink : public net::link::Datagrams {
+class LocalLink : public SessionLink {
 public:
     ~LocalLink() override;
 
@@ -115,9 +116,9 @@ public:
     bool join(const LocalSession& session, std::string* error);
 
     // Tears the network down. Safe to call on a link that never came up.
-    void leave();
+    void leave() override;
 
-    bool active() const { return active_; }
+    bool active() const override { return active_; }
     bool hosting() const { return hosting_; }
 
     // This console's node id -- 1 when hosting, 2 upwards when not.
@@ -126,12 +127,12 @@ public:
     // Rewrites the beacon with a new player count, so a console scanning from
     // the next room sees "2/4" rather than what the session looked like when it
     // opened. Hosts only, and cheap enough to call when the count changes.
-    void advertise(int players);
+    void advertise(int players) override;
 
     // Frames dropped by the radio rather than by the air: the send buffer was
     // full. Worth showing on the debug page, because it is the one loss the
     // link layer cannot tell from a bad room.
-    u32 sendOverflows() const { return overflows_; }
+    u32 sendOverflows() const override { return overflows_; }
 
     bool send(u16 node, const u8* data, usize size) override;
     bool receive(u8* buffer, usize capacity, usize* size, u16* node) override;

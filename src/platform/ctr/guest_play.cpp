@@ -38,9 +38,10 @@ bool GuestPlay::join(const LocalSession& session, const std::string& name, std::
     if (!startLocalWireless(error)) {
         return false;
     }
-    if (!link_.join(session, error)) {
+    if (!local_.join(session, error)) {
         return false;
     }
+    link_ = &local_;
     name_ = name;
     left_ = false;
     lines_.clear();
@@ -57,11 +58,28 @@ bool GuestPlay::join(const LocalSession& session, const std::string& name, std::
     return true;
 }
 
+// **Nothing to start and nothing that can fail.** By the time this is called
+// the punch has already landed or the relay has already been allocated; what is
+// handed over is a link that is up. The Hello that follows is the same one a
+// console in the next room gets.
+void GuestPlay::joinOnline(SessionLink& link, const std::string& name)
+{
+    link_ = &link;
+    name_ = name;
+    left_ = false;
+    lines_.clear();
+
+    net::link::GeneratorId own;
+    own.version = net::link::generatorVersion();
+    session_.join(name, own, u32(osGetTime()), this);
+    setLinkPauseHook(&GuestPlay::linkPaused, this);
+}
+
 void GuestPlay::linkPaused(void* context, u32 expectedMs)
 {
     auto* self = static_cast<GuestPlay*>(context);
-    if (self->link_.active()) {
-        self->session_.announceAway(expectedMs, u32(osGetTime()), self->link_);
+    if (self->link_ != nullptr && self->link_->active()) {
+        self->session_.announceAway(expectedMs, u32(osGetTime()), *self->link_);
     }
 }
 
@@ -71,14 +89,17 @@ void GuestPlay::leave(const std::string& reason)
         return;
     }
     left_ = true;
-    if (link_.active()) {
-        session_.leave(reason, u32(osGetTime()), link_);
+    if (link_ != nullptr && link_->active()) {
+        session_.leave(reason, u32(osGetTime()), *link_);
     }
     // **The channel before the link**, because stopping it joins a thread that
     // may be halfway through a column and the link's buffers are what it reads
     // out of.
     channel_.stop();
-    link_.leave();
+    if (link_ != nullptr) {
+        link_->leave();
+        link_ = nullptr;
+    }
     setLinkPauseHook(nullptr, nullptr);
 }
 
@@ -195,11 +216,15 @@ void GuestPlay::flushChannel()
 
 bool GuestPlay::pumpLobby()
 {
-    if (!link_.active()) {
+    if (link_ == nullptr) {
+        return false;
+    }
+    link_->service(u32(osGetTime()));
+    if (!link_->active()) {
         return false;
     }
     const usize before = lines_.size();
-    session_.pump(u32(osGetTime()), link_);
+    session_.pump(u32(osGetTime()), *link_);
 
     if (session_.state() != net::link::GuestSession::State::Playing) {
         return lines_.size() != before;
@@ -225,10 +250,14 @@ bool GuestPlay::pumpLobby()
 
 void GuestPlay::pump()
 {
-    if (!link_.active()) {
+    if (link_ == nullptr) {
         return;
     }
-    session_.pump(u32(osGetTime()), link_);
+    link_->service(u32(osGetTime()));
+    if (!link_->active()) {
+        return;
+    }
+    session_.pump(u32(osGetTime()), *link_);
 
     const u32 now = u32(osGetTime());
     if (u32(now - terrainAtMs_) >= kPlayingTerrainMs) {

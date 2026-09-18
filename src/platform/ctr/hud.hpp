@@ -198,10 +198,11 @@ inline constexpr u32 kTabIdleText = 0x2E2E2E;
 // column, 320 columns across, bottom-up -- so `strideX` is 240 and `strideY` is
 // -1 and (0, 0) is the top-left corner a player sees.
 //
-// **False rather than a guess** when libctru does not hand back the framebuffer
-// this expects. `consoleInit` leaves the screen in RGB565 with double buffering
-// off; if either has changed under us, writing pixels at computed offsets is
-// the last thing to do about it.
+// **It is the off-screen picture, not the framebuffer** -- see
+// platform/ctr/bottom_screen.hpp -- so it is always there and this always
+// returns true. The check that the framebuffer is still RGB565 at 240 x 320
+// moved to `bottom::flush`, which is the one thing that writes it: if either has
+// changed under us, nothing is copied rather than bytes at computed offsets.
 bool bottomSurface(gui::Surface* out);
 
 // One row of text, placed absolutely, clipped and padded to exactly `columns`

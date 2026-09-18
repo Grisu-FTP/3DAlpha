@@ -1,4 +1,5 @@
 #include "platform/ctr/renderer.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include "core/mesh/vertex.hpp"
 #include "core/render/remote_player_mesh.hpp"
@@ -22,8 +23,8 @@ namespace mc::ctr {
 // **A breadcrumb straight onto the bottom screen, for a console that may not
 // live to draw another frame.**
 //
-// `consoleInit` turns double buffering off, so the bottom screen is a plain
-// framebuffer the CPU writes and the LCD scans out -- no swap, no GPU, no
+// The console draws off-screen now (platform/ctr/bottom_screen.hpp), but
+// `bottom::flush` copies it across synchronously -- no swap, no GPU, no
 // completed frame required. A line printed here is on the screen before the
 // next instruction runs, which makes it the one report channel that survives
 // the thing being investigated. Row 30 is below the overlay's footer at 28-29.
@@ -33,7 +34,7 @@ namespace mc::ctr {
 void geoTrace(const char* what)
 {
     std::printf("\x1b[30;1H\x1b[2K\x1b[33mgeo: %s\x1b[0m", what);
-    gfxFlushBuffers();
+    bottom::flush();
 }
 
 
@@ -498,6 +499,17 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
     signVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxSignVertices));
     // 4 KB, and the smallest of the lot: one item, 66 quads at the worst.
     heldVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxHeldVertices));
+    // 128 bytes for the flames over a burning player's view, built here and
+    // never again. A version with no fire block builds nothing, and
+    // `drawFireOverlay` then has nothing to draw.
+    fireOverlayVerts_ =
+        linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kFireOverlayVertices));
+    if (fireOverlayVerts_ != nullptr) {
+        auto* verts = static_cast<mesh::DetailVertex*>(fireOverlayVerts_);
+        fireOverlayCount_ = render::buildFireOverlay(verts, render::kFireOverlayVertices);
+        GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex)
+                                         * u32(render::kFireOverlayVertices));
+    }
     // 70 KB for the whole sky -- two 169-quad planes, the sun, the moon and 780
     // stars -- written once below and never again. See core/render/sky.hpp.
     skyVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kSkyVertexCount));
@@ -1946,6 +1958,75 @@ void Renderer::drawHeldItem(float iod)
     }
 }
 
+// **The flames over a burning player's view** -- `jh.d(F)V`, which
+// `renderOverlays` runs straight after the hand with the modelview still at
+// identity. So this is the hand's pass again with three differences, and
+// core/render/fire_overlay.cpp holds the geometry.
+//
+// **One: the same projection and the same slice of depth.** The original draws
+// it after the depth clear the hand gets, with the depth test still on, so the
+// part of a held item nearer than a sheet covers it and the rest is behind the
+// flames. Keeping the hand's `C3D_DepthMap` does exactly that, and writing no
+// depth keeps it from mattering to anything after.
+//
+// **Two: blended, at 0.9.** `glColor4f(1, 1, 1, 0.9F)` with src-alpha blending.
+// The vertex alpha is the fog amount here, so the 0.9 goes into the last
+// combiner stage's alpha as a constant instead, and `applyAtlasTexEnv` takes it
+// back out afterwards.
+//
+// **Three: nothing to build.** The eight vertices were written at init; the
+// flames move because `FlameAnimation` rewrites the two tiles under them.
+void Renderer::drawFireOverlay(float iod)
+{
+    if (!burning_ || fireOverlayVerts_ == nullptr || fireOverlayCount_ < 4) {
+        return;
+    }
+
+    C3D_Mtx projection;
+    Mtx_PerspStereoTilt(&projection, C3D_AngleFromDegrees(config_.fovDegrees), 400.0f / 240.0f,
+                        kHeldItemNearPlane, farPlane(), iod * kHeldItemStereoScale,
+                        kHeldItemFocalBlocks, false);
+
+    // Everything the hand's pass states, for the reason it gives: whatever ran
+    // last in this eye left its own settings behind.
+    applyWorldState();
+
+    bindPipeline(detailPipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &projection);
+
+    // The texture's alpha times 0.9, on the stage that already carries the fog
+    // colour as its constant -- so the colour stays and only its alpha byte is
+    // borrowed. In wireframe the stage is a pass-through and this is all it does.
+    const u32 alpha = u32(render::kFireOverlayAlpha * 255.0f + 0.5f);
+    C3D_TexEnv* env2 = C3D_GetTexEnv(2);
+    C3D_TexEnvSrc(env2, C3D_Alpha, GPU_PREVIOUS, GPU_CONSTANT, GPU_PREVIOUS);
+    C3D_TexEnvFunc(env2, C3D_Alpha, GPU_MODULATE);
+    C3D_TexEnvColor(env2, (fogColour_ & 0x00FFFFFFu) | (alpha << 24));
+
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_COLOR);
+    C3D_DepthMap(true, kHeldItemDepthScale, kHeldItemDepthOffset);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, fireOverlayVerts_, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    const int quads = fireOverlayCount_ / 4;
+    C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    frameStats_.quads += usize(quads);
+
+    // Put back what the world's passes assume, as `drawHeldItem` does with the
+    // depth map.
+    C3D_DepthMap(true, kDepthMapScale, kDepthMapOffset);
+    C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+    applyAtlasTexEnv();
+}
+
 // **Once a frame, before the first eye.** Both eyes draw the same lines at the
 // same place, and a buffer rewritten between them would be rewritten under a
 // draw the GPU has not run yet -- harmless only while the two builds agree.
@@ -2729,7 +2810,7 @@ void Renderer::shutdown()
                           &arrowVerts_, &boatVerts_,
                           &minecartVerts_, &minecartBlockVerts_, &mobVerts_,
                           &entityFireVerts_, &signVerts_,
-                          &heldVerts_,
+                          &heldVerts_, &fireOverlayVerts_,
                           &chatVerts_, &chatStrips_, &skyVerts_}) {
         if (*buffer != nullptr) {
             linearFree(*buffer);
@@ -3628,6 +3709,7 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // the other its bottom right corner -- so the order is a statement of
     // intent rather than something a player can see.
     drawHeldItem(iod);
+    drawFireOverlay(iod);
     drawChat();
     drawHud();
     // **After the hearts**, because it is over the world and over the HUD both:
@@ -3964,6 +4046,8 @@ void Renderer::drawFrame(const Camera& camera, void* overlayContext, Overlay2D o
     frameStats_.commandWords = kCommandBufferBytes / 4 - commandWordsFree();
 
     C3D_FrameEnd(0);
+    // After the frame is handed to the GPU, so the copy overlaps its work.
+    bottom::presentIfChanged();
 
     blockedMs_ = millisFromTicks(afterBegin - beforeBegin);
     submitMs_ = millisFromTicks(svcGetSystemTick() - afterBegin);

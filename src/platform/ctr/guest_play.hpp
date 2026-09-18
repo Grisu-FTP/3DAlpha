@@ -25,6 +25,7 @@
 #include "core/settings/world_settings.hpp"
 #include "core/util/types.hpp"
 #include "platform/ctr/local_link.hpp"
+#include "platform/ctr/session_link.hpp"
 
 #include <string>
 #include <vector>
@@ -42,6 +43,14 @@ public:
     // Connects to a host a scan found and sends the Hello. False with `*error`
     // in words a player can act on.
     bool join(const LocalSession& session, const std::string& name, std::string* error);
+
+    // **The same session, over the internet.** The link is already up when this
+    // is called -- two consoles the rendezvous server introduced, talking
+    // directly or through a relay -- so there is no radio to start and nothing
+    // that can fail here. Everything above this line is unchanged: the Hello,
+    // the world, the terrain a guest makes for its host. See
+    // platform/ctr/online.hpp.
+    void joinOnline(SessionLink& link, const std::string& name);
 
     // The lobby's frame: read the radio, answer whatever terrain the host has
     // asked for, and note what happened. True when something changed that the
@@ -72,7 +81,7 @@ public:
     int playerCount() const { return int(session_.players().size()); }
     u32 rttMs() const { return session_.rttMs(); }
     u32 terrainAnswered() const { return responder_.answered(); }
-    bool active() const { return link_.active(); }
+    bool active() const { return link_ != nullptr && link_->active(); }
 
     // **How the host's world is played**, which this console adopts rather than
     // choosing for itself: a guest in a Survival world must not be flying and a
@@ -112,7 +121,10 @@ private:
 
     void add(std::string line);
 
-    LocalLink link_;
+    // The radio, when this is a session in a room, and the thing every line
+    // below talks through, whichever it is.
+    LocalLink local_;
+    SessionLink* link_ = nullptr;
     net::link::GuestSession session_;
     net::link::TerrainResponder responder_;
     net::LocalChannel channel_;

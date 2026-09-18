@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 251 modules, 133,836 lines.**
+**23 directories, 265 modules, 140,575 lines.**
 
 ## `src/core/audio/`
 
@@ -141,6 +141,10 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
+| `ac_client.{hpp,cpp}` | 810 | The console's side of AlphaComputer: logging in, staying logged in, opening a session, finding one, and the two account errands the Profile screen runs. |
+| `ac_identity.{hpp,cpp}` | 277 | Who this console is to AlphaComputer, and the one secret it keeps. |
+| `ac_link.{hpp,cpp}` | 700 | One socket, three kinds of traffic, and the thing that sorts them out. |
+| `ac_wire.{hpp,cpp}` | 737 | The control protocol a console speaks to AlphaComputer, the rendezvous server that introduces two consoles so that neither has to forward a port. |
 | `chunk_payload.{hpp,cpp}` | 363 | Map Chunk (0x33) payloads: inflating them, writing them into columns, and making them, the last for tests and the host harness. |
 | `client_session.{hpp,cpp}` | 476 | One connection to a protocol-2 server, run on a thread of its own and talked to through two queues. |
 | `dns.{hpp,cpp}` | 363 | **A DNS resolver of our own**, because the console's is not reliably one. |
@@ -152,9 +156,10 @@ weight is, not what is important.
 | `pending_edits.{hpp,cpp}` | 124 | A multiplayer client's own block edits are provisional for four seconds: unless the server says something about that block in the meantime, the edit is put back. |
 | `player_sync.{hpp,cpp}` | 373 | What a multiplayer client tells the server about its own player every tick: where it is, which way it faces, and -- once a second -- what it carries. |
 | `server_list.{hpp,cpp}` | 279 | The multiplayer server list on the card, the address a player types, and the name the client logs in with. a1.1.2 has neither a list nor a name to choose: its Multiplayer screen (`gc`) is one text field whose last value goes to `options.txt` as `lastServer`, and the name is whatever the launcher passed. |
-| `session.{hpp,cpp}` | 1098 | A 3DAlpha session as the two ends see it: one console hosting a world it has open, and up to three others that found it and joined. |
-| `tcp_socket.{hpp,cpp}` | 357 | A non-blocking TCP connection over the BSD socket API, which is the one network interface both targets share. |
+| `session.{hpp,cpp}` | 1104 | A 3DAlpha session as the two ends see it: one console hosting a world it has open, and up to three others that found it and joined. |
+| `tcp_socket.{hpp,cpp}` | 388 | A non-blocking TCP connection over the BSD socket API, which is the one network interface both targets share. |
 | `terrain_share.{hpp,cpp}` | 490 | Terrain generated on one console for another's world. |
+| `udp_socket.{hpp,cpp}` | 294 | The one socket an online session lives on, over the BSD calls both targets share. |
 | `wire.{hpp,cpp}` | 430 | Big-endian primitives and Java's modified UTF-8, which is everything a protocol-2 packet is built from. a1.1.2 writes packets through `DataOutputStream` and reads them back through `DataInputStream`, so the wire is Java's own: big-endian integers, IEEE-754 floats in the same order, and strings as `writeUTF` -- a *byte* length and **modified** UTF-8. |
 | `world_copy.{hpp,cpp}` | 810 | One world crossing a link, from the console that has it to one that wants a copy of it. |
 | `world_server.{hpp,cpp}` | 2118 | The host's half of a playable session: the world it has open, described to the other consoles in protocol-2 packets. |
@@ -181,6 +186,7 @@ weight is, not what is important.
 | `draw_budget.hpp` | 123 | **Nearest first, when there is more to draw than room to draw it.** The entity pools have no cap (core/util/segmented_pool.hpp), but each entity pass draws out of one vertex buffer taken once at init, and it has to: the GPU reads the buffer after the frame is submitted, so it cannot be grown or reused mid-frame, and linear memory is the chunk meshes' too. |
 | `entity_fire_mesh.{hpp,cpp}` | 504 | **A burning entity's flames** -- `ak.a(Lkh;DDDF)V`, the private half of `doRenderShadowAndFire` that every entity renderer inherits and that this port had never drawn. |
 | `falling_block_mesh.{hpp,cpp}` | 189 | **A falling block as geometry** -- `RenderFallingSand.doRender`, which is one call to `RenderBlocks.renderBlockFallingSand` and nothing else. |
+| `fire_overlay.{hpp,cpp}` | 152 | **The flames over the screen while the player is burning** -- `jh.d(F)V`, the fire half of `ItemRenderer.renderOverlays` (`jh.b(F)V`), which `renderHand` (`iq.b(FI)V`) calls straight after the held item whenever the player's `aT` -- the fire counter, `PlayerVitals::fire` -- is above zero. |
 | `held_item.{hpp,cpp}` | 762 | **What is in your hand, in the bottom right of the top screen** -- `jh`, which is `ItemRenderer`, and the last thing `EntityRenderer.renderWorld` draws before the GUI. |
 | `hud_mesh.{hpp,cpp}` | 237 | **The hearts, the armour row and the air bubbles** -- the Survival half of `lu.a(FZII)V`, GuiIngame's overlay, as quads on the top screen. |
 | `item_entity_mesh.{hpp,cpp}` | 464 | **A dropped item as geometry** -- `ab.a(Ldx;DDDFF)V`, which is `RenderItem.doRenderItem`, and the third thing in this project that turns an entity into quads. |
@@ -205,8 +211,9 @@ weight is, not what is important.
 |---|--:|---|
 | `control_scheme.{hpp,cpp}` | 160 | Which stick walks the player and which one turns the view. |
 | `ini.{hpp,cpp}` | 102 | The `key=value` reader both settings files share. |
+| `online_privacy.{hpp,cpp}` | 129 | **Who may reach a world this console opens on the internet.** Three answers, asked once, before the world is even chosen -- because the answer decides what the rendezvous server is told when the session is registered, and that happens before anybody can join. |
 | `sensitivity.{hpp,cpp}` | 102 | How fast the view turns, as a1.1.2's own slider. |
-| `settings_file.{hpp,cpp}` | 269 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
+| `settings_file.{hpp,cpp}` | 327 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
 | `world_settings.{hpp,cpp}` | 560 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
 
 ## `src/core/texture/` -- Texture packs, atlases, PNG and zip
@@ -258,6 +265,7 @@ weight is, not what is important.
 | `console_text.{hpp,cpp}` | 78 | Fitting text to a fixed-width character console, escape sequences and all. |
 | `coord_text.{hpp,cpp}` | 215 | Parsing a coordinate triple that a person typed. |
 | `crc32.{hpp,cpp}` | 64 | CRC-32, the one zlib and zip and gzip all mean by the name. |
+| `ed25519.{hpp,cpp}` | 496 | Ed25519 signatures, RFC 8032, enough of them to prove this console is the one that claimed its identity. |
 | `fat_name.{hpp,cpp}` | 79 | Making a string safe to be a file or directory name on a FAT card. |
 | `frustum.{hpp,cpp}` | 187 | Frustum culling for axis-aligned boxes, which on this project means sections. |
 | `java_cast.hpp` | 103 | Java's narrowing conversion from floating point to `int`, which is **not** C++'s and is load-bearing at the edge of the world. |
@@ -268,6 +276,8 @@ weight is, not what is important.
 | `nibble.hpp` | 38 | Packed 4-bit accessors, in Minecraft's packing order. |
 | `seed_text.{hpp,cpp}` | 195 | Turning what a player typed into a world seed. |
 | `segmented_pool.hpp` | 192 | **A pool that grows instead of refusing** -- what every entity pool is. a1.1.2 keeps its entities in `ArrayList`s and caps none of them: `World.spawnEntityInWorld` adds, `EffectRenderer.addEffect` adds (read off `bq.a(Lnq;)V`: one `List.add` and a return), and neither asks how many there are. |
+| `sha1.{hpp,cpp}` | 115 | SHA-1, for the one thing in this build that needs it: the check byte inside a 3DS friend code. |
+| `sha512.{hpp,cpp}` | 209 | SHA-512, FIPS 180-4, because Ed25519 is defined in terms of it. |
 | `span.hpp` | 50 | A minimal non-owning view over contiguous memory. |
 | `strict_math.hpp` | 178 | java.lang.StrictMath, for the parts that world generation depends on. |
 | `types.hpp` | 27 | Fixed-width types for core code. |
@@ -348,23 +358,26 @@ weight is, not what is important.
 | Module | Lines | What it is |
 |---|--:|---|
 | `audio.{hpp,cpp}` | 860 | ndsp behind `audio::Backend`: one streamed voice, a ring of wave buffers in linear memory, and a missing DSP firmware that costs the player silence rather than a boot failure. |
+| `bottom_screen.{hpp,cpp}` | 173 | **The bottom screen is drawn off-screen and copied on whole.** `consoleInit` turns double buffering off, so the bottom framebuffer is the buffer the LCD is scanning out *while* the CPU writes it. |
 | `gpu_memory.{hpp,cpp}` | 115 | The two kinds of memory the PICA can fetch vertices from, behind the pool's allocator seam. |
-| `guest_play.{hpp,cpp}` | 379 | The other console's end of a local session: everything a guest owns, from the radio up to the stream `NetPlay` plays out of. |
+| `guest_play.{hpp,cpp}` | 420 | The other console's end of a local session: everything a guest owns, from the radio up to the stream `NetPlay` plays out of. |
 | `gui_art.{hpp,cpp}` | 383 | What the menu draws with once a pack supplies it: the dirt backdrop and the bitmap font. |
-| `heap.{hpp,cpp}` | 376 | What is left of the heap this file's .cpp carved out at startup. |
-| `host_play.{hpp,cpp}` | 822 | Hosting, as the game loop sees it: the world is the player's own, open the way it always is, with a session running beside it and a server inside it. |
-| `hud.{hpp,cpp}` | 1647 | The bottom screen's furniture: the hotbar along the top, the tab strip along the bottom, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
-| `local_link.{hpp,cpp}` | 529 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
-| `main.cpp` | 4637 | The 3DS entry point. |
-| `map_screen.{hpp,cpp}` | 1531 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 8248 | The main menu: the title screen, the world list, and creating a world. |
-| `menu_preview.{hpp,cpp}` | 1786 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
+| `heap.{hpp,cpp}` | 377 | What is left of the heap this file's .cpp carved out at startup. |
+| `host_play.{hpp,cpp}` | 995 | Hosting, as the game loop sees it: the world is the player's own, open the way it always is, with a session running beside it and a server inside it. |
+| `hud.{hpp,cpp}` | 1644 | The bottom screen's furniture: the hotbar along the top, the tab strip along the bottom, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
+| `local_link.{hpp,cpp}` | 530 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
+| `main.cpp` | 4682 | The 3DS entry point. |
+| `map_screen.{hpp,cpp}` | 1533 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
+| `menu.{hpp,cpp}` | 9424 | The main menu: the title screen, the world list, and creating a world. |
+| `menu_preview.{hpp,cpp}` | 1800 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
 | `net_play.{hpp,cpp}` | 454 | A multiplayer session as the game loop sees it: what the server's packets do to the world and the player, and what the player's ticks and clicks become. |
-| `network.{hpp,cpp}` | 190 | The console's half of multiplayer: its socket service, and the name it logs in with. |
-| `overlay.{hpp,cpp}` | 3730 | The bottom screen. |
-| `probe.{hpp,cpp}` | 953 | The M0 hardware probe, reachable by holding SELECT at boot. |
-| `progress_screen.{hpp,cpp}` | 556 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
-| `renderer.{hpp,cpp}` | 5014 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
+| `network.{hpp,cpp}` | 283 | The console's half of multiplayer: its socket service, and the name it logs in with. |
+| `online.{hpp,cpp}` | 434 | Everything this console needs to be *on* AlphaComputer, in one object the menu can hold: its identity, its socket, the login, and the link a session runs over once two consoles have been introduced. |
+| `overlay.{hpp,cpp}` | 3736 | The bottom screen. |
+| `probe.{hpp,cpp}` | 955 | The M0 hardware probe, reachable by holding SELECT at boot. |
+| `progress_screen.{hpp,cpp}` | 557 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
+| `renderer.{hpp,cpp}` | 5114 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
+| `session_link.hpp` | 56 | What a session runs over, whichever radio that turns out to be. |
 | `textures.{hpp,cpp}` | 1118 | The three things the world shader samples: the block atlas, the lightmap, and the fog LUT. |
 | `world_transfer.{hpp,cpp}` | 330 | One console handing a world to another, over the same local wireless a session runs on. |
 
@@ -374,5 +387,6 @@ weight is, not what is important.
 |---|--:|---|
 | `audio_wav.{hpp,cpp}` | 258 | A host `audio::Backend` that writes what it was handed to a .wav instead of to a speaker. |
 | `join.{hpp,cpp}` | 479 | `--join`: the host plays a short scripted session on a real protocol-2 server. |
-| `main.cpp` | 3487 | Host entry point. |
+| `main.cpp` | 3492 | Host entry point. |
+| `online.{hpp,cpp}` | 405 | `--online`: the host build logs in to a real AlphaComputer and runs the errands the Profile screen runs. |
 

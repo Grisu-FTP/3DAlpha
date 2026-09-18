@@ -127,6 +127,13 @@ bool haveAddress()
     return gethostid() != 0;
 }
 
+u32 localAddress()
+{
+    // `gethostid` reports it in network byte order, like an `in_addr`; every
+    // caller here wants a number it can compare and print.
+    return ntohl(u32(gethostid()));
+}
+
 void stopNetwork()
 {
     if (gSocUp) {
@@ -142,6 +149,11 @@ void stopNetwork()
 
 std::string loginName()
 {
+    return net::usernameFrom(friendScreenName());
+}
+
+std::string friendScreenName()
+{
     std::string screenName;
     // frd:u, the user service: the one an application holds, and the one
     // GetMyScreenName is on.
@@ -152,7 +164,53 @@ std::string loginName()
         }
         frdExit();
     }
-    return net::usernameFrom(screenName);
+    return screenName;
+}
+
+u32 principalId()
+{
+    u32 principal = 0;
+    if (R_SUCCEEDED(frdInit(true))) {
+        FriendKey key = {};
+        if (R_SUCCEEDED(FRD_GetMyFriendKey(&key))) {
+            principal = key.principalId;
+        }
+        frdExit();
+    }
+    if (principal != 0) {
+        return principal;
+    }
+
+    // **The fallback, and what it costs.** A console whose friend account was
+    // never set up has no principal ID, and refusing to let it online at all
+    // would be the wrong trade for a service whose identities are staked rather
+    // than proved anyway. The device ID is a different number about the same
+    // console: stable, console-unique, and readable without the friend service.
+    //
+    // What it risks is a collision with a real friend code's principal, which
+    // would be one console finding its identity already claimed. That is the
+    // same failure the design already has a story for -- it is refused, it is
+    // logged, and an operator clears it -- and it is rarer than the number of
+    // consoles that have no friend account at all.
+    if (R_SUCCEEDED(psInit())) {
+        u32 device = 0;
+        if (R_SUCCEEDED(PS_GetDeviceId(&device))) {
+            principal = device;
+        }
+        psExit();
+    }
+    return principal;
+}
+
+bool randomBytes(void* context, u8* out, usize size)
+{
+    (void)context;
+    if (R_FAILED(psInit())) {
+        return false;
+    }
+    const Result rc = PS_GenerateRandomBytes(out, size);
+    psExit();
+    return R_SUCCEEDED(rc);
 }
 
 }  // namespace mc::ctr

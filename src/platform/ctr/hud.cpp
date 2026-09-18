@@ -1,4 +1,5 @@
 #include "platform/ctr/hud.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include "core/block/registry.hpp"
 #include "core/gui/item_icon.hpp"
@@ -127,17 +128,12 @@ int pageTop() { return bannerTop() + kBannerHeight; }
 
 bool bottomSurface(gui::Surface* out)
 {
-    u16 framebufferWidth = 0;
-    u16 framebufferHeight = 0;
-    u8* raw = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, &framebufferWidth, &framebufferHeight);
-
-    // Checked rather than assumed: libctru reports the framebuffer in the
-    // orientation it is stored in, 240 down a column and 320 columns across.
-    if (raw == nullptr || framebufferWidth != kScreenHeight || framebufferHeight != kScreenWidth) {
-        return false;
-    }
-
-    out->pixels = reinterpret_cast<gui::Pixel*>(raw) + (kScreenHeight - 1);
+    // **The off-screen picture, not the framebuffer** -- see
+    // platform/ctr/bottom_screen.hpp. It is in the framebuffer's orientation,
+    // 240 down a column and 320 columns across. Asking for it marks nothing:
+    // the overlay asks every frame and mostly draws nothing, and a copy a frame
+    // for that would be 150 KB of nothing. A paint ends in `bottom::flush`.
+    out->pixels = reinterpret_cast<gui::Pixel*>(bottom::pixels()) + (kScreenHeight - 1);
     out->strideX = kScreenHeight;
     out->strideY = -1;
     out->width = kScreenWidth;

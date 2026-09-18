@@ -47,8 +47,11 @@
 #include "core/net/server_list.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/settings/control_scheme.hpp"
+#include "core/settings/online_privacy.hpp"
 #include "core/settings/sensitivity.hpp"
 #include "platform/ctr/guest_play.hpp"
+#include "platform/ctr/host_play.hpp"
+#include "platform/ctr/online.hpp"
 #include "platform/ctr/world_transfer.hpp"
 #include "platform/ctr/local_link.hpp"
 #include "core/audio/sound_engine.hpp"
@@ -106,6 +109,11 @@ struct MenuChoice {
     enum class Link {
         Internet,
         Local,
+        // **Another 3DS, anywhere.** The same session the Local link runs --
+        // the same handshake, the same world server, the same terrain coming
+        // back -- over a UDP socket that AlphaComputer introduced the two
+        // consoles through. See platform/ctr/online.hpp.
+        Online,
     };
 
     Action action = Action::Quit;
@@ -289,6 +297,24 @@ public:
     // what a session the host may have closed in the meantime has to mean.
     std::unique_ptr<GuestPlay> takeGuest() { return std::move(guest_); }
 
+    // **The host half of an internet session, already open.** A host on the
+    // internet runs the session from the lobby -- the screen with the join
+    // code on it -- so guests can arrive while the host is still deciding to
+    // press Start. The game loop takes it here and opens the world behind it;
+    // null for a session in a room, which has no lobby and starts with the
+    // world. See `HostPlay::openLobby`.
+    std::unique_ptr<HostPlay> takeHost() { return std::move(host_); }
+
+    // **The link an internet session runs over**, or null when there is none.
+    // Handed to `HostPlay` so a hosted world serves the guests the rendezvous
+    // server introduces, and kept by the menu because the login was made here
+    // and has to be taken down here.
+    SessionLink* onlineLink();
+
+    // After an online session: the socket, the login and the directory entry
+    // all go. Safe when there was never one.
+    void endOnline();
+
     // The pause menu: Resume, World Settings, Options, Exit World, over a world
     // that is still open behind it. Owns the frame loop the same way `run`
     // does, so the game is genuinely paused while this is up -- nothing is
@@ -471,6 +497,28 @@ private:
         // and a way out -- and the two halves differ only in which of them is
         // reading the card. See platform/ctr/world_transfer.hpp.
         Transfer,
+        // **Who this console is online**, at the bottom of Options: which
+        // server it talks to, what that server calls it, and the one button
+        // that puts it on an account or takes it off one. It is the only screen
+        // outside multiplayer that opens a socket, and it opens one only while
+        // it is on screen. See platform/ctr/online.hpp.
+        Profile,
+        // **How far this world is about to reach**, asked before the world is
+        // even chosen: the answer is what the rendezvous server is told when
+        // the session is registered, and that happens the moment one is. See
+        // core/settings/online_privacy.hpp.
+        OnlinePrivacy,
+        // **Between choosing a world and playing it, for a host on the
+        // internet, and a room to wait in while people arrive.** There is
+        // nothing like it for a session in a room, because a room needs no
+        // introduction: this is where the console logs in, registers the world
+        // with the server's directory and shows the six characters that are
+        // the way in -- and then holds the session open, so a guest can be in
+        // the player list on the bottom screen before the world exists. START
+        // opens the world.
+        OnlineHost,
+        // The other end of those six characters.
+        OnlineJoin,
     };
 
     // **Which of the four buttons asked the Local-or-Internet question.** It
@@ -602,6 +650,59 @@ private:
     void endSession(const std::string& reason);
 
     void refreshServers();
+
+    // **The Profile screen**, and the one object behind it. `ensureOnline`
+    // makes it on first use and `start` is what opens a socket -- neither
+    // happens on any path a single-player session takes.
+    void ensureOnline(bool hosting);
+    void startOnline(bool hosting);
+    void stopOnline();
+    void pumpOnline();
+    void handleProfile(u32 down);
+    void drawProfile();
+    void buildProfileInfo(int row);
+    const char* profileStatusText() const;
+    const char* profileAccountText() const;
+
+    // Remembers what the server last said this console is called, so the screen
+    // has something to draw before it has connected. See
+    // `settings::GameSettings::accountHandle`.
+    void rememberAccount();
+
+    void handleOnlinePrivacy(u32 down);
+    void drawOnlinePrivacy();
+
+    bool handleOnlineHost(u32 down, MenuChoice* choice);
+    void drawOnlineHost();
+    // The bottom screen of the lobby: who is here, on the dirt rather than on
+    // the console's text grid. Drawn into the preview's render target -- see
+    // `PreviewScreen::Plain` -- and skipped entirely when there is none, in
+    // which case the console prints the same list.
+    void drawLobbyPlayers();
+    bool handleOnlineJoin(u32 down, MenuChoice* choice);
+    void drawOnlineJoin();
+
+    // **The session under the lobby.** Opened once the server has answered
+    // with a join code: the world's own generator id is read out of its
+    // level.dat without opening the world, and from then on guests can join,
+    // be welcomed and be listed while the host is still looking at the code.
+    void openOnlineLobby();
+
+    // Once a frame while the lobby is up: the session, over the link the menu
+    // is already servicing. Ends the lobby if the link goes.
+    void pumpOnlineLobby();
+
+    // Takes the lobby's session down without opening the world -- the host
+    // pressed B. Everyone in it is told why.
+    void cancelOnlineLobby(const std::string& reason);
+
+    // The world the player picked, opened for the internet: logs in if it is
+    // not already, then asks the server for a session and a join code.
+    void beginOnlineHost();
+
+    // Types the six characters and asks to be introduced to whoever is behind
+    // them.
+    void beginOnlineJoin(const std::string& code, u64 sessionId);
 
     // Searches the room for sessions, which takes about a second on the radio.
     // Called from the frame *after* the one that says it is searching, so the
@@ -1301,6 +1402,62 @@ private:
     // than at boot: the friend service is one more thing to start, and most
     // sessions never open this screen.
     std::string username_;
+
+    // **Null until somebody asks to be online.** Constructing it costs a
+    // socket, a key read off the card and a name lookup, and a player who never
+    // opens the Profile screen and never picks Internet pays for none of it.
+    std::unique_ptr<Online> online_;
+
+    // What the Profile screen is showing, and where `message_` points while it
+    // is up -- `message_` is a borrowed pointer, so the string it names has to
+    // live somewhere that outlasts the frame.
+    std::string onlineMessage_;
+    int profileCursor_ = 0;
+    int profileScroll_ = 0;
+
+    // The URL the Profile screen edits, and the account it last heard about.
+    // Both come off 3ds.ini; the account is a cache, so the screen can say who
+    // this console is before it has connected to ask.
+    std::string serverUrl_;
+    std::string accountHandle_;
+    std::string accountName_;
+
+    // **The session an internet host is running from the lobby**, before the
+    // world is open and before the game loop has it. Handed over by `takeHost`
+    // when Start is pressed, and dropped where it stands if the host backs
+    // out. Null on every other path, including a session in a room.
+    std::unique_ptr<HostPlay> host_;
+    // Who the session says is in it, rebuilt when it changes rather than every
+    // frame, because it is a vector of strings and this is a menu.
+    std::vector<net::link::Player> lobbyPlayers_;
+    // The lobby is up: the session is open and the world is not.
+    bool onlineLobbyOpen_ = false;
+    // How far the world about to be hosted reaches. Read from 3ds.ini and
+    // written back when it is answered; see core/settings/online_privacy.hpp.
+    settings::OnlinePrivacy onlinePrivacy_ = settings::OnlinePrivacy::CodeOnly;
+    int privacyCursor_ = 0;
+
+    // Which world a host is opening for the internet, and the code the server
+    // gave it. The code is what a host reads out; it is the only way in to a
+    // session this build opens, which is hosted unlisted on purpose.
+    std::string onlineWorldName_;
+    std::string onlineWorldPath_;
+    std::string onlineJoinCode_;
+    bool onlineSessionOpen_ = false;
+    // Whether the session has been asked for. A flag rather than "the message
+    // happens to be empty": a refusal would otherwise leave it never asked.
+    bool onlineHostAsked_ = false;
+    // A host that chose Internet rather than Local, from the moment the
+    // question is answered until the world opens.
+    bool hostingOnline_ = false;
+    // A guest that has asked to be introduced and is waiting for the punch.
+    bool onlineJoining_ = false;
+    int onlineJoinCursor_ = 0;
+    int onlineJoinScroll_ = 0;
+    // A guest that was introduced over the internet rather than found in the
+    // room, so the lobby hands the game the right kind of link.
+    bool guestOnline_ = false;
+
     bool multiplayer_ = false;
     std::string disconnectTitle_;
     std::string disconnectDetail_;

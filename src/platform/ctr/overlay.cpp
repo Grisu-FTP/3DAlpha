@@ -1,4 +1,5 @@
 #include "platform/ctr/overlay.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include "core/block/registry.hpp"
 #include "core/item/creative_palette.hpp"
@@ -914,7 +915,7 @@ bool Overlay::editSignViaKeyboard(world::SignStore* store, int index)
 
     // The same re-init `teleportViaKeyboard` documents at length: libctru's
     // console caches a framebuffer address that an applet invalidates.
-    consoleInit(GFX_BOTTOM, nullptr);
+    bottom::initConsole();
     dirty_ = true;
     bodyDirty_ = true;
     hotbarDirty_ = true;
@@ -996,7 +997,7 @@ bool Overlay::teleportViaKeyboard(Camera* camera)
     // leaks nothing and costs one VBlank wait on a frame where the player has
     // just spent seconds typing. The caller has already set `dirty_`, which is
     // what reprints the header and the page over the cleared screen.
-    consoleInit(GFX_BOTTOM, nullptr);
+    bottom::initConsole();
 
     if (pressed != SWKBD_BUTTON_CONFIRM) {
         return false;
@@ -1092,8 +1093,8 @@ void Overlay::draw(const Renderer& renderer, const render::WorldStreamer& world,
     // when what it draws has moved, and returns immediately when it has not.
     if (page_ == Page::Player) {
         if (drawPlayerPage(camera, cleared)) {
-            // The CPU has just written a buffer the LCD reads by DMA.
-            gfxFlushBuffers();
+            // The paint is finished: one copy puts all of it on the glass.
+            bottom::flush();
         }
         return;
     }
@@ -2503,8 +2504,13 @@ int Overlay::drawInfo(const Renderer& renderer, const render::WorldStreamer& wor
     // the card a chunk at a time at the lowest priority there is; `fill` is how
     // many chunks are still waiting to be asked about and how many have come
     // back with ground in them. See map_screen.hpp.
-    row(r++, "map   %5lu us a redraw fill %4d/%5lu",
-        static_cast<unsigned long>(map_.lastDrawMicros()), map_.fillWaiting(),
+    //
+    // **After the plus, the bottom screen's copy** -- the whole picture moved
+    // from off-screen onto the framebuffer, which every redraw now pays on top
+    // of drawing it. See bottom_screen.hpp.
+    row(r++, "map %5lu+%4lu us fill %4d/%5lu",
+        static_cast<unsigned long>(map_.lastDrawMicros()),
+        static_cast<unsigned long>(bottom::lastCopyMicros()), map_.fillWaiting(),
         static_cast<unsigned long>(map_.filled()));
 
     blank(r++);

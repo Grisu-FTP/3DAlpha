@@ -9850,6 +9850,231 @@ scheme, and a hand-edited `controls=wii-u` is not a chosen one.
 turn for a digital press, whether the Old 3DS default is the one an existing player wants, and
 whether the map's zoom wanting the focus is a fair trade for the d-pad walking.
 
+### 58. Sessions over the internet, and the account that makes several consoles one player
+
+**Two consoles in a room find each other with a beacon. Two consoles in different countries
+cannot**, and asking a player to forward a port is the thing this feature exists to avoid. The
+answer is a small server in a sibling repository — `../AlphaComputer` — whose entire job is to
+introduce them, and which never holds a world: no chunk, block or entity is parsed there, and the
+largest message it handles is a list of open sessions.
+
+**Nothing above the link changed.** `net::link::HostSession` and `GuestSession` run the session,
+`WorldServer` serves the world, guests still generate terrain for their host. What changed is what
+the frames travel on, and the seam that made it possible was already there: `net::link::Datagrams`.
+`platform/ctr/session_link.hpp` adds the three questions `HostPlay` and `GuestPlay` additionally
+wanted — is it up, take it down, rewrite the beacon — so `LocalLink` and `Online` drop into the same
+slot and everything above is untouched.
+
+#### Identity, and why a friend code is not a credential
+
+Checked against `libctru`, not assumed: `FRD_PrincipalIdToFriendCode` and its inverse are a pure
+reversible pair, so anyone can mint a valid-looking code for any principal ID, and
+`PS_SignRsaSha256` signs with a key the *caller* supplies. Add that the homebrew is ours and the
+console is modded, and there is no attestation to be had at all.
+
+So identity is **staked**: the first console to claim one binds an Ed25519 public key, and every
+login afterwards signs a nonce the server chose. The private half is 32 bytes at
+`sdmc:/3dalpha/identity.key` — the whole file, no header, no version. **The key file is the
+account**; a file of the wrong length is refused rather than overwritten, because replacing it
+takes the identity away for good.
+
+**The crypto is written from its specifications**, because libctru has none and nothing else this
+build links does either. `core/util/ed25519.cpp` is 2^255-19 in eight 32-bit limbs with 64-bit
+products — an ARM11 has no 128-bit integer, so the usual radix-2^51 form is out, and plain
+schoolbook turns out to be *fewer* multiplies than the classic radix-2^25.5 one — the unified
+extended-coordinate addition law used for doubling as well, and a scalar reduction mod L that is a
+bitwise double-and-add rather than the reference implementation's unrolled routine. Nothing in it
+is constant-time and nothing needs to be. Nothing is vendored, so nothing is owed a notice.
+
+#### Getting two consoles connected
+
+A console learns its own public address for free — the server reports the source it saw. Knowing
+the other side's is not enough, because most NATs forward an inbound datagram only from an address
+the host has recently sent to. **Simultaneity is the whole mechanism**: one `JoinRequest` produces
+a `PunchNow` at both consoles with a shared token and a window they count down together. Fired
+one-sidedly it works only on a full-cone NAT.
+
+**One socket carries all three kinds of traffic**, and that is not a saving: the public address a
+NAT hands out belongs to the socket that sent through it, so the game has to leave by the door the
+Hello did. `ac::Connection` is the demultiplexer — server address to the client, `ACPK` plus a
+known token answered as a probe, relay address or a peer that answered as a game frame, everything
+else dropped.
+
+Where there is no hole to punch — symmetric and carrier-grade NAT — the server allocates a relay,
+and frames go out as `token || payload`. **At most one relayed peer per session, and that is the
+server's limit rather than this build's**: AlphaComputer keys allocations by session id, so a host
+refuses a second relayed guest out loud instead of quietly breaking the first.
+
+#### What the player sees
+
+**Options → Profile**, at the bottom of the settings: the server address, the status, what the
+server calls this console, and one button that is *Link* when it is not on an account and *Unlink*
+when it is. The address is stored as the **website's URL**, defaulting to `https://ac.grisu-ftp.de`,
+because that is the form anybody publishes and the thing a link code is typed into; the control
+plane is UDP 7717 on the same host and appears in no URL.
+
+Hosting is **unlisted by default**. A world on somebody's console is not a public server, so the
+session is kept out of the browser and the six characters the host reads out are the invitation.
+That needed a server change: `locked` used to mean "nobody may join", and now means "not listed",
+with `may_join` taking a `by_code` flag and refusing a locked session named by an id that could
+only have come from the browser it is not in.
+
+#### Two changes in the server, and why
+
+- **`Unlink` (0x2C) and `Unlinked` (0x2D)**, protocol 2. Before them the only way off an account
+  was the website, which a player holding a 3DS does not necessarily have to hand.
+- **`can_unlink` is gone.** It refused the last console, from an older design in which a console
+  was the only way into an account. An account is reached with a password now, so the rule only
+  meant that the Unlink button on somebody's *only* console could never work — which is the case
+  it exists for. `docs/identity.md` had already said unlinking goes down to zero; the code was the
+  stale half.
+
+#### Single player waits for none of it
+
+`Menu::online_` is null until `ensureOnline`, which is called from opening the Profile screen and
+from choosing Internet on the multiplayer menu, and from nowhere else. Opening a world, playing one
+and saving one touch none of it. The one call that would block — turning a host name into an
+address, which walks four resolvers and can wait three seconds on the last — runs on a worker with
+the screen saying what it is doing.
+
+#### What was run
+
+`tests/crypto_test.cpp`: SHA-512 against OpenSSL's digests and Ed25519 against OpenSSL's
+signatures, over RFC 8032's own seeds and over the exact payload the server asks a console to sign.
+Both matched on the first run.
+
+`tests/ac_wire_test.cpp`: **the encoder against bytes Rust produced.** `tests/ac_wire_vectors.hpp`
+is printed by `cargo run --example wire_vectors` in the server's repository, so this is two
+implementations of one protocol checked against each other rather than one checked against itself —
+plus every truncation, every single-byte corruption, a list count larger than its datagram, and a
+string longer than its field.
+
+`tests/ac_client_test.cpp`: the login and the five errands, driven by the server's own Challenge
+and AuthOk bytes and asserting the client's replies equal the server's own encodings byte for byte
+— possible because the token in the AuthOk vector is the token every later message carries.
+
+`tests/ac_link_test.cpp`: a punch through a NAT model that forwards an inbound datagram only from
+an address the receiver has already written to. A one-sided punch fails against it; two consoles
+firing together get through; a pair that cannot reach each other at all falls back to the relay and
+the frames still cross.
+
+**And against a real server**, which is the one thing a byte vector cannot answer, because the
+signature is verified by code that is not here: `./build-host/3dalpha --online` logs in, is issued
+a link code, has that code redeemed on the real website, comes back as the account's name, unlinks,
+and is correctly told "not linked" the second time. Two of them, `host` and `join <code>`, are
+introduced by the server, punch through, and complete a full `net::link` session handshake with the
+player list and chat crossing both ways.
+
+**One hardware run, and it found something.** The Profile screen died on
+`bind(): Invalid argument (errno 22)`. `objdump` of `soc_bind.o` out of `libctru.a` rules out
+libctru's own checks — its only EINVAL is an `addrlen` under 8 for `AF_INET`, and this passes 16 —
+so `SOCU:Bind` itself refused, and `_net_convert_error` turned the service's code into an errno.
+The two ways the call differed from libctru's own sockets example were **`INADDR_ANY` instead of
+`gethostid()`** and **port 0 instead of a named port**; a host cannot distinguish which the service
+objected to, so both are handled. The bind address is now the platform's answer
+(`ctr::localAddress()`, 0 on the host, because `gethostid()` on Linux is not an address at all) and
+the port is asked for as 0 first and then from a short fixed list. `gethostid()` is also 0 before
+the console has joined a network, which the Profile screen is easy to open in front of, so there is
+a `WaitingForAddress` stage that waits ten seconds with "Waiting for Wi-Fi..." rather than refusing.
+`tests/udp_socket_test.cpp` holds what a host can hold: a bind that cannot succeed reports words
+rather than an errno, a bound socket knows the address it will offer as a candidate, and a datagram
+crosses and says where it came from.
+
+**Nothing past the bind has run on a console.** Untested: whether `PS_GenerateRandomBytes` answers,
+whether a console with no friend account gets a usable device ID, what a punch does behind a real
+carrier-grade NAT, and what the scalar multiplication costs on a 268 MHz ARM11 — the host figure is
+microseconds and the console's will not be, but it happens once per login.
+
+### 59. A lobby to host an internet session from, and how far a world reaches
+
+**The Internet row is live.** It was drawn disabled under Host and Join with "not in this build
+yet" under it while the plumbing was written; it is now enabled for those two and still disabled
+for Import and Export, which is a different limit and not a network one — `net::world_copy` moves a
+whole world in `link::Msg` frames with no flow control of its own, which a room's radio carries and
+a relay with a byte budget does not.
+
+#### The road into a hosted world, in the order it is walked
+
+Multiplayer → Host → Internet now asks **Privacy** before it asks which world: `Code only`,
+`Friends only`, `Friends and code`. The answer is what the rendezvous server is told when the
+session is registered, and that happens the moment the world is picked, so it cannot be asked
+afterwards. It is remembered in `3ds.ini` as a word (`online_privacy=code`), the choice
+`controlScheme` makes and for the same reason.
+
+**All three register the session unlisted** — `settings::onlinePrivacyLocked` is true for every one
+of them, and it is a function rather than a constant because that is the wire's `locked` flag and
+the reason belongs beside the answer. What the three differ in is who is handed the way in, not
+whether strangers can browse to it.
+
+**Two of the three are refused out loud.** AlphaComputer stores friendships — they are made on its
+website, in a `friendship` table — but protocol 2 has no message that asks a console for them and
+no join it turns away on their account, so a session registered friends-only would be a session
+nobody could enter. The rows are drawn disabled with "not in this build yet" and pressing A on one
+says so, which is the same answer the Internet row itself used to give.
+
+#### The lobby, which is where the session now starts
+
+`Screen::OnlineHost` used to be a join code and a button. It is now a room: the code on the top
+screen at the size somebody reads across a table, and **who has arrived on the bottom one, on the
+dirt** rather than on the console's text grid. START opens the world; B closes the lobby and tells
+everybody in it why.
+
+The list is real, which is the part that needed work under it. A guest who types the code while the
+host is still looking at it is introduced, punched through, **welcomed into the session and
+listed** — so the host can see that three people are waiting before deciding to start. That means
+the session runs before the world exists:
+
+- `HostPlay::openLobby` opens `net::link::HostSession` over the link with no `WorldServer` behind
+  it. The handshake, the player list and the chat are the session's; the world is not.
+- The world's `GeneratorId` — seed, generation switches, generator version — is what a guest checks
+  its own build against at the Welcome, and it is read out of `level.dat` with `world::WorldPeek`,
+  which takes no lock and writes nothing back. That matters: the world is about to be opened for
+  real a minute later, and `AnyStorage::open` would have claimed `session.lock` and rewritten the
+  level.
+- `HostPlay::pumpLobby` carries it a frame at a time from the menu's loop. **It does not service
+  the link**: `Menu::pumpOnline` is already doing that on the same socket, and two services in one
+  frame would mean one of them taking the datagrams the other was about to read.
+- `WorldServer` is opened when the world is, by `HostPlay::startWorld`, which then adds everybody
+  the lobby already let in. Adding them earlier would have stood them at 0, 64, 0 — the spawn point
+  is read off a streamer that does not exist yet.
+- `Menu::takeHost` hands the running session to `runHosted`, and `HostPlay::open` **adopts** it
+  rather than opening a second one, which would have dropped every guest and reissued player ids
+  that were already spoken for.
+
+**The gap between the lobby's last frame and the game loop's first is announced.** Nothing pumps
+the session while a world is opening off a card, so `runHosted` sends `Msg::Away` for twenty
+seconds first — the warning an applet already gets, for the other moment this console stops
+answering. Without it a guest who joined the lobby would be counting a card read against
+`kTimeoutMs`.
+
+The bottom screen is a render target rather than the console for this one screen:
+`PreviewScreen::Plain` links the target and draws nothing into it, and the menu draws the backdrop
+and the names itself. A console with no memory for a second target keeps the text grid, which
+prints the same list.
+
+#### Joining
+
+**Enter Code**, and **Friend list**, disabled and labelled "not implemented yet". The directory
+browser is gone from the screen: this build hosts unlisted whichever privacy answer was given, so
+a list of open sessions was a row that could only ever come back empty. `Client::listSessions` is
+still in the client and still tested — the `--online` harness uses it — it is simply not a row.
+
+**A session can be joined after it has started**, which needed nothing new: the session stays
+registered with the server, and a punch that lands mid-game is handled inside `HostPlay::pump` by
+the same `Connection` that handles one landing in the lobby.
+
+#### What was run
+
+`tests/settings_file_test.cpp`, one case: a privacy answer round-trips as a word, and both an
+answer this build does not know and a file from before the key leave the narrowest answer standing
+— the one that needs nothing of the server. The rest of this is menu code on a console the host
+suite cannot draw.
+
+**No hardware run.** Unmeasured, and worth measuring first: whether a 3DS reaches the lobby at all
+(the bind in §58 is still the last thing a console did), what a guest joining a lobby looks like
+from both screens, and whether twenty seconds of `Away` covers opening a large world off a slow
+card.
+
 ## Standing constraints
 
 - **Never ship Mojang assets** — textures, sounds, fonts, jar contents. The bundled fallback pack
@@ -9860,3 +10085,72 @@ whether the map's zoom wanting the focus is a fair trade for the d-pad walking.
 - **Jar extraction is a maintainer step**, never a player step and never part of the build. Its
   output is checked in.
 - **The real world is worked on through copies only.**
+
+### 60. A burning player saw no fire: `renderOverlays`' flames, lowered
+
+Reported as "burning doesn't show the fire animation on screen, don't make it too high". The
+player's fire counter (`PlayerVitals::fire`, `kh.aT`) had run since Survival gained damage, and
+entity flames since 32, but the first-person half -- `jh.d(F)V`, which `renderOverlays`
+(`jh.b(F)V`) calls from inside `renderHand` (`iq.b(FI)V`) whenever `aT > 0` -- had never been
+ported. It is now `core/render/fire_overlay.{hpp,cpp}` and `Renderer::drawFireOverlay`, straight
+after the hand.
+
+**From the bytecode:** two unit sheets at z = -0.5 in camera space, modelview at identity, colour
+(1, 1, 1, 0.9) blended with the alpha test off. Sheet i is `translate(-(2i - 1) * 0.24, -0.3, 0)`
+then `rotate((2i - 1) * 10, 0, 1, 0)` off tile `Block.fire.blockIndexInTexture + 16i` -- so the
+right sheet reads the first fire tile, the left the second, which is `texture::flameTile(i)`; the u
+axis runs backwards. The same pass order means the hand's projection and depth slice: the part of a
+held item nearer than a sheet covers it, as with the original's depth test after its depth clear.
+
+**The deviation is the height, at the user's request.** At 70 degrees vertical a1.1.2's -0.3 puts
+the top edge about 76 % of the way up the middle of the screen and 81 % at its sides, computed from
+the geometry. `kFireOverlayDrop` is -0.4, which gives about 63 % and 66 %, with the sparse flame
+tips below that. Nothing else changed.
+
+**Built once at init** -- eight vertices, no inputs; the animation is `FlameAnimation` rewriting the
+tiles. 0.9 goes into combiner stage 2's alpha as a constant, since vertex alpha carries fog.
+`setBurning` is set each frame beside the hand, false in Spectator and cleared on world entry.
+
+Covered by `tests/fire_overlay_test.cpp` (three cases: tiles, mirroring and full-bright white; the
+lean and spread against the transcribed transform; and the top edge below the original's).
+Suite **1889/1889**; 3DS build clean. **Not seen on hardware** -- how high it feels is a
+hardware judgement, and `kFireOverlayDrop` is the one number to move.
+
+### 61. Black pixels on the bottom screen: every repaint was drawn on the glass
+
+Reported as "the bottom screen refreshes in a way that causes black pixels often, in both menus and
+in game". **Not reproduced here -- no console -- so this is the mechanism the code and libctru show,
+fixed; the report on hardware is owed.**
+
+**What libctru does**, out of `libctru.a`'s `gfx.o`: `gfxGetFramebuffer` returns
+`buffers[curBuf ^ isDoubleBuf]` and `gfxScreenSwapBuffers` toggles `curBuf` by `isDoubleBuf`. So with
+the double buffering `consoleInit` turns off, the buffer the CPU is handed is **the one the LCD is
+scanning out**. Every bottom-screen paint in this port clears and then draws: the progress screen and
+the overlay's page change both print `\x1b[2J` (the whole screen to black) before the backdrop and
+panels, menu screens reprint over a cleared console, and the pages repaint panels over what was
+there. A scanout between the two shows the black. The data cache scatters it rather than wiping it:
+writes reach memory in line-eviction order until the flush, so what the LCD catches is blocks of the
+clear among blocks of the paint -- black pixels. The menu previews add a second route: the GPU's
+display transfer writes the same framebuffer the console was writing through the cache.
+
+**The fix, `platform/ctr/bottom_screen`:** the bottom screen is drawn off-screen, a 150 KB RGB565
+picture in the framebuffer's own layout, and only `bottom::flush` writes the framebuffer -- one
+`memcpy` of a finished picture and a `GSPGPU_FlushDataCache`. The LCD can still catch the copy half
+way, but that is two complete images, never a cleared one.
+
+- Every `consoleInit(GFX_BOTTOM)` is now `bottom::initConsole`, which repoints
+  `PrintConsole::frameBuffer` at the picture, clears it as the console just cleared the screen, and
+  taps stdout's devoptab so console text marks the picture changed.
+- `hud::bottomSurface` hands out the picture. It no longer marks it changed, because the overlay
+  asks every frame and mostly draws nothing.
+- The `gfxFlushBuffers` at the end of each paint became `bottom::flush`. The map's own became
+  `bottom::changed`, so the overlay's flush after the band copies the frame once, not twice.
+  `geoTrace` and the out-of-memory line flush synchronously as before.
+- `bottom::presentIfChanged` runs after every `C3D_FrameEnd` (the game, the menu, the probe) and
+  puts across console text nothing flushed.
+- While `MenuPreview` has a render target on the bottom screen, `bottom::setGpuOwned` holds every
+  copy back.
+
+**The cost is a copy a frame the bottom screen changes on**, and the map page changes on most of
+them. It is measured rather than estimated on the console: the debug page's map row is now
+`map <redraw>+<copy> us`. Host build is unaffected (platform code only); 3DS build clean.

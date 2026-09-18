@@ -10,6 +10,7 @@
 using namespace mc;
 using settings::ControlScheme;
 using settings::GameSettings;
+using settings::OnlinePrivacy;
 
 namespace {
 
@@ -229,6 +230,38 @@ TEST(a_skin_key_with_a_separator_is_ignored)
     writeText(fs, path, "skin=pack:Faithful.zip\n");
     CHECK(settings::loadSettings(fs, path.c_str(), &read));
     CHECK_EQ(read.skin, std::string("pack:Faithful.zip"));
+}
+
+// The Privacy answer is a word in the file for the reason the Controls row is
+// one, and it has the harder half of that bargain to keep: it is asked on the
+// way into hosting, so a value this build does not recognise must leave the
+// default standing rather than open a world wider than the player last said.
+TEST(a_privacy_answer_round_trips_as_a_word_and_an_unknown_one_keeps_the_default)
+{
+    TempDir dir;
+    io::PosixFileSystem fs;
+    const std::string path = dir.at("3ds.ini");
+
+    GameSettings written;
+    written.onlinePrivacy = OnlinePrivacy::FriendsAndCode;
+    CHECK(settings::saveSettings(fs, path.c_str(), written));
+
+    GameSettings read;
+    CHECK(settings::loadSettings(fs, path.c_str(), &read));
+    CHECK(read.onlinePrivacy == OnlinePrivacy::FriendsAndCode);
+
+    // A word from a later build, and a file from an earlier one with no key at
+    // all. Both leave the struct's own answer standing, which is the narrowest
+    // one -- the one that needs nothing of the server.
+    writeText(fs, path, "online_privacy=everybody_on_earth\n");
+    GameSettings later;
+    CHECK(settings::loadSettings(fs, path.c_str(), &later));
+    CHECK(later.onlinePrivacy == OnlinePrivacy::CodeOnly);
+
+    writeText(fs, path, "render_distance=8\n");
+    GameSettings older;
+    CHECK(settings::loadSettings(fs, path.c_str(), &older));
+    CHECK(older.onlinePrivacy == OnlinePrivacy::CodeOnly);
 }
 
 // Stated in the header so it is a decision rather than a surprise: saving

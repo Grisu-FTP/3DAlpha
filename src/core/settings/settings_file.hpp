@@ -16,6 +16,7 @@
 
 #include "core/io/file_system.hpp"
 #include "core/settings/control_scheme.hpp"
+#include "core/settings/online_privacy.hpp"
 #include "core/util/types.hpp"
 
 #include <string>
@@ -84,6 +85,30 @@ struct GameSettings {
     // cannot see from here.
     bool controlSchemeChosen = false;
     ControlScheme controlScheme = ControlScheme::New3DS;
+
+    // **Where the Profile screen connects.** The website's URL, because that is
+    // the form of the address anybody publishes and the thing a player types a
+    // link code into; the control port is a UDP port on the same host that
+    // appears in no URL. Empty means the default -- see
+    // `net::ac::kDefaultServerUrl` -- rather than "no server", so that a file
+    // written by a build that predates this row still reaches somewhere.
+    std::string serverUrl;
+
+    // **How far a world this console opens on the internet reaches.** Asked on
+    // the way into hosting rather than in Options, because it is a question
+    // about the session being opened -- but remembered here, because a player
+    // who has answered it once should not have to answer it again to host the
+    // same world tomorrow. See core/settings/online_privacy.hpp.
+    OnlinePrivacy onlinePrivacy = OnlinePrivacy::CodeOnly;
+
+    // **The account this console was last told it is on**, which is a cache of
+    // the server's answer and not a setting. It is here so that the Profile
+    // screen has something to draw the instant it opens, before a socket exists
+    // -- a screen that must connect before it can say anything is a screen that
+    // makes a player wait to be told nothing has changed. Empty means "not
+    // linked, as far as this console last knew".
+    std::string accountHandle;
+    std::string accountName;
 
     // **Which player skin the arm of an empty hand is drawn with**, as
     // `SkinEntry::key`: empty for Default -- the active pack's `char.png`, or

@@ -1,7 +1,154 @@
 # Current work
 
-Last verified: 2026-09-16. A compact handoff, not a substitute for inspecting the current diff.
+Last verified: 2026-09-18. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
+
+## Internet joins: the relay was never registered, and a login raced itself (2026-09-18)
+
+"A right code says the server did not answer, a wrong one says wrong code." **The protocol
+matches AlphaComputer**: the regenerated wire vectors are identical, and `--online` host+join
+works end to end against a local server and against `ac.grisu-ftp.de`. The two faults were
+behind it:
+
+- **The relay path deadlocked.** The relay learns each end's address only from that end's own
+  datagrams, and neither end sent any until the other had. A guest whose punch failed timed out
+  with "the host did not answer". `ac::Connection` now sends a relay hello on `RelayAllocated`
+  until something comes back. Reproduced and fixed against the real Rust relay
+  (`AC_FORCE_RELAY=1`, local and live); `tests/ac_link_test.cpp`'s fake relay now learns
+  addresses as the real one does.
+- **The login raced its own retransmissions.** An `AuthOk` slower than 900 ms meant a repeated
+  `Auth`, which the server refuses; the client believed the refusal. Seen live once.
+  `ac::Client` now discounts those, and restarts a refused handshake with copies once.
+
+- **The actual "server did not answer": a join timed from the login.** `Client::queue` started a
+  request on `sentAtMs_` -- when the *previous* request went out -- so a join typed more than six
+  seconds after logging in had expired before it was sent, and the next pump failed it unless the
+  answer was already in. A wrong code is refused instantly; a right one waits on the server's
+  `bump_stat` write, so only right codes failed. Requests now start on the client's own clock,
+  and a gap between pumps over `kSuspendGapMs` (the keyboard applet, HOME) moves every server
+  timer forward and sends a keep-alive. Reproduced against the live server with
+  `AC_TYPING_MS=8000` (fails before, joins after).
+
+- **A login the server forgot is logged in again.** The server drops a console it has not heard
+  from for 60 s, which a minute in the keyboard applet causes. A refusal while logged in (past the
+  allowance above) now restarts from Hello and resends the pending request, once per
+  `kReloginGuardMs`; the other refusals of the dead token, which land before the Challenge, are
+  ignored. Checked live with `AC_TYPING_MS=75000`: connecting, ready, joined.
+- Open: a join answered slower than `kRetryMs` is sent twice, and the server introduces the two
+  consoles twice with different punch tokens. Harmless in the live run; the clean fix is
+  server-side (repeat the same PunchNow for a join already punching).
+
+- **"Asking host to join" then "the host did not answer" (2026-09-19).** `handleProbe` moved a
+  peer's address to *every* probe's source while frames were accepted from that one address only.
+  Two consoles on one network prove themselves on two paths (the LAN and the router's loopback),
+  so the ends could settle on different ones and the guest's Hello was dropped. The send address
+  is now the first proven one and frames are accepted from any proven address
+  (`a_peer_proven_on_two_paths_...`). **Inferred, not reproduced** -- a PC cannot make two paths.
+  The session-ended screen now appends `Connection::report`: path, frames sent/heard, proven
+  paths, and datagrams from unknown addresses with the last source.
+
+`docs/online-play.md` has all of it. **Not seen on consoles.**
+
+## The bottom screen is drawn off-screen and copied whole (2026-09-18)
+
+"Black pixels on the bottom screen, menus and in game." With double buffering off (as `consoleInit`
+leaves it), the CPU painted the buffer the LCD was scanning, and every repaint clears first (`\x1b[2J`
+to black) and draws second. `platform/ctr/bottom_screen` now holds the picture off-screen, and
+`bottom::flush` copies a finished picture across. Console text goes there too (`initConsole`
+repoints `PrintConsole::frameBuffer` and taps stdout), and `presentIfChanged` runs after each frame.
+The menu preview's GPU target holds copies back. The copy's cost is on the debug page's map row
+(`map <redraw>+<copy> us`). `status.md` 61. **Not seen on hardware.**
+
+## The flames over a burning player's view (2026-09-18)
+
+`jh.d(F)V` -- `renderOverlays`' fire -- is `core/render/fire_overlay` and
+`Renderer::drawFireOverlay`, after the hand under its projection and depth slice; `main.cpp` sets
+`setBurning(vitals.fire > 0)` outside Spectator. **One deviation**: `kFireOverlayDrop` is -0.4 against
+a1.1.2's -0.3, so the top edge is ~63 % up the screen rather than ~76 %. `status.md` 60.
+**Not seen on hardware.**
+
+## A lobby to host an internet session from, and how far a world reaches (2026-09-18)
+
+**The Internet row is enabled** under Host and Join -- it was drawn disabled while the plumbing was
+written -- and still disabled under Import and Export, which is `world_copy`'s missing flow control
+rather than a network limit. **`docs/online-play.md` *What the player sees* is the flow and
+`status.md` 59 the history.**
+
+Host -> Internet now asks **Privacy** (`Screen::OnlinePrivacy`) before it asks which world, because
+the answer is what the server is told when the session is registered: *Code only*, *Friends only*,
+*Friends and code*, remembered in `3ds.ini` as a word. **All three are unlisted** -- a world on
+somebody's console is not a public server -- and the two friend answers are drawn disabled and
+refused out loud, because AlphaComputer has the friendships and protocol 2 has no message that asks
+a console for them. Join is **Enter Code** and a disabled **Friend list**; the directory browser is
+gone, since nothing this build hosts is ever in it.
+
+**`Screen::OnlineHost` is now a lobby**: the join code on the top screen, who has arrived on the
+bottom one on the dirt (`PreviewScreen::Plain` is a render target with nothing drawn into it), START
+opens the world. The list is real, which is what needed building -- **the session runs before the
+world exists**. `HostPlay::openLobby` opens the `HostSession` with no `WorldServer`; the
+`GeneratorId` comes out of `level.dat` through `world::WorldPeek`, which takes no lock;
+`pumpLobby` carries it a frame at a time and deliberately **does not service the link**, because
+`Menu::pumpOnline` already is on the same socket. `HostPlay::startWorld` opens the world server when
+the world opens and adds everybody the lobby let in -- earlier would have stood them at 0, 64, 0.
+`Menu::takeHost` hands the running session to `runHosted` and `HostPlay::open` adopts it; `runHosted`
+sends `Msg::Away` for twenty seconds first, because nothing pumps a session while a world loads.
+
+**Not verified on hardware** -- a console has still never got past the bind in the entry below.
+
+## Sessions over the internet, and a Profile screen to be somebody on (2026-09-18)
+
+Options gained **Profile**, at the bottom: the server address, the status, what the server calls
+this console, and one button that is **Link** when the console is not on an account and **Unlink**
+when it is. Multiplayer -> Host/Join -> **Internet** now works. The server is
+[`../AlphaComputer`](../../AlphaComputer), a sibling repository that introduces two consoles and
+never holds a world. **`docs/online-play.md` is the derivation and `status.md` 58 the history.**
+
+**Nothing above the link changed.** `HostSession`, `GuestSession`, `WorldServer` and the terrain
+sharing are untouched; the seam was already there in `net::link::Datagrams`, and
+`platform/ctr/session_link.hpp` adds the three questions `HostPlay`/`GuestPlay` additionally wanted
+so that `LocalLink` and `Online` drop into the same slot.
+
+**Single player waits for none of it, and that is a requirement rather than an optimisation.**
+`Menu::online_` is null until `ensureOnline`, which is called from opening the Profile screen and
+from choosing Internet, and from nowhere else. The one blocking call -- a name lookup, which walks
+four resolvers -- is on a worker. Two tests hold the line:
+`a_client_that_was_never_begun_sends_nothing_and_waits_for_nothing` and
+`a_connection_that_was_never_begun_is_inert`.
+
+**A friend code is an identifier and not a credential** -- checked against libctru, not assumed --
+so identity is *staked*: an Ed25519 key at `sdmc:/3dalpha/identity.key`, 32 raw bytes and nothing
+else, claimed on first contact and proved on every login after. The crypto is written from RFC 8032
+and FIPS 180-4 rather than vendored, because nothing this build links has any, and it is checked
+against OpenSSL.
+
+**Two changes in the server**, both in `../AlphaComputer`: `Unlink`/`Unlinked` (protocol 2), so a
+console can leave an account from the console rather than only from the website; and `can_unlink`
+deleted, because it refused the last console -- from a design in which a console was the only way
+into an account -- which meant the Unlink button on somebody's only console could never work.
+`locked` now means *unlisted* rather than *sealed*, which is how this build hosts: the six
+characters the host reads out are the invitation.
+
+**Verified against a real server, not only against vectors**: `./build-host/3dalpha --online`
+logs in, gets a link code, has it redeemed on the real website, comes back as the account's name,
+and unlinks. Two of them, `host` and `join <code>`, are introduced, punch through and complete a
+full session handshake with chat both ways. `tests/ac_wire_vectors.hpp` is generated by the
+server's own encoder -- **regenerate it with `cargo run --example wire_vectors` there whenever
+`wire::PROTOCOL` moves.**
+
+**One hardware failure, found and fixed.** The first console run died on `bind(): Invalid argument
+(errno 22)`. `objdump` of `soc_bind.o` rules out libctru's own checks -- its only EINVAL is an
+`addrlen` under 8 and this passes 16 -- so `SOCU:Bind` itself refused, and the two ways the call
+differed from libctru's own sockets example were **`INADDR_ANY` instead of `gethostid()`** and port
+0 instead of a named port. Both are handled now: the bind address is the platform's
+(`ctr::localAddress()`, 0 on the host), and the port is asked for as 0 first then from a short
+fixed list. `gethostid()` is also 0 before the console has joined a network, so there is a
+`WaitingForAddress` stage that waits ten seconds rather than refusing. `tests/udp_socket_test.cpp`.
+
+**Not otherwise verified on hardware.** Whether `PS_GenerateRandomBytes` answers, whether a console
+with no friend account gets a usable device ID, what a punch does behind a real carrier-grade NAT,
+and what one scalar multiplication costs on a 268 MHz ARM11 -- once per login, but unmeasured. IPv6
+is carried on the wire and refused by the socket; world Import/Export over the internet is still
+local-only, because `world_copy` has no flow control of its own and a relay has a byte budget.
 
 ## A Controls row: the port had one scheme, and it needed a C-stick (2026-09-18)
 

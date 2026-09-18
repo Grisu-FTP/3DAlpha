@@ -173,6 +173,12 @@ public:
     // it is what the slowest player in the room is living with.
     u32 worstRttMs() const;
 
+    // What the guests were told this world is, which is what they check their
+    // own build against before offering to generate for it. Readable because a
+    // session can be opened before the world is -- see `HostPlay::openLobby` --
+    // and the two answers have to be the same one.
+    const GeneratorId& world() const { return world_; }
+
 private:
     struct Guest {
         Peer peer;

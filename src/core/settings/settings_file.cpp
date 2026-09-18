@@ -98,6 +98,25 @@ bool loadSettings(io::FileSystem& fs, const char* path, GameSettings* out)
             }
             continue;
         }
+        if (key == "online_privacy") {
+            // A word, for the reason `controls` gives: an answer this build
+            // does not know stays the default instead of becoming whichever
+            // one an out-of-range ordinal would land on.
+            onlinePrivacyFromToken(value, &out->onlinePrivacy);
+            continue;
+        }
+        if (key == "server_url") {
+            out->serverUrl.assign(value);
+            continue;
+        }
+        if (key == "account_handle") {
+            out->accountHandle.assign(value);
+            continue;
+        }
+        if (key == "account_name") {
+            out->accountName.assign(value);
+            continue;
+        }
         if (key == "skin") {
             // **The same guard `texture_pack` has, and for the same reason.**
             // A skin key is a prefix and a *file name*; a separator in it would
@@ -148,6 +167,20 @@ bool saveSettings(io::FileSystem& fs, const char* path, const GameSettings& sett
 
     text += "skin=";
     text += settings.skin;
+    text += '\n';
+
+    text += "online_privacy=";
+    text += onlinePrivacyToken(settings.onlinePrivacy);
+    text += '\n';
+
+    text += "server_url=";
+    text += settings.serverUrl;
+    text += '\n';
+    text += "account_handle=";
+    text += settings.accountHandle;
+    text += '\n';
+    text += "account_name=";
+    text += settings.accountName;
     text += '\n';
 
     return fs.writeFileAtomic(path, ConstByteSpan(reinterpret_cast<const u8*>(text.data()),

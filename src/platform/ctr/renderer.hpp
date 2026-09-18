@@ -21,6 +21,7 @@
 #include "core/render/boat_mesh.hpp"
 #include "core/render/minecart_mesh.hpp"
 #include "core/render/entity_fire_mesh.hpp"
+#include "core/render/fire_overlay.hpp"
 #include "core/render/mob_mesh.hpp"
 #include "core/render/spawner_mesh.hpp"
 #include "core/render/sign_mesh.hpp"
@@ -492,6 +493,11 @@ public:
     // an empty hand and does draw one.
     void clearHeldItem() { heldVisible_ = false; }
 
+    // **Whether the flames are over the screen**: the player's fire counter is
+    // running, which is `jh.b(F)V`'s whole test. Set every frame alongside the
+    // hand. See core/render/fire_overlay.hpp.
+    void setBurning(bool burning) { burning_ = burning; }
+
     // **The hearts, the armour row and the bubbles** -- Survival's half of
     // GuiIngame, over the world on the top screen. Set every frame a Survival
     // body is being drawn; `clearHud` for every other mode, which `lu` hides the
@@ -763,6 +769,11 @@ private:
     // sees where the camera is. See core/render/held_item.hpp.
     void drawHeldItem(float iod);
 
+    // **The flames over the screen, straight after the hand**, in the same
+    // camera space and under the same projection -- `renderOverlays` runs
+    // inside `renderHand` in the original. See core/render/fire_overlay.hpp.
+    void drawFireOverlay(float iod);
+
     // **The chat, after the hand**, where `GuiIngame` runs: the hand is drawn
     // before the whole GUI. Built once a frame by `buildChat`, since both eyes
     // draw the same lines at the same place, and drawn in each.
@@ -869,6 +880,11 @@ private:
     const mc::world::SignStore* signs_ = nullptr;
     const mc::texture::FontImage* signFont_ = nullptr;
     void* heldVerts_ = nullptr;
+    // Eight vertices, 128 bytes, written once at init: the overlay has no
+    // inputs, and the flames move because the tiles they sample do.
+    void* fireOverlayVerts_ = nullptr;
+    int fireOverlayCount_ = 0;
+    bool burning_ = false;
     // The glyphs, 64 KB (render::kChatMaxVertices), and the strips behind the
     // lines, six corners each. Built before the first eye and read by both.
     void* chatVerts_ = nullptr;

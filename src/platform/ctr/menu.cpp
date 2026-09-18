@@ -1,4 +1,5 @@
 #include "platform/ctr/menu.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include "platform/ctr/local_link.hpp"
 #include "platform/ctr/network.hpp"
@@ -10,6 +11,7 @@
 #include "core/audio/vorbis_stream.hpp"
 #include "core/gui/settings_list.hpp"
 #include "core/gui/text.hpp"
+#include "core/net/terrain_share.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/background.hpp"
 #include "core/texture/jar_import.hpp"
@@ -20,6 +22,7 @@
 #include "core/world/format/converter.hpp"
 #include "core/world/spawn_point.hpp"
 #include "core/world/world_format.hpp"
+#include "core/world/world_peek.hpp"
 #include "core/world/world_transfer.hpp"
 
 #include "version_config.hpp"
@@ -291,6 +294,14 @@ enum OptionsRow {
     kOptMusic,
     kOptSound,
     kOptAutosave,
+    // **The bottom of the settings, and the only row on this screen that talks
+    // to anything off the console.** Everything above is a choice about this
+    // machine; this one is about who the player is on somebody else's. It is a
+    // screen of its own rather than rows here for the same reason Texture Pack
+    // is: what belongs on it is a server address, a status that changes while
+    // you watch it, and a button whose label depends on an answer that has to
+    // be asked for. See `Screen::Profile`.
+    kOptProfile,
     // **A row with nothing to change**, like World Info on the settings screen
     // next door and for the same reason: what belongs on it is a fact about
     // this build rather than a choice about it, so the row is a handle and its
@@ -301,7 +312,33 @@ enum OptionsRow {
     kOptBack,
     kOptCount,
 };
-constexpr u8 kOptionsGroups[kOptCount] = {0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 4};
+constexpr u8 kOptionsGroups[kOptCount] = {0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 4, 5};
+
+// **The Profile screen's rows.** Server first, because nothing else on the
+// screen means anything until it points somewhere; then the two rows that are
+// answers rather than choices; then the one button, whose label is the whole
+// point of the screen and depends on what the server just said.
+enum ProfileRow {
+    kProfileServer = 0,
+    kProfileStatus,
+    kProfileAccount,
+    kProfileLink,
+    kProfileBack,
+    kProfileCount,
+};
+constexpr u8 kProfileGroups[kProfileCount] = {0, 1, 1, 2, 3};
+constexpr float kProfileTop = 56.0f;
+
+const char* profileTitle(int row)
+{
+    switch (row) {
+    case kProfileServer:  return "Server";
+    case kProfileStatus:  return "Status";
+    case kProfileAccount: return "Account";
+    case kProfileLink:    return "Account Link";
+    default:              return "Back";
+    }
+}
 
 // The rows of the World Settings screen. **World Info is a row that does
 // nothing on the top screen**: it is where everything that is a fact about the
@@ -492,6 +529,7 @@ const char* optionsTitle(int row)
     case kOptMusic:    return "Music";
     case kOptSound:    return "Sound";
     case kOptAutosave: return "Autosave";
+    case kOptProfile:  return "Profile";
     case kOptInfo:     return "About 3DAlpha";
     default:           return "Back";
     }
@@ -1076,6 +1114,16 @@ void Menu::loadSettings()
     renderDistance_ = saved.renderDistance;
     packName_ = saved.texturePack;
     skinKey_ = saved.skin;
+
+    // **Empty means the default rather than "nowhere".** A card written by a
+    // build that predates the Profile row has no such key, and a player who
+    // never edits the row should still reach the server the game is built
+    // around.
+    serverUrl_ = saved.serverUrl.empty() ? net::ac::kDefaultServerUrl : saved.serverUrl;
+    accountHandle_ = saved.accountHandle;
+    accountName_ = saved.accountName;
+    onlinePrivacy_ = saved.onlinePrivacy;
+    privacyCursor_ = int(saved.onlinePrivacy);
     autosaveSeconds_ = saved.autosaveSeconds;
     chunkCacheMB_ = saved.chunkCacheMB;
 
@@ -1126,6 +1174,10 @@ void Menu::saveSettings()
     current.lookSensitivity = lookSensitivity_;
     current.controlScheme = controlScheme_;
     current.controlSchemeChosen = true;
+    current.serverUrl = serverUrl_;
+    current.accountHandle = accountHandle_;
+    current.accountName = accountName_;
+    current.onlinePrivacy = onlinePrivacy_;
 
     if (!fs_.makeDirectories(kRootDir)) {
         return;
@@ -1214,8 +1266,8 @@ void Menu::paintBackdropOnly()
         return;
     }
     hud::drawBackdrop(surface, bottomBackdropTile());
-    // The CPU has just written a buffer the LCD reads by DMA.
-    gfxFlushBuffers();
+    // The paint is finished: one copy puts all of it on the glass.
+    bottom::flush();
 }
 
 void Menu::paintSettingInfo(const char* title, RowKind kind)
@@ -1299,8 +1351,8 @@ void Menu::paintSettingInfo(const char* title, RowKind kind)
     gui::drawText(surface, (kBottomWidth - texture::textWidth(font.widths, controls)) / 2,
                   kControlsY, font, controls, grey, true);
 
-    // The CPU has just written a buffer the LCD reads by DMA.
-    gfxFlushBuffers();
+    // The paint is finished: one copy puts all of it on the glass.
+    bottom::flush();
 }
 
 void Menu::buildOptionsInfo(int row)
@@ -1596,10 +1648,19 @@ void Menu::printConsoleHelp()
         buildOptionsInfo(optionsCursor_);
         const RowKind kind = optionsCursor_ == kOptInfo ? RowKind::Info
                              : optionsCursor_ == kOptPack || optionsCursor_ == kOptSkin ||
+                                             optionsCursor_ == kOptProfile ||
                                              optionsCursor_ == kOptBack
                                  ? RowKind::Action
                                  : RowKind::Value;
         paintSettingInfo(optionsTitle(optionsCursor_), kind);
+        return;
+    }
+    if (screen_ == Screen::Profile) {
+        buildProfileInfo(profileCursor_);
+        paintSettingInfo(profileTitle(profileCursor_),
+                         profileCursor_ == kProfileStatus || profileCursor_ == kProfileAccount
+                             ? RowKind::Info
+                             : RowKind::Action);
         return;
     }
     if (screen_ == Screen::CreateWorld) {
@@ -1817,7 +1878,47 @@ void Menu::printConsoleHelp()
         std::printf("version's.\n");
         break;
     case Screen::Options:
+    case Screen::Profile:
         break;  // painted above, not printed
+    case Screen::OnlinePrivacy:
+        std::printf("Up/Down  choose\n");
+        std::printf("A        select\n");
+        std::printf("B        back\n\n");
+        std::printf("The session is \x1b[33munlisted\x1b[0m whichever\n");
+        std::printf("of these it is: a world on your\n");
+        std::printf("console is never a public server.\n\n");
+        std::printf("Friends need a friend list, which\n");
+        std::printf("the server does not hand a console\n");
+        std::printf("yet. Code only is the one that works\n");
+        std::printf("today.\n");
+        break;
+    case Screen::OnlineHost:
+        // **Only when there is no render target for the bottom screen.** With
+        // one, the lobby's player list is drawn on the dirt instead -- see
+        // `drawLobbyPlayers` -- and this never runs.
+        std::printf("START    start the session\n");
+        std::printf("B        cancel\n\n");
+        if (onlineLobbyOpen_) {
+            std::printf("In the lobby:\n");
+            for (const net::link::Player& player : lobbyPlayers_) {
+                std::printf("  \x1b[33m%s\x1b[0m%s\n", player.name.c_str(),
+                            player.playerId == net::link::kHostPlayerId ? "  (you)" : "");
+            }
+            std::printf("\nOthers can still join after the\n");
+            std::printf("world opens.\n");
+        } else {
+            std::printf("Waiting for the server to give this\n");
+            std::printf("world a join code.\n");
+        }
+        break;
+    case Screen::OnlineJoin:
+        std::printf("Up/Down  move\n");
+        std::printf("A        select\n");
+        std::printf("B        back\n\n");
+        std::printf("Ask the host for the six characters\n");
+        std::printf("their console is showing. A session\n");
+        std::printf("can be joined after it has started.\n");
+        break;
     case Screen::TexturePacks:
         std::printf("Up/Down  choose\n");
         std::printf("A        use it, or extract a jar\n");
@@ -1895,6 +1996,12 @@ MenuChoice Menu::run()
             refreshWorldOffers();
         }
         pumpSession();
+        // **Only ever a no-op when nobody is online.** `online_` is null on
+        // every path a single-player session takes.
+        pumpOnline();
+        // The session behind the join code, which is running before the world
+        // is. Nothing when there is no lobby up.
+        pumpOnlineLobby();
         pumpTransfer();
 
         hidScanInput();
@@ -1967,6 +2074,18 @@ MenuChoice Menu::run()
             break;
         case Screen::Disconnected:
             handleDisconnected(down);
+            break;
+        case Screen::Profile:
+            handleProfile(down);
+            break;
+        case Screen::OnlinePrivacy:
+            handleOnlinePrivacy(down);
+            break;
+        case Screen::OnlineHost:
+            done = handleOnlineHost(down, &choice);
+            break;
+        case Screen::OnlineJoin:
+            done = handleOnlineJoin(down, &choice);
             break;
         case Screen::Pause:
             // Unreachable: it lives under runPause, which puts the screen back
@@ -2333,6 +2452,15 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
         // multiplayer screen when it is being used to pick a world to host.
         const bool hosting = pickingHost_;
         pickingHost_ = false;
+        // **One step back, not all the way out.** On the internet road the
+        // world list is the second half of one question -- how far this world
+        // reaches, and then which world -- so B goes back to the first half.
+        if (hosting && hostingOnline_) {
+            privacyCursor_ = int(onlinePrivacy_);
+            setScreen(Screen::OnlinePrivacy);
+            return false;
+        }
+        hostingOnline_ = false;
         setScreen(hosting ? Screen::Multiplayer : Screen::Title);
         return false;
     }
@@ -2386,6 +2514,19 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
     // of playing a world -- the host plays it exactly as they would alone --
     // so everything below this line is the single-player path, and the only
     // difference is the action the caller is handed.
+    // **A world hosted on the internet does not open here.** It has to be
+    // registered with the server and given a join code first, and the player
+    // has to be shown that code -- none of which can happen once the world is
+    // loading. So the pick hands over to `Screen::OnlineHost` and the choice
+    // is made there instead.
+    if (pickingHost_ && hostingOnline_) {
+        pickingHost_ = false;
+        onlineWorldPath_ = entry.path;
+        onlineWorldName_ = entry.name;
+        beginOnlineHost();
+        return false;
+    }
+
     choice->action = pickingHost_ ? MenuChoice::Action::Host : MenuChoice::Action::Play;
     choice->link = pickingHost_ ? MenuChoice::Link::Local : MenuChoice::Link::Internet;
     choice->username = username_;
@@ -2591,6 +2732,23 @@ void Menu::handleOptions(u32 down)
             return;
         }
         break;
+    case kOptProfile:
+        if ((down & KEY_A) != 0) {
+            message_ = nullptr;
+            playClick();
+            profileCursor_ = 0;
+            profileScroll_ = 0;
+            onlineMessage_.clear();
+            // **The one place in the menu that opens a socket without being
+            // asked twice.** Opening this screen is the ask: a player is here
+            // to see who they are online, and making them press a Connect
+            // button first would be asking them to confirm the thing they just
+            // chose.
+            startOnline(false);
+            setScreen(Screen::Profile);
+            return;
+        }
+        break;
     case kOptSkin:
         if ((down & KEY_A) != 0) {
             message_ = nullptr;
@@ -2608,7 +2766,8 @@ void Menu::handleOptions(u32 down)
     // row the cursor has just left.
     if (optionsCursor_ == before) {
         const bool valueless = optionsCursor_ == kOptPack || optionsCursor_ == kOptSkin ||
-                               optionsCursor_ == kOptInfo || optionsCursor_ == kOptBack;
+                               optionsCursor_ == kOptProfile || optionsCursor_ == kOptInfo ||
+                               optionsCursor_ == kOptBack;
         turnInfoPage(down, valueless);
     }
 
@@ -3017,7 +3176,7 @@ void Menu::askNewSeed()
     linkPausing(net::link::kAppletAwayMs);
     const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
 
-    consoleInit(GFX_BOTTOM, nullptr);
+    bottom::initConsole();
     consoleDirty_ = true;
     C2D_Prepare();
 
@@ -3937,7 +4096,7 @@ bool Menu::askWorldName(std::string_view current, std::string* out)
     // address at consoleInit and never looks it up again, so it has to be told
     // again. Same reason, and same safety argument, as
     // Overlay::teleportViaKeyboard.
-    consoleInit(GFX_BOTTOM, nullptr);
+    bottom::initConsole();
     consoleDirty_ = true;
     C2D_Prepare();
 
@@ -3984,7 +4143,7 @@ bool Menu::askCopyName(std::string_view sourceName, std::string* out)
     const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
     gExistingWorlds = nullptr;
 
-    consoleInit(GFX_BOTTOM, nullptr);
+    bottom::initConsole();
     consoleDirty_ = true;
     C2D_Prepare();
 
@@ -4033,7 +4192,7 @@ bool Menu::askSeed(bool* chosen, i64* out)
     linkPausing(net::link::kAppletAwayMs);
     const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
 
-    consoleInit(GFX_BOTTOM, nullptr);
+    bottom::initConsole();
     consoleDirty_ = true;
     C2D_Prepare();
 
@@ -4568,6 +4727,7 @@ void Menu::drawFrame()
     drawScreen();
     drawPreviewScreen();
     C3D_FrameEnd(0);
+    bottom::presentIfChanged();
 }
 
 void Menu::prepare2D()
@@ -4657,6 +4817,18 @@ void Menu::drawScreen()
         break;
     case Screen::Options:
         drawOptions();
+        break;
+    case Screen::Profile:
+        drawProfile();
+        break;
+    case Screen::OnlinePrivacy:
+        drawOnlinePrivacy();
+        break;
+    case Screen::OnlineHost:
+        drawOnlineHost();
+        break;
+    case Screen::OnlineJoin:
+        drawOnlineJoin();
         break;
     case Screen::ConfirmDelete:
         drawConfirmDelete();
@@ -5057,6 +5229,7 @@ void Menu::drawOptions()
     rows[kOptMusic] = {"Music:", music, false};
     rows[kOptSound] = {"Sound:", effects, false};
     rows[kOptAutosave] = {"Autosave:", autosave, false};
+    rows[kOptProfile] = {"Profile", nullptr, false};
     rows[kOptInfo] = {"Info", nullptr, false};
     rows[kOptBack] = {"Back", nullptr, false};
 
@@ -5518,6 +5691,10 @@ PreviewScreen Menu::previewScreenFor(Screen screen) const
     // player is aiming is then literally the picture the world list will show.
     case Screen::MovePanorama:
         return PreviewScreen::Worlds;
+    // **A target and no picture.** The lobby draws its own backdrop and its
+    // own player list into it; nothing is read from the card for this one.
+    case Screen::OnlineHost:
+        return PreviewScreen::Plain;
     default:
         return PreviewScreen::None;
     }
@@ -5544,6 +5721,7 @@ void Menu::syncPreview()
     case PreviewScreen::Worlds:
         preview_->setWorldList(worlds_);
         break;
+    case PreviewScreen::Plain:
     case PreviewScreen::None:
         break;
     }
@@ -5602,7 +5780,11 @@ void Menu::drawPreviewScreen()
     prepare2D();
     C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
     C2D_SceneBegin(bottom);
-    drawPreviewLabels();
+    if (screen_ == Screen::OnlineHost) {
+        drawLobbyPlayers();
+    } else {
+        drawPreviewLabels();
+    }
     C2D_Flush();
 }
 
@@ -5728,6 +5910,801 @@ MpRow mpRowAt(int index, int sessions, int* sub)
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// The Profile screen, and the object behind it.
+//
+// **Nothing above this line exists in a single-player session.** `online_` is
+// null until `ensureOnline` is called, and it is called from exactly two
+// places: opening this screen, and choosing Internet on the multiplayer menu.
+// Opening a world, playing one and saving one never touch any of it, so a game
+// that is never played online never opens a socket, never looks up a name and
+// never waits a frame for either.
+// ---------------------------------------------------------------------------
+
+SessionLink* Menu::onlineLink()
+{
+    return online_ ? &online_->link() : nullptr;
+}
+
+void Menu::endOnline()
+{
+    // **The lobby's session, if it is somehow still here.** It is not on the
+    // path this is called from -- the game loop took it with `takeHost` -- but
+    // a session left running against a socket that is about to close would be
+    // guests sitting on a timeout.
+    cancelOnlineLobby("the host left the world");
+    stopOnline();
+    guestOnline_ = false;
+    hostingOnline_ = false;
+    onlineJoining_ = false;
+    onlineMessage_.clear();
+}
+
+void Menu::ensureOnline(bool hosting)
+{
+    if (!online_) {
+        online_ = std::make_unique<Online>();
+    }
+    online_->setHosting(hosting);
+}
+
+void Menu::startOnline(bool hosting)
+{
+    ensureOnline(hosting);
+    online_->start(serverUrl_, hosting);
+    onlineMessage_ = online_->message();
+    message_ = onlineMessage_.empty() ? nullptr : onlineMessage_.c_str();
+    consoleDirty_ = true;
+}
+
+void Menu::stopOnline()
+{
+    if (online_) {
+        online_->stop();
+    }
+    onlineSessionOpen_ = false;
+    onlineHostAsked_ = false;
+    onlineJoinCode_.clear();
+}
+
+// One frame of network, and whatever it changed on screen. Called from the
+// frame loop for every screen that has an `online_`, because a login that only
+// advanced while a button was pressed would never finish.
+void Menu::pumpOnline()
+{
+    if (!online_ || online_->stage() == Online::Stage::Off) {
+        return;
+    }
+    // **One pump per frame, and the session's is the one that counts.** Once a
+    // guest is in the lobby, `GuestPlay::pumpLobby` services the link itself --
+    // pumping here as well would take the events before it saw them.
+    if (guestOnline_ && guest_) {
+        return;
+    }
+
+    // **`message_` is borrowed by every screen**, so only the three that own
+    // `onlineMessage_` may point it anywhere. Without this, one visit to the
+    // Profile screen would go on blanking the multiplayer list's message for
+    // the rest of the session.
+    const bool ours = screen_ == Screen::Profile || screen_ == Screen::OnlineHost
+                      || screen_ == Screen::OnlineJoin;
+    const Online::Stage before = online_->stage();
+    online_->pump(u32(osGetTime()));
+
+    net::ac::Event event = online_->takeEvent();
+    while (event != net::ac::Event::None) {
+        switch (event) {
+        case net::ac::Event::LoggedIn:
+            // **The cache, so the next visit says something before it has
+            // asked.** See `settings::GameSettings::accountHandle`.
+            rememberAccount();
+            break;
+        case net::ac::Event::Unlinked:
+            rememberAccount();
+            onlineMessage_ = "This console is no longer on an account.";
+            break;
+        case net::ac::Event::LinkCodeIssued:
+            onlineMessage_ = "Type this code into " + online_->host();
+            break;
+        case net::ac::Event::SessionOpened:
+            onlineJoinCode_ = online_->client().joinCode();
+            onlineSessionOpen_ = true;
+            onlineMessage_.clear();
+            // **The lobby starts here and nowhere else.** The world's level.dat
+            // is read to open it, so it is done once, on the event, rather than
+            // tried again on every frame the screen is up.
+            if (screen_ == Screen::OnlineHost) {
+                openOnlineLobby();
+            }
+            break;
+        case net::ac::Event::Refused:
+            onlineMessage_ = online_->message();
+            break;
+        default:
+            break;
+        }
+        consoleDirty_ = true;
+        event = online_->takeEvent();
+    }
+
+    if (online_->stage() != before) {
+        if (online_->stage() == Online::Stage::Failed
+            || online_->stage() == Online::Stage::Resolving
+            || online_->stage() == Online::Stage::WaitingForAddress
+            || online_->stage() == Online::Stage::Connecting) {
+            onlineMessage_ = online_->message();
+        } else if (online_->stage() == Online::Stage::Ready) {
+            onlineMessage_.clear();
+        }
+        consoleDirty_ = true;
+    }
+    if (ours) {
+        message_ = onlineMessage_.empty() ? nullptr : onlineMessage_.c_str();
+    }
+}
+
+void Menu::rememberAccount()
+{
+    if (!online_) {
+        return;
+    }
+    const std::string handle = online_->client().accountHandle();
+    const std::string name = online_->client().displayName();
+    if (handle == accountHandle_ && name == accountName_) {
+        return;
+    }
+    accountHandle_ = handle;
+    accountName_ = name;
+    saveSettings();
+}
+
+const char* Menu::profileStatusText() const
+{
+    if (!online_) {
+        return "Not connected";
+    }
+    switch (online_->stage()) {
+    case Online::Stage::Off:        return "Not connected";
+    case Online::Stage::Resolving:  return "Looking up...";
+    case Online::Stage::WaitingForAddress: return "Waiting for Wi-Fi...";
+    case Online::Stage::Connecting: return "Connecting...";
+    case Online::Stage::Ready:      return "Connected";
+    case Online::Stage::Failed:     return "Failed";
+    }
+    return "Not connected";
+}
+
+// **The cached answer when there is no live one.** A screen that must connect
+// before it can tell a player what their own account is called is a screen that
+// makes them wait to be told nothing has changed.
+const char* Menu::profileAccountText() const
+{
+    if (online_ && online_->ready()) {
+        return online_->client().accountHandle().empty() ? "Not linked"
+                                                         : online_->client().displayName().c_str();
+    }
+    if (!accountHandle_.empty()) {
+        return accountName_.empty() ? accountHandle_.c_str() : accountName_.c_str();
+    }
+    return "Not linked";
+}
+
+void Menu::buildProfileInfo(int row)
+{
+    std::string& out = infoBody_;
+    out.clear();
+
+    const bool linked = online_ && online_->ready()
+                            ? !online_->client().accountHandle().empty()
+                            : !accountHandle_.empty();
+
+    switch (row) {
+    case kProfileServer:
+        appendf(&out, "Which server introduces this console\n");
+        appendf(&out, "to other consoles.\n");
+        appendf(&out, "§7Current: §f%s\n", serverUrl_.c_str());
+        appendf(&out, "§7It never holds your world.");
+        break;
+    case kProfileStatus:
+        appendf(&out, "§7%s\n", profileStatusText());
+        if (online_ && !online_->identity().empty()) {
+            appendf(&out, "§7This console: §f%s\n", online_->identity().c_str());
+        }
+        if (online_ && online_->ready() && online_->client().firstClaim()) {
+            // Shown once, on the login that created the binding, so a player
+            // has something to compare against if the identity is ever
+            // disputed. See AlphaComputer's docs/identity.md.
+            appendf(&out, "§7New key: §f%s", online_->client().keyFingerprint().c_str());
+        }
+        break;
+    case kProfileAccount:
+        if (linked) {
+            appendf(&out, "You play under your account name on\n");
+            appendf(&out, "every console you have linked.\n");
+            appendf(&out, "§7Name: §f%s", profileAccountText());
+        } else {
+            appendf(&out, "Without an account this console plays\n");
+            appendf(&out, "under its friend list name.\n");
+            appendf(&out, "§7An account is what makes several\n");
+            appendf(&out, "§7consoles one player.");
+        }
+        break;
+    case kProfileLink:
+        if (linked) {
+            appendf(&out, "Takes this console off the account.\n");
+            appendf(&out, "§7It keeps playing under its friend\n");
+            appendf(&out, "§7list name. You can link it again.");
+        } else if (online_ && !online_->client().linkCode().empty()) {
+            appendf(&out, "Type this code into the website:\n");
+            appendf(&out, "§f%s §7-> Settings -> Link a console\n", online_->host().c_str());
+            appendf(&out, "§7It lasts %u minutes and works once.",
+                    unsigned(online_->client().linkCodeSeconds() / 60));
+        } else {
+            appendf(&out, "Asks the server for a code to type\n");
+            appendf(&out, "into the website, which puts this\n");
+            appendf(&out, "console on your account.\n");
+            appendf(&out, "§7Register there first.");
+        }
+        break;
+    default:
+        appendf(&out, "Back to Options.");
+        break;
+    }
+}
+
+void Menu::handleProfile(u32 down)
+{
+    const int before = profileCursor_;
+    profileCursor_ = step(down, profileCursor_, kProfileCount);
+    profileScroll_ = gui::listScrollFor(kProfileGroups, kProfileCount, profileCursor_,
+                                        profileScroll_, settingsGeometry(kProfileTop));
+    if (profileCursor_ != before) {
+        infoPage_ = 0;
+    }
+    if (down != 0) {
+        consoleDirty_ = true;
+    }
+
+    if ((down & KEY_B) != 0 || ((down & KEY_A) != 0 && profileCursor_ == kProfileBack)) {
+        if ((down & KEY_A) != 0) {
+            playClick();
+        }
+        // **The socket closes with the screen.** Nothing else in the menu wants
+        // it, and a console holding a login open behind a single-player game is
+        // sending a keep-alive every ten seconds for nobody.
+        stopOnline();
+        onlineMessage_.clear();
+        message_ = nullptr;
+        setScreen(Screen::Options);
+        return;
+    }
+
+    if ((down & KEY_A) == 0) {
+        turnInfoPage(down, true);
+        return;
+    }
+
+    switch (profileCursor_) {
+    case kProfileServer: {
+        playClick();
+        std::string typed;
+        if (!askServerText("Server address", serverUrl_, 96, &typed)) {
+            break;
+        }
+        // Empty puts the row back on the server this build is built around
+        // rather than leaving it pointing nowhere.
+        serverUrl_ = typed.empty() ? std::string(net::ac::kDefaultServerUrl) : typed;
+        net::ac::ServerAddress parsed;
+        if (!net::ac::parseServerUrl(serverUrl_, &parsed)) {
+            onlineMessage_ = "That is not an address.";
+            break;
+        }
+        saveSettings();
+        // A different server is a different account and a different identity
+        // binding, so the cached name goes with it.
+        accountHandle_.clear();
+        accountName_.clear();
+        stopOnline();
+        startOnline(false);
+        break;
+    }
+    case kProfileLink: {
+        playClick();
+        if (online_ == nullptr || !online_->ready()) {
+            onlineMessage_ = online_ != nullptr && !online_->message().empty()
+                                 ? online_->message()
+                                 : std::string("Not connected to the server yet.");
+            break;
+        }
+        if (online_->client().accountHandle().empty()) {
+            online_->client().requestLinkCode();
+            onlineMessage_ = "Asking for a code...";
+        } else {
+            online_->client().unlink();
+            onlineMessage_ = "Unlinking...";
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    consoleDirty_ = true;
+}
+
+void Menu::drawProfile()
+{
+    drawLabelCentered("Profile", kScreenWidth * 0.5f, 16.0f, 0.8f, kInk, true);
+
+    // The host rather than the whole URL: the row is 180 pixels wide and a
+    // scheme and a slash tell a player nothing they did not already know.
+    net::ac::ServerAddress parsed;
+    const std::string server = net::ac::parseServerUrl(serverUrl_, &parsed)
+                                   ? parsed.host
+                                   : serverUrl_;
+
+    const bool linked = online_ && online_->ready()
+                            ? !online_->client().accountHandle().empty()
+                            : !accountHandle_.empty();
+
+    // **The code where the button's label was.** A player who has just pressed
+    // Link is looking at that row, and the eight characters are the entire
+    // result of pressing it.
+    const char* linkLabel = linked ? "Unlink this console" : "Link this console";
+    const char* linkValue = nullptr;
+    if (!linked && online_ && !online_->client().linkCode().empty()) {
+        linkLabel = "Code:";
+        linkValue = online_->client().linkCode().c_str();
+    }
+
+    SettingRowView rows[kProfileCount];
+    rows[kProfileServer] = {"Server:", server.c_str(), false};
+    rows[kProfileStatus] = {"Status:", profileStatusText(), false};
+    rows[kProfileAccount] = {"Account:", profileAccountText(), !linked};
+    rows[kProfileLink] = {linkLabel, linkValue, false};
+    rows[kProfileBack] = {"Back", nullptr, false};
+
+    drawSettingsRows(rows, kProfileGroups, kProfileCount, profileCursor_, profileScroll_,
+                     kProfileTop);
+}
+
+// ---------------------------------------------------------------------------
+// Hosting and joining over the internet.
+//
+// **The session itself is the one in the room.** Nothing below changes the
+// handshake, the world server, the player list or the terrain sharing -- what
+// it changes is how the two consoles find each other, which for a room is a
+// beacon and for the internet is a server that introduces them. Everything
+// after the introduction runs over `Online` exactly as it runs over the radio.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Privacy: how far a world this console opens on the internet reaches.
+//
+// **Asked before the world is chosen**, because the answer is what the server
+// is told when the session is registered, and that is the first thing that
+// happens after the world is picked. All three answers register the session
+// unlisted -- see `settings::onlinePrivacyLocked` -- so what is being chosen
+// is who gets handed the way in, not whether strangers can browse to it.
+// ---------------------------------------------------------------------------
+
+void Menu::handleOnlinePrivacy(u32 down)
+{
+    const int before = privacyCursor_;
+    privacyCursor_ = step(down, privacyCursor_, settings::kOnlinePrivacyCount);
+    if (privacyCursor_ != before) {
+        playMoveClick();
+        consoleDirty_ = true;
+    }
+
+    if ((down & KEY_B) != 0) {
+        message_ = nullptr;
+        hostingOnline_ = false;
+        netModeCursor_ = 1;
+        setScreen(Screen::NetMode);
+        return;
+    }
+    if ((down & KEY_A) == 0) {
+        return;
+    }
+    playClick();
+
+    const auto chosen = settings::OnlinePrivacy(privacyCursor_);
+    if (settings::onlinePrivacyNeedsFriendList(chosen)) {
+        // **Refused out loud rather than hidden.** The server knows who is
+        // friends with whom -- the friendships are made on its website -- but
+        // protocol 2 has no message that asks for them and no join it turns
+        // away on their account, so a session registered this way would be one
+        // nobody could enter. See docs/online-play.md.
+        message_ = "Friends need a friend list, which is not in this build yet.";
+        consoleDirty_ = true;
+        return;
+    }
+
+    // Remembered, so hosting the same world tomorrow is one button rather than
+    // this screen again.
+    if (onlinePrivacy_ != chosen) {
+        onlinePrivacy_ = chosen;
+        saveSettings();
+    }
+    message_ = nullptr;
+    pickingHost_ = true;
+    refreshWorlds();
+    setScreen(Screen::Worlds);
+}
+
+void Menu::drawOnlinePrivacy()
+{
+    drawLabelCentered("Host on the Internet", kScreenWidth * 0.5f, 16.0f, 0.7f, kInk, true);
+    drawLabelCentered("Who should be able to reach this world?", kScreenWidth * 0.5f, 42.0f,
+                      0.45f, kInkDim, true);
+
+    // The same shape the Local-or-Internet question has, one row longer: a
+    // button apiece and the line under it saying what the answer means. B goes
+    // back, as it does there, rather than a row spent saying so.
+    const float x = (kScreenWidth - kButtonWidth) * 0.5f;
+    for (int i = 0; i < settings::kOnlinePrivacyCount; ++i) {
+        const auto privacy = settings::OnlinePrivacy(i);
+        const bool ready = !settings::onlinePrivacyNeedsFriendList(privacy);
+        const float y = 66.0f + float(i) * 48.0f;
+        drawButton(Rect{x, y, kButtonWidth, kButtonHeight}, settings::onlinePrivacyLabel(privacy),
+                   privacyCursor_ == i, ready);
+        drawLabelCentered(ready ? settings::onlinePrivacyNote(privacy)
+                                : "not in this build yet",
+                          kScreenWidth * 0.5f, y + kButtonHeight + 9.0f, 0.38f, kInkDim, true);
+    }
+
+    if (message_ != nullptr) {
+        drawLabelCentered(message_, kScreenWidth * 0.5f, 224.0f, 0.4f, kInkWarn, true);
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+void Menu::beginOnlineHost()
+{
+    onlineSessionOpen_ = false;
+    onlineHostAsked_ = false;
+    onlineLobbyOpen_ = false;
+    onlineJoinCode_.clear();
+    lobbyPlayers_.clear();
+    host_.reset();
+    if (username_.empty()) {
+        username_ = ctr::loginName();
+    }
+    startOnline(true);
+    setScreen(Screen::OnlineHost);
+}
+
+// **The session under the join code**, opened the moment the server has given
+// this world one and taken down again if the host backs out. From here until
+// the world opens, a guest who types the code is introduced, welcomed, listed
+// on the bottom screen and left waiting on its own lobby -- which is what
+// makes the list on this screen a list of people rather than a promise.
+void Menu::openOnlineLobby()
+{
+    if (online_ == nullptr || !online_->ready() || host_) {
+        return;
+    }
+
+    // **The world's generator, read without opening the world.** A guest is
+    // told this at the handshake and checks its own build against it before it
+    // ever offers to make a column, so the lobby cannot do without it -- and
+    // `WorldPeek` is the one way to read a level.dat that takes no lock and
+    // writes nothing back, which matters when the world is about to be opened
+    // for real a minute later. See core/world/world_peek.hpp.
+    world::WorldPeek peek(fs_);
+    if (!peek.open(onlineWorldPath_)) {
+        onlineMessage_ = "That world's level.dat will not read.";
+        message_ = onlineMessage_.c_str();
+        consoleDirty_ = true;
+        return;
+    }
+    settings::WorldSettings worldSettings;
+    settings::loadWorldSettings(fs_, onlineWorldPath_, &worldSettings);
+    mcver::WorldGenOptions options;
+    options.snowCovered = peek.level().snowCovered;
+    options.fixOreVeinBounds = worldSettings.fixOreGeneration;
+    options.fixBedrockHole = worldSettings.fixBedrockHole;
+
+    net::link::GeneratorId world;
+    world.seed = peek.level().randomSeed;
+    world.options = net::link::packOptions(options);
+    world.version = net::link::generatorVersion();
+    peek.close();
+
+    if (username_.empty()) {
+        username_ = ctr::loginName();
+    }
+    host_ = std::make_unique<HostPlay>();
+    host_->openLobby(online_->link(), onlineWorldName_, username_, world);
+    // **Before anybody joins, because the Welcome carries it.** A guest in a
+    // Survival world must not arrive flying. See `net::link::WorldRules`.
+    host_->setWorldRules(worldSettings.gamemode, worldSettings.difficulty);
+    onlineLobbyOpen_ = true;
+    lobbyPlayers_.clear();
+    host_->players(&lobbyPlayers_);
+    consoleDirty_ = true;
+}
+
+void Menu::pumpOnlineLobby()
+{
+    if (!host_ || !onlineLobbyOpen_) {
+        return;
+    }
+    // **The link is serviced by `pumpOnline`, once**, and this is the session
+    // over it. Two services in one frame would mean one of them taking the
+    // datagrams the other was about to read.
+    host_->pumpLobby();
+
+    std::vector<net::link::Player> here;
+    host_->players(&here);
+    bool changed = here.size() != lobbyPlayers_.size();
+    for (usize i = 0; !changed && i < here.size(); ++i) {
+        changed = here[i].playerId != lobbyPlayers_[i].playerId
+                  || here[i].name != lobbyPlayers_[i].name;
+    }
+    if (changed) {
+        lobbyPlayers_ = std::move(here);
+        consoleDirty_ = true;
+    }
+}
+
+void Menu::cancelOnlineLobby(const std::string& reason)
+{
+    if (host_) {
+        // Everyone waiting is told why rather than left on a ten-second
+        // timeout for a console that has gone back to the menu.
+        host_->close(reason);
+        host_.reset();
+    }
+    onlineLobbyOpen_ = false;
+    lobbyPlayers_.clear();
+}
+
+bool Menu::handleOnlineHost(u32 down, MenuChoice* choice)
+{
+    // **Asked once, as soon as there is a login to ask with.** The screen is
+    // already up while the lookup and the handshake run, so the player watches
+    // it happen rather than watching a frozen menu.
+    if (online_ && online_->ready() && !onlineSessionOpen_ && !onlineHostAsked_) {
+        onlineHostAsked_ = true;
+        onlineMessage_ = "Opening the session...";
+        // Locked whichever answer the Privacy screen got: the session is kept
+        // out of the public browser and the six characters below are the way
+        // in. A world on somebody's console is not a public server.
+        online_->client().hostSession(onlineWorldName_, u8(net::link::kMaxGuests + 1),
+                                      settings::onlinePrivacyLocked(onlinePrivacy_));
+    }
+    if ((down & KEY_B) != 0) {
+        cancelOnlineLobby("the host closed the lobby");
+        stopOnline();
+        onlineMessage_.clear();
+        message_ = nullptr;
+        hostingOnline_ = false;
+        setScreen(Screen::Multiplayer);
+        return false;
+    }
+
+    // **START, because this screen is not a list.** A is taken as well -- it
+    // is the button a player presses first on every other screen in the menu,
+    // and there is nothing else here for it to mean.
+    if ((down & (KEY_START | KEY_A)) == 0 || !onlineLobbyOpen_) {
+        return false;
+    }
+    playClick();
+
+    // The world opens exactly as Play opens it. The session is already
+    // registered, the link is already logged in and the lobby's guests are
+    // already in it; `runHosted` takes the session with `takeHost` and opens
+    // the world behind it.
+    choice->action = MenuChoice::Action::Host;
+    choice->link = MenuChoice::Link::Online;
+    choice->username = username_;
+    choice->worldPath = onlineWorldPath_;
+    choice->worldName = onlineWorldName_;
+    choice->created = false;
+
+    settings::WorldSettings worldSettings;
+    settings::loadWorldSettings(fs_, onlineWorldPath_, &worldSettings);
+    choice->gamemode = worldSettings.gamemode;
+    choice->difficulty = worldSettings.difficulty;
+
+    onlineLobbyOpen_ = false;
+    hostingOnline_ = false;
+    message_ = nullptr;
+    return true;
+}
+
+void Menu::drawOnlineHost()
+{
+    drawLabelCentered(onlineWorldName_.c_str(), kScreenWidth * 0.5f, 18.0f, 0.7f, kInk, true);
+    drawLabelCentered(settings::onlinePrivacyNote(onlinePrivacy_), kScreenWidth * 0.5f, 42.0f,
+                      0.4f, kInkDim, true);
+
+    if (!onlineLobbyOpen_) {
+        drawLabelCentered(profileStatusText(), kScreenWidth * 0.5f, 110.0f, 0.5f, kInk, true);
+        if (message_ != nullptr) {
+            drawLabelCentered(message_, kScreenWidth * 0.5f, 208.0f, 0.42f, kInkWarn, true);
+        }
+        return;
+    }
+
+    // **The code is the screen.** It is the way into this world and the host is
+    // about to read it out loud, so it is drawn at the size a person reads
+    // across a room rather than as a value on a row.
+    drawLabelCentered("Join code", kScreenWidth * 0.5f, 88.0f, 0.5f, kInkDim, true);
+    drawLabelCentered(onlineJoinCode_.c_str(), kScreenWidth * 0.5f, 118.0f, 1.3f, kInk, true);
+    drawLabelCentered("START: start the session      B: cancel", kScreenWidth * 0.5f, 186.0f,
+                      0.45f, kInk, true);
+    drawLabelCentered("they can still join once it has started", kScreenWidth * 0.5f, 206.0f,
+                      0.38f, kInkDim, true);
+    if (message_ != nullptr) {
+        drawLabelCentered(message_, kScreenWidth * 0.5f, 226.0f, 0.4f, kInkWarn, true);
+    }
+}
+
+// **The other half of the lobby, on the other screen.** Who is here, on the
+// dirt: the host first and then whoever has typed the code, which is the order
+// `HostSession::players` reports and the order they arrived in.
+void Menu::drawLobbyPlayers()
+{
+    constexpr float kCentre = 160.0f;
+    drawLabelCentered("In the lobby", kCentre, 16.0f, 0.6f, kInk, true);
+
+    char count[48];
+    std::snprintf(count, sizeof(count), "%d of %d", int(lobbyPlayers_.size()),
+                  net::link::kMaxGuests + 1);
+    drawLabelCentered(count, kCentre, 34.0f, 0.45f, kInkDim, true);
+
+    // **The host is always in this list**, first, because a session has one
+    // from the moment it opens -- see `HostSession::players`. So an empty
+    // lobby is a list of one, and it says so under the list rather than in
+    // place of it.
+    float y = 64.0f;
+    for (const net::link::Player& player : lobbyPlayers_) {
+        const bool self = player.playerId == net::link::kHostPlayerId;
+        drawLabelCentered(player.name.empty() ? "?" : player.name.c_str(), kCentre, y, 0.55f,
+                          kInk, true);
+        if (self) {
+            drawLabelCentered("this console", kCentre, y + 15.0f, 0.38f, kInkDim, true);
+            y += 15.0f;
+        }
+        y += 26.0f;
+    }
+
+    if (lobbyPlayers_.size() <= 1) {
+        drawLabelCentered("nobody else yet", kCentre, 150.0f, 0.5f, kInkDim, true);
+        drawLabelCentered("read the join code out to them", kCentre, 170.0f, 0.42f, kInkDim,
+                          true);
+    }
+
+    drawLabelCentered("START: start   B: cancel", kCentre, 226.0f, 0.45f, kInkDim, true);
+}
+
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// **The Join screen's rows.** The code first, because it is the one that
+// works; the friend list under it, because that is where it will be.
+enum OnlineJoinRow {
+    kOnlineJoinCode = 0,
+    kOnlineJoinFriends,
+    kOnlineJoinBack,
+    kOnlineJoinRows,
+};
+constexpr u8 kOnlineJoinGroups[kOnlineJoinRows] = {0, 0, 1};
+
+}  // namespace
+
+void Menu::beginOnlineJoin(const std::string& code, u64 sessionId)
+{
+    if (online_ == nullptr || !online_->ready()) {
+        onlineMessage_ = "Not connected to the server yet.";
+        consoleDirty_ = true;
+        return;
+    }
+    if (username_.empty()) {
+        username_ = ctr::loginName();
+    }
+    onlineJoining_ = true;
+    onlineMessage_ = "Asking to join...";
+    if (!code.empty()) {
+        online_->client().joinByCode(code);
+    } else {
+        online_->client().joinById(sessionId);
+    }
+    consoleDirty_ = true;
+}
+
+bool Menu::handleOnlineJoin(u32 down, MenuChoice* choice)
+{
+    (void)choice;
+
+    // **The punch is what is being waited for**, and it lands inside
+    // `pumpOnline`. The moment there is a peer there is a session to start, and
+    // it is the same lobby a console in the next room lands in.
+    if (onlineJoining_ && online_ && online_->connection().connected()) {
+        onlineJoining_ = false;
+        if (!guest_) {
+            guest_ = std::make_unique<GuestPlay>();
+        }
+        guest_->joinOnline(online_->link(), username_);
+        guestOnline_ = true;
+        onlineMessage_.clear();
+        message_ = nullptr;
+        setScreen(Screen::Session);
+        return false;
+    }
+
+    // **Three rows, and one of them works.** A session this build hosts is
+    // unlisted whatever the host chose on the Privacy screen, so there is no
+    // browser to offer: the code is the invitation, and the friend list is the
+    // other way in once the server hands a console one. See
+    // core/settings/online_privacy.hpp.
+    onlineJoinCursor_ = step(down, onlineJoinCursor_, kOnlineJoinRows);
+
+    if ((down & (KEY_B | KEY_START)) != 0) {
+        stopOnline();
+        onlineJoining_ = false;
+        onlineMessage_.clear();
+        message_ = nullptr;
+        setScreen(Screen::Multiplayer);
+        return false;
+    }
+    if ((down & KEY_A) == 0) {
+        return false;
+    }
+    playClick();
+
+    if (onlineJoinCursor_ == kOnlineJoinCode) {
+        std::string typed;
+        // Six characters from an alphabet with no O, I or U in it, because a
+        // person reads this one out and types it back in. The server is
+        // case-insensitive and ignores separators, so nothing is done to it
+        // here beyond taking what was typed.
+        if (askServerText("Join code", "", 12, &typed) && !typed.empty()) {
+            beginOnlineJoin(typed, 0);
+        }
+        return false;
+    }
+    if (onlineJoinCursor_ == kOnlineJoinFriends) {
+        message_ = nullptr;
+        onlineMessage_ = "A friend list is not in this build yet.";
+        consoleDirty_ = true;
+        return false;
+    }
+
+    stopOnline();
+    onlineMessage_.clear();
+    message_ = nullptr;
+    setScreen(Screen::Multiplayer);
+    return false;
+}
+
+void Menu::drawOnlineJoin()
+{
+    drawLabelCentered("Join over the Internet", kScreenWidth * 0.5f, 16.0f, 0.7f, kInk, true);
+
+    if (onlineJoining_) {
+        drawLabelCentered("Connecting...", kScreenWidth * 0.5f, 110.0f, 0.6f, kInk, true);
+        return;
+    }
+
+    SettingRowView rows[kOnlineJoinRows];
+    rows[kOnlineJoinCode] = {"Enter Code", nullptr, false};
+    // Dimmed rather than hidden, which is what says the answer is "not yet"
+    // instead of "never": the friendships exist on the server and no message
+    // in protocol 2 asks for them.
+    rows[kOnlineJoinFriends] = {"Friend list", "not implemented yet", true};
+    rows[kOnlineJoinBack] = {"Back", nullptr, false};
+
+    drawSettingsRows(rows, kOnlineJoinGroups, kOnlineJoinRows, onlineJoinCursor_,
+                     onlineJoinScroll_, kProfileTop);
+
+    drawLabelCentered(profileStatusText(), kScreenWidth * 0.5f, 200.0f, 0.45f, kInk, true);
+}
+
 void Menu::refreshServers()
 {
     net::loadServerList(fs_, net::kServerListPath, &servers_);
@@ -5783,7 +6760,7 @@ bool Menu::askServerText(const char* hint, const std::string& current, int maxCh
     const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
 
     // See askWorldName: the applet had both screens.
-    consoleInit(GFX_BOTTOM, nullptr);
+    bottom::initConsole();
     consoleDirty_ = true;
     C2D_Prepare();
 
@@ -5966,14 +6943,33 @@ bool Menu::handleNetMode(u32 down, MenuChoice* choice)
     if (netModeCursor_ == 1) {
         switch (netPurpose_) {
         case NetPurpose::Host:
-            message_ = "Hosting over the internet is not in this build yet.";
-            break;
+            // **How far it reaches is asked before which world it is.** The
+            // answer is what the server is told when the session is
+            // registered, and the world is chosen after it because the world
+            // is opened last of all: between the pick and the game,
+            // `Screen::OnlineHost` logs this console in, registers the world
+            // and puts the join code on screen -- none of which can happen
+            // once the world is loading.
+            hostingOnline_ = true;
+            privacyCursor_ = int(onlinePrivacy_);
+            message_ = nullptr;
+            setScreen(Screen::OnlinePrivacy);
+            return false;
+        case NetPurpose::Join:
+            onlineJoinCursor_ = 0;
+            onlineJoinScroll_ = 0;
+            onlineJoining_ = false;
+            message_ = nullptr;
+            startOnline(false);
+            setScreen(Screen::OnlineJoin);
+            return false;
         case NetPurpose::Import:
         case NetPurpose::Export:
+            // Still local-only, and for a reason that is not the network:
+            // `net::world_copy` moves a whole world in `link::Msg` frames with
+            // no flow control of its own, which a room's radio carries and a
+            // relay with a byte budget does not.
             message_ = "Sending a world over the internet is not in this build yet.";
-            break;
-        default:
-            message_ = "3DAlpha sessions over the internet are not in this build yet.";
             break;
         }
         consoleDirty_ = true;
@@ -6078,7 +7074,14 @@ void Menu::pumpSession()
         consoleDirty_ = true;
     }
     if (guest_->finished()) {
-        const std::string reason = guest_->reason();
+        std::string reason = guest_->reason();
+        // **Over the internet, what the link saw goes with it.** The one
+        // sentence a session ends on cannot say whether the frames went out,
+        // came back, or came back from somewhere nobody recognised -- and that
+        // is the whole question when two consoles cannot finish a handshake.
+        if (guestOnline_ && online_) {
+            reason += " (" + online_->connection().report(net::link::kHostNode) + ")";
+        }
         guest_->leave("the session ended");
         showDisconnected("Session ended", reason);
     }
@@ -6100,7 +7103,11 @@ bool Menu::handleSession(u32 down, MenuChoice* choice)
     if (guest_ && guest_->ready()) {
         playClick();
         choice->action = MenuChoice::Action::Join;
-        choice->link = MenuChoice::Link::Local;
+        // The same lobby for both, and the only thing that differs is what the
+        // frames travelled on -- which the game loop has to know, because the
+        // internet link has a socket to service every frame and the radio does
+        // not. See platform/ctr/session_link.hpp.
+        choice->link = guestOnline_ ? MenuChoice::Link::Online : MenuChoice::Link::Local;
         choice->worldName = guest_->worldName();
         choice->worldPath.clear();
         choice->serverName = guest_->hostName();
@@ -6145,12 +7152,16 @@ void Menu::drawSession()
         drawLabelCentered(line, kScreenWidth * 0.5f, 40.0f, 0.45f, kInkDim, true);
     }
 
-    // **What this console is waiting for.** The link is up and the two consoles
-    // are talking; what has not happened yet is the host deciding to send a
-    // world, which is the moment this screen goes away by itself.
-    drawLabelCentered(joining ? "asking the other console to let this one in"
-                              : "connected -- waiting for the host to send the world",
-                      kScreenWidth * 0.5f, 64.0f, 0.42f, kInkWarn, true);
+    // **What this console is waiting for**, which is not the same thing on the
+    // two roads. The link is up and the consoles are talking either way; what
+    // has not happened is the host sending a world -- and on the internet the
+    // host may not have opened one yet, because the lobby there runs before the
+    // world does and START is what ends it. See `Menu::openOnlineLobby`.
+    const char* waiting = joining ? "asking the other console to let this one in"
+                          : guestOnline_
+                              ? "in the lobby -- waiting for the host to press Start"
+                              : "connected -- waiting for the host to send the world";
+    drawLabelCentered(waiting, kScreenWidth * 0.5f, 64.0f, 0.42f, kInkWarn, true);
 
     if (!joining && session != nullptr && session->terrainAnswered() != 0) {
         char work[96];
@@ -6233,7 +7244,7 @@ bool Menu::askImportName(std::string* out)
     const SwkbdButton pressed = swkbdInputText(&swkbd, text, sizeof(text));
     gExistingWorlds = nullptr;
 
-    consoleInit(GFX_BOTTOM, nullptr);
+    bottom::initConsole();
     consoleDirty_ = true;
     C2D_Prepare();
 
@@ -6832,12 +7843,20 @@ void Menu::drawNetMode()
     drawLabelCentered("another 3DS in the same room", kScreenWidth * 0.5f, 114.0f, 0.4f,
                       kInkDim, true);
 
-    // Drawn disabled rather than hidden: the row is what says the answer is
-    // "not yet" instead of "never".
+    // **Enabled for a session and not for a world.** Host and Join go out
+    // through AlphaComputer, which introduces two consoles and never holds a
+    // world; Import and Export move a whole world in `link::Msg` frames with
+    // no flow control of their own, which a room's radio carries and a relay
+    // with a byte budget does not. So the row is live for the first two and
+    // drawn disabled for the other two, which is what says the answer there is
+    // "not yet" rather than "never".
+    const bool internetReady =
+        netPurpose_ == NetPurpose::Host || netPurpose_ == NetPurpose::Join;
     drawButton(Rect{x, 136.0f, kButtonWidth, kButtonHeight}, "Internet", netModeCursor_ == 1,
-               false);
-    drawLabelCentered("not in this build yet", kScreenWidth * 0.5f, 174.0f, 0.4f, kInkDim,
-                      true);
+               internetReady);
+    drawLabelCentered(internetReady ? "another 3DS anywhere, through AlphaComputer"
+                                    : "not in this build yet",
+                      kScreenWidth * 0.5f, 174.0f, 0.4f, kInkDim, true);
 
     if (message_ != nullptr) {
         drawLabelCentered(message_, kScreenWidth * 0.5f, 208.0f, 0.42f, kInkWarn, true);

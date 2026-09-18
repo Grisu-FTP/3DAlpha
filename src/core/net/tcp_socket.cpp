@@ -81,15 +81,31 @@ bool resolveHost(const char* host, u16 port, sockaddr_in* out, std::string* erro
     out->sin_family = AF_INET;
     out->sin_port = htons(port);
 
-    if (inet_aton(host, &out->sin_addr) != 0) {
+    u32 address = 0;
+    if (!resolveHostAddress(host, &address, error)) {
+        return false;
+    }
+    out->sin_addr.s_addr = htonl(address);
+    return true;
+}
+
+}  // namespace
+
+bool resolveHostAddress(const char* host, u32* address, std::string* error)
+{
+    in_addr numeric{};
+    if (inet_aton(host, &numeric) != 0) {
+        *address = ntohl(numeric.s_addr);
         return true;
     }
 
-    // `getaddrinfo`, restricted to the one family and socket type this can use:
-    // an AAAA answer is an address `TcpSocket` has no `sockaddr_in6` to put.
+    // `getaddrinfo`, restricted to the one family this can use: an AAAA answer
+    // is an address neither socket in this tree has a `sockaddr_in6` to put.
     addrinfo hints{};
     hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
+    // No socket type: this answer is used for a stream and for a datagram
+    // alike, and an A record does not know the difference.
+    hints.ai_socktype = 0;
     addrinfo* list = nullptr;
     if (::getaddrinfo(host, nullptr, &hints, &list) == 0 && list != nullptr) {
         bool got = false;
@@ -97,7 +113,7 @@ bool resolveHost(const char* host, u16 port, sockaddr_in* out, std::string* erro
             if (it->ai_family == AF_INET && it->ai_addr != nullptr
                 && it->ai_addrlen >= socklen_t(sizeof(sockaddr_in))) {
                 const sockaddr_in* in = reinterpret_cast<const sockaddr_in*>(it->ai_addr);
-                out->sin_addr = in->sin_addr;
+                *address = ntohl(in->sin_addr.s_addr);
                 got = true;
             }
         }
@@ -110,7 +126,9 @@ bool resolveHost(const char* host, u16 port, sockaddr_in* out, std::string* erro
     const hostent* found = gethostbyname(host);
     if (found != nullptr && found->h_addrtype == AF_INET && found->h_length == 4
         && found->h_addr_list != nullptr && found->h_addr_list[0] != nullptr) {
-        std::memcpy(&out->sin_addr, found->h_addr_list[0], 4);
+        in_addr first{};
+        std::memcpy(&first, found->h_addr_list[0], 4);
+        *address = ntohl(first.s_addr);
         return true;
     }
 
@@ -121,7 +139,7 @@ bool resolveHost(const char* host, u16 port, sockaddr_in* out, std::string* erro
     constexpr int kDnsTimeoutMs = 3000;
     u32 resolved = 0;
     if (resolveViaDns(host, kDnsTimeoutMs, &resolved)) {
-        out->sin_addr.s_addr = htonl(resolved);
+        *address = resolved;
         return true;
     }
 
@@ -141,8 +159,6 @@ bool resolveHost(const char* host, u16 port, sockaddr_in* out, std::string* erro
     }
     return false;
 }
-
-}  // namespace
 
 bool TcpSocket::connect(const char* host, u16 port, int timeoutMs, std::string* error)
 {

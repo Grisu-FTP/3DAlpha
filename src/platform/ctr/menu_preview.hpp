@@ -58,6 +58,13 @@ enum class PreviewScreen {
     Skins,
     Packs,
     Worlds,
+    // **The bottom screen as a screen, with nothing drawn on it here.** The
+    // online host's lobby wants the player list on the dirt rather than on the
+    // console's text grid, and that means a render target: this is the target
+    // and no picture behind it, so the menu draws its own backdrop and its own
+    // rows into it. Nothing is read from the card for it and no worker is
+    // asked for anything.
+    Plain,
 };
 
 class MenuPreview {
@@ -73,8 +80,9 @@ public:
     bool init(bool isNew3DS);
     void shutdown();
 
-    // Links the bottom screen to a render target for one of the three screens,
-    // or gives it back to the console for None. Outside a frame only.
+    // Links the bottom screen to a render target for one of the screens that
+    // want one, or gives it back to the console for None. Outside a frame
+    // only.
     void setScreen(PreviewScreen screen);
     PreviewScreen screen() const { return screen_; }
     C3D_RenderTarget* target() const { return target_; }
@@ -108,7 +116,7 @@ public:
 
     // The 3D half of the bottom screen, into `target()`. The caller has begun
     // the frame, cleared the target and drawn the backdrop, and puts citro2d's
-    // state back afterwards.
+    // state back afterwards. `Plain` has no 3D half and draws nothing.
     void draw();
 
 private:

@@ -37,6 +37,7 @@
 #include "core/settings/sensitivity.hpp"
 #include "core/net/client_session.hpp"
 #include "platform/ctr/audio.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 #include "platform/ctr/guest_play.hpp"
 #include "platform/ctr/host_play.hpp"
 #include "platform/ctr/net_play.hpp"
@@ -2024,8 +2025,11 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // **The renderer outlives the world and this state does not.** Its held
     // item is whatever the last world left, and the generation loop below draws
     // frames before anything sets it -- so a second world would open with one
-    // frame of the first one's hand over the terrain being made.
+    // frame of the first one's hand over the terrain being made. The flames
+    // are the same: a player who left a world burning would enter the next one
+    // still alight.
     renderer.clearHeldItem();
+    renderer.setBurning(false);
 
     // **Creative flight, and its double tap.** Off at world entry, every time:
     // it is a state the player asked for with a gesture and there is nowhere to
@@ -3836,6 +3840,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 renderer.setHeldItem(hand.item(), hand.equippedProgress(handPartial),
                                      hand.swingProgress(handPartial), handLight);
             }
+            // **The flames over the view** while the fire counter runs --
+            // `jh.b(F)V` asks nothing else. Spectator has no body to be alight.
+            renderer.setBurning(vitals.fire > 0
+                                && overlay.gamemode() != settings::Gamemode::Spectator);
 
             // **The hearts**, Survival's alone -- `lu` draws the rows only while
             // `PlayerController.shouldDrawHUD` is true, and a Creative or
@@ -4400,6 +4408,11 @@ int runMultiplayer(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::So
 // **The session outlives this function either way.** It is taken from the menu
 // on the way in and given back on the way out, so leaving a world does not
 // drop a link the player may be about to rejoin through.
+// **Joined another console**, whether it was found in the room or introduced
+// over the internet. The two differ in nothing above the link: the guest object
+// the menu built is already holding whichever one it joined over, and the only
+// thing this function has to know is whether there is a login to take down
+// afterwards.
 int runJoinedLocal(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngine& sound,
                    ctr::NdspBackend& audio, bool isNew3DS, bool haveCstick)
 {
@@ -4420,6 +4433,9 @@ int runJoinedLocal(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::So
                                nullptr, guest.get());
 
     guest->leave("left the world");
+    if (choice.link == ctr::MenuChoice::Link::Online) {
+        menu.endOnline();
+    }
     if (net->closed()) {
         menu.showDisconnected(net->closeTitle(), net->closeDetail());
     } else {
@@ -4437,15 +4453,40 @@ int runJoinedLocal(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::So
 int runHosted(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngine& sound,
               ctr::NdspBackend& audio, bool isNew3DS, bool haveCstick)
 {
-    // **Opened inside runGame, once the world is.** The session has to tell a
-    // guest which world it is joining -- seed and generation switches -- and
-    // none of that is known until level.dat has been read.
-    auto host = std::make_unique<ctr::HostPlay>();
+    // **An internet session is already running by the time the world opens.**
+    // The menu logged in, registered the world with the rendezvous server,
+    // showed the player the join code and ran the session behind it while the
+    // lobby was up -- so for that road this is the lobby's own object, guests
+    // and all, and `open` inside `runGame` adopts the session rather than
+    // starting a second one. See `HostPlay::openLobby`.
+    const bool online = choice.link == ctr::MenuChoice::Link::Online;
+    auto host = menu.takeHost();
+    if (host) {
+        // **The gap the lobby's guests are about to sit through.** Nothing
+        // pumps the session between here and the game loop's first frame, and
+        // opening a world off a card is not instant. Twenty seconds is more
+        // than a world takes and less than the minute `kMaxAwayMs` allows;
+        // what it buys is that a guest waits rather than times out.
+        host->announceAway(20000);
+    } else {
+        // **Opened inside runGame, once the world is.** The session has to
+        // tell a guest which world it is joining -- seed and generation
+        // switches -- and none of that is known until level.dat has been read.
+        host = std::make_unique<ctr::HostPlay>();
+        if (online) {
+            host->serveOnline(menu.onlineLink());
+        }
+    }
 
     const int result =
         runGame(choice, menu, sound, audio, isNew3DS, haveCstick, nullptr, host.get(), nullptr);
 
     host->close("the host closed the world");
+    if (online) {
+        menu.endOnline();
+        menu.showMultiplayer();
+        return result;
+    }
     if (!host->everOpened()) {
         menu.showDisconnected("Could not open the session",
                               "Local wireless would not start. Check the wireless switch.");
@@ -4530,7 +4571,11 @@ int runShell(bool isNew3DS, bool haveCstick)
         menu.shutdown();
 
         if (choice.action == ctr::MenuChoice::Action::Join) {
-            result = choice.link == ctr::MenuChoice::Link::Local
+            // Local and Online are both *this* game at the other end; Internet
+            // is a Java server, which is a different client entirely.
+            const bool console = choice.link == ctr::MenuChoice::Link::Local
+                                 || choice.link == ctr::MenuChoice::Link::Online;
+            result = console
                          ? runJoinedLocal(choice, menu, sound, audio, isNew3DS, haveCstick)
                          : runMultiplayer(choice, menu, sound, audio, isNew3DS, haveCstick);
             if (result != 0) {
@@ -4589,7 +4634,7 @@ bool queryVolume(const char* path, mc::io::VolumeInfo* out)
 int main()
 {
     gfxInitDefault();
-    consoleInit(GFX_BOTTOM, nullptr);
+    mc::ctr::bottom::initConsole();
 
     mc::io::setVolumeInfoQuery(&queryVolume);
 

@@ -1,4 +1,5 @@
 #include "platform/ctr/map_screen.hpp"
+#include "platform/ctr/bottom_screen.hpp"
 
 #include "core/map/map_sample.hpp"
 #include "core/util/math.hpp"
@@ -909,8 +910,9 @@ void MapScreen::drawPixels(const gui::Surface& surface, const Camera& camera,
     // all, and mixing the two would hide which of them was the problem.
     lastDrawMicros_ = u32(millisFromTicks(svcGetSystemTick() - before) * 1000.0f);
 
-    // The CPU has just written a buffer the LCD reads by DMA.
-    gfxFlushBuffers();
+    // Copied by the overlay's flush once the band is drawn too, so the frame
+    // goes across once rather than twice.
+    bottom::changed();
 }
 
 }  // namespace mc::ctr

@@ -46,6 +46,7 @@
 #include "core/world/world_list.hpp"
 #include "platform/host/audio_wav.hpp"
 #include "platform/host/join.hpp"
+#include "platform/host/online.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_generator.hpp"
 #include "items.hpp"  // generated; see tools/configure.py
 #include "version_config.hpp"
@@ -3399,6 +3400,9 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    if (argc > 1 && std::strcmp(argv[1], "--online") == 0) {
+        return runOnline(argc, argv);
+    }
     if (argc > 1 && std::strcmp(argv[1], "--join") == 0) {
         return runJoin(argc, argv);
     }
@@ -3406,6 +3410,7 @@ int main(int argc, char** argv)
     std::printf("3DAlpha host harness (%s).\n", mcver::kDisplay);
     std::printf("  --version                            build configuration\n");
     std::printf("  --join host[:port] [name] [seconds] [compare=<world-copy>]\n");
+    std::printf("  --online host[:port] [principal] [seconds]\n");
     std::printf("        play a scripted session on a real protocol-2 server: log in, keep\n");
     std::printf("        every column, chat, dig and place, and check the server echoed it.\n");
     std::printf("        compare= diffs the columns against a copy of the server's world\n");

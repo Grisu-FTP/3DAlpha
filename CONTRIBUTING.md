@@ -74,9 +74,15 @@ to remove.
 
 - **Never** copy code from ViaLegacy or any other GPL source into this tree. It is documentation.
   Protocol IDs and wire formats are facts about a 2010 protocol; the code implementing them is not.
-- craftus_reloaded is MIT: reusable **with attribution** in `romfs/licenses.txt`.
-- Never commit Mojang assets — no textures, sounds, fonts, or jar contents.
-- Every vendored dependency gets its licence reproduced in `romfs/licenses.txt`.
+- craftus_reloaded is MIT: reusable **with attribution**.
+- **Never commit Mojang assets** — no textures, sounds, fonts, or jar contents. This covers a jar
+  you are only using to test against: `/srv/` and `*.jar` are in `.gitignore` for that reason.
+  A local copy is a maintainer's own file; a committed one is redistribution.
+- **Every notice the binary owes goes in `src/core/util/about.cpp`**, and the player reads it on
+  the Options → Info row. There is no `romfs/licenses.txt` and never was — nothing ships inside
+  the title. Add the prose entry to [docs/licences.md](docs/licences.md) in the same change, and
+  transcribe the text from the installed package's own licence file rather than from upstream's
+  website; the two have differed.
 
 ## The player supplies nothing
 

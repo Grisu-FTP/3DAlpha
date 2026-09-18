@@ -207,3 +207,13 @@ is simply there. See [docs/assets.md](docs/assets.md).
   alpha-era protocol. Used here as *documentation only*; it is GPLv3 and none of its code is copied.
 - **OrnitheMC** — mappings that make the original a1.1.2 jar readable for verification.
 - **devkitPro** — devkitARM, libctru, citro3d, picasso.
+- **Jean-loup Gailly and Mark Adler** — zlib, which every chunk file and every Map Chunk packet
+  is written with.
+- **Sun Microsystems** — fdlibm, whose `__ieee754_log` is transcribed in
+  [`src/core/util/strict_math.hpp`](src/core/util/strict_math.hpp) because `StrictMath` is
+  specified against it and seeded world generation has to agree with a 2010 JVM bit for bit.
+- **The Xiph.Org Foundation** — libvorbisidec (Tremor) and libogg, which decode the audio a
+  player supplies.
+
+The same list, with the notices in full, is on the **Options → Info** row in game and in
+[docs/licences.md](docs/licences.md).

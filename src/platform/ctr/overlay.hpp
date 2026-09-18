@@ -487,6 +487,27 @@ public:
     // press does one thing, and this is the flag that guarantees it.
     bool uiFocused() const { return focus_; }
 
+    // **Whether the d-pad is walking or turning the player** rather than being
+    // free for this screen to use. The Controls row's two Old schemes take it;
+    // the New 3DS one leaves it alone. See core/settings/control_scheme.hpp.
+    //
+    // It changes one thing in here -- the map's zoom wants the focus once the
+    // d-pad is spoken for, rather than answering a press that was a step
+    // forward -- and one thing in the caller, which is `dpadTakenByScreen`.
+    void setDpadIsGameplay(bool gameplay) { dpadIsGameplay_ = gameplay; }
+
+    // **True while the bottom screen is the d-pad's owner**, which the caller
+    // reads to stop the same press also moving the player. Three cases: a
+    // focused player page, whose cursor the d-pad walks; any of the debug pages
+    // behind SELECT, whose rows it drives and which have no focus of their own
+    // to check; and the game-over screen, which chooses between Respawn and
+    // Title with it. It is the rule the circle pad already follows -- a screen
+    // that is open takes the input, which is a1.1.2's -- applied to one device.
+    //
+    // The body is already still on the last two; what this stops is the camera
+    // turning under a press that was meant for a menu.
+    bool dpadTakenByScreen() const { return focus_ || dead_ || page_ != Page::Player; }
+
     // **Whether the circle pad is scrolling the map rather than walking.** True
     // while the screen is focused *and* the map is what is in front of the
     // player, which is the one place the stick has a window to move. The caller
@@ -878,6 +899,10 @@ private:
     // and the cursor behaves identically on both, so the flag says "the grid"
     // and the page says which grid.
     bool focus_ = false;
+
+    // Set by the caller from the Controls row; false is the New 3DS scheme,
+    // where nothing in gameplay wants the d-pad. See `setDpadIsGameplay`.
+    bool dpadIsGameplay_ = false;
     bool focusGrid_ = false;
 
     // **The circle pad, read as a d-pad while a cursor is focused.** A repeat

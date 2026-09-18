@@ -788,6 +788,15 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
         if (playerPage_ != PlayerPage::Map) {
             return false;
         }
+        // **Once the d-pad walks or turns the player, the map's own d-pad wants
+        // the focus.** Under the New 3DS scheme nothing in gameplay uses it and
+        // zoom is a free press; under either Old scheme the same press is a
+        // step forward, and answering both would zoom the map every time the
+        // player walked past it. X focuses, and a focused page has the d-pad --
+        // see `dpadTakenByScreen`.
+        if (dpadIsGameplay_ && !focus_) {
+            return false;
+        }
         if (down & (KEY_DLEFT | KEY_DRIGHT)) {
             map_.cycleGrid((down & KEY_DRIGHT) != 0 ? 1 : -1);
         }

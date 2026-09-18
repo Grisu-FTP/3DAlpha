@@ -55,11 +55,13 @@ TEST(settings_round_trip)
     written.renderDistance = 10;
     written.texturePack = "minecraft-a1.1.2_01-client.zip";
     written.skin = "file:Steve.png";
+    written.lookSensitivity = 135;
     CHECK(settings::saveSettings(fs, path.c_str(), written));
 
     GameSettings read;
     CHECK(settings::loadSettings(fs, path.c_str(), &read));
     CHECK_EQ(read.renderDistance, 10);
+    CHECK_EQ(read.lookSensitivity, 135);
     CHECK_EQ(read.texturePack, written.texturePack);
     // The skin key carries a prefix and a colon, which is the one value in this
     // file that is not a bare name or a number -- and `key=value` splits on the
@@ -85,6 +87,25 @@ TEST(the_built_in_pack_round_trips_as_empty)
     CHECK(settings::loadSettings(fs, path.c_str(), &read));
     CHECK(read.texturePack.empty());
     CHECK_EQ(read.renderDistance, 6);
+}
+
+// A file written before the Sensitivity row existed has no key for it, and the
+// menu has to be able to tell that from a player who chose a value. -1 is the
+// convention the autosave timer already uses; the row turns it into 100%, which
+// is the rate that build already had.
+TEST(a_settings_file_from_before_the_sensitivity_row_says_so_rather_than_reading_as_zero)
+{
+    TempDir dir;
+    io::PosixFileSystem fs;
+    const std::string path = dir.at("3ds.ini");
+
+    writeText(fs, path, "render_distance=8\nmusic_volume=100\n");
+
+    GameSettings read;
+    CHECK(settings::loadSettings(fs, path.c_str(), &read));
+    CHECK_EQ(read.renderDistance, 8);
+    // Not 0, which is a real setting on this row -- it is `*yawn*`.
+    CHECK_EQ(read.lookSensitivity, -1);
 }
 
 // The first boot on a console that has never run this. Not an error, and the

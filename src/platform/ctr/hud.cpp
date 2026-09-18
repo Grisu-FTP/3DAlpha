@@ -96,7 +96,7 @@ constexpr LookLayout lookLayout(int top)
 static_assert(lookLayout(kBandedPageTop).padY + lookLayout(kBandedPageTop).padH <= kTabTop,
               "the look pad must clear the tab strip");
 static_assert(lookLayout(kBarePageTop).padY >= kBannerHeight,
-              "the look pad must clear the banner row");
+              "the look pad must clear the reserved row");
 constexpr u32 kRibbonFace = 0x0C0C0C;
 // 1.5 pixels a degree puts a little over 90 degrees either side of the centre
 // on a 288-pixel ribbon, which is wide enough that the point behind you is off
@@ -667,8 +667,8 @@ bool insideBox(int px_, int py_, int x, int y, int w, int h)
 
 namespace {
 
-// **The Items page fills the page band**, which is 320 x 168 between the focus
-// banner and the tab strip. Nine columns of backpack at 32 pixels is 288, an
+// **The Items page fills the page band**, which is 320 x 168 between the
+// reserved row and the tab strip. Nine columns of backpack at 32 pixels is 288, an
 // armour column of the same beside it is 320, and 320 is the screen -- so the
 // two grids are laid out from the panel's inside edges rather than centred, and
 // the panel is the page.
@@ -1128,19 +1128,6 @@ int paletteArrowAt(int touchX, int touchY)
     return 0;
 }
 
-
-void drawFocusBanner(const gui::Surface& surface, const char* label)
-{
-    // The label's own row: flat, because a character cell has one background
-    // colour and there is nothing to be done about that. Near-black rather than
-    // black, so it reads as a shade over the page instead of a hole in it.
-    constexpr u32 kBannerFace = 0x101014;
-    constexpr u32 kBannerText = 0xFFD24A;
-    const int top = bannerTop();
-    gui::fillRect(surface, 0, top, kScreenWidth, kFocusBannerLabelHeight, px(kBannerFace));
-    text(top / kCell + 1, 1, kColumns, kBannerText, kBannerFace, "%s",
-         label != nullptr ? label : "");
-}
 
 namespace {
 

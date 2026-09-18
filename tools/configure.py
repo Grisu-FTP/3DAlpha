@@ -259,7 +259,7 @@ def write_blocks(out: Path, m: dict) -> bool:
                     "RenderType::Cube, Shape::FullCube, true, 0.6f, true, "
                     "0xFFFF, 0, 0, 255, true, true, true, false, true, "
                     "TickBehaviour::None, 10, false, 0, 0, false, false, 0, "
-                    "Contact::None, WorldTexture::None}")
+                    "Contact::None, WorldTexture::None, SideRule::None}")
         # repr keeps the decimal point: "100f" is not a float literal, "100.0f"
         # is, and %g drops the point for integral values.
         hardness = repr(float(entry["hardness"]))
@@ -286,7 +286,8 @@ def write_blocks(out: Path, m: dict) -> bool:
             f'{c_bool(entry.get("canBurn", False))}, true, '
             f'{step_index.get(entry.get("stepSound"), 0)}, '
             f'Contact::{pascal(entry.get("contact", "none"))}, '
-            f'WorldTexture::{pascal(entry.get("worldTexture", "none"))}}}'
+            f'WorldTexture::{pascal(entry.get("worldTexture", "none"))}, '
+            f'SideRule::{pascal(entry.get("sideRule", "none"))}}}'
         )
 
     # Air's material is the jar's too -- every block that uses it is the same
@@ -308,6 +309,7 @@ def write_blocks(out: Path, m: dict) -> bool:
         "using mc::block::TickBehaviour;\n",
         "using mc::block::Contact;\n",
         "using mc::block::WorldTexture;\n",
+        "using mc::block::SideRule;\n",
         "\n// Named ids, so no literal block number appears anywhere else.\n",
         "enum class Block : mc::block::BlockId {\n",
         "    Air = 0,\n",
@@ -444,7 +446,7 @@ def write_items(out: Path, m: dict) -> bool:
             # See core/item/item_def.hpp.
             return ('{"unknown", 0, 0, 0, 1, 1, IconSheet::Items, '
                     'ItemDef::kNotArmour, ItemDef::kNotABucket, '
-                    'SpawnsEntity::None, 0, false, false, false, false}')
+                    'SpawnsEntity::None, 0, false, false, "", false, false}')
         return (
             f'{{"{entry["name"]}", {entry["icon"]}, {entry["places"]}, '
             f'{entry["durability"]}, {entry["damageVsEntity"]}, {entry["stack"]}, '
@@ -452,6 +454,7 @@ def write_items(out: Path, m: dict) -> bool:
             f'{entry["armour"]}, {entry["bucket"]}, '
             f'SpawnsEntity::{pascal(entry["spawns"])}, {entry["spawnVariant"]}, '
             f'{c_bool(bool(entry["fx"]))}, {c_bool(entry["tills"])}, '
+            f'"{entry.get("record", "")}", '
             f'{c_bool(entry["palette"])}, true}}'
         )
 
@@ -463,6 +466,12 @@ def write_items(out: Path, m: dict) -> bool:
     # palette like anything else -- a skeleton killing a creeper drops one, so
     # they are obtainable and a catalogue that omitted them would have a hole.
     palette = [i for i in sorted(items) if items[i]["palette"]]
+    # **The lowest music-disc id**, which is the only number `BlockJukeBox`'s
+    # metadata arithmetic needs: `BlockJukeBox`'s field and `ItemRecord`'s field both key the disc as
+    # `1 + (item - record13)`, so the table carries the base rather than the
+    # two ids. -1 for a version with no discs at all.
+    records = [i for i in sorted(items) if items[i].get("record")]
+    first_record = records[0] if records else -1
 
     lines = [
         BANNER.format(id=m["id"]),
@@ -480,6 +489,13 @@ def write_items(out: Path, m: dict) -> bool:
     lines.append("};\n")
 
     lines.append(f"\ninline constexpr int kItemTableSize = {table_size};\n")
+    lines.append("\n// The first music disc's id. `1 + (item - this)` is the "
+                 "metadata a jukebox\n// keeps a disc as, which is `cv.e`'s and "
+                 "`lg.a`'s shared arithmetic; -1 when\n// the version has no "
+                 "discs. See core/item/registry.hpp.\n")
+    lines.append(f"inline constexpr mc::item::ItemId kFirstRecordItem = "
+                 f"{first_record};\n")
+    lines.append(f"inline constexpr int kRecordCount = {len(records)};\n")
     lines.append(f"inline constexpr int kItemCount = {len(items)};\n")
     lines.append("\n// Ids this version defines that the contiguous table does "
                  "not reach --\n// a1.1.2's two music discs at 2256 and 2257, "

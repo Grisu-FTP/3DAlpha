@@ -9,7 +9,9 @@
 // top face and two sides at three different brightnesses -- and drawing one
 // tile flat instead makes every cube in the game a featureless square. The
 // three faces are what tell grass from dirt, a log's end from its bark, and a
-// furnace's mouth from its back.
+// furnace's mouth from its back -- and *which* three is worked out from the
+// original's own transform rather than picked, because the mouth is on one
+// particular face and a quarter turn hides it. See `project` in the .cpp.
 //
 // **It is rasterised here rather than rendered.** The bottom screen has no GPU
 // behind it (core/gui/paint.hpp says why), so the cube is three parallelograms

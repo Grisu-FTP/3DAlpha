@@ -920,7 +920,11 @@ Distance 8 on an old 3DS is the one that runs at the ceiling. It still never ref
 75 % of its uploads are served from a recycled block with no allocator involvement — which is the
 size-class free list doing precisely the job craftus's sorted vector does badly. What it costs is
 re-meshing: 2,829 meshes over 48 frames is **59 per frame**, and at the measured 28.5 µs per section
-that is an *estimated* ~1.7 ms of worker-thread meshing per frame. Tolerable, and it is a harsh
+that is an *estimated* ~1.7 ms of meshing per frame. **On the main thread**, not the worker: the
+text said "worker-thread" and the worker has never meshed -- it generates, and meshing runs on the
+main thread behind a per-frame budget (`docs/architecture.md`, *Threading model*). 1.7 ms of a 16.7
+ms frame is tolerable where 1.7 ms of somebody else's core would have been free, so the number is
+worth more attention than it was being given. Tolerable, and it is a harsh
 stress — 22.5° per frame is a full revolution in half a second.
 
 VRAM is fully used in every configuration, which is the intended outcome: it is the smallest and

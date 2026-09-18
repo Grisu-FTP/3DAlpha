@@ -110,9 +110,13 @@ void wireDisplay(const TickWorld& world, i32 x, int y, i32 z, JavaRandom& rand)
                         double(z) + 0.5 + (double(rand.nextFloat()) - 0.5) * 0.2);
 }
 
-// a field of another original class -- BlockOre's glitter, on the *lit* redstone ore only. Six motes, one
-// per face, each pulled just outside the block if that face is open.
-void oreDisplay(const TickWorld& world, i32 x, int y, i32 z, JavaRandom& rand)
+}  // namespace
+
+// a field of another original class -- BlockOre's glitter. Six motes, one per face, each pulled just
+// outside the block if that face is open. **Not guarded on the lit ore**: the
+// guard is in the two callers, and one of them -- the glow -- sparkles a dull
+// ore on its way to becoming a lit one.
+void redstoneOreSparkle(const TickWorld& world, i32 x, int y, i32 z, JavaRandom& rand)
 {
     // A sixteenth of a block proud of the face.
     constexpr double kProud = 0.0625;
@@ -143,6 +147,8 @@ void oreDisplay(const TickWorld& world, i32 x, int y, i32 z, JavaRandom& rand)
         }
     }
 }
+
+namespace {
 
 // `BlockFire`'s field -- BlockFire. The crackle, then smoke off whichever neighbouring face
 // has something burnable behind it.
@@ -284,8 +290,12 @@ void blockDisplayTick(const TickWorld& world, i32 x, int y, i32 z, block::BlockI
         wireDisplay(world, x, y, z, rand);
         break;
 
+    // **The lit one only**, and the guard lives here rather than inside the
+    // sparkle because a field of another original class runs the same six motes off an ore that is still
+    // dull. `ai`'s `this.a` is the constructor's flag: true for 74, false for
+    // 73.
     case block::BlockId(mcver::Block::LitRedstoneOre):
-        oreDisplay(world, x, y, z, rand);
+        redstoneOreSparkle(world, x, y, z, rand);
         break;
 
     case block::BlockId(mcver::Block::Fire):

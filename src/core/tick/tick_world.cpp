@@ -249,6 +249,9 @@ bool TickWorld::writeBlock(i32 x, int y, i32 z, block::BlockId id, u8 data, bool
     const block::BlockId old = c->block(lx, y, lz);
     if (old == id && (!setData || c->blockData(lx, y, lz) == data)) return true;
 
+    if (access_.beforeWrite != nullptr) {
+        access_.beforeWrite(access_.ctx, x, y, z, old, c->blockData(lx, y, lz));
+    }
     c->setBlock(lx, y, lz, id);
 
     // The original runs onBlockRemoval here, before the metadata is touched,
@@ -272,6 +275,9 @@ bool TickWorld::setDataRaw(i32 x, int y, i32 z, u8 data)
     const int lx = localOf(x);
     const int lz = localOf(z);
     if (c->blockData(lx, y, lz) == data) return true;
+    if (access_.beforeWrite != nullptr) {
+        access_.beforeWrite(access_.ctx, x, y, z, c->block(lx, y, lz), c->blockData(lx, y, lz));
+    }
     c->setBlockData(lx, y, lz, data);
     if (access_.changed != nullptr) access_.changed(access_.ctx, x, y, z);
     return true;

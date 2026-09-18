@@ -109,16 +109,32 @@ Full scheme, including title IDs for installing several versions at once, in
 
 ## Threading model
 
+**What the code actually creates**, read off `platform/ctr/main.cpp`'s `workerSpawn` rather than
+planned. A larger priority number is a *lower* priority on the ARM11, and the kernel is SCHED_FIFO:
+equal priority is a queue, not a share.
+
 | Thread | Old 3DS | New 3DS | Work |
 |---|---|---|---|
-| main | core0 | core0 | game loop, GPU submission, input |
-| chunk worker | core1 (needs `APT_SetAppCpuTimeLimit(30)`) | core2 (exclusive, `CanAccessCore2`) | meshing, lighting, worldgen, inflate |
-| I/O | shares core1 | core3 | chunk file read/write, socket poll |
+| main | core0 | core0 | game loop, GPU submission, input, **meshing** |
+| generation worker | core0 at `0x3F` | **core2**, one step below main | worldgen, inflate, borrowed read-only column work |
+| audio decode | core0, one below main | **core2**, one *above* generation | Vorbis into the NDSP ring |
+| I/O | core0, two below main | core0, two below main | chunk file read/write |
+| net | core0, two below main | core0, two below main | `poll`, packet parse, column inflate |
 
-**Worldgen was what forced this thread, and it is the half that exists.** Meshing is still on the
-main thread behind a per-frame budget and is survivable there at 30 µs a section; a generated column
-is 3.7 ms on a desktop and therefore tens of milliseconds on a 268 MHz ARM11, several whole frames
-for one column. `WorldStreamer` runs generation on one worker, one column at a time.
+Three things in that table were wrong for long enough to be worth naming:
+
+- **Meshing is on the main thread**, behind a per-frame budget, and is survivable there at 30 µs a
+  section. The table used to promise it to the worker. Worldgen is what forced the worker and is
+  the half that exists: a generated column is 3.7 ms on a desktop and therefore tens of
+  milliseconds on a 268 MHz ARM11, several whole frames for one column. `WorldStreamer` runs
+  generation on one worker, one column at a time.
+- **The I/O thread is on core 0 on both consoles**, not core 3. It spends nearly all its life
+  blocked in an IPC round trip to the FS sysmodule, so a core of its own would waste one — and on a
+  New 3DS core 2 is already the generator's. **Core 3 is the system's and this application never
+  gets it.**
+- **Core 2 has two tenants, not one.** The audio decoder is there too and sits one step *above*
+  generation, because `workerMain` takes its next job the moment it finishes one and a full slate
+  never let a lower-priority thread in. That is what made the music skip under load.
 
 **Who creates that worker is a seam, and it has to be, because `std::thread` cannot name a core —
 and on this toolchain it does not merely decline to.** devkitARM's pthread shim calls
@@ -202,8 +218,10 @@ game, then menu again, with the menu owning its own frame loop while it is up (c
 one target it creates and gives back around each visit) and `runGame` owning the one below. START
 opens the **pause menu** — Resume, Options, Exit World — which is the *same* `Menu` object running
 the *same* frame loop over a world that is still open, so the world is genuinely stopped while it is
-up; Exit World leaves for the main menu and only the title screen's Quit ends the process. See
-`platform/ctr/menu.hpp`.
+up; Exit World leaves for the main menu and only the title screen's Quit ends the process. **In a
+session it is stepped instead**, one call per frame from `runGame`'s own loop, because a console
+that stopped would stop for everybody it is linked to — the menu is the same screens either way, and
+what changes is which of the two loops owns the frame. See `platform/ctr/menu.hpp`.
 
 **A menu takes the top screen and does not hand it back.** citro3d holds one linked target per
 screen output, so the menu's own target evicts the left eye and deleting it leaves the slot empty —

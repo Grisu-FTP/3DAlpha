@@ -192,7 +192,11 @@ void BoatSystem::tick(const tick::TickWorld& world, const VehicleRider& rider)
             const bool inWater = block::handleWaterMovement(world, b.box, kWaterMaterial,
                                                             &b.motionX, &b.motionY, &b.motionZ);
             const WaterEntryResult wet =
-                updateWaterEntry(b.water, inWater, b.motionX, b.motionY, b.motionZ);
+                updateWaterEntry(b.water, inWater, b.motionX, b.motionY, b.motionZ,
+                                 [&] {
+                                     return block::isMaterialInBox(world, b.box,
+                                                                   kWaterMaterial);
+                                 });
             if (wet.splash) {
                 world.playSoundAt(kSplashSound, b.x, b.y - kBoatYOffset, b.z, wet.volume,
                                   splashPitch(rand_));

@@ -118,6 +118,17 @@ struct Placement {
 // callers do not each write the same two sines.
 Placement placeAt(double x, double y, double z, float yawRadians, float scale = kModelUnit);
 
+// **A model placed the way the game's entity renderers place one**, which is
+// not the way `placeAt` places a mesh that was built in world orientation.
+//
+// `RenderLiving.doRenderLiving` does `glScalef(-1, -1, 1)` and *then*, inside
+// that flip, translates down by `24 * 0.0625 + 0.0078125` -- so a model's own
+// +Y points at the ground and the whole body hangs from a point a block and a
+// half above the entity's feet. A `ModelPart` mesh placed with `placeAt`
+// instead comes out upside down and buried, which is exactly what it looked
+// like on hardware. `y` is the entity's `posY`, as the mob pass takes it.
+Placement placeModel(double x, double y, double z, float yawRadians);
+
 // How many vertices one part writes. Six quads, four corners each -- always,
 // with no face ever skipped: a box model has no neighbours to hide behind.
 inline constexpr int kBoxVertices = 6 * 4;

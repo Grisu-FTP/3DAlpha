@@ -16,7 +16,7 @@
 //
 //     +----------------------------------------+
 //     | [ Map ] [ Items ] [ Blocks ] [ Look ]  |  the tab strip, hud.hpp's
-//     |  focus banner row, or backdrop           |  hud.hpp's bannerTop()
+//     |  a reserved row of backdrop              |  hud.hpp's bannerTop()
 //     |+-------+ +---------------------------+ |
 //     ||       | |                           | |
 //     ||x  -12 | |                           | |
@@ -71,7 +71,7 @@
 // does anything a future entity does to the ground.
 //
 // **The game never waits for any of it.** That is a rule and not an
-// aspiration, and it is what the three pieces below are for.
+// aspiration, and it is what the four pieces below are for.
 //
 //   * **A queue, and a chunk is on it once.** `WorldStreamer` hands over the
 //     columns the world wrote into -- deduped there, so a lake draining for a
@@ -92,6 +92,17 @@
 //     `WorldStreamer::offerColumnWork` -- and generation keeps priority: the
 //     worker looks at what the world is owed before it looks at the map, and
 //     drops a half-finished batch the moment a column comes up.
+//
+//   * **And the card, for the ground no column will ever arrive for.** The
+//     window is 14 chunks across at 1:1 and 27 at the widest zoom, against a
+//     grid of `2r + 1` -- 21 at a New 3DS's default distance, 13 at an old
+//     one's, 5 at the minimum; wherever the window is wider, the difference is
+//     ground the grid cannot answer for however long the map waits. It is
+//     surveyed off the card instead -- read *and sampled* on the I/O thread,
+//     under every read the world itself wants, nothing installed in the cache
+//     and nothing kept but the 1 KB sample. See `postSurveys` below and
+//     `world::ChunkCache::survey`, and note that a guest has no card: a
+//     session's map is what the server sent and nothing more.
 //
 // The sampling itself is one chunk's 256 downward scans, and the re-shade it
 // would normally force is skipped when the new sample is identical to the old
@@ -119,11 +130,15 @@
 #include "core/map/map_render.hpp"
 #include "core/map/map_sample.hpp"
 #include "core/map/map_store.hpp"
+#include "core/net/entities.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/util/chunk_queue.hpp"
+#include "core/world/chunk.hpp"
 #include "platform/ctr/hud.hpp"
 #include "platform/ctr/renderer.hpp"
+
+#include <atomic>
 
 namespace mc::ctr {
 
@@ -215,6 +230,18 @@ public:
     //
     // Neither is a limit on where the player may go: ground beyond it is
     // sampled again when they come back.
+    // **The rest of the session, for their markers.** Null in single player,
+    // which is what `reset` puts it back to. `selfEntityId` is this console's
+    // own player id on the wire, and it is here for one reason: it picks this
+    // player's colour out of the same table everybody else's comes from, so
+    // the arrow you are looking at on your screen is the arrow they are
+    // looking at on theirs. See `net::playerColour`.
+    void setSession(const net::RemoteEntities* players, i32 selfEntityId)
+    {
+        players_ = players;
+        selfEntityId_ = selfEntityId;
+    }
+
     void configure(bool isNew3DS);
 
     // A different world. Everything remembered belongs to the old one.
@@ -289,9 +316,9 @@ public:
     // draws nothing at all when nothing has moved.
     //
     // **True when it actually put pixels down**, which most frames it does not.
-    // The caller needs that answer for two reasons: the LCD's cache flush, and
-    // anything drawn *over* the map -- the focus banner is, and would be
-    // silently erased by a redraw it could not see.
+    // The caller needs that answer for the LCD's cache flush, and for anything
+    // it might later draw over the map, which a redraw it could not see would
+    // silently erase.
     bool draw(const gui::Surface& surface, const Camera& camera, bool force);
 
     const map::MapStore& store() const { return store_; }
@@ -306,6 +333,15 @@ public:
     // copying the window -- so a texture-pack change or a grid toggle shows up
     // as one expensive frame and everything else as the copy.
     u32 lastDrawMicros() const { return lastDrawMicros_; }
+
+    // **How the fill from the card is going**, for the Info page: chunks still
+    // waiting to be asked about, and chunks the card has answered for -- with
+    // and without ground in them. A world standing still in explored terrain
+    // settles at zero waiting; one that never falls is a card that cannot keep
+    // up with a player walking, which is the thing to watch for on hardware.
+    int fillWaiting() const { return fill_.size(); }
+    u32 filled() const { return filled_; }
+    u32 fillEmpty() const { return fillEmpty_; }
 
 private:
     // What the last redraw was of. A redraw happens when this changes, and not
@@ -330,19 +366,29 @@ private:
         // picture, because the coordinates in the panel say something else and
         // the centre cross is on it.
         bool panned = false;
+        // **Everybody else, in one number.** The other markers move without
+        // this player moving at all, so a redraw has to happen when they do --
+        // and comparing a digest of their quantised positions is what keeps a
+        // standing player's map from being copied sixty times a second while
+        // still following somebody walking past. See `playersDigest`.
+        u32 players = 0;
         bool valid = false;
 
         bool operator==(const Signature& other) const
         {
             return valid && other.valid && originX == other.originX && originZ == other.originZ
                    && yawStep == other.yawStep && stored == other.stored && grid == other.grid
-                   && zoom == other.zoom && panned == other.panned;
+                   && zoom == other.zoom && panned == other.panned && players == other.players;
         }
     };
 
     // The window centred on the player. Its origin is a block, so the map's
     // pixel grid is the block grid and a chunk is always sixteen pixels.
     map::MapWindow windowFor(const Camera& camera) const;
+
+    // A number that changes when any other marker would be drawn somewhere
+    // else. Zero with nobody else in the session.
+    u32 playersDigest(const map::MapWindow& window) const;
 
     void drawFurniture(const gui::Surface& surface);
     void drawText(const Camera& camera, const map::MapWindow& window);
@@ -397,6 +443,9 @@ private:
         bool valid = false;
     };
     Refreshed refreshed_;
+
+    const net::RemoteEntities* players_ = nullptr;
+    i32 selfEntityId_ = 0;
 
     // Where the last "keep these alive" pass was centred, so it runs when the
     // view moves rather than sixty times a second on a player standing still.
@@ -474,13 +523,93 @@ private:
     map::MapChunkSample offloadSample_[kOffload];
     int offloadCount_ = 0;
 
-    // One chunk of the queue, sampled on this thread. False when there was
-    // nothing to do -- the column is not resident, or the sample the store
-    // already holds is current.
-    bool sampleOne(const render::WorldStreamer& world, i32 chunkX, i32 chunkZ,
-                   map::MapChunkSample* scratch);
+    // What one chunk off the queue turned out to be.
+    enum class Sampled {
+        Took,         // sampled, and the store has it
+        Current,      // the store's sample is already the truth
+        NotResident,  // no column here to sample: the card's answer or nothing
+    };
+    Sampled sampleOne(const render::WorldStreamer& world, i32 chunkX, i32 chunkZ,
+                      map::MapChunkSample* scratch);
     void collectOffload(render::WorldStreamer& world);
     void postOffload(render::WorldStreamer& world);
+
+    // ------------------------------------------------------------------
+    // **Filling in the ground no column will ever arrive for.**
+    //
+    // The window reaches past the render distance at every setting below 7 and
+    // past every setting once it is zoomed out, so a part of it can never be
+    // sampled from the grid: there is no column and there never will be one.
+    // Until this, that part of the map stayed blank for the whole session, and
+    // the wider the player zoomed the more of the screen it was.
+    //
+    // It is read off the card instead, on the terms
+    // `world::ChunkCache::survey` sets: **the lowest priority there is, one
+    // scratch column, nothing installed and nothing evicted.** The world's own
+    // streaming cannot be slowed by it, because every read the world wants is
+    // taken before any of these are.
+    //
+    // **The sampling happens on the I/O thread**, in the visitor, which is the
+    // whole reason this is affordable: what crosses back to the main thread is
+    // a 1 KB sample rather than an 80 KB column, and the frame pays a store and
+    // a patch redraw for it -- the same two things a resident chunk costs.
+    //
+    // **It runs behind the resident work, never instead of it.** A chunk is
+    // offered here only after `sampleOne` has said there is no column for it,
+    // so ground the streamer holds is always sampled first and the card is
+    // asked about exactly the band that is left.
+    //
+    // **Guests have no card.** `WorldStreamer::surveyAvailable` is false on a
+    // remote world, so a session's map shows what the server sent and nothing
+    // else; there is nowhere else for it to come from.
+    // ------------------------------------------------------------------
+    static constexpr int kSurveys = 4;
+
+    // One request in flight. **The handshake is the state and nothing else**:
+    // the main thread fills the coordinates and publishes `Posted`, the I/O
+    // thread matches its own coordinates against the posted slots, writes the
+    // sample and publishes `Done`, and the main thread puts it away and
+    // publishes `Free`. No lock, because at no point do the two threads own the
+    // same slot.
+    enum class SurveyState : u8 {
+        Free,
+        Posted,
+        Done,
+    };
+    struct Survey {
+        std::atomic<u8> state{u8(SurveyState::Free)};
+        i32 chunkX = 0;
+        i32 chunkZ = 0;
+        bool found = false;
+        map::MapChunkSample sample;
+    };
+    Survey surveys_[kSurveys];
+    int surveysOut_ = 0;
+    u32 filled_ = 0;     // surveys that put ground on the map
+    u32 fillEmpty_ = 0;  // ...and those that found nothing there to put
+
+    // Registered on the streamer the first time a world wants one, and cleared
+    // by `reset()` because a world closing forgets the visitor -- see
+    // `WorldStreamer::cancelSurveys`.
+    bool surveyorSet_ = false;
+
+    // **The window chunks the grid cannot answer for**, in the ring order the
+    // walk produced, waiting for the card.
+    ChunkQueue fill_;
+
+    // **...and the ones the card has already been asked about**, so that each
+    // is asked once. Pushed and never popped: what it answers is "has this
+    // coordinate been offered", and the answer has to survive the request. It
+    // matters most for ground that is not there at all -- a chunk nobody has
+    // generated is not held, so without this the walk would offer it again
+    // every time the player crossed a block. Cleared when it fills, which costs
+    // one more pass over ground that has not changed its mind about existing.
+    ChunkQueue asked_;
+
+    // The visitor, on the I/O thread. See `Survey`.
+    static void surveyOnIo(void* ctx, i32 chunkX, i32 chunkZ, const world::ChunkColumn* column);
+    void collectSurveys();
+    void postSurveys(render::WorldStreamer& world);
 };
 
 }  // namespace mc::ctr

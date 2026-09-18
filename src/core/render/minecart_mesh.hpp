@@ -24,10 +24,21 @@
 // file rather than a conversion of anything -- `180/PI` is 57.3, so this is
 // about a quarter more tilt than the geometry has. It exaggerates on purpose.
 //
-// **Not transcribed, and named so it is not looked for**: a chest or furnace
-// cart draws its block inside the cart, which needs a block model rendered
-// inside an entity and is a thing this build has no path for. Both types are
-// placeable and drawable as plain carts. See core/entity/minecart.hpp.
+// **A chest or furnace cart carries its block, and that is a second pass.**
+// `RenderMinecart`'s field draws it between the tilt and the cart's own model:
+//
+// Chest and furnace carts draw their cargo block after the cart: bind the terrain texture, scale by 0.75, move up 0.3125, turn 90 degrees about the vertical axis, and draw the chest or the unlit furnace the way it looks in the inventory.
+//
+// It is a separate builder rather than six more boxes in the one above because
+// of that first line: the cart is drawn off the **entity** sheet and the block
+// off **terrain**, which is a different binding and therefore a different draw.
+// `buildMinecartBlocks` emits the block, in the cart's own frame, so the two
+// agree about the tilt down to the last degree -- a block that worked out its
+// own heading would slide out of the cart on a slope.
+//
+// **The furnace is always the unlit one.** `Block`'s field is `stoneOvenIdle`; a
+// burning furnace cart does not light up, which is a1.1.2's and not an
+// omission here.
 
 #include "core/entity/minecart.hpp"
 #include "core/mesh/vertex.hpp"
@@ -52,5 +63,17 @@ inline constexpr int kMinecartMaxVertices = kMinecartDrawBudget * kMinecartVerti
 int buildMinecarts(const entity::MinecartSystem& system, const tick::TickWorld& world,
                    double originX, double originY, double originZ, float partial,
                    mesh::DetailVertex* out, int max);
+
+// One cube per chest or furnace cart, off **terrain.png** rather than the
+// entity sheet -- see the header. Same arguments, same origin, same partial;
+// the caller draws it with the block atlas bound.
+inline constexpr int kMinecartBlockVerticesEach = 6 * 4;
+inline constexpr int kMinecartBlockDrawBudget = kMinecartDrawBudget;
+inline constexpr int kMinecartBlockMaxVertices =
+    kMinecartBlockDrawBudget * kMinecartBlockVerticesEach;
+
+int buildMinecartBlocks(const entity::MinecartSystem& system, const tick::TickWorld& world,
+                        double originX, double originY, double originZ, float partial,
+                        mesh::DetailVertex* out, int max);
 
 }  // namespace mc::render

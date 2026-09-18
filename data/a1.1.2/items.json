@@ -30,6 +30,9 @@
     "painting, boat, minecart or arrow, and `none` for everything else. It is",
     "why four items measure `places` as 0 and still do something. `spawnVariant`",
     "is ItemMinecart's own type field -- 0 cart, 1 chest, 2 furnace.",
+    "`record` is ItemRecord's own name field -- the track a music disc",
+    "plays -- and is present only on the two discs. It is the string handed",
+    "to World.playRecord and the key streaming/13.mus files itself under.",
     "`palette` is whether the Creative hand offers it: everything this version",
     "defines except an ItemBlock whose block already has a carried form, and a",
     "handful of engine-only ids named in emitItems."
@@ -197,7 +200,7 @@
     {"id": 344, "name": "egg", "sheet": "items", "icon": 12, "stack": 64, "durability": 32, "damageVsEntity": 1, "places": 0, "armour": -1, "bucket": -2, "fx": 0, "spawns": "none", "spawnVariant": 0, "tills": false, "palette": true},
     {"id": 345, "name": "compass", "sheet": "items", "icon": 54, "stack": 64, "durability": 32, "damageVsEntity": 1, "places": 0, "armour": -1, "bucket": -2, "fx": 1, "spawns": "none", "spawnVariant": 0, "tills": false, "palette": true},
     {"id": 346, "name": "fishing_rod", "sheet": "items", "icon": 69, "stack": 64, "durability": 32, "damageVsEntity": 1, "places": 0, "armour": -1, "bucket": -2, "fx": 0, "spawns": "none", "spawnVariant": 0, "tills": false, "palette": true},
-    {"id": 2256, "name": "record_13", "sheet": "items", "icon": 240, "stack": 1, "durability": 32, "damageVsEntity": 1, "places": 0, "armour": -1, "bucket": -2, "fx": 0, "spawns": "none", "spawnVariant": 0, "tills": false, "palette": true},
-    {"id": 2257, "name": "record_cat", "sheet": "items", "icon": 241, "stack": 1, "durability": 32, "damageVsEntity": 1, "places": 0, "armour": -1, "bucket": -2, "fx": 0, "spawns": "none", "spawnVariant": 0, "tills": false, "palette": true}
+    {"id": 2256, "name": "record_13", "sheet": "items", "icon": 240, "stack": 1, "durability": 32, "damageVsEntity": 1, "places": 0, "armour": -1, "bucket": -2, "fx": 0, "spawns": "none", "spawnVariant": 0, "tills": false, "record": "13", "palette": true},
+    {"id": 2257, "name": "record_cat", "sheet": "items", "icon": 241, "stack": 1, "durability": 32, "damageVsEntity": 1, "places": 0, "armour": -1, "bucket": -2, "fx": 0, "spawns": "none", "spawnVariant": 0, "tills": false, "record": "cat", "palette": true}
   ]
 }

@@ -205,6 +205,10 @@ void buildContainerLayout(const item::ContainerSession& session, int pageTop,
         break;
     }
 
+    // **A chest cart's screen is a chest's**, which is not a convenience: the
+    // original opens the same `GuiChest` on it, so the slot grid, the rows and
+    // the title are the same by construction rather than by resemblance.
+    case item::ScreenKind::MinecartChest:
     case item::ScreenKind::Chest: {
         const int rows = session.chestRows();
         out->chestRows = rows;

@@ -10,6 +10,8 @@
 #include "core/entity/boat.hpp"
 #include "core/entity/minecart.hpp"
 #include "core/entity/mob.hpp"
+#include "core/entity/player_body.hpp"
+#include "core/net/entities.hpp"
 #include "core/world/sign_store.hpp"
 #include "core/entity/painting.hpp"
 #include "core/entity/particle.hpp"
@@ -476,6 +478,33 @@ bool useSeeds(tick::TickWorld& world, BlockId crop, const entity::RayHit& hit)
     return true;
 }
 
+// `ItemRecord`'s method -- **ItemRecord.onItemUse**, which is seven lines
+// and is the only way a disc gets into a jukebox:
+//
+// A disc is used on the clicked cell only if it is an empty jukebox (metadata zero). The jukebox's metadata becomes this disc's index relative to record 13 plus one, the disc's music starts, one item is consumed, and the click counts as used.
+//
+// **The struck cell, not the face's offset.** A disc is not placed past the
+// block it is clicked on; it goes *into* it, which is why this cannot be an
+// `ItemBlock` and why `places` measures 0 for both discs.
+//
+// **The metadata test is the whole of "one at a time"**: a jukebox that is
+// already playing has non-zero metadata and refuses, and the block's own
+// `blockActivated` has already taken that click to eject instead -- so the two
+// halves never both run. See `tick::blockActivated`.
+bool useRecord(tick::TickWorld& world, ItemId held, const char* track,
+               const entity::RayHit& hit)
+{
+    if (block::def(world.blockAt(hit.x, hit.y, hit.z)).tick != TickBehaviour::Jukebox) {
+        return false;
+    }
+    if (world.dataAt(hit.x, hit.y, hit.z) != 0) {
+        return false;
+    }
+    world.setDataRaw(hit.x, hit.y, hit.z, recordMetadata(held));
+    world.playRecord(track, hit.x, hit.y, hit.z);
+    return true;
+}
+
 // a field of another original class -- **`Item.itemRand`**, the static Random every item's own use method
 // draws from. It is deliberately *not* the world's tick random: pitching a
 // sound must not perturb the stream that decides where a tree grows, and in the
@@ -708,6 +737,15 @@ bool rightClick(tick::TickWorld& world, ItemId held, const entity::RayHit& hit,
         return byItem(effects.entities.paintings->place(world, hit.x, hit.y, hit.z, hit.face));
     }
 
+    // **A music disc, which also changes the cell it struck** -- it goes into
+    // the jukebox rather than past it -- and so cannot be routed by the block
+    // it places either: it places none. The `record` column is what says so.
+    if (held != 0) {
+        if (const char* track = recordTrack(held)) {
+            return byItem(useRecord(world, held, track, hit));
+        }
+    }
+
     // **A hoe, which changes the cell it struck rather than the one past it**
     // and so cannot be routed by the block it places -- it places none. Its
     // column says so; see `ItemDef::tills` and `useHoe`.
@@ -890,6 +928,29 @@ EntityTarget pickEntity(const EntityPools& pools, double eyeX, double eyeY, doub
             }
         }
     }
+    // **The other players, last, so a tie goes to something local.** A body is
+    // the player box -- 0.6 across and 1.8 tall, `EntityPlayer`'s own -- built around
+    // where the session last said they were, because `RemotePlayer` keeps a
+    // position and not a box: it is drawn from the packets rather than moved
+    // by physics, so there is no box for it to have.
+    if (pools.players != nullptr) {
+        for (int i = 0; i < pools.players->playerCount(); ++i) {
+            const net::RemotePlayer& other = pools.players->player(i);
+            if (!other.used) {
+                continue;
+            }
+            // `EntityPlayer`'s own size, and `RemotePlayer::y` is the feet.
+            const double half = double(entity::kPlayerWidth / 2.0f);
+            AABB box;
+            box.minX = other.x - half;
+            box.maxX = other.x + half;
+            box.minY = other.y;
+            box.maxY = other.y + double(entity::kPlayerHeight);
+            box.minZ = other.z - half;
+            box.maxZ = other.z + half;
+            consider(EntityTarget::Kind::Player, i, box);
+        }
+    }
     return best;
 }
 
@@ -908,6 +969,13 @@ bool attackEntity(tick::TickWorld& world, const EntityTarget& target, ItemId hel
     }
 
     const EntityPools& pools = effects.entities;
+    // **Somebody else's player is not hit here.** The hit crosses the link and
+    // lands on the console that is running them; doing it here as well would
+    // be this world arguing with theirs about their health. See
+    // `EntityTarget::remote` and `NetPlay::attackEntity`.
+    if (target.remote()) {
+        return false;
+    }
     switch (target.kind) {
     case EntityTarget::Kind::Painting:
         return pools.paintings != nullptr && pools.paintings->attack(world, target.index);
@@ -924,6 +992,7 @@ bool attackEntity(tick::TickWorld& world, const EntityTarget& target, ItemId hel
                && pools.mobs->attack(world, target.index, damage, true, attacker.x,
                                      attacker.z, attacker.present, false,
                                      attacker.provokes);
+    case EntityTarget::Kind::Player:
     case EntityTarget::Kind::None:
         break;
     }
@@ -931,7 +1000,8 @@ bool attackEntity(tick::TickWorld& world, const EntityTarget& target, ItemId hel
 }
 
 EntityInteraction interactWithEntity(tick::TickWorld& world, const EntityTarget& target,
-                                     const EntityPools& pools, ItemId held)
+                                     const EntityPools& pools, ItemId held, double playerX,
+                                     double playerZ)
 {
     EntityInteraction result;
     result.becomes = held;
@@ -939,11 +1009,22 @@ EntityInteraction interactWithEntity(tick::TickWorld& world, const EntityTarget&
     case EntityTarget::Kind::Boat:
         result.taken = pools.boats != nullptr && pools.boats->mount(target.index);
         break;
-    case EntityTarget::Kind::Minecart:
-        // `mount` refuses a chest or a furnace cart, which is `interact`'s own
-        // split -- those two open something this build has nowhere to put.
-        result.taken = pools.minecarts != nullptr && pools.minecarts->mount(target.index);
+    case EntityTarget::Kind::Minecart: {
+        if (pools.minecarts == nullptr) {
+            break;
+        }
+        // `EntityMinecart`'s method, and it is one method with three bodies: a plain cart
+        // is mounted, a chest cart opens its slots and a furnace cart takes the
+        // coal and is pointed away from the player.
+        const entity::MinecartSystem::Interaction answer =
+            pools.minecarts->interact(target.index, held, playerX, playerZ);
+        result.taken = answer.taken();
+        result.spentFuel = answer.spentFuel;
+        if (answer.kind == entity::MinecartSystem::Interaction::Kind::Chest) {
+            result.opensMinecartChest = answer.cart;
+        }
         break;
+    }
     case EntityTarget::Kind::Mob: {
         if (pools.mobs == nullptr) {
             break;
@@ -955,6 +1036,10 @@ EntityInteraction interactWithEntity(tick::TickWorld& world, const EntityTarget&
         break;
     }
     case EntityTarget::Kind::Painting:
+    // **A right click on another player does nothing**, here and in a1.1.2:
+    // `EntityPlayer` has no `interact` of its own, so the click falls through
+    // and places whatever is in the hand against the block behind them.
+    case EntityTarget::Kind::Player:
     case EntityTarget::Kind::None:
         break;
     }

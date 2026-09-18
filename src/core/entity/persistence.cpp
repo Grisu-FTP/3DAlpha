@@ -39,6 +39,25 @@ bool PersistentEntities::capture(const EntityPools& pools)
     if (pools.fallingBlocks) ok = ok && copyOut(pools.fallingBlocks->items_, &fallingBlocks);
     if (pools.primedTnt) ok = ok && copyOut(pools.primedTnt->items_, &primedTnt);
     if (pools.mobs) ok = ok && copyOut(pools.mobs->mobs_, &mobs);
+    // **The chest carts' contents, which are not in the carts.** One entry per
+    // store the pool holds, keyed by the cart's id; an empty store is written
+    // anyway, because "this cart has a chest" is itself worth keeping.
+    if (pools.minecarts) {
+        // Sized once, exactly as `copyOut` sizes the pools above; a snapshot is
+        // filled once and never refilled.
+        ok = ok && minecartChests.reserve(int(pools.minecarts->chests_.size()));
+        for (const MinecartSystem::CartChest& chest : pools.minecarts->chests_) {
+            SavedCartChest row;
+            row.cart = chest.cart;
+            for (int slot = 0; slot < kMinecartChestSlots; ++slot) {
+                const item::ItemStack& stack = chest.slots[slot];
+                row.id[slot] = stack.empty() ? item::kEmptyItemId : stack.id;
+                row.damage[slot] = stack.empty() ? i16(0) : stack.damage;
+                row.count[slot] = stack.empty() ? i8(0) : stack.count;
+            }
+            ok = ok && minecartChests.push(row);
+        }
+    }
     return ok;
 }
 void PersistentEntities::restore(const EntityPools& pools) const
@@ -58,6 +77,41 @@ void PersistentEntities::restore(const EntityPools& pools) const
     if (pools.minecarts) {
         pools.minecarts->clear();
         copyIn(minecarts, &pools.minecarts->carts_, &pools.minecarts->refused_);
+
+        // **Every cart gets an id, and the counter goes past the highest.** A
+        // world saved before carts had ids reads them all as 0, which is the
+        // "no id" value -- so they are handed fresh ones here rather than left
+        // sharing one, and the chest store below then finds nothing for them,
+        // which is right: that world had no cart inventories to lose.
+        MinecartSystem& carts = *pools.minecarts;
+        u32 highest = 0;
+        for (int i = 0; i < carts.carts_.size(); ++i) {
+            highest = carts.carts_[i].id > highest ? carts.carts_[i].id : highest;
+        }
+        carts.nextId_ = highest + 1;
+        for (int i = 0; i < carts.carts_.size(); ++i) {
+            if (carts.carts_[i].id == 0) {
+                carts.carts_[i].id = carts.nextId_++;
+            }
+        }
+
+        for (int i = 0; i < minecartChests.count(); ++i) {
+            const SavedCartChest& row = minecartChests[i];
+            if (carts.indexOfId(row.cart) < 0) {
+                continue;  // a chest for a cart that did not survive the read
+            }
+            MinecartSystem::CartChest* store = carts.openChestStore(row.cart);
+            for (int slot = 0; slot < kMinecartChestSlots; ++slot) {
+                item::ItemStack stack;
+                if (row.count[slot] > 0 && row.id[slot] != item::kEmptyItemId) {
+                    stack.id = row.id[slot];
+                    stack.damage = row.damage[slot];
+                    stack.count = row.count[slot];
+                }
+                stack.slot = i8(slot);
+                store->slots[slot] = stack;
+            }
+        }
     }
     if (pools.items) {
         pools.items->clear();
@@ -74,6 +128,12 @@ void PersistentEntities::restore(const EntityPools& pools) const
     if (pools.mobs) {
         pools.mobs->clear();
         copyIn(mobs, &pools.mobs->mobs_, &pools.mobs->refused_);
+        // **`Mob::handle` is not in the save**, because the thing it stands in
+        // for -- `shootingEntity` -- is a live reference a1.1.2 never writes.
+        // Every mob therefore arrives holding zero, which is the value the
+        // arrow sweep reads as "fired by nobody"; without this an arrow in
+        // flight across a reload would decline to hit any of them.
+        pools.mobs->reissueHandles();
     }
 }
 namespace {
@@ -325,6 +385,9 @@ void write(nbt::Writer& w, const Minecart& e)
     w.writeByte("onGround", static_cast<i8>(e.onGround));
     w.writeByte("flipped", static_cast<i8>(e.flipped));
     w.writeByte("type", static_cast<i8>(e.type));
+    // **The handle its contents are filed under.** A save written before carts
+    // had one reads back as 0, which `restore` hands a fresh id -- see there.
+    w.writeInt("id", static_cast<i32>(e.id));
 }
 bool read(nbt::Reader& r, Minecart* out, bool* keep)
 {
@@ -368,6 +431,10 @@ bool read(nbt::Reader& r, Minecart* out, bool* keep)
             if (!nbt::expectType(r, type, TagType::Float)) return false;
             e.yaw = static_cast<decltype(e.yaw)>(r.floatValue());
             if (!std::isfinite(e.yaw) || std::abs(e.yaw) > 32000000) *keep = false;
+        } else if (name == "id") {
+            if (!nbt::expectType(r, type, TagType::Int)) return false;
+            const i32 id = r.intValue();
+            e.id = id > 0 ? u32(id) : 0u;
         } else if (name == "fuel") {
             if (!nbt::expectType(r, type, TagType::Int)) return false;
             e.fuel = static_cast<decltype(e.fuel)>(r.intValue());
@@ -799,6 +866,90 @@ bool read(nbt::Reader& r, Mob* out, bool* keep)
     *out = e;
     return true;
 }
+// **A chest cart's 27 slots**, and the shape is the one every inventory in the
+// save format has: a sparse list, one compound per occupied slot, tagged with
+// its index. An empty cart writes an entry with an empty list -- "this cart has
+// a chest" is worth keeping on its own.
+void write(nbt::Writer& w, const SavedCartChest& e)
+{
+    w.writeInt("cart", static_cast<i32>(e.cart));
+    w.beginList("Items", TagType::Compound);
+    for (int slot = 0; slot < kMinecartChestSlots; ++slot) {
+        if (e.count[slot] <= 0 || e.id[slot] == item::kEmptyItemId) {
+            continue;
+        }
+        w.beginListElementCompound();
+        w.writeByte("Slot", static_cast<i8>(slot));
+        w.writeShort("id", e.id[slot]);
+        w.writeShort("Damage", e.damage[slot]);
+        w.writeByte("Count", e.count[slot]);
+        w.endCompound();
+    }
+    w.endList();
+}
+
+bool read(nbt::Reader& r, SavedCartChest* out, bool* keep)
+{
+    SavedCartChest e;
+    for (int slot = 0; slot < kMinecartChestSlots; ++slot) {
+        e.id[slot] = item::kEmptyItemId;
+    }
+    TagType type;
+    std::string_view name;
+    while (r.nextField(&type, &name)) {
+        if (name == "cart") {
+            if (!nbt::expectType(r, type, TagType::Int)) return false;
+            const i32 id = r.intValue();
+            if (id <= 0) *keep = false;
+            e.cart = id > 0 ? u32(id) : 0u;
+        } else if (name == "Items") {
+            if (!nbt::expectType(r, type, TagType::List)) return false;
+            TagType element;
+            i32 count;
+            if (!r.enterList(&element, &count) || count < 0
+                || (count != 0 && element != TagType::Compound)) {
+                return false;
+            }
+            for (i32 i = 0; i < count; ++i) {
+                int slot = -1;
+                i16 id = item::kEmptyItemId;
+                i16 damage = 0;
+                i8 stackCount = 0;
+                TagType field;
+                std::string_view key;
+                while (r.nextField(&field, &key)) {
+                    if (key == "Slot") {
+                        if (!nbt::expectType(r, field, TagType::Byte)) return false;
+                        slot = int(r.byteValue());
+                    } else if (key == "id") {
+                        if (!nbt::expectType(r, field, TagType::Short)) return false;
+                        id = r.shortValue();
+                    } else if (key == "Damage") {
+                        if (!nbt::expectType(r, field, TagType::Short)) return false;
+                        damage = r.shortValue();
+                    } else if (key == "Count") {
+                        if (!nbt::expectType(r, field, TagType::Byte)) return false;
+                        stackCount = r.byteValue();
+                    } else if (!r.skipValue(field)) {
+                        return false;
+                    }
+                }
+                // A slot outside the cart is dropped rather than failing the
+                // read: the rest of the world is still good.
+                if (slot >= 0 && slot < kMinecartChestSlots && stackCount > 0) {
+                    e.id[slot] = id;
+                    e.damage[slot] = damage;
+                    e.count[slot] = stackCount;
+                }
+            }
+        } else if (!r.skipValue(type)) {
+            return false;
+        }
+    }
+    *out = e;
+    return true;
+}
+
 template<class T>
 void writePool(nbt::Writer& w, std::string_view name, const SavedPool<T>& pool)
 {
@@ -855,6 +1006,10 @@ void writePersistentEntities(nbt::Writer& w, const PersistentEntities& state)
     // has them reads a file written without one as "no animals" -- so the two
     // directions both work and `Version` still means what it meant.
     writePool(w, "mobs", state.mobs);
+    // Added without a version bump, on the same argument as the two above: a
+    // build without it skips the list and a build with it reads a file that has
+    // none as "no cart inventories".
+    writePool(w, "minecartChests", state.minecartChests);
     w.endCompound();
 }
 bool readPersistentEntities(nbt::Reader& r, PersistentEntities* out)
@@ -882,6 +1037,8 @@ bool readPersistentEntities(nbt::Reader& r, PersistentEntities* out)
             if (!readPool(r, type, &out->primedTnt)) return false;
         } else if (name == "mobs") {
             if (!readPool(r, type, &out->mobs)) return false;
+        } else if (name == "minecartChests") {
+            if (!readPool(r, type, &out->minecartChests)) return false;
         } else if (!r.skipValue(type)) return false;
     }
     return r.ok() && version == 1;

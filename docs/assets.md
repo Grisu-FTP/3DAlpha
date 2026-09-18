@@ -245,8 +245,10 @@ dumped DSP firmware — see below.)
 the folder has — is decoded at boot and is what the
 menus click with; everything else in the sound pool is indexed and counted but not played, because
 nothing in the port can emit it yet — there is no block placement, no player body and no entities.
-`streaming/*.mus` is Mojang's own container, which nothing here decodes. A card with no
-`random/click.ogg` in either simply has silent menus. See
+`streaming/*.mus` is Mojang's own container — an Ogg Vorbis file behind a one-byte cipher keyed
+on its own file name — and a jukebox plays one straight out of the folder; see
+[audio-a1.1.2.md](audio-a1.1.2.md). A card with no `random/click.ogg` in either simply has silent
+menus. See
 [audio-a1.1.2.md](audio-a1.1.2.md).
 
 ## SD card layout

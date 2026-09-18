@@ -50,7 +50,7 @@ void NdspBackend::init(bool enabled)
         return;
     }
 
-    // 32 KB, once, for the life of the process. linearAlloc because the DSP
+    // 64 KB, once, for the life of the process. linearAlloc because the DSP
     // reads it by physical address and cannot follow the MMU.
     ring_ = static_cast<i16*>(linearAlloc(kRingBytes));
     if (ring_ == nullptr) {
@@ -316,6 +316,37 @@ void NdspBackend::run()
 {
     u32 generation = generation_.load(std::memory_order_acquire);
 
+    // **What this thread may ask for, asked once and then put back.** The kernel
+    // refuses a priority numerically below what the process was granted, and it
+    // refuses it at the moment of the call -- so taking a boost now and dropping
+    // it again is the only way to know whether one is available on this console.
+    // A console that refuses keeps exactly the old behaviour.
+    //
+    // Two steps are asked for first because on an Old 3DS this thread starts one
+    // step *below* the main thread, so two is what it takes to preempt it.
+    //
+    // **One step is a real fallback rather than a consolation**, and for a
+    // reason that only holds under SCHED_FIFO: one step up on an Old 3DS is the
+    // main thread's own priority, and equal priority cuts both ways. The decoder
+    // still cannot interrupt a running frame -- but once the main thread blocks
+    // at VBlank and the decoder starts a pass, the frame loop waking up does not
+    // interrupt *it* either. The pass is capped at kBoostBuffersPerPass, so what
+    // that buys is a bounded, guaranteed slice per frame instead of whatever the
+    // main thread happened to leave.
+    if (R_SUCCEEDED(svcGetThreadPriority(&normalPriority_, CUR_THREAD_HANDLE))) {
+        for (s32 step = 2; step >= 1; --step) {
+            const s32 target = normalPriority_ - step;
+            if (target < 0) {
+                continue;
+            }
+            if (R_SUCCEEDED(svcSetThreadPriority(CUR_THREAD_HANDLE, target))) {
+                boostPriority_ = target;
+                svcSetThreadPriority(CUR_THREAD_HANDLE, normalPriority_);
+                break;
+            }
+        }
+    }
+
     while (running_.load(std::memory_order_acquire)) {
         // One wake, one pass over the ring, then back to sleep. Bounded work
         // per wake is what keeps this off the frame on an Old 3DS.
@@ -324,26 +355,48 @@ void NdspBackend::run()
             break;
         }
 
-        // Pick up a track handed over by the main thread. The swap happens
-        // under the lock; the decoding does not.
+        // Pick up a track handed over by the main thread. **The lock covers the
+        // pointer swap and nothing else** -- not the open, not the header parse.
+        // Both read the card, the main thread takes this same lock in playMusic
+        // and stopMusic, and a LightLock does not lend its holder the waiter's
+        // priority: holding it across an SD read would park the frame loop
+        // behind this thread at exactly the moment a track starts.
+        std::unique_ptr<audio::PcmSource> taken;
+        bool swapped = false;
         LightLock_Lock(&lock_);
         const u32 current = generation_.load(std::memory_order_acquire);
         if (current != generation) {
             generation = current;
-            source_ = std::move(pending_);
+            taken = std::move(pending_);
             pending_.reset();
+            swapped = true;
+        }
+        LightLock_Unlock(&lock_);
 
+        if (swapped) {
+            source_.reset();
             ndspChnWaveBufClear(kMusicChannel);
             for (ndspWaveBuf& buffer : buffers_) {
                 buffer.status = NDSP_WBUF_DONE;
                 buffer.nsamples = 0;
             }
+            ringLow_.store(kRingBuffers, std::memory_order_relaxed);
+            primed_ = false;
+            source_ = std::move(taken);
 
             // The open, the header parse and the format query, all here on the
             // decode thread rather than on the frame that asked for the track.
             if (source_ && !source_->prepare()) {
                 source_.reset();
                 playing_.store(false, std::memory_order_release);
+            }
+
+            // Opening takes long enough that the track can have been stopped or
+            // replaced meanwhile, and `generation_` is where that is recorded.
+            // Without this check the buffers below would be queued for a track
+            // nobody is waiting for any more.
+            if (source_ && generation_.load(std::memory_order_acquire) != generation) {
+                source_.reset();
             }
 
             if (source_) {
@@ -357,9 +410,41 @@ void NdspBackend::run()
                 applyGain();
             }
         }
-        LightLock_Unlock(&lock_);
 
-        fillBuffers();
+        // **The catch-up, and the whole of the policy.** How much audio the DSP
+        // still holds is the only honest measure of whether this thread is
+        // keeping up, because it is the thing that runs out. Below kBoostBelow
+        // the decoder outranks the main thread until the ring is full again.
+        //
+        // The *reported* numbers -- the low-water mark and the boost count --
+        // start only once the ring has been full once for this track. An empty
+        // ring at the top of a track is how every track starts, and counting
+        // that would bury the number that matters: how often this thread was
+        // genuinely losing ground mid-track. The boost itself is not gated on
+        // that, because filling the ring quickly at the start is exactly what it
+        // is for.
+        const int queued = queuedBuffers();
+        if (!primed_ && queued >= kRestoreAt) {
+            primed_ = true;
+        }
+        if (primed_ && queued < ringLow_.load(std::memory_order_relaxed)) {
+            ringLow_.store(queued, std::memory_order_relaxed);
+        }
+        if (source_ && !boosted_ && queued <= kBoostBelow) {
+            setBoosted(true);
+            if (primed_ && boosted_) {
+                boosts_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        fillBuffers(boosted_ ? kBoostBuffersPerPass : kRingBuffers);
+
+        // Back down the moment the ring is full again, or the track is over.
+        // Boosted, this thread is in front of the frame loop, so it stays there
+        // for as little as it can get away with.
+        if (boosted_ && (!source_ || queuedBuffers() >= kRestoreAt)) {
+            setBoosted(false);
+        }
 
         // The track has drained when the decoder is finished *and* the hardware
         // has run out. Both halves matter: clearing `playing_` when the decoder
@@ -375,10 +460,39 @@ void NdspBackend::run()
         }
     }
 
+    setBoosted(false);
     source_.reset();
 }
 
-void NdspBackend::fillBuffers()
+int NdspBackend::queuedBuffers() const
+{
+    int queued = 0;
+    for (const ndspWaveBuf& buffer : buffers_) {
+        // The DSP writes these back, so this is what the hardware still has
+        // rather than what was handed to it.
+        if (buffer.status != NDSP_WBUF_DONE && buffer.status != NDSP_WBUF_FREE) {
+            ++queued;
+        }
+    }
+    return queued;
+}
+
+void NdspBackend::setBoosted(bool boosted)
+{
+    if (boosted == boosted_ || boostPriority_ < 0) {
+        return;
+    }
+    const s32 target = boosted ? boostPriority_ : normalPriority_;
+    if (R_FAILED(svcSetThreadPriority(CUR_THREAD_HANDLE, target))) {
+        // Refusing to go back down would leave this thread in front of the frame
+        // loop for good, so a failure is recorded as "still where it was" and
+        // tried again on the next pass rather than assumed.
+        return;
+    }
+    boosted_ = boosted;
+}
+
+void NdspBackend::fillBuffers(int maxBuffers)
 {
     if (!source_) {
         return;
@@ -386,9 +500,9 @@ void NdspBackend::fillBuffers()
 
     const int channels = source_->channels();
     const u64 before = svcGetSystemTick();
-    bool decoded = false;
+    int filled = 0;
 
-    for (int i = 0; i < kRingBuffers; ++i) {
+    for (int i = 0; i < kRingBuffers && filled < maxBuffers; ++i) {
         ndspWaveBuf& buffer = buffers_[i];
         if (buffer.status != NDSP_WBUF_DONE && buffer.status != NDSP_WBUF_FREE) {
             continue;
@@ -403,7 +517,7 @@ void NdspBackend::fillBuffers()
             source_.reset();
             break;
         }
-        decoded = true;
+        ++filled;
 
         buffer.nsamples = u32(frames);
 
@@ -414,9 +528,13 @@ void NdspBackend::fillBuffers()
         ndspChnWaveBufAdd(kMusicChannel, &buffer);
     }
 
-    if (decoded) {
+    if (filled > 0) {
         const u64 elapsed = svcGetSystemTick() - before;
-        decodeMicros_.store(u32(elapsed / (SYSCLOCK_ARM11 / 1000000)),
+        // **Per buffer, which is what the overlay says it is.** A pass fills
+        // however many fell free, so the total is a pass time and the quotient
+        // is the 23 ms block's decode cost -- the number the thread policy has
+        // to be argued from.
+        decodeMicros_.store(u32(elapsed / (SYSCLOCK_ARM11 / 1000000) / u64(filled)),
                             std::memory_order_relaxed);
     } else if (source_ && !ndspChnIsPlaying(kMusicChannel)) {
         // Nothing was free and the channel has nothing to play: the decoder

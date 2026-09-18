@@ -49,6 +49,9 @@ constexpr Slot kSlots[kEntitySkinCount] = {
     // each and a slot apart, so the sheet's one page pitch still describes it.
     {128, 32, kCelestialPagePixels, kCelestialPagePixels, "terrain/sun.png"},
     {192, 32, kCelestialPagePixels, kCelestialPagePixels, "terrain/moon.png"},
+    // The one free page in the top row, and the same file the player's page is
+    // built from -- see the note on `EntitySkin::OtherPlayer`.
+    {192, 0, kSkinPageWidth, kSkinPageHeight, kSkinFile},
 };
 
 const Slot& slotOf(EntitySkin skin)
@@ -211,6 +214,27 @@ void devArtPage(std::vector<u8>* out, int outWidth, const Slot& slot, u8 r, u8 g
     }
 }
 
+// **The slime's stand-in, which is a grid with a hole in its opacity.**
+//
+// `gq` draws the slime twice: `hh(16)`, the inner body with the face on it, and
+// then `hh(0)`, the shell, blended over the top -- and the shell is blended
+// because the jar's own `mob/slime.png` has it at alpha 199 of 255. A flat
+// opaque stand-in therefore draws a slime with no face, which is exactly the
+// bug the second pass exists to fix and is not something a stand-in should be
+// able to hide. The shell's net is the top-left quarter of the page (the 8-cube
+// at texture offset (0, 0) in a 64 x 32), so that quarter gets the jar's alpha
+// and the rest -- the inner body, the eyes and the mouth -- stays opaque.
+void slimePage(std::vector<u8>* out, int outWidth, const Slot& slot, u8 r, u8 g, u8 b)
+{
+    constexpr u8 kJellyAlpha = 199;
+    devArtPage(out, outWidth, slot, r, g, b);
+    for (int y = 0; y < slot.height / 2; ++y) {
+        for (int x = 0; x < slot.width / 2; ++x) {
+            texel(out, outWidth, slot.x + x, slot.y + y)[3] = kJellyAlpha;
+        }
+    }
+}
+
 // A page of opaque black. See the header on why the player's stand-in is not a
 // grid like the other four.
 void blackPage(std::vector<u8>* out, int outWidth, const Slot& slot)
@@ -300,7 +324,7 @@ void buildDevArtSkins(std::vector<u8>* out)
     devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Skeleton)], 200, 200, 190);
     devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Creeper)], 110, 190, 100);
     devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Spider)], 60, 45, 40);
-    devArtPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Slime)], 130, 220, 120);
+    slimePage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Slime)], 130, 220, 120);
     eyePage(out, kEntitySheetWidth, kSlots[int(EntitySkin::SpiderEyes)]);
     // The sky's two. Warm for the sun and pale for the moon, so a stand-in sky
     // still reads as a sky -- and a grid rather than a disc, because these are
@@ -312,6 +336,10 @@ void buildDevArtSkins(std::vector<u8>* out)
     // silhouette is an honest answer where an orange grid would read as a bug.
     // Opaque, because the alpha test would otherwise cut the arm away entirely.
     blackPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::Player)]);
+    // Other people are silhouettes for the same reason, and deliberately the
+    // same silhouette -- which is why `each_page_has_its_own_colour` excuses
+    // this page along with the spider's eyes.
+    blackPage(out, kEntitySheetWidth, kSlots[int(EntitySkin::OtherPlayer)]);
 }
 
 void buildDevArtArt(std::vector<u8>* out)

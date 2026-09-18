@@ -103,9 +103,20 @@ const char* tickBehaviourName(TickBehaviour behaviour)
     case TickBehaviour::MobSpawner:    return "mob_spawner";
     case TickBehaviour::Chest:         return "chest";
     case TickBehaviour::Workbench:     return "workbench";
+    case TickBehaviour::Jukebox:       return "jukebox";
     case TickBehaviour::Count:         break;
     }
     return "unknown";
+}
+
+const char* sideRuleName(SideRule rule)
+{
+    switch (rule) {
+    case SideRule::OwnKind:     return "own_kind";
+    case SideRule::OwnMaterial: return "own_material";
+    case SideRule::Slab:        return "slab";
+    default:                    return "none";
+    }
 }
 
 bool tileEntityBearing(TickBehaviour behaviour)

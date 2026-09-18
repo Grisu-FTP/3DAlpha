@@ -47,14 +47,40 @@ TEST(the_stand_in_sheet_is_the_right_size_and_wholly_opaque)
     // everywhere but the eyes, and the detail pass's alpha test is what makes
     // the rest of the head show through. A filled eye page would draw a solid
     // box over the spider's face.
+    //
+    // **And the slime's shell is the other**, for the opposite reason: it is
+    // not an overlay, it is a *pass*. `gq` draws `hh(0)` over `hh(16)` with
+    // `GL_BLEND` on, and the jar's own `mob/slime.png` is alpha 199 across the
+    // shell's quarter of the page. A fully opaque stand-in there draws a slime
+    // with no face, which is the one thing about this model that can be wrong
+    // -- so the page is checked below rather than excused.
     for (int i = 0; i < texture::kEntitySkinCount; ++i) {
-        if (EntitySkin(i) == EntitySkin::SpiderEyes) {
+        if (EntitySkin(i) == EntitySkin::SpiderEyes || EntitySkin(i) == EntitySkin::Slime) {
             continue;
         }
         int ox = 0, oy = 0;
         texture::skinOrigin(EntitySkin(i), &ox, &oy);
         CHECK_EQ(int(texelAt(sheet, ox + 1, oy + 1)[3]), 255);
     }
+}
+
+TEST(the_slime_stand_in_has_a_translucent_shell_over_an_opaque_face)
+{
+    std::vector<u8> sheet;
+    texture::buildDevArtSkins(&sheet);
+    int ox = 0, oy = 0;
+    texture::skinOrigin(EntitySkin::Slime, &ox, &oy);
+
+    // The shell's net is the top-left quarter -- the 8-cube at texture offset
+    // (0, 0) of a 64 x 32 -- and carries the jar's own alpha.
+    CHECK_EQ(int(texelAt(sheet, ox + 1, oy + 1)[3]), 199);
+    CHECK_EQ(int(texelAt(sheet, ox + texture::kSkinPageWidth / 2 - 1,
+                         oy + texture::kSkinPageHeight / 2 - 1)[3]), 199);
+
+    // Everything else is opaque: the inner body below it, and the eyes and the
+    // mouth beside it. A face you can see through is not a face.
+    CHECK_EQ(int(texelAt(sheet, ox + 1, oy + texture::kSkinPageHeight / 2 + 1)[3]), 255);
+    CHECK_EQ(int(texelAt(sheet, ox + texture::kSkinPageWidth / 2 + 1, oy + 1)[3]), 255);
 }
 
 TEST(the_spider_eye_page_is_clear_except_for_two_dots)
@@ -95,12 +121,19 @@ TEST(each_page_has_its_own_colour)
         texture::skinOrigin(EntitySkin(i), &ox, &oy);
         red[i] = texelAt(sheet, ox + 5, oy + 5)[0];
     }
+    // The eye overlay is transparent by design, and the two player pages are
+    // the same black silhouette by design -- one is this console's owner and
+    // one is everybody else, and dev art has nothing to say about either.
+    const auto excused = [](int index) {
+        return EntitySkin(index) == EntitySkin::SpiderEyes
+               || EntitySkin(index) == EntitySkin::OtherPlayer;
+    };
     for (int a = 0; a < texture::kEntitySkinCount; ++a) {
-        if (EntitySkin(a) == EntitySkin::SpiderEyes) {
+        if (excused(a)) {
             continue;
         }
         for (int b = a + 1; b < texture::kEntitySkinCount; ++b) {
-            if (EntitySkin(b) == EntitySkin::SpiderEyes) {
+            if (excused(b)) {
                 continue;
             }
             CHECK(red[a] != red[b]);
@@ -115,8 +148,9 @@ TEST(every_placeholder_page_carries_a_corner_mark_so_up_is_visible)
     std::vector<u8> sheet;
     texture::buildDevArtSkins(&sheet);
     for (int i = 0; i < texture::kEntitySkinCount; ++i) {
-        if (EntitySkin(i) == EntitySkin::Player) {
-            continue;  // A silhouette, not a placeholder. See below.
+        if (EntitySkin(i) == EntitySkin::Player || EntitySkin(i) == EntitySkin::OtherPlayer) {
+            continue;  // Silhouettes, not placeholders -- this console's owner
+                       // and everybody else. See below.
         }
         if (EntitySkin(i) == EntitySkin::SpiderEyes) {
             continue;  // An overlay, and a corner mark on one would be a dot

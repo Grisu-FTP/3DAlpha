@@ -1,5 +1,7 @@
 #include "core/mesh/mesher.hpp"
 
+#include "core/block/side_rule.hpp"
+
 #include "core/block/collision.hpp"
 #include "core/block/registry.hpp"
 #include "core/block/world_texture.hpp"
@@ -446,13 +448,21 @@ void addBoundedCube(const MeshScratch& scratch, int x, int y, int z, const u16 t
 
     int mask = 0;
     u8 light = scratch.light(x, y, z);
+    const BlockId self = scratch.block(x, y, z);
+    const BlockDef& selfDef = block::def(self);
     for (int face = 0; face < kFaceCount; ++face) {
         const FaceOffset& offset = kFaceOffset[face];
         const int nx = x + offset.dx;
         const int ny = y + offset.dy;
         const int nz = z + offset.dz;
         const bool touchesEdge = reach[face] == 0.0;
-        if (touchesEdge && block::def(scratch.block(nx, ny, nz)).opaque) {
+        // **The block's own `shouldSideBeRendered`**, which for a slab is not
+        // "is the neighbour opaque" -- see core/block/side_rule.hpp. The reach
+        // test is still ours and still first: a face that does not touch the
+        // side of the cell has no neighbour to be hidden by whatever rule the
+        // block carries.
+        if (touchesEdge
+            && !block::sideVisible(self, selfDef, scratch.block(nx, ny, nz), face)) {
             continue;
         }
         mask |= 1 << face;
@@ -509,7 +519,10 @@ void emitNonCube(const MeshScratch& scratch, int x, int y, int z, BlockId id,
             // exactly as the fast path would.
             for (int face = 0; face < kFaceCount; ++face) {
                 const FaceOffset& offset = kFaceOffset[face];
-                if (block::def(scratch.block(x + offset.dx, y + offset.dy, z + offset.dz)).opaque) {
+                if (!block::sideVisible(id, def,
+                                        scratch.block(x + offset.dx, y + offset.dy,
+                                                      z + offset.dz),
+                                        face)) {
                     continue;
                 }
                 out.addFace(x, y, z, face, tiles[face],
@@ -578,12 +591,14 @@ void meshSection(const MeshScratch& scratch, MeshBuilder& out)
                     const int ny = y + offset.dy;
                     const int nz = z + offset.dz;
 
-                    // The original's rule, and the only one: a face is drawn
-                    // unless the block against it is an opaque cube. Glass and
-                    // leaves are full cubes that are not opaque, so their
-                    // interior faces survive -- which is correct for alpha,
-                    // where glass panes had not been invented.
-                    if (block::def(scratch.block(nx, ny, nz)).opaque) {
+                    // **`shouldSideBeRendered`, which is the block's own and
+                    // not one line.** The base class is "unless the neighbour
+                    // is an opaque cube" and that covers sixty-five blocks;
+                    // glass, ice and leaves also hide a face against their own
+                    // kind, which is what makes a wall of glass a window
+                    // rather than a stack of boxes. See
+                    // core/block/side_rule.hpp.
+                    if (!block::sideVisible(id, def, scratch.block(nx, ny, nz), face)) {
                         continue;
                     }
 

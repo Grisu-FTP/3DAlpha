@@ -94,6 +94,7 @@
 
 #include "core/entity/item_entity.hpp"
 #include "core/gui/container_layout.hpp"
+#include "core/gui/stick_cursor.hpp"
 #include "core/gui/paint.hpp"
 #include "core/item/container_session.hpp"
 #include "core/tick/tick_world.hpp"
@@ -289,6 +290,15 @@ public:
     // the icons unpainted rather than painting the wrong thing.
     void setAtlas(const texture::AtlasImage& atlas);
 
+    // **The rest of the session, for the map's markers.** Straight through to
+    // `MapScreen::setSession`; the overlay holds the map and the frame loop
+    // holds the session, and this is where the two meet. Null in single
+    // player.
+    void setSession(const net::RemoteEntities* players, i32 selfEntityId)
+    {
+        map_.setSession(players, selfEntityId);
+    }
+
     // What the player is carrying. **Held here because it is what this screen
     // is**: every slot in it is drawn, touched and cursored on the bottom
     // screen and nowhere else, and the only thing outside that reads it is the
@@ -438,6 +448,10 @@ public:
     // Inv. page keeps its swap-only edit and never opens a session.
     void openContainer(tick::TickWorld& world, tick::TickWorld::ContainerKind kind, i32 x,
                        int y, i32 z);
+    // **A chest minecart**, which is the same screen on an entity rather than
+    // on a cell -- so it cannot come through `ContainerKind`, which names a
+    // block. See `item::ContainerSession::openMinecartChest`.
+    void openMinecartChest(tick::TickWorld& world, entity::MinecartSystem& carts, u32 cartId);
     bool containerOpen() const
     {
         return session_.isOpen() && session_.kind() != item::ScreenKind::Inventory;
@@ -472,16 +486,32 @@ public:
     bool uiFocused() const { return focus_; }
 
     // **Whether the circle pad is scrolling the map rather than walking.** True
-    // only while the screen is focused *and* the map is the page up, which is
-    // the one combination where the stick has somewhere better to be. The
-    // caller zeroes the body's heading while it holds -- panning and walking at
-    // once would be two things fighting over the same window.
-    bool mapPanActive() const { return focus_ && playerPage_ == PlayerPage::Map; }
+    // while the screen is focused *and* the map is what is in front of the
+    // player, which is the one place the stick has a window to move. The caller
+    // zeroes the body's heading while it holds -- panning and walking at once
+    // would be two things fighting over the same window.
+    //
+    // **A world container is drawn over the page**, so a chest opened while the
+    // map tab happened to be up is not a map to pan: what the stick should be
+    // moving then is the chest's cursor, which is what `uiCursorActive` says.
+    bool mapPanActive() const
+    {
+        return focus_ && playerPage_ == PlayerPage::Map && !containerOpen();
+    }
 
-    // Once a frame, after handleInput. Reads the circle pad and scrolls the map
-    // when `mapPanActive()`; does nothing at all otherwise. `dt` is seconds,
-    // because a pan is a gesture and belongs on the frame clock -- unlike the
-    // body, whose every constant is per tick.
+    // **Whether the circle pad is walking a cursor rather than the player.**
+    // Every focused screen except a map being panned has a cursor on it, and
+    // while one does the stick drives it exactly as the d-pad does -- a grid is
+    // a grid, and having to let go of the stick and find the d-pad to cross one
+    // is a seam the player has no reason to feel. The caller zeroes the body's
+    // heading for this too: a screen is open, so nothing reaches the player.
+    bool uiCursorActive() const { return focus_ && !mapPanActive(); }
+
+    // Once a frame, after handleInput. Reads the circle pad and either scrolls
+    // the map (`mapPanActive`) or steps the focused screen's cursor
+    // (`uiCursorActive`); does nothing at all when the screen is not focused.
+    // `dt` is seconds, because both are gestures and belong on the frame clock
+    // -- unlike the body, whose every constant is per tick.
     void tickFocus(float dt);
 
     // The backdrop behind the player's panels: the pack's `dirt.png`, tiled and
@@ -571,6 +601,18 @@ private:
         float walk = 0.0f;
         float stream = 0.0f;
         float tick = 0.0f;
+
+        // **The frame minus everything above it, so the page reconciles by
+        // construction.** The five measured buckets do not span the game loop:
+        // `beforeWalk` is a long way down from the top of it, and `afterStream`
+        // is not the bottom. Everything outside them -- the input scan, the
+        // pause and death branches, block breaking, item use, the net pump,
+        // `Overlay::tickMap`, this very function's console printing and
+        // `gfxFlushBuffers` -- used to be invisible, so a 25 ms frame could sit
+        // over a 15 ms `CPU busy` with nothing on the screen to say where the
+        // other ten went. This is where they go. It is a residual rather than a
+        // measurement, which is the point: nothing can fall out of it.
+        float other = 0.0f;
     };
 
     // Each draws its page starting at the body's first row and returns the
@@ -596,19 +638,18 @@ private:
     bool drawLook(const gui::Surface& surface, const Camera& camera, bool cleared);
     void drawBlocks(const gui::Surface& surface);
 
-    // The dark strip under the tab strip that says the screen is focused, and
-    // what the buttons mean while it is. Drawn last, over the page -- see
-    // hud::drawFocusBanner.
-    void drawFocusBanner(const gui::Surface& surface) const;
-
     // Turns the focus off and puts everything it owned back: the palette
-    // cursor, the map's pan, and a full redraw, because the banner darkened
-    // pixels that can only be restored by drawing them again.
+    // cursor and the map's pan, and a full redraw, because the focused pages
+    // draw a cursor that can only be taken away by drawing them again.
     void releaseFocus();
 
     // The focused d-pad, A and B, and the shoulder pair. Returns true when
     // something it changed has to be redrawn.
     bool handleFocusedInput(u32 down);
+
+    // `tickFocus`'s other half: the circle pad stepping a focused cursor, with
+    // the wait-then-repeat a held direction needs.
+    void tickCursorStick(float dt);
 
     // Where the palette cursor is, as a palette index rather than a cell.
     int paletteIndex() const { return palettePage_ * hud::kPalettePerPage + paletteCursor_; }
@@ -713,6 +754,11 @@ public:
         int monsters = 0;
         unsigned searches = 0;
         unsigned exhausted = 0;
+        // The most searches any one tick has run. The per-tick cap of one was
+        // removed because it was dropping nine path requests in ten once the
+        // monsters arrived; this is what says what that costs. See
+        // `MobSystem::peakSearchesPerTick`.
+        int peakSearches = 0;
         int taken = 0;
         int hits = 0;
 
@@ -822,6 +868,12 @@ private:
     bool focus_ = false;
     bool focusGrid_ = false;
 
+    // **The circle pad, read as a d-pad while a cursor is focused.** A repeat
+    // is a thing with a memory -- the first step lands the moment the stick
+    // moves and the ones after it are slow enough to stop on -- so the state
+    // lives here and the rule lives in core/gui/stick_cursor.hpp.
+    gui::StickRepeat stick_;
+
     // The game-over screen: whether it is up, the score it shows, which of its
     // two buttons the d-pad is on, and a press not yet collected.
     bool dead_ = false;
@@ -867,6 +919,15 @@ private:
 
     Accum accum_;
     Accum shown_;
+
+    // **The largest single frame in the block, beside the mean of it.** The top
+    // screen is 59.83 Hz, so a frame costs 16.71 ms or 33.4 ms and nothing in
+    // between; a mean of 25 is not a frame anybody had, it is half of each. And
+    // because each bucket's spike lands in a different frame from the others,
+    // no mean of a part can ever add up to a mean of the whole. The peaks are
+    // what say which part actually spiked.
+    Accum peak_;
+    Accum shownPeak_;
 
     // **The chunk cache's counters are cumulative, and a cumulative counter
     // cannot answer "is it happening now".**

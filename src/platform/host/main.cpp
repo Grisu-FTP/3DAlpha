@@ -45,6 +45,7 @@
 #include "core/world/world_format.hpp"
 #include "core/world/world_list.hpp"
 #include "platform/host/audio_wav.hpp"
+#include "platform/host/join.hpp"
 #include "impl/worldgen/alpha_nobiome/chunk_generator.hpp"
 #include "items.hpp"  // generated; see tools/configure.py
 #include "version_config.hpp"
@@ -2581,9 +2582,22 @@ int audioList(const char* resources)
     std::printf("  music      %4zu  (music/ and newmusic/ -- what the ticker draws from)\n",
                 index.music.size());
     std::printf("  sounds     %4zu  (sound/ and newsound/)\n", index.sounds.size());
-    std::printf("  streaming  %4zu  (records; .mus is Mojang's own container and is not\n",
+    std::printf("  streaming  %4zu  (records, keyed by name -- a jukebox asks for one\n",
                 index.streaming.size());
-    std::printf("                    decoded -- see docs/audio-a1.1.2.md)\n");
+    std::printf("                    of these by the disc's own track name)\n");
+
+    // **The records, with the key a jukebox asks for**, which for the streaming
+    // pool is the file's own name with the extension off -- the digits stay, so
+    // `13.mus` really is addressable as "13". A `.mus` is an Ogg Vorbis file
+    // behind a one-byte cipher keyed on its file name; see
+    // core/audio/vorbis_stream.hpp.
+    if (!index.streaming.empty()) {
+        std::printf("\nstreaming pool, as registered and keyed:\n");
+        for (const audio::SoundEntry& entry : index.streaming.entries()) {
+            std::printf("  %-28s -> %s\n", entry.name.c_str(),
+                        audio::poolKey(entry.name, false).c_str());
+        }
+    }
 
     // The keys, because the digit strip and the category strip are both easy
     // to get wrong and this is the cheapest way to look at what they did. The
@@ -2776,6 +2790,57 @@ int audioDump(const char* resources, const char* outPath, i64 seed, int minutes)
     return 0;
 }
 
+
+// `--record-dump`: **one disc, decoded and written out**, which is the only way
+// to say the `.mus` cipher is right rather than merely plausible. The path is
+// the console's exactly -- the same pool lookup by track name, the same
+// `VorbisStream`, the same positional gain -- with a .wav where ndsp is.
+//
+// A record is not on the music voice by accident here: `playRecord` shares it,
+// because a1.1.2 stops `BgMusic` the moment a disc starts. See
+// core/audio/sound_engine.hpp.
+int recordDump(const char* resources, const char* track, const char* outPath, int seconds)
+{
+    io::PosixFileSystem fs;
+    host::WavBackend wav(outPath);
+    audio::SoundEngine engine(fs, wav, 0);
+    const usize found = engine.loadResources(resources);
+    if (found == 0) {
+        std::printf("no resources at %s -- nothing to play\n", resources);
+        return 1;
+    }
+    if (!audio::vorbisAvailable()) {
+        std::printf("this build has no Vorbis decoder; install libvorbisfile and\n");
+        std::printf("reconfigure.\n");
+        return 1;
+    }
+
+    // The jukebox is at the origin and so are the ears, which is the gain a
+    // player standing on the block would hear: 0.5 * soundVolume, undimmed.
+    engine.setListener(0.0, 0.0, 0.0);
+    engine.playRecord(track, 0.0, 0.0, 0.0);
+    if (!engine.recordPlaying()) {
+        std::printf("no record called \"%s\" in %s -- try --audio-list\n", track, resources);
+        return 1;
+    }
+
+    const int ticks = seconds * 20;
+    for (int tick = 0; tick < ticks && engine.recordPlaying(); ++tick) {
+        engine.tick(1);
+        wav.advance(1);
+    }
+    wav.finish();
+
+    std::printf("%s: %.1f s of \"%s\"\n", outPath, double(wav.framesWritten()) / 44100.0,
+                track);
+    // A cipher that is wrong does not decode at all: Vorbis refuses the header
+    // and the stream ends with nothing written. One second is enough to tell.
+    if (wav.framesWritten() < 44100) {
+        std::printf("that is less than a second -- the file did not decode\n");
+        return 1;
+    }
+    return 0;
+}
 
 // `--spawns`: where the monsters go, in a real world, on the host.
 //
@@ -3235,6 +3300,11 @@ int main(int argc, char** argv)
         return audioDump(argv[2], argv[3], seed, minutes);
     }
 
+    if (argc > 4 && std::strcmp(argv[1], "--record-dump") == 0) {
+        const int seconds = argc > 5 ? std::atoi(argv[5]) : 30;
+        return recordDump(argv[2], argv[3], argv[4], seconds > 0 ? seconds : 30);
+    }
+
     if (argc > 2 && std::strcmp(argv[1], "--rewrite") == 0) {
         const bool reconcile = argc > 3 && std::strcmp(argv[3], "reconcile") == 0;
         return rewriteWorld(argv[2], reconcile);
@@ -3329,8 +3399,16 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    if (argc > 1 && std::strcmp(argv[1], "--join") == 0) {
+        return runJoin(argc, argv);
+    }
+
     std::printf("3DAlpha host harness (%s).\n", mcver::kDisplay);
     std::printf("  --version                            build configuration\n");
+    std::printf("  --join host[:port] [name] [seconds] [compare=<world-copy>]\n");
+    std::printf("        play a scripted session on a real protocol-2 server: log in, keep\n");
+    std::printf("        every column, chat, dig and place, and check the server echoed it.\n");
+    std::printf("        compare= diffs the columns against a copy of the server's world\n");
     std::printf("  --generate [seed] [radius] [snow] [cache-columns] [raster]\n");
     std::printf("        generate a fresh world outward from one chunk and report what it\n");
     std::printf("        cost, per column and in cache high-water\n");
@@ -3365,6 +3443,10 @@ int main(int argc, char** argv)
     std::printf("  --music-schedule <resources-dir> [seed] [hours]\n");
     std::printf("        when a1.1.2 would start background music over a stretch of play.\n");
     std::printf("        Needs no decoder and no console -- this is the feature itself\n");
+    std::printf("  --record-dump <resources-dir> <track> <out.wav> [seconds]\n");
+    std::printf("        decode one music disc -- `13`, `cat` -- and write it out. This is\n");
+    std::printf("        the path a jukebox takes, cipher included: a `.mus` is an Ogg\n");
+    std::printf("        Vorbis file behind a byte cipher keyed on its own file name\n");
     std::printf("  --audio-dump <resources-dir> <out.wav> [seed] [minutes]\n");
     std::printf("        render that schedule to a .wav, silence between tracks included,\n");
     std::printf("        so the music can be listened to without a 3DS\n");

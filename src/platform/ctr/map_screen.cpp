@@ -143,6 +143,14 @@ void MapScreen::configure(bool isNew3DS)
     // world and send the map straight to the fallback pass it is there to
     // avoid.
     pending_.setCapacity(1024);
+    // **The same window again, for the band the grid cannot fill.** At the
+    // widest zoom and the shortest render distance that band is most of the
+    // window, so it is sized as though it were all of it. `asked_` holds the
+    // ground already offered and is twice as long, because it also remembers
+    // chunks the world does not have -- which is most of a window in a world
+    // nobody has explored.
+    fill_.setCapacity(1024);
+    asked_.setCapacity(2048);
     resync_ = false;
     offloadCount_ = 0;
 
@@ -201,11 +209,27 @@ void MapScreen::reset()
 {
     store_.clear();
     pending_.clear();
+    fill_.clear();
+    asked_.clear();
     resync_ = false;
     offloadCount_ = 0;
+    // **The world that was surveyed is closed and has forgotten the visitor**
+    // -- `WorldStreamer::close` drops it, with the card's thread already joined
+    // -- so the slots are free and the next world registers again.
+    for (Survey& survey : surveys_) {
+        survey.state.store(u8(SurveyState::Free), std::memory_order_relaxed);
+    }
+    surveysOut_ = 0;
+    surveyorSet_ = false;
+    filled_ = 0;
+    fillEmpty_ = 0;
     primed_ = false;
     shown_ = Signature{};
     refreshed_ = Refreshed{};
+    // The screen is a process-lifetime object and the session is not: a
+    // pointer kept here would outlive the world it belonged to.
+    players_ = nullptr;
+    selfEntityId_ = 0;
     clearPan();
 }
 
@@ -294,28 +318,126 @@ void MapScreen::sampleOnWorker(void* ctx, int index, const world::ChunkColumn& c
     map::sampleChunk(column, &self->offloadSample_[index]);
 }
 
-bool MapScreen::sampleOne(const render::WorldStreamer& world, i32 chunkX, i32 chunkZ,
-                          map::MapChunkSample* scratch)
+MapScreen::Sampled MapScreen::sampleOne(const render::WorldStreamer& world, i32 chunkX,
+                                       i32 chunkZ, map::MapChunkSample* scratch)
 {
     // **The column's serial, which is what "this sample is out of date" means.**
     // Zero is a column the streamer does not hold, and a held sample of ground
     // that is no longer resident stays exactly as it was -- it is the last true
     // thing anyone knew about that chunk, and there is nothing to replace it
-    // with. The map never asks the card for anything.
+    // with.
+    //
+    // **Not resident is not the end of it any more**, which is the one thing
+    // that changed here: the caller offers what this refuses to the card. See
+    // `postSurveys`.
     const u32 serial = world.columnBlockSerial(chunkX, chunkZ);
     if (serial == 0) {
-        return false;
+        return Sampled::NotResident;
     }
     if (store_.find(chunkX, chunkZ) != nullptr && serial == store_.sampleSerial(chunkX, chunkZ)) {
-        return false;
+        return Sampled::Current;
     }
     const world::ChunkColumn* column = world.residentColumn(chunkX, chunkZ);
     if (column == nullptr) {
-        return false;
+        return Sampled::NotResident;
     }
     map::sampleChunk(*column, scratch);
     store_.store(chunkX, chunkZ, *scratch, serial);
-    return true;
+    return Sampled::Took;
+}
+
+void MapScreen::surveyOnIo(void* ctx, i32 chunkX, i32 chunkZ, const world::ChunkColumn* column)
+{
+    // **The I/O thread, and the only lines of this class that run there.** The
+    // column is the cache's for the length of this call and nothing but the
+    // sample is kept; the slot is this thread's alone from the moment it was
+    // published `Posted`.
+    auto* self = static_cast<MapScreen*>(ctx);
+    for (Survey& survey : self->surveys_) {
+        if (survey.state.load(std::memory_order_acquire) != u8(SurveyState::Posted)) {
+            continue;
+        }
+        if (survey.chunkX != chunkX || survey.chunkZ != chunkZ) {
+            continue;
+        }
+        survey.found = column != nullptr;
+        if (column != nullptr) {
+            map::sampleChunk(*column, &survey.sample);
+        }
+        survey.state.store(u8(SurveyState::Done), std::memory_order_release);
+        return;
+    }
+    // Nothing is waiting for this one: the world closed and the slots were
+    // freed between the request being queued and the card answering it.
+}
+
+void MapScreen::collectSurveys()
+{
+    for (Survey& survey : surveys_) {
+        if (survey.state.load(std::memory_order_acquire) != u8(SurveyState::Done)) {
+            continue;
+        }
+        if (survey.found) {
+            // **Stored with a serial of zero**, which is what the streamer says
+            // about a column it does not hold -- and it is the right answer
+            // rather than a placeholder. The moment the grid does adopt this
+            // chunk, `adoptColumn` puts it on the change list with a fresh
+            // serial, `sampleOne` finds zero against it and samples the live
+            // column. Ground read off the card is therefore replaced by ground
+            // in memory as soon as there is any, without either side knowing
+            // about the other.
+            store_.store(survey.chunkX, survey.chunkZ, survey.sample, 0);
+            ++filled_;
+        } else {
+            ++fillEmpty_;
+        }
+        survey.state.store(u8(SurveyState::Free), std::memory_order_release);
+        --surveysOut_;
+    }
+}
+
+void MapScreen::postSurveys(render::WorldStreamer& world)
+{
+    if (fill_.empty() || !world.surveyAvailable()) {
+        return;
+    }
+    if (!surveyorSet_) {
+        world.setColumnSurveyor(&MapScreen::surveyOnIo, this);
+        surveyorSet_ = true;
+    }
+    for (Survey& survey : surveys_) {
+        if (surveysOut_ >= kSurveys) {
+            return;
+        }
+        if (survey.state.load(std::memory_order_acquire) != u8(SurveyState::Free)) {
+            continue;
+        }
+        i32 chunkX = 0;
+        i32 chunkZ = 0;
+        if (!fill_.pop(&chunkX, &chunkZ)) {
+            return;
+        }
+        survey.chunkX = chunkX;
+        survey.chunkZ = chunkZ;
+        survey.found = false;
+        // Published before the request, so the visitor cannot arrive at a slot
+        // that does not yet say which chunk it is for. The I/O thread reads the
+        // coordinates only after seeing this.
+        survey.state.store(u8(SurveyState::Posted), std::memory_order_release);
+        if (!world.surveyColumn(chunkX, chunkZ)) {
+            // Refused -- the world shut under us, or this coordinate is still
+            // queued down there from a request whose slot has already been
+            // collected. Nothing will answer for this slot, so take it back,
+            // and put the coordinate at the head of the queue rather than
+            // dropping it: `asked_` would never offer it again, and that is a
+            // chunk of the map blank for the rest of the session. Posting stops
+            // for this frame, which is what keeps a refusal from spinning.
+            survey.state.store(u8(SurveyState::Free), std::memory_order_release);
+            fill_.push(chunkX, chunkZ);
+            return;
+        }
+        ++surveysOut_;
+    }
 }
 
 void MapScreen::collectOffload(render::WorldStreamer& world)
@@ -390,6 +512,10 @@ void MapScreen::update(render::WorldStreamer& world, const Camera& camera)
     // anything else touches the queue, so a chunk it finished is not also
     // sitting on the queue to be done again.
     collectOffload(world);
+
+    // ...and whatever the card answered, on the same terms and for the same
+    // reason. See `postSurveys`.
+    collectSurveys();
 
     // **Then the world's own list of what it wrote into.** This is the whole of
     // "the map follows the world", and it is a pop per *changed chunk* rather
@@ -495,17 +621,48 @@ void MapScreen::update(render::WorldStreamer& world, const Camera& camera)
     // spare.** The clock is read after each chunk rather than before, so a
     // frame always samples at least one however little of its allowance is
     // left: the queue can fall behind, but it cannot stall.
+    // **A guest has no card**, so there is nothing to offer and no point
+    // collecting the offers. Asked once here rather than per chunk below.
+    const bool fillFromCard = world.surveyAvailable();
+
     const u32 allowance = primed_ ? sampleMicros_ : kPrimeMicros;
     map::MapChunkSample scratch;
     bool tookAny = false;
     i32 chunkX = 0;
     i32 chunkZ = 0;
     while (pending_.pop(&chunkX, &chunkZ)) {
-        tookAny = sampleOne(world, chunkX, chunkZ, &scratch) || tookAny;
+        const Sampled took = sampleOne(world, chunkX, chunkZ, &scratch);
+        tookAny = took == Sampled::Took || tookAny;
+        if (took == Sampled::NotResident && fillFromCard && asked_.push(chunkX, chunkZ)) {
+            // **The card's half of the window**, offered only by a chunk the
+            // grid has just refused -- so the resident ground is always
+            // sampled first and this is exactly the band that is left.
+            // `asked_` is what keeps a chunk that is not there at all from
+            // being offered again on every step the player takes.
+            fill_.push(chunkX, chunkZ);
+        }
         if (microsSince(began) >= allowance) {
             break;
         }
     }
+    // **Both are read, not short-circuited**: `overflowed` clears the flag it
+    // answers with, so a test that skipped the second one would leave it set to
+    // fire again on a frame where nothing had overflowed.
+    const bool lostAsked = asked_.overflowed();
+    const bool lostFill = fill_.overflowed();
+    if (lostAsked || lostFill) {
+        // Both are bounded and both recover the same way -- by forgetting what
+        // has been offered, so the walk offers it again the next time the
+        // window moves. A refused `fill_` push is the case that needs it: the
+        // coordinate is in `asked_` and would otherwise never be offered again,
+        // which is a hole in the map for the rest of the session.
+        asked_.clear();
+    }
+
+    // **And the requests themselves, last**: the queue they draw on is what
+    // this frame's sampling has just added to, and the I/O thread has the whole
+    // of the rest of the frame -- and of the next one -- to answer them in.
+    postSurveys(world);
 
     // **The cold start ends when a frame finds nothing to take.** Not when the
     // window is full: the map reaches further than the render distance can at
@@ -530,6 +687,7 @@ bool MapScreen::draw(const gui::Surface& surface, const Camera& camera, bool for
     now.grid = grid_;
     now.zoom = zoom_;
     now.panned = panned();
+    now.players = playersDigest(window);
     now.valid = true;
 
     if (!force && now == shown_) {
@@ -548,6 +706,35 @@ bool MapScreen::draw(const gui::Surface& surface, const Camera& camera, bool for
     drawPixels(surface, camera, window, map::yawFromStep(now.yawStep));
     shown_ = now;
     return true;
+}
+
+u32 MapScreen::playersDigest(const map::MapWindow& window) const
+{
+    if (players_ == nullptr) {
+        return 0;
+    }
+    // Quantised to the pixel the marker would land on and the angle it would
+    // be drawn at, so the digest changes exactly when the picture would --
+    // never for a step too small to see, always for one that is not.
+    const double perBlock = double(map::mapPixelsPerBlock(window.zoom))
+                            / double(map::mapBlocksPerPixel(window.zoom));
+    u32 digest = 0;
+    for (int i = 0; i < players_->playerCount(); ++i) {
+        const net::RemotePlayer& other = players_->player(i);
+        if (!other.used) {
+            continue;
+        }
+        const i32 px = i32((other.x - double(window.originBlockX)) * perBlock);
+        const i32 pz = i32((other.z - double(window.originBlockZ)) * perBlock);
+        // One round of a 32-bit FNV-1a over the three values that move the
+        // arrow. Order matters and is the pool's, which is stable between
+        // redraws.
+        const u32 parts[3] = {u32(px), u32(pz), u32(map::yawStep(other.yaw))};
+        for (const u32 part : parts) {
+            digest = (digest ^ part) * 16777619u;
+        }
+    }
+    return digest;
 }
 
 void MapScreen::drawFurniture(const gui::Surface& surface)
@@ -664,11 +851,38 @@ void MapScreen::drawPixels(const gui::Surface& surface, const Camera& camera,
     }
     map::renderMapWindow(store_, window, style, target);
 
-    // The player. **Every other player in a multiplayer session is this call
-    // again** with their own position, yaw and colour -- which is why the marker
-    // takes a position rather than assuming the centre, even though the window
-    // is centred on this one.
-    map::drawMarker(target, window, camera.x, camera.z, yawDegrees, kMarkerLength, kMarkerFill,
+    // **Everybody else first, so this player's marker is the one on top.** It
+    // is the same call with their position, their yaw and their colour -- which
+    // is why `drawMarker` takes a position rather than assuming the centre,
+    // even though the window is centred on this one.
+    //
+    // A marker outside the window is clipped by `drawMarker` and costs a few
+    // arithmetic operations, so there is nothing here to skip: the pool is four
+    // players and three of them are somebody else.
+    if (players_ != nullptr) {
+        for (int i = 0; i < players_->playerCount(); ++i) {
+            const net::RemotePlayer& other = players_->player(i);
+            if (!other.used) {
+                continue;
+            }
+            u8 r = 255;
+            u8 g = 255;
+            u8 b = 255;
+            net::playerColour(other.id, &r, &g, &b);
+            map::drawMarker(target, window, other.x, other.z, other.yaw, kMarkerLength,
+                            map::rgb565(r, g, b), kMarkerOutline);
+        }
+    }
+
+    // This player, in the colour everybody else is drawing them in. White in
+    // single player, which is `playerColour`'s answer for an id nobody gave
+    // out.
+    u8 selfR = 255;
+    u8 selfG = 255;
+    u8 selfB = 255;
+    net::playerColour(selfEntityId_, &selfR, &selfG, &selfB);
+    map::drawMarker(target, window, camera.x, camera.z, yawDegrees, kMarkerLength,
+                    selfEntityId_ != 0 ? map::rgb565(selfR, selfG, selfB) : kMarkerFill,
                     kMarkerOutline);
 
     // The centre cross, on a scrolled map only. Four arms with a gap in the

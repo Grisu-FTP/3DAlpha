@@ -66,7 +66,6 @@ because **GCC leaves it out of the `-fsanitize=undefined` group**.
 
 | Thing | Where |
 |---|---|
-| Repo | `/home/grisu/Documents/GitHub/3DAlpha` — **a git repository**, whose `build/` and `build-host/` are committed, so filter status with `git status --short -- src tests docs README.md CMakeLists.txt` |
 | Real a1.1.2 client jar | `~/.local/share/PrismLauncher/libraries/com/mojang/minecraft/a1.1.2_01/minecraft-a1.1.2_01-client.jar` — in `libraries/`, **not** in the instance directory |
 | Real a1.1.2 world (660 chunks) | `~/.local/share/PrismLauncher/instances/a1.1.2_01/minecraft/saves/World1` |
 | Shell | **fish** — does not word-split variables in `for` loops |

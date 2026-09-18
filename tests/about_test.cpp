@@ -112,3 +112,21 @@ TEST(the_disclaimer_says_what_it_has_to)
     CHECK(std::strstr(about::kDisclaimer, "Mojang") != nullptr);
     CHECK(std::strstr(about::kDisclaimer, "not made by") != nullptr);
 }
+
+// GPLv3 5(d) asks an interactive program to display "Appropriate Legal
+// Notices", and section 0 spells out what that means: a copyright notice, and
+// statements that there is no warranty, that the work may be conveyed under
+// this licence, and how to read it. Pinned here for the same reason as the
+// disclaimer -- nothing else fails if a sentence goes missing, and the whole
+// point is that it is on the screen a player checks.
+TEST(the_licence_notice_says_what_gplv3_asks_for)
+{
+    CHECK(present(about::kLicence));
+    CHECK(std::strstr(about::kLicence, "Copyright (C)") != nullptr);
+    CHECK(std::strstr(about::kLicence, "General Public License") != nullptr);
+    CHECK(std::strstr(about::kLicence, "NO WARRANTY") != nullptr);
+    CHECK(std::strstr(about::kLicence, "redistribute") != nullptr);
+    // How to read the licence. There is no shell on a 3DS and nothing ships
+    // inside the title, so the pointer to the repository is the whole of it.
+    CHECK(std::strstr(about::kLicence, "github.com/Grisu-FTP/3DAlpha") != nullptr);
+}

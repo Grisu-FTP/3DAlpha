@@ -52,6 +52,26 @@ inline constexpr char kDisclaimer[] =
     "game files of theirs -- the textures and sounds it draws and plays are the ones you put on "
     "your own SD card.";
 
+// **This program's own terms, and the one entry here that grants rather than
+// owes.** GPLv3 section 5(d) asks a program with an interactive interface to
+// display "Appropriate Legal Notices", which section 0 defines as a copyright
+// notice plus three statements: that there is no warranty, that the work may be
+// conveyed under this licence, and how to read the licence. A 3DS has no shell
+// to type `show w` into and nothing ships inside the title (see
+// docs/licences.md), so the last of those is a pointer to the repository, which
+// is also where section 6 is satisfied from -- the release the .cia came from
+// is built out of that tree and tagged in it.
+//
+// It sits beside kDisclaimer rather than in credits() because both are facts
+// about what this build *is*. credits() and notices() are for work of other
+// people's that this binary carries, and this is neither.
+inline constexpr char kLicence[] =
+    "3DAlpha is free software under the GNU General Public License, version 3 or later. "
+    "Copyright (C) 2026 Grisu-FTP and the 3DAlpha contributors. It comes with ABSOLUTELY NO "
+    "WARRANTY, to the extent permitted by law. You are welcome to redistribute it, and to change "
+    "it and redistribute your version, under those terms -- which include handing on the source. "
+    "The licence in full, and that source, are at github.com/Grisu-FTP/3DAlpha.";
+
 // One work this binary carries something of, as one line of the credits.
 struct Credit {
     // Who to name. The person or project, as they call themselves.

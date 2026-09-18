@@ -1356,6 +1356,14 @@ void Menu::buildOptionsInfo(int row)
         out.append(about::kDisclaimer);
         out.append("\n");
 
+        // The licence sits with the disclaimer and above the credits because it
+        // is the same kind of statement -- what this build is and what you may
+        // do with it -- and because GPLv3 5(d) wants it where a player actually
+        // arrives, not at the end of 1,400 characters of Xiph.
+        out.append("\n§7");
+        out.append(about::kLicence);
+        out.append("\n");
+
         out.append("\n§eWith thanks to\n");
         for (const about::Credit& credit : about::credits()) {
             out.append("§f");

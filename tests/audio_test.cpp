@@ -547,6 +547,13 @@ TEST(aRecordIsStoppedOnTheWayOutOfAWorldAndTheMusicIsNot)
     CHECK(engine.loadResources(dir.path) > 0);
 
     engine.playRecord("13", 0.0, 0.0, 0.0);
+    if (!vorbisAvailable()) {
+        // Nothing opened, so nothing is on the voice and there is no disc to
+        // stop -- the rest of this case is about a disc that is playing.
+        CHECK(!engine.recordPlaying());
+        CHECK_EQ(backend.starts, 0);
+        return;
+    }
     CHECK(engine.recordPlaying());
     CHECK_EQ(backend.starts, 1);
 
@@ -605,6 +612,13 @@ TEST(aRecordThisCardDoesNotHaveIsSilence)
 
     // And a null track is the eject: it stops whatever is on the voice and
     // starts nothing, which is `BlockJukeBox.ejectRecord`'s own call.
+    //
+    // The checks above hold with or without a decoder -- a record that is not
+    // in the pool starts nothing either way -- so only the eject, which needs
+    // something playing to stop, is gated here.
+    if (!vorbisAvailable()) {
+        return;
+    }
     engine.playRecord("13", 0.0, 0.0, 0.0);
     CHECK(engine.recordPlaying());
     engine.playRecord(nullptr, 0.0, 0.0, 0.0);

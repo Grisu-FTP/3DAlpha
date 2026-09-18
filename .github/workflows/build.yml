@@ -11,6 +11,10 @@
 # the build carries it: the SMDH title, the product code and the UniqueId all
 # stay per-version, so an R42 CIA installs over an R41 CIA rather than beside
 # it, which is what you want from a build number.
+#
+# On main, the run then publishes a release tagged R<n> carrying every version's
+# binaries and an FBI-scannable QR per version, so a console can install without
+# a PC. See docs/build-versions.md.
 name: build
 
 on:
@@ -63,17 +67,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # `find_package(ZLIB REQUIRED)` is the host build's only external
-      # dependency (chunk files are gzip, Map Chunk payloads are zlib). The
-      # runner image ships zlib1g-dev, so this is a guard against an image
-      # change rather than a routine install -- hence the check first, which
-      # keeps the usual run at a second or so.
-      - name: Ensure zlib headers are present
+      # zlib is required outright (chunk files are gzip, Map Chunk payloads are
+      # zlib). libvorbis is not: without it the host build sets MC_HAVE_VORBIS=0
+      # and the audio layer compiles to stubs that never open anything.
+      #
+      # It is installed anyway, and deliberately. A skipped test is not a
+      # passing test -- a runner with no decoder would quietly cover less than
+      # the machine the developer runs `build-host` on, which is the one thing
+      # this job exists to prevent. `vorbisfile.pc`, which the host branch of
+      # CMakeLists probes for, comes from libvorbis-dev.
+      - name: Ensure zlib and libvorbis headers are present
         run: |
-          if ! pkg-config --exists zlib; then
-            sudo apt-get update && sudo apt-get install -y zlib1g-dev
+          missing=""
+          pkg-config --exists zlib      || missing="$missing zlib1g-dev"
+          pkg-config --exists vorbisfile || missing="$missing libvorbis-dev"
+          if [ -n "$missing" ]; then
+            sudo apt-get update
+            sudo apt-get install -y $missing
           fi
-          pkg-config --modversion zlib
+          # Fails the job rather than letting the build silently drop audio.
+          pkg-config --modversion zlib vorbisfile
 
       # Debug with SANITIZE=ON, matching the build-host configuration the
       # working guide tells contributors to use, so a failure here reproduces
@@ -224,3 +237,68 @@ jobs:
             dist/${{ steps.name.outputs.name }}.3dsx
             dist/${{ steps.name.outputs.name }}.cia
           if-no-files-found: error
+
+  # One release per push to main, tagged R<n>, holding every version at once.
+  #
+  # Artifacts are the wrong delivery mechanism for a console: they are zipped
+  # (so FBI cannot fetch one), they expire, and they need a signed-in GitHub
+  # session to download at all. A release asset is a plain, permanent, public
+  # URL, which is the one thing FBI's Remote Install needs -- so each version
+  # also gets a QR of its own .cia URL and installs with no PC in the loop.
+  #
+  # Main only. A release is a public, permanent tag; branch pushes still build
+  # and test above, they just do not publish.
+  release:
+    needs: [versions, test, build]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Narrower than the default token: this job writes tags and releases and
+    # needs nothing else.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every version's build, flattened into one directory. The build job
+      # uploads one artifact per version, all named 3DAlphaR<n><version>.
+      - name: Collect every version's binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: 3DAlphaR${{ github.run_number }}*
+          merge-multiple: true
+
+      - name: Install qrencode
+        run: sudo apt-get update && sudo apt-get install -y qrencode
+
+      # Writes dist/qr-<version>.png and the release body. The QR encodes the
+      # asset URL this run is about to create -- see tools/release_assets.py for
+      # why predicting it is sound.
+      - name: Build QR codes and release notes
+        run: |
+          python3 tools/release_assets.py \
+            --repo "${{ github.repository }}" \
+            --tag "R${{ github.run_number }}" \
+            --dir dist \
+            --notes notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Re-running a failed workflow reuses its run number, so the tag may
+      # already exist. Replacing it keeps a re-run idempotent instead of
+      # failing on the tag; `--cleanup-tag` removes the tag too, so the new
+      # release points at the commit this run actually built.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="R${{ github.run_number }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag exists (re-run); replacing it"
+            gh release delete "$tag" --yes --cleanup-tag
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes-file notes.md \
+            --target "${{ github.sha }}" \
+            dist/*.cia dist/*.3dsx dist/*.png

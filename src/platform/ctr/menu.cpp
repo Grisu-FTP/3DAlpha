@@ -1148,6 +1148,39 @@ const char* Menu::soundProblem() const
     return nullptr;
 }
 
+// The same darkened dirt the top screen tiles, and the HUD in game, as the
+// 16-bit texels the bottom framebuffer is written in. Null when the pack has
+// not handed a tile over, which `hud::drawBackdrop` fills flat instead.
+const u16* Menu::bottomBackdropTile()
+{
+    if (backgroundTile_.size() != texture::kBackgroundBytes
+        || texture::kBackgroundEdge != hud::kTileEdge) {
+        return nullptr;
+    }
+    const usize texels = usize(hud::kTileEdge) * hud::kTileEdge;
+    bottomTile_.resize(texels);
+    for (usize i = 0; i < texels; ++i) {
+        bottomTile_[i] = gui::rgb565(int(backgroundTile_[i * 4]),
+                                     int(backgroundTile_[i * 4 + 1]),
+                                     int(backgroundTile_[i * 4 + 2]));
+    }
+    return bottomTile_.data();
+}
+
+// **The backdrop and nothing on it.** For a screen whose bottom half has not
+// been decided yet, which is better than a page of console text that says what
+// the buttons already say.
+void Menu::paintBackdropOnly()
+{
+    gui::Surface surface;
+    if (!hud::bottomSurface(&surface)) {
+        return;
+    }
+    hud::drawBackdrop(surface, bottomBackdropTile());
+    // The CPU has just written a buffer the LCD reads by DMA.
+    gfxFlushBuffers();
+}
+
 void Menu::paintSettingInfo(const char* title, RowKind kind)
 {
     gui::Surface surface;
@@ -1162,19 +1195,7 @@ void Menu::paintSettingInfo(const char* title, RowKind kind)
     }
     const texture::FontImage& font = fontImage_.empty() ? consoleFont_ : fontImage_;
 
-    // The same darkened dirt the top screen tiles, and the HUD in game.
-    const bool haveTile = backgroundTile_.size() == texture::kBackgroundBytes
-                          && texture::kBackgroundEdge == hud::kTileEdge;
-    if (haveTile) {
-        const usize texels = usize(hud::kTileEdge) * hud::kTileEdge;
-        bottomTile_.resize(texels);
-        for (usize i = 0; i < texels; ++i) {
-            bottomTile_[i] = gui::rgb565(int(backgroundTile_[i * 4]),
-                                         int(backgroundTile_[i * 4 + 1]),
-                                         int(backgroundTile_[i * 4 + 2]));
-        }
-    }
-    hud::drawBackdrop(surface, haveTile ? bottomTile_.data() : nullptr);
+    hud::drawBackdrop(surface, bottomBackdropTile());
 
     const int lineWidth = kTooltipWidth - 2 * kTooltipPad;
     texture::wrapText(font.widths, infoBody_, lineWidth, &infoLines_);
@@ -1416,6 +1437,20 @@ void Menu::printConsoleHelp()
     }
     printedScreen_ = screen_;
     consoleDirty_ = false;
+
+    // **Three screens show the dirt and nothing else.** The title, the
+    // multiplayer list and the pause menu each had a page of console text on
+    // the bottom screen; what belongs down there is still being decided, and
+    // until it is, the backdrop reads as a screen waiting for something rather
+    // than as a help page nobody asked for. Painted rather than printed, for
+    // the same reason the settings screens below are -- and like them it leaves
+    // the console alone, so the next screen that prints clears the paint away
+    // with its own \x1b[2J.
+    if (screen_ == Screen::Title || screen_ == Screen::Multiplayer
+        || screen_ == Screen::Pause) {
+        paintBackdropOnly();
+        return;
+    }
 
     // **The two settings screens paint the whole bottom screen** rather than
     // printing to it, so the console is neither cleared nor written here. The
@@ -2666,6 +2701,9 @@ void Menu::openExtraSettings()
     extraLevelKnown_ = false;
     extraSeed_ = 0;
     extraSnowCovered_ = false;
+    // Cleared here rather than only written below, so a world whose level will
+    // not read cannot show the last world's table positions.
+    panoramaAnchors_ = preview::DioramaAnchors{};
     if (selectedWorldPath_.empty()) {
         return;
     }
@@ -2688,6 +2726,24 @@ void Menu::openExtraSettings()
 
     panoramaTileX_ = worldSettings_.panoramaTileX;
     panoramaTileZ_ = worldSettings_.panoramaTileZ;
+    // **The places this world offers to stand the table on**, which is what
+    // `MenuPreview::runWorldJob` anchors the picture on. Taken off this read
+    // rather than off the world list, because `peekLevel` answers a packed
+    // world out of its manifest and leaves spawn and the player at zero -- and
+    // Move Panorama is reached through this screen and no other, so they are
+    // always read before they are shown.
+    panoramaAnchors_ = preview::dioramaAnchorsOf(level);
+    panoramaAnchor_ = worldSettings_.panoramaAnchor;
+    // A world saved asking for the player's corner and since stripped of its
+    // Player compound would otherwise leave a row on the screen that names a
+    // place the world does not have.
+    if (!preview::dioramaAnchorAvailable(panoramaAnchor_, panoramaAnchors_)) {
+        panoramaAnchor_ = settings::PanoramaAnchor::Spawn;
+        // In memory only. The row above this one names the anchor, and it has
+        // to name the one the picture is actually standing on; the file is put
+        // right the next time anything on this screen commits.
+        worldSettings_.panoramaAnchor = panoramaAnchor_;
+    }
 }
 
 void Menu::openExtraSettingsForNewWorld()
@@ -2918,6 +2974,7 @@ void Menu::applyWorldPack()
 
 void Menu::commitPanorama()
 {
+    worldSettings_.panoramaAnchor = panoramaAnchor_;
     worldSettings_.panoramaTileX = panoramaTileX_;
     worldSettings_.panoramaTileZ = panoramaTileZ_;
     saveWorldSettings();
@@ -2989,14 +3046,17 @@ void Menu::buildExtraSettingsInfo(int row)
         appendf(&out, "§7Press A to choose one.");
         break;
     case kExtraPanorama:
-        appendf(&out, "X %ld, Z %ld.\n", (long)extraSettings().panoramaTileX,
+        appendf(&out, "%s, X %ld, Z %ld.\n",
+                settings::panoramaAnchorLabel(extraSettings().panoramaAnchor),
+                (long)extraSettings().panoramaTileX,
                 (long)extraSettings().panoramaTileZ);
         appendf(&out, "§7Where the little world on the world list\n");
-        appendf(&out, "§7is taken from. It stands on the 128-block\n");
-        appendf(&out, "§7grid the map draws in red, three squares\n");
-        appendf(&out, "§7across, and this moves it one square at a\n");
-        appendf(&out, "§7time.\n");
-        appendf(&out, "§7Press A to move it.");
+        appendf(&out, "§7is taken from. It stands on the world's\n");
+        appendf(&out, "§7spawn unless you pick somewhere else:\n");
+        appendf(&out, "§7block 0, 0, or where you logged out.\n");
+        appendf(&out, "§7From there it moves one square of the\n");
+        appendf(&out, "§7map's red 128-block grid at a time.\n");
+        appendf(&out, "§7Press A to place it.");
         break;
     case kExtraBedrockFix:
         appendf(&out, "%s.\n", onOff(extraSettings().fixBedrockHole));
@@ -3093,6 +3153,7 @@ void Menu::handleExtraSettings(u32 down)
                 panoramaTileZ_ = worldSettings_.panoramaTileZ;
                 panoramaUndoX_ = panoramaTileX_;
                 panoramaUndoZ_ = panoramaTileZ_;
+                panoramaUndoAnchor_ = panoramaAnchor_;
                 setScreen(Screen::MovePanorama);
                 return;
             }
@@ -3190,6 +3251,25 @@ void Menu::handleMovePanorama(u32 down)
         dz = 1;
     }
 
+    // **L and R choose what the table stands on**, which the d-pad cannot do
+    // without giving up the step it already has. Picking an anchor puts the
+    // table exactly on it -- the offset is measured from the anchor, so
+    // carrying the old one across would land the table somewhere neither
+    // choice asked for.
+    const int anchorStep = ((down & KEY_R) != 0 ? 1 : 0) - ((down & KEY_L) != 0 ? 1 : 0);
+    if (anchorStep != 0) {
+        const settings::PanoramaAnchor next =
+            preview::nextDioramaAnchor(panoramaAnchor_, anchorStep, panoramaAnchors_);
+        if (next != panoramaAnchor_ || panoramaTileX_ != 0 || panoramaTileZ_ != 0) {
+            panoramaAnchor_ = next;
+            panoramaTileX_ = 0;
+            panoramaTileZ_ = 0;
+            playMoveClick();
+            commitPanorama();
+            consoleDirty_ = true;
+        }
+    }
+
     if (dx != 0 || dz != 0) {
         panoramaTileX_ += dx;
         panoramaTileZ_ += dz;
@@ -3213,9 +3293,11 @@ void Menu::handleMovePanorama(u32 down)
         // B puts the world back where it was found, and puts it back the same
         // way every other step did -- through the file, so the picture on the
         // way out is the picture that was there on the way in.
-        if (panoramaTileX_ != panoramaUndoX_ || panoramaTileZ_ != panoramaUndoZ_) {
+        if (panoramaTileX_ != panoramaUndoX_ || panoramaTileZ_ != panoramaUndoZ_
+            || panoramaAnchor_ != panoramaUndoAnchor_) {
             panoramaTileX_ = panoramaUndoX_;
             panoramaTileZ_ = panoramaUndoZ_;
+            panoramaAnchor_ = panoramaUndoAnchor_;
             commitPanorama();
         }
         setScreen(Screen::ExtraSettings);
@@ -3231,14 +3313,24 @@ void Menu::drawExtraSettings()
                      40.0f, 28.0f, 0.5f, kInkDim, kScreenWidth - 80.0f);
 
     char seed[32];
-    char panorama[32];
+    char panorama[48];
     if (extraLevelKnown_) {
         std::snprintf(seed, sizeof(seed), "%lld", (long long)extraSeed_);
     } else {
         std::snprintf(seed, sizeof(seed), "unreadable");
     }
-    std::snprintf(panorama, sizeof(panorama), "%ld, %ld", (long)extraSettings().panoramaTileX,
-                  (long)extraSettings().panoramaTileZ);
+    // The place first, because that is what the row is now about; the offset
+    // only when there is one, so a table sitting exactly on its anchor reads as
+    // the anchor rather than as "Spawn +0, +0".
+    if (extraSettings().panoramaTileX == 0 && extraSettings().panoramaTileZ == 0) {
+        std::snprintf(panorama, sizeof(panorama), "%s",
+                      settings::panoramaAnchorLabel(extraSettings().panoramaAnchor));
+    } else {
+        std::snprintf(panorama, sizeof(panorama), "%s %+ld, %+ld",
+                      settings::panoramaAnchorLabel(extraSettings().panoramaAnchor),
+                      (long)extraSettings().panoramaTileX,
+                      (long)extraSettings().panoramaTileZ);
+    }
 
     SettingRowView rows[kExtraCount];
     for (int i = 0; i < layout.count; ++i) {
@@ -3345,30 +3437,43 @@ void Menu::drawMovePanorama()
     drawLabelClipped(selectedWorldName_.c_str(), 40.0f, 40.0f, 0.5f, kInkDim,
                      kScreenWidth - 80.0f);
 
+    // **What it is standing on and how far from it**, which are two different
+    // questions and are drawn as two rows. The anchor is a place a player can
+    // name; the tiles are the nudge away from it.
+    i32 anchorX = 0;
+    i32 anchorZ = 0;
+    preview::dioramaAnchorBlock(panoramaAnchor_, panoramaAnchors_, &anchorX, &anchorZ);
+
     // **The table's own corner, in blocks**, rather than the tile numbers the
     // d-pad steps: a player looking for a particular place in their world
     // knows where it is in blocks and has never heard of a tile.
     i32 blockX = 0;
     i32 blockZ = 0;
-    preview::dioramaOrigin(&blockX, &blockZ, panoramaTileX_, panoramaTileZ_);
+    preview::dioramaOrigin(&blockX, &blockZ, panoramaTileX_, panoramaTileZ_, anchorX, anchorZ);
 
     char line[96];
+    std::snprintf(line, sizeof(line), "< %s >", settings::panoramaAnchorLabel(panoramaAnchor_));
+    drawLabelCentered(line, kScreenWidth * 0.5f, 68.0f, 0.6f, kInk, true);
+
+    std::snprintf(line, sizeof(line), "block %ld, %ld", (long)anchorX, (long)anchorZ);
+    drawLabelCentered(line, kScreenWidth * 0.5f, 88.0f, 0.42f, kInkDim, true);
+
     std::snprintf(line, sizeof(line), "tile %ld, %ld", (long)panoramaTileX_,
                   (long)panoramaTileZ_);
-    drawLabelCentered(line, kScreenWidth * 0.5f, 72.0f, 0.6f, kInk, true);
+    drawLabelCentered(line, kScreenWidth * 0.5f, 112.0f, 0.5f, kInk, true);
 
     std::snprintf(line, sizeof(line), "blocks %ld..%ld  x  %ld..%ld", (long)blockX,
                   (long)(blockX + preview::kDioramaBlocks - 1), (long)blockZ,
                   (long)(blockZ + preview::kDioramaBlocks - 1));
-    drawLabelCentered(line, kScreenWidth * 0.5f, 96.0f, 0.42f, kInkDim, true);
+    drawLabelCentered(line, kScreenWidth * 0.5f, 130.0f, 0.42f, kInkDim, true);
 
-    drawLabelCentered("Each step is one square of the map's", kScreenWidth * 0.5f, 126.0f,
+    drawLabelCentered("L/R picks a place to stand it on.", kScreenWidth * 0.5f, 152.0f,
                       0.42f, kInkDim, true);
-    drawLabelCentered("red 128-block grid.", kScreenWidth * 0.5f, 142.0f, 0.42f, kInkDim,
-                      true);
+    drawLabelCentered("D-Pad steps one square of the map's red grid.", kScreenWidth * 0.5f,
+                      166.0f, 0.42f, kInkDim, true);
 
     if (message_ != nullptr) {
-        drawLabelCentered(message_, kScreenWidth * 0.5f, 166.0f, 0.45f, kInkWarn, true);
+        drawLabelCentered(message_, kScreenWidth * 0.5f, 182.0f, 0.45f, kInkWarn, true);
     }
 
     const float half = kButtonWidth * 0.5f;
@@ -5345,7 +5450,7 @@ void Menu::drawPreviewLabels()
     const char* name = nullptr;
     const char* note = nullptr;
     const char* hint = "A: Select   B: Back";
-    char panoramaNote[32];
+    char panoramaNote[48];
 
     switch (screen_) {
     case Screen::Skins:
@@ -5382,13 +5487,19 @@ void Menu::drawPreviewLabels()
     case Screen::MovePanorama:
         name = selectedWorldName_.c_str();
         // The tiles stream in again from the new corner after every step, so
-        // the table is often half table for a moment. Saying which square it
-        // is standing on is what makes that read as moving rather than as
-        // broken.
-        std::snprintf(panoramaNote, sizeof(panoramaNote), "tile %ld, %ld",
-                      (long)panoramaTileX_, (long)panoramaTileZ_);
+        // the table is often half table for a moment. Saying what it is
+        // standing on -- and which square of that, once it has been nudged --
+        // is what makes that read as moving rather than as broken.
+        if (panoramaTileX_ == 0 && panoramaTileZ_ == 0) {
+            std::snprintf(panoramaNote, sizeof(panoramaNote), "%s",
+                          settings::panoramaAnchorLabel(panoramaAnchor_));
+        } else {
+            std::snprintf(panoramaNote, sizeof(panoramaNote), "%s  %+ld, %+ld",
+                          settings::panoramaAnchorLabel(panoramaAnchor_),
+                          (long)panoramaTileX_, (long)panoramaTileZ_);
+        }
         note = panoramaNote;
-        hint = "D-Pad: Move   A/START: Save   B: Cancel";
+        hint = "L/R: Place   D-Pad: Move   A/START: Save";
         break;
     default:
         return;

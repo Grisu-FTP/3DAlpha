@@ -82,6 +82,36 @@ enum class Difficulty {
 // cannot be the empty string here, so it is a token of its own.
 inline constexpr char kWorldPackDevArt[] = "dev-art";
 
+// **What the world diorama's table is centred on**, before `panoramaTile*`
+// steps it away. Three places a world has that are worth standing on, rather
+// than one fixed coordinate: the table is 384 blocks a side and a1.1.2 puts
+// spawn wherever its sand walk lands, so on a real save block 0, 0 is usually
+// somewhere nobody has ever been.
+//
+// Stable words in the file, like Gamemode and Difficulty above: a file written
+// by a later build that adds an anchor is readable here instead of being an
+// ordinal that silently means something else.
+enum class PanoramaAnchor : u8 {
+    // `level.dat`'s SpawnX/SpawnZ -- where a1.1.2 starts a player, and where
+    // the chunks around them were generated first. The default, because it is
+    // the one anchor every world has.
+    Spawn,
+    // Block 0, 0. Where the table stood before there was a choice, and the
+    // right answer for a world whose interesting part is the origin.
+    Origin,
+    // Where the player was standing when the world was last closed, out of
+    // level.dat's Player compound. **A world can be without one** -- a
+    // server-made level.dat has no Player at all -- and then this anchor is not
+    // offered, rather than quietly meaning 0, 0, 0.
+    Player,
+};
+
+// The token written to the file, the label the menu draws, and a parse that
+// leaves the caller's default alone when the word is not one of these.
+const char* panoramaAnchorToken(PanoramaAnchor anchor);
+const char* panoramaAnchorLabel(PanoramaAnchor anchor);
+bool panoramaAnchorFromToken(std::string_view token, PanoramaAnchor* out);
+
 struct WorldSettings {
     // **Spectator, which is this port's default and not a1.1.2's** -- the
     // original has one way to play and it is Survival. It stays the default
@@ -141,10 +171,19 @@ struct WorldSettings {
     // spelling `GameSettings::texturePack` uses.
     std::string texturePack;
 
-    // **Where the main menu's world diorama stands**, in 128-block map tiles
-    // away from the tile holding block 0, 0 -- the fixed place it used to be
-    // and still is at 0, 0. The diorama is three tiles square, so one step of
-    // these moves it by a third of its own width. See core/preview/diorama.hpp.
+    // **What the main menu's world diorama stands on**, and how far from it.
+    //
+    // The anchor is a place in the world that is worth putting a table on --
+    // see `PanoramaAnchor` -- and the tiles are 128-block map steps away from
+    // it. The diorama is three tiles square, so one step of those moves it by a
+    // third of its own width. See core/preview/diorama.hpp.
+    //
+    // **Changing the anchor is not the same as moving the table**: the offset
+    // is relative to the anchor, so the two are stored apart and the menu zeroes
+    // the offset when the anchor changes. A world written before this key
+    // existed reads as Spawn with whatever offset it had, which is where its
+    // table already stood.
+    PanoramaAnchor panoramaAnchor = PanoramaAnchor::Spawn;
     i32 panoramaTileX = 0;
     i32 panoramaTileZ = 0;
 };

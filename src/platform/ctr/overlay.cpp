@@ -347,8 +347,13 @@ int Overlay::playerPagesFor(PlayerPage* out) const
     // Creative fills the strip exactly. A fifth page needs the strip widened
     // before it needs anything in this function.
     static_assert(hud::kMaxTabs >= 4, "Creative needs four tabs");
+    // **The inventory comes first, and the map after it.** The strip used to
+    // open with Map because the map was the first page this screen had; what a
+    // player reaches for is the inventory, and in Creative the palette beside
+    // it. So the order is what a mode carries, then where it is: Inv., Items,
+    // Map, Look. Spectator carries nothing and starts at Map, which is still
+    // its first tab because it has no others to come before it.
     int count = 0;
-    out[count++] = PlayerPage::Map;
     switch (gamemode_) {
     case settings::Gamemode::Spectator:
         break;  // carries nothing and places nothing, so neither page applies
@@ -360,6 +365,7 @@ int Overlay::playerPagesFor(PlayerPage* out) const
         out[count++] = PlayerPage::Blocks;
         break;
     }
+    out[count++] = PlayerPage::Map;
     out[count++] = PlayerPage::Look;
     return count;
 }
@@ -574,17 +580,10 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
             } else if (index >= 0) {
                 const bool moved = index != containerCursor_;
                 containerCursor_ = index;
-                const int handFirst = session_.slotCount() - item::kHotbarSlots;
-                const bool hadNothing = session_.cursor().empty();
                 clickContainer(index, (held & KEY_Y) != 0 ? 1 : 0);
-                // An empty hand tapping an empty hotbar cell has nothing to
-                // click, and still means what it means on every other page:
-                // hold this slot.
-                if (index >= handFirst && hadNothing && session_.cursor().empty()
-                    && session_.slotAt(inventory_, index).empty()
-                    && index - handFirst != inventory_.selected) {
-                    inventory_.selected = index - handFirst;
-                }
+                // A tap in the band is a tap on a slot the player also holds,
+                // so the hand goes with it -- the same rule the d-pad follows.
+                selectUnderContainerCursor();
                 if (moved) {
                     bodyDirty_ = true;
                     hotbarDirty_ = true;
@@ -599,6 +598,16 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
             // ...unless a stack is being carried, in which case the band is
             // somewhere to put it down. One press does one thing, and which
             // thing it is is decided by whether the player's hands are full.
+            //
+            // **The cursor comes to the band either way.** The band's cursor is
+            // `inventory_.selected` itself (see `drawPlayerPage`), so leaving
+            // the grid is the whole of the move -- and it is what makes a stack
+            // carried over from the backpack hover over the slot that was
+            // tapped rather than over the cell it came out of.
+            if (focusGrid_) {
+                focusGrid_ = false;
+                bodyDirty_ = true;
+            }
             if (heldSlot_ >= 0) {
                 touchSlot(slot);
             } else if (slot != inventory_.selected) {
@@ -609,7 +618,12 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
         } else if (playerPage_ == PlayerPage::Items) {
             const int cell = hud::itemsCellAt(x, y);
             if (cell >= 0) {
+                // The cursor goes where the tap did, so the stack it picks up
+                // hovers over that cell and the mark under it says which.
+                focusGrid_ = true;
                 itemsCursor_ = cell;
+                bodyDirty_ = true;
+                hotbarDirty_ = true;
                 touchSlot(hud::itemsSlotForCell(cell));
             }
             uiTouchActive_ = true;
@@ -628,6 +642,7 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
                 // player filling a hotbar picks the slot and then the block,
                 // and a pick that also moved the slot would fill one slot nine
                 // times.
+                focusGrid_ = true;
                 paletteCursor_ = cell;
                 takeFromPalette();
                 bodyDirty_ = true;
@@ -659,9 +674,11 @@ bool Overlay::handleInput(u32 down, u32 held, DebugSettings* settings, Camera* c
         // Changing the slot in your hand *is* pointing at it, so the cursor
         // follows the hand to the band it just moved in.
         //
-        // Only while the screen is focused: unfocused there is no cursor drawn
-        // and nothing to move.
-        if (focus_) {
+        // Only while there is a cursor drawn to move -- which unfocused means
+        // while a stack is in hand, since a tap can put the cursor down too.
+        // With empty hands and the focus off there is no mark on the screen and
+        // nothing for this to do.
+        if (cursorShown()) {
             cursorToHand();
         }
     }
@@ -1476,6 +1493,7 @@ bool Overlay::handleContainerInput(u32 down)
         const int next = gui::containerStep(layout_, containerCursor_, dx, dx != 0 ? 0 : dy);
         if (next != containerCursor_) {
             containerCursor_ = next;
+            selectUnderContainerCursor();
             bodyDirty_ = true;
             hotbarDirty_ = true;
         }
@@ -1813,6 +1831,29 @@ void Overlay::selectionMoved()
     }
 }
 
+void Overlay::selectUnderContainerCursor()
+{
+    // **The amber mark and the white one are the same slot on the band.** A
+    // container screen's last nine slots are the hand, so a cursor that walks
+    // into them is pointing at a slot the player is also holding -- and two
+    // outlines disagreeing about which one that is, on a screen whose whole job
+    // is to say where the next press lands, is the one thing it must never
+    // show. This is `cursorToHand` the other way round: there the hand moves
+    // the cursor, here the cursor moves the hand.
+    //
+    // Off the band nothing happens: a cursor in the chest or the backpack is
+    // not pointing at anything the hand holds.
+    if (!session_.isOpen()) {
+        return;
+    }
+    const int slot = containerCursor_ - (session_.slotCount() - item::kHotbarSlots);
+    if (slot < 0 || slot >= item::kHotbarSlots || slot == inventory_.selected) {
+        return;
+    }
+    inventory_.selected = slot;
+    hotbarDirty_ = true;
+}
+
 void Overlay::cursorToHand()
 {
     if (session_.isOpen()) {
@@ -1990,6 +2031,17 @@ void Overlay::showItemInPalette(item::ItemId id)
     hotbarDirty_ = true;
 }
 
+bool Overlay::cursorShown() const
+{
+    // **Focused, the cursor is always drawn; unfocused, only while a stack is
+    // in hand.** A tap picks a stack up and the next tap puts it down, and
+    // between the two the mark under the lifted stack is the only thing on the
+    // screen that says which cell it came from -- which is what "tapping an
+    // item to move it does not show the hover" was. With empty hands the
+    // screen goes quiet again, as it always did.
+    return focus_ || heldSlot_ >= 0 || (session_.isOpen() && !session_.cursor().empty());
+}
+
 void Overlay::carriedPosition(int* itemsCell, int* hotbarSlot) const
 {
     *itemsCell = -1;
@@ -1997,14 +2049,15 @@ void Overlay::carriedPosition(int* itemsCell, int* hotbarSlot) const
     if (heldSlot_ < 0) {
         return;
     }
-    // The cursor, wherever it is -- which is the grid on the Items page, or the
-    // band, or nowhere at all on the map page and with the focus off. The two
-    // tests below are the same ones `drawPlayerPage` passes as cursors, because
-    // a stack hovering over a cell no cursor is on would be marking a slot no
-    // button acts on.
-    if (focus_ && focusGrid_ && playerPage_ == PlayerPage::Items) {
+    // **The cursor, wherever it was last put -- by the d-pad or by a tap.**
+    // Both move it now, which is what makes a stack picked up with the stylus
+    // hover over the cell that was touched rather than over whichever slot the
+    // hand happened to be on. The two tests below are the same ones
+    // `drawPlayerPage` passes as cursors, because a stack hovering over a cell
+    // no cursor is on would be marking a slot no press acts on.
+    if (focusGrid_ && playerPage_ == PlayerPage::Items) {
         *itemsCell = itemsCursor_;
-    } else if (focus_ && !focusGrid_ && playerPage_ != PlayerPage::Map) {
+    } else if (!focusGrid_ && playerPage_ != PlayerPage::Map) {
         *hotbarSlot = inventory_.selected;
     } else if (heldSlot_ < item::kHotbarSlots) {
         *hotbarSlot = heldSlot_;
@@ -2022,7 +2075,8 @@ void Overlay::drawBlocks(const gui::Surface& surface)
     char caption[40];
     itemCaption(named, caption, sizeof caption);
 
-    hud::drawBlocksPage(surface, sheets_, palettePage_, focusGrid_ ? paletteCursor_ : -1,
+    hud::drawBlocksPage(surface, sheets_, palettePage_,
+                        cursorShown() && focusGrid_ ? paletteCursor_ : -1,
                         inventory_.selectedItem(), caption);
 }
 
@@ -2071,7 +2125,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         bool drewContainer = cleared;
         if (bodyDirty_) {
             hud::drawContainerPage(screen, layout_, session_, inventory_, sheets_,
-                                   containerCursor_, focus_);
+                                   containerCursor_, cursorShown());
             drewContainer = true;
         } else if (progressDirty_) {
             hud::drawContainerProgress(screen, layout_, session_);
@@ -2079,7 +2133,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         }
         if (hotbarDirty_ || bodyDirty_) {
             hud::drawContainerBand(screen, layout_, session_, inventory_, sheets_,
-                                   containerCursor_, focus_);
+                                   containerCursor_, cursorShown());
             drewContainer = true;
         }
         bodyDirty_ = false;
@@ -2106,7 +2160,8 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         // Nothing on it changes, so once drawn it stays drawn.
         if (bodyDirty_) {
             hud::drawItemsPage(screen, inventory_, sheets_,
-                               focusGrid_ ? itemsCursor_ : -1, heldSlot_, carriedCell);
+                               cursorShown() && focusGrid_ ? itemsCursor_ : -1, heldSlot_,
+                               carriedCell);
             drew = true;
         }
         break;
@@ -2131,7 +2186,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         // so a cursor on the hotbar would be marking a slot that no button
         // moves -- which is worse than not marking one at all.
         const bool cursorOnHotbar =
-            focus_ && !focusGrid_ && playerPage_ != PlayerPage::Map;
+            cursorShown() && !focusGrid_ && playerPage_ != PlayerPage::Map;
         hud::drawHotbar(screen, inventory_, sheets_,
                         cursorOnHotbar ? inventory_.selected : -1, heldSlot_, carriedSlot);
         hotbarDirty_ = false;

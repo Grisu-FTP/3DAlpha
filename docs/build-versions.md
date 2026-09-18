@@ -281,10 +281,13 @@ sharing `packs/` don't fight over a stale `.3dtex`.
 
 ## CI
 
-Build **every** version on every change. The whole point of Tier 2 and Tier 3 over `#ifdef` is that
-shared code stays type-checked across versions, and that only holds if CI actually compiles them.
+Test and build **every** version on every change. The whole point of Tier 2 and Tier 3 over
+`#ifdef` is that shared code stays type-checked across versions, and that only holds if CI actually
+compiles them — and compiling only proves the code parses. Running the host suite per version is
+what proves a change made for one version did not quietly alter shared entity, world, net or tick
+behaviour for another.
 
-`.github/workflows/build.yml` does that on every push. The matrix is not written down: it is
+`.github/workflows/build.yml` does both on every push. The matrix is not written down: it is
 `versions/*.json`, read at the start of the run, so a new manifest is a new build with no workflow
 edit. Each version produces a `.3dsx` and a `.cia`, both uploaded as one artifact named
 **`3DAlphaR<n><version>`** — `3DAlphaR1a1.1.2` — where `<n>` is the run number and therefore goes up
@@ -305,7 +308,15 @@ Two things the workflow has to work around, both of them permanent:
   this repo with a `CMakeCache.txt` full of one developer's absolute paths; CMake refuses to reuse
   it from anywhere else. CI configures into `build-ci/<version>` instead.
 
-Still to add: a debug configuration alongside Release, and host `ctest` on the same push.
+The `test` job runs first and the 3DS builds `need:` it, so a red suite for any version produces no
+artifacts at all — an artifact that boots but silently broke shared code for another version is
+worse than no artifact. It builds host-side only (`src/core/` is platform-independent, so no
+devkitARM), Debug with `SANITIZE=ON`, matching the `build-host` configuration in
+[working-guide.md](working-guide.md) so a CI failure reproduces locally with the same command. The
+suite binary is invoked directly rather than through `ctest`, because `add_test` wraps all of it as
+a single test and would report one line either way, where the binary names the failing case.
+
+Still to add: a Debug configuration for the *3DS* target alongside Release.
 
 ## Rules
 

@@ -124,6 +124,118 @@ TEST(a_moved_diorama_steps_by_whole_map_tiles)
     CHECK_EQ(x, baseX + kDioramaBlocks);
 }
 
+// **The table stands on the world's spawn, not on block 0, 0.** It is 384
+// blocks a side and a1.1.2 puts spawn wherever its sand walk lands, so a table
+// fixed at the origin stands next to most real worlds rather than on them:
+// measured over four a1.1.2 saves spawning at 341, 255 / 98, 314 / -193, 151 /
+// 35, -511, the origin-centred table held 148, 188, 158 and 185 of its 576
+// chunks and the spawn-anchored one holds 576, 576, 397 and 572.
+TEST(the_diorama_table_stands_on_the_world_spawn)
+{
+    i32 baseX = 0;
+    i32 baseZ = 0;
+    dioramaOrigin(&baseX, &baseZ);
+
+    // Spawn is somewhere in the middle tile of the three, whichever tile that
+    // is -- which is the whole claim, and it holds for a spawn in any quadrant.
+    const i32 spawns[5][2] = {{0, 0}, {341, 255}, {98, 314}, {-193, 151}, {35, -511}};
+    for (const auto& spawn : spawns) {
+        i32 x = 0;
+        i32 z = 0;
+        dioramaOrigin(&x, &z, 0, 0, spawn[0], spawn[1]);
+        CHECK(spawn[0] >= x + map::kTileBlocks);
+        CHECK(spawn[0] < x + 2 * map::kTileBlocks);
+        CHECK(spawn[1] >= z + map::kTileBlocks);
+        CHECK(spawn[1] < z + 2 * map::kTileBlocks);
+
+        // Still a chunk corner, so no chunk straddles two cell blocks.
+        CHECK_EQ(((x % 16) + 16) % 16, 0);
+        CHECK_EQ(((z % 16) + 16) % 16, 0);
+
+        // And Move Panorama's offset is relative to it, so a world that has
+        // never been moved reads as the anchor itself.
+        i32 movedX = 0;
+        i32 movedZ = 0;
+        dioramaOrigin(&movedX, &movedZ, 2, -3, spawn[0], spawn[1]);
+        CHECK_EQ(movedX, x + 2 * map::kTileBlocks);
+        CHECK_EQ(movedZ, z - 3 * map::kTileBlocks);
+    }
+
+    // A spawn of 0, 0 is where the table has always stood, which is what the
+    // calls that pass no anchor at all are pinning.
+    i32 x = 0;
+    i32 z = 0;
+    dioramaOrigin(&x, &z, 0, 0, 0, 0);
+    CHECK_EQ(x, baseX);
+    CHECK_EQ(z, baseZ);
+}
+
+// **Three places to stand it, and one of them a world can be without.** A
+// level.dat made by a server has no Player compound, and an anchor that quietly
+// meant 0, 0, 0 for those worlds would put the table at the origin and label it
+// "where you logged out".
+TEST(the_panorama_offers_the_places_the_world_actually_has)
+{
+    world::LevelData level;
+    level.spawnX = 341;
+    level.spawnZ = 255;
+
+    DioramaAnchors without = dioramaAnchorsOf(level);
+    CHECK_EQ(int(without.spawnX), 341);
+    CHECK_EQ(int(without.spawnZ), 255);
+    CHECK(!without.hasPlayer);
+    CHECK(dioramaAnchorAvailable(settings::PanoramaAnchor::Spawn, without));
+    CHECK(dioramaAnchorAvailable(settings::PanoramaAnchor::Origin, without));
+    CHECK(!dioramaAnchorAvailable(settings::PanoramaAnchor::Player, without));
+
+    i32 x = 0;
+    i32 z = 0;
+    CHECK(dioramaAnchorBlock(settings::PanoramaAnchor::Origin, without, &x, &z));
+    CHECK_EQ(int(x), 0);
+    CHECK_EQ(int(z), 0);
+    CHECK(dioramaAnchorBlock(settings::PanoramaAnchor::Spawn, without, &x, &z));
+    CHECK_EQ(int(x), 341);
+    CHECK_EQ(int(z), 255);
+    // Refused, and it says so rather than answering 0, 0.
+    CHECK(!dioramaAnchorBlock(settings::PanoramaAnchor::Player, without, &x, &z));
+    CHECK_EQ(int(x), 341);
+    CHECK_EQ(int(z), 255);
+
+    // The cycle steps over an anchor this world does not have, in both
+    // directions, and never lands on it.
+    CHECK(nextDioramaAnchor(settings::PanoramaAnchor::Spawn, 1, without)
+          == settings::PanoramaAnchor::Origin);
+    CHECK(nextDioramaAnchor(settings::PanoramaAnchor::Origin, 1, without)
+          == settings::PanoramaAnchor::Spawn);
+    CHECK(nextDioramaAnchor(settings::PanoramaAnchor::Spawn, -1, without)
+          == settings::PanoramaAnchor::Origin);
+
+    // **Floored, not truncated.** A player standing just west of the origin is
+    // at a negative fraction, and (i32) would move them a block east -- which
+    // at a tile boundary is a whole table in the wrong place.
+    level.player.present = true;
+    level.player.pos[0] = -0.5;
+    level.player.pos[2] = -128.25;
+    const DioramaAnchors with = dioramaAnchorsOf(level);
+    CHECK(with.hasPlayer);
+    CHECK_EQ(int(with.playerX), -1);
+    CHECK_EQ(int(with.playerZ), -129);
+    CHECK(dioramaAnchorBlock(settings::PanoramaAnchor::Player, with, &x, &z));
+    CHECK_EQ(int(x), -1);
+    CHECK_EQ(int(z), -129);
+
+    // With a player there, the cycle visits all three and comes back round.
+    settings::PanoramaAnchor at = settings::PanoramaAnchor::Spawn;
+    at = nextDioramaAnchor(at, 1, with);
+    CHECK(at == settings::PanoramaAnchor::Origin);
+    at = nextDioramaAnchor(at, 1, with);
+    CHECK(at == settings::PanoramaAnchor::Player);
+    at = nextDioramaAnchor(at, 1, with);
+    CHECK(at == settings::PanoramaAnchor::Spawn);
+    at = nextDioramaAnchor(at, -1, with);
+    CHECK(at == settings::PanoramaAnchor::Player);
+}
+
 TEST(diorama_cell_keeps_every_height_a_map_would_draw)
 {
     DioramaGrid grid;

@@ -54,6 +54,7 @@
 #include "core/settings/settings_file.hpp"
 #include "platform/ctr/audio.hpp"
 #include "platform/ctr/menu_preview.hpp"
+#include "core/preview/diorama.hpp"
 #include "core/settings/world_settings.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/font.hpp"
@@ -520,6 +521,14 @@ private:
     // `infoPages_`, which the top screen reads to give the selected button the
     // same arrows.
     void paintSettingInfo(const char* title, RowKind kind);
+
+    // The pack's darkened dirt as bottom-screen texels, built into
+    // `bottomTile_` on demand; null when the pack has not handed one over.
+    const u16* bottomBackdropTile();
+
+    // The backdrop alone, for the screens whose bottom half is still to be
+    // decided: the title, the multiplayer list and the pause menu.
+    void paintBackdropOnly();
 
     // The tooltip for each row, into `infoBody_`. Colour codes, not escapes:
     // it is drawn in the pack's font.
@@ -1019,6 +1028,12 @@ private:
     i32 panoramaTileZ_ = 0;
     i32 panoramaUndoX_ = 0;
     i32 panoramaUndoZ_ = 0;
+    // Which place in the world tile zero stands on, and the places this world
+    // has to offer. Both read in openExtraSettings off the level that screen
+    // already decodes; Move Panorama is reached through it and no other way.
+    settings::PanoramaAnchor panoramaAnchor_ = settings::PanoramaAnchor::Spawn;
+    settings::PanoramaAnchor panoramaUndoAnchor_ = settings::PanoramaAnchor::Spawn;
+    preview::DioramaAnchors panoramaAnchors_;
 
     // True while the live atlas is a world's pack rather than the console's,
     // so the next visit to the menu knows to build the console's again. See

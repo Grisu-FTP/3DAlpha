@@ -241,8 +241,10 @@ public:
     };
     static constexpr int kPageCount = 4;
 
-    // The player's pages, in the order their tabs are laid out. Which of them
-    // a gamemode offers is `tabs()`; Spectator has no inventory and so has no
+    // The player's pages. **This is not the order their tabs are laid out in**
+    // -- that is `playerPagesFor`, which is also the one place it lives -- and
+    // it is not the order they were added in either any more. Which of them a
+    // gamemode offers is `tabs()`; Spectator has no inventory and so has no
     // `Items` page.
     //
     // **These names are older than the labels on them.** `Items` is the
@@ -702,15 +704,25 @@ private:
     // Does nothing on the map page, which has no cursor to move.
     void cursorToHand();
 
+    // `cursorToHand` the other way round: on a container screen, a cursor
+    // sitting in the nine hand slots moves the selection to that slot, so the
+    // amber mark and the white one never name two different cells of the band.
+    // Does nothing off the band, and nothing without a session.
+    void selectUnderContainerCursor();
+
+    // **Is a cursor drawn at all?** Focused, always. Unfocused, only while a
+    // stack is in hand -- see the definition.
+    bool cursorShown() const;
+
     // **Where the carried stack is drawn floating**, as a cell on the Items
     // page and as an index into the hotbar band; at most one of the two is set,
     // and both are -1 when nothing is in hand.
     //
     // It follows the cursor, because the cursor is the slot the next press acts
-    // on -- a stack in hand is drawn on the slot it is about to go into. With
-    // the focus off there is no cursor to follow: the pointing device is a
-    // finger, which is not on the screen between presses, so it hovers over the
-    // slot it came out of instead and the player can still see what they are
+    // on -- a stack in hand is drawn on the slot it is about to go into. A tap
+    // puts the cursor where it landed, so this is as true of the stylus as of
+    // the d-pad; on a page with no cursor at all the stack hovers over the slot
+    // it came out of instead, so the player can still see what they are
     // carrying.
     void carriedPosition(int* itemsCell, int* hotbarSlot) const;
 

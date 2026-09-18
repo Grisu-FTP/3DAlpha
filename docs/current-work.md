@@ -3,6 +3,69 @@
 Last verified: 2026-09-16. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## CI runs the host suite, and the binaries wait on it (2026-09-18)
+
+`.github/workflows/build.yml` gained a `test` job over the same `versions/*.json` matrix the builds
+use: host build, Debug with `SANITIZE=ON`, then `3dalpha_tests` run directly for its exit status
+(0 on pass, 1 on any failure -- `tests/framework.cpp:85`). `build` now `needs: [versions, test]`, so
+a red suite for any version produces no `.3dsx` and no `.cia`. Until now CI compiled and packaged
+1,820 tests' worth of covered code without running one of them; the suite was green locally at the
+time of the change (1820/1820). This matters more per version added, since the argument for
+configure-time selection over forks is that shared code stays checked against every manifest.
+See [build-versions.md](build-versions.md#ci). Not yet done: a Debug configuration for the 3DS
+target, and the run number is still filename-only -- nothing on the console reports which R it is.
+
+## The diorama stood next to the world, and four things on the bottom screen (2026-09-18)
+
+**Move Panorama picks a place, then nudges from it.** The screen was a bare tile offset from a
+fixed corner; it now offers `settings::PanoramaAnchor` -- **World spawn** (the default), **Block
+0, 0** (where the table stood before there was a choice) and **Where you logged out** (level.dat's
+Player compound). L and R cycle it, the d-pad still steps 128-block map tiles, and picking an anchor
+zeroes the offset, because the offset is measured from the anchor. A world with no Player compound
+-- a server-made level.dat has none -- is never offered that one: `preview::dioramaAnchorAvailable`
+says so, `nextDioramaAnchor` steps over it and `dioramaAnchorBlock` falls back to Spawn and reports
+that it did, rather than quietly meaning 0, 0, 0. The word goes in `3dalpha.ini` as
+`panorama_anchor=`, so a key a later build adds is readable here; a file without it reads as Spawn.
+
+**The world diorama now stands on the world's spawn.** `preview::dioramaOrigin` took its anchor
+from block 0, 0 and nothing else, so its 384-block table stood wherever the coordinate origin
+happens to be -- which on a real a1.1.2 save is usually nowhere anyone has been. That is the whole
+of "some worlds only load some chunks on the bottom screen": every chunk the table asked for *was*
+read, and most of what it asked for had never been generated. Measured over the four a1.1.2 saves
+in `saves/`, whose spawns are 341, 255 / 98, 314 / -193, 151 / 35, -511, the table held **148, 188,
+158 and 185** of its 576 chunks; anchored on spawn the same four hold **576, 576, 397 and 572**.
+`dioramaOrigin` gained an anchor pair, `MenuPreview::runWorldJob` passes `peek.level()`'s spawn, and
+Move Panorama's offset is now relative to it -- `Menu::openExtraSettings` keeps the anchor in
+`panoramaAnchorX_/Z_`, off the `readLevel` that screen already does, because `peekLevel` answers a
+packed world out of its manifest and would leave spawn at zero. `tests/diorama_test.cpp` pins it.
+**The read path was never at fault**: a host probe over all four worlds found 0 mismatches between
+the batched read and a chunk-at-a-time one, and 0 chunks left unread.
+
+**The title, multiplayer and pause screens show the dirt and nothing else.** Each had a page of
+console text on the bottom screen; what belongs there is still open, so until it is decided they
+paint `hud::drawBackdrop` and stop. Painted rather than printed, like the settings screens --
+`Menu::paintBackdropOnly`, with the tile conversion `paintSettingInfo` used to do inline now in
+`Menu::bottomBackdropTile`. The console is left alone, so the next screen that prints clears the
+paint away with its own `\x1b[2J`.
+
+**The tab strip leads with the inventory**: Inv., Map, Look in Survival and Inv., Items, Map, Look
+in Creative. `Overlay::playerPagesFor` is still the one place the order lives; Spectator carries
+nothing and so still starts at Map. The page a world opens on is unchanged.
+
+**The amber cursor and the white selection are one slot on the band.** On a container screen the
+last nine slots *are* the hand, and walking the cursor into them left the white outline behind --
+two marks disagreeing about which slot the next press acts on. `Overlay::selectUnderContainerCursor`
+is `cursorToHand` the other way round and is called wherever `containerCursor_` moves, by d-pad or
+by tap. It replaced the narrower rule that only moved the selection for an empty hand tapping an
+empty cell.
+
+**A tap places the cursor, so a tapped stack hovers where it was tapped.** `carriedPosition` asked
+for `focus_` before it would follow the cursor, so a stack picked up with the stylus hovered over
+whatever slot the hand was on instead of over the cell that was touched. Touching now moves
+`focusGrid_` and the grid cursor with it, and `Overlay::cursorShown` -- focused, or unfocused with a
+stack in hand -- is what decides whether any cursor is drawn. Empty-handed and unfocused the screen
+is as quiet as it was.
+
 ## The bottom screen takes the stick, and the press that closes it (2026-09-17)
 
 Two fixes to focused screens, both about a control doing two things at once.

@@ -59,6 +59,7 @@ __pycache__/
 .idea/
 *.swp
 *.swo
+.*.kate-swp
 *~
 
 # OS junk
@@ -67,3 +68,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Mojang binaries. Never committed -- see CONTRIBUTING.md, "Licensing discipline".
+# srv/ holds the maintainer's own copy of the a1.1.2-era server jar, used to verify
+# the codec against a real server. It is a local file, never redistributed.
+/srv/
+*.jar

@@ -181,9 +181,10 @@ Do not implement these, and do not expect a server to send them:
 |---|---|
 | 0x07 Use Entity | protocol 4 (2010-11-10) |
 | 0x08 Update Health | protocol 5 (2010-11-24) |
-| 0x09 Respawn | protocol 5 |
+| 0x09 Respawn | protocol 5 (a 3DAlpha host takes it from a guest; see the end of this file) |
 | 0x1C Entity Velocity | protocol 4 |
-| 0x26 Entity Status | protocol 5 |
+| 0x26 Entity Status | protocol 5 (a 3DAlpha host sends it anyway; see the end of this file) |
+| 0x13 Entity Action | after a1.2.6, by b1.2 (between two 3DAlpha consoles only; see the end of this file) |
 | 0x27 Attach Entity | protocol 4 |
 | 0x3C Explosion | protocol 6 (2010-12-01) |
 | 0x64–0x6B window/inventory family | Beta |
@@ -267,8 +268,12 @@ not expect would end the connection.
 
 | Addition | What | Why it is not in the jar |
 | --- | --- | --- |
-| `0x07` Use Entity, client to server | `i32 fromEntityId`, `i32 toEntityId`, `bool leftClick` -- protocol 4's `Packet7UseEntity`, shape unchanged | Protocol 2 has **no way to tell a server you hit something**, which is why vanilla's monsters of this era "were only damaged by fire". Between two consoles running this port that is a hole in the wire rather than a decision about the game, so the id protocol 4 gave it is used at its own shape. Gated behind `NetPlay::allowUseEntity`, off by default. |
+| `0x07` Use Entity, client to server | `i32 fromEntityId`, `i32 toEntityId`, `bool leftClick` -- protocol 4's `Packet7UseEntity`, shape unchanged | Protocol 2 has **no way to tell a server you hit something**, which is why vanilla's monsters of this era "were only damaged by fire". Between two consoles running this port that is a hole in the wire rather than a decision about the game, so the id protocol 4 gave it is used at its own shape. Gated behind `NetPlay::allowExtensions`, off by default. |
 | `0x07` Use Entity, **server to client** | The same three fields, read the other way round: "`fromEntityId` hit you" | Protocol 4 has no such direction either. It is what makes players able to hit each other at all, and it carries no damage number on purpose -- see below. |
+| `0x26` Entity Status, server to client | `i32 entityId`, `i8 status` -- protocol 5's `Packet38EntityStatus`; `2` a hit, `3` a death | Protocol 2 **never tells a client an animal was hit or died**, so a guest's punch drew no red tint, played no noise and flailed no legs, and the corpse vanished without falling over. The host watches `Mob::hurtSerial` and the health in `WorldServer::syncMobs` and sends both as they happen; the guest runs later versions' `handleHealthUpdate` in `MobSystem::statusFromServer`. |
+| `0x13` Entity Action, both directions | `i32 entityId`, `i8 action` -- b1.2's `on`; `1` crouched, `2` stood up | a1.1.2's `isSneaking` is a hard-wired false, so nothing had to say it; this port sneaks, and nobody else saw it. Client to server it is b1.2's own, sent by `of.W()` on a change (`net::StanceReporter`). Server to client it is read the other way round, as `0x07` is: "this entity crouched" -- b1.2 says that with `0x28`'s metadata, a format of its own for one bit. Drawn with `cr`'s sneak branch, which a1.1.2 carries as dead code, lowered 0.125 as b1.2's `RenderPlayer` does. |
+| `0x26` Entity Status, **client to server** | The same two fields, about the sender's own entity; only `3` | Health is each console's own (see below), so the console that died is the only one that knows. The host passes it on, and the others run `ge.y()`'s death: `random.hurt`, twenty ticks of falling over, the puff -- `dm` overrides none of it. |
+| `0x09` Respawn, client to server | No fields -- protocol 5's, empty in a1.2.6 (`jk`) and b1.2 (`kr`), which sends it from `of.u()` | "Alive again". The host answers the others with a fresh `0x14` where the player now stands, which brings back the body that fell over and went. The host's own stance goes out through `WorldServer::setHostStance`, and a console that joins is told how everyone already stands. |
 | Mob type `92` sheep, `93` cow | Two values in `0x18`'s type byte | `a(Class, String, int)` registers `bo`, `am` and `mz` **all as 91** and the map keeps the last, so a real a1.1.2 client draws a chicken for every sheep and cow it meets. That is reproduced for a real server and is a plain bug between two copies of this port, which knows what it spawned. `91` still means what the jar says it means. |
 | Mob type `94`, `95`, `96` -- slime of size 1, 2 and 4 | Three more values in the same byte | `0x18` carries a type and nothing else, and a slime's size is not a type: `ma`'s constructor draws `1 << nextInt(3)` and `gy` never overwrites it, so against a real server the two ends disagree about how big every slime is, how much standing on it costs (`0.6 * size` reach, `size` damage) and how far it hops (`moveForward = size`). `55` keeps meaning exactly that, and a client that is sent it draws a size of its own as the jar does. Three ids because `1 << nextInt(3)` never produces a 3. |
 

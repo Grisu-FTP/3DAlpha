@@ -72,8 +72,16 @@ inline constexpr u8 SpawnPosition = 0x06;
 // hole rather than a design, so the id protocol 4 gave it carries the same
 // three fields here -- and it is **never sent to a Java server**, which would
 // find an id its table does not have and end the connection. See
-// `NetPlay::allowUseEntity`.
+// `NetPlay::allowExtensions`.
 inline constexpr u8 UseEntity = 0x07;
+// **Ours, as `UseEntity` is: the respawn**, protocol 5's, with no fields --
+// `jk` in a1.2.6 and `kr` in b1.2, which `of.u()` sends when the death screen's
+// button is pressed. Protocol 2 has
+// no death on the wire, so a player that died on its own console stayed
+// standing on everybody else's. Towards the host it says "I am alive again";
+// the host answers the others with a fresh Named Entity Spawn, which is how a
+// body that fell over and went is brought back.
+inline constexpr u8 Respawn = 0x09;
 inline constexpr u8 Flying = 0x0A;
 inline constexpr u8 PlayerPosition = 0x0B;
 inline constexpr u8 PlayerLook = 0x0C;
@@ -83,6 +91,14 @@ inline constexpr u8 Place = 0x0F;
 inline constexpr u8 BlockItemSwitch = 0x10;
 inline constexpr u8 AddToInventory = 0x11;
 inline constexpr u8 ArmAnimation = 0x12;
+// **Ours: the crouch**, b1.2's `on` at its own id and shape -- the entity and a
+// byte, 1 when `of.W()` sees the sneak start and 2 when it ends. a1.1.2's
+// `isSneaking` is a hard-wired false, so it never needed telling anybody; this
+// port sneaks, and a crouch nobody else could see was a stance only its owner
+// knew about. Client to server as b1.2 has it, and server to client the other
+// way round, as `UseEntity` is: "this entity crouched" -- b1.2 says that with
+// `0x28`'s metadata, which is a format of its own for one bit.
+inline constexpr u8 EntityAction = 0x13;
 inline constexpr u8 NamedEntitySpawn = 0x14;
 inline constexpr u8 PickupSpawn = 0x15;
 inline constexpr u8 Collect = 0x16;
@@ -94,6 +110,17 @@ inline constexpr u8 RelEntityMove = 0x1F;
 inline constexpr u8 EntityLook = 0x20;
 inline constexpr u8 RelEntityMoveLook = 0x21;
 inline constexpr u8 EntityTeleport = 0x22;
+// **Ours, as `UseEntity` is.** Entity Status arrives at protocol 5, and at
+// protocol 2 nothing tells a client an animal was hit or died: a guest saw a
+// cow it had just punched take no notice and then vanish. Between two 3DAlpha
+// consoles the id protocol 5 gave it carries protocol 5's two fields -- the
+// entity and 2 for a hit, 3 for a death -- and only a 3DAlpha host sends it, so
+// a Java 0.2.1 server never reaches the row.
+//
+// **A guest sends it too, about itself**: 3 when its own player dies. Health
+// lives on each console (see `net::IncomingHit`), so the console that died is
+// the only one that knows, and the host passes it on.
+inline constexpr u8 EntityStatus = 0x26;
 inline constexpr u8 PreChunk = 0x32;
 inline constexpr u8 MapChunk = 0x33;
 inline constexpr u8 MultiBlockChange = 0x34;
@@ -186,6 +213,17 @@ Packet makeArmSwing(i32 entityId);
 // See `packet::UseEntity`. `leftClick` false is a right click, which nothing
 // sends yet.
 Packet makeUseEntity(i32 fromEntityId, i32 toEntityId, bool leftClick);
+
+// See `packet::EntityStatus`. `status` is `entity::kStatusHurt` or
+// `entity::kStatusDead`.
+Packet makeEntityStatus(i32 entityId, int status);
+
+// See `packet::EntityAction`: `kActionCrouch` or `kActionUncrouch`.
+inline constexpr int kActionCrouch = 1;
+inline constexpr int kActionUncrouch = 2;
+Packet makeEntityAction(i32 entityId, int action);
+// See `packet::Respawn`.
+Packet makeRespawn();
 Packet makeInventory(int type, const WireStack* stacks, int count);
 // Position in 1/32 of a block and motion in 1/128 of a block per tick, the way
 // `ha(dx)` packs a thrown item: **the last three bytes are its velocity**, not a

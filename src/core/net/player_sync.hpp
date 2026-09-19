@@ -139,6 +139,33 @@ private:
     int last_ = 0;
 };
 
+// **How this player stands, for everybody else to draw** -- crouched, dead, or
+// back from the dead -- which protocol 2 has no way to say. b1.2's
+// `of.W()` sends an Entity Action whenever the sneak starts or stops, and
+// `of.u()` a Respawn when the death screen's button is pressed; the death
+// itself is a 3 in an Entity Status about this player's own id, because on
+// this wire the console that died is the only one that knows. All three are
+// ours (see `packet::EntityAction`), so a caller sends them only to a 3DAlpha
+// host.
+//
+// Reported on a change and never again, like `HeldItemReporter`. A dead player
+// does not crouch -- the body fell over and went -- and a respawned one starts
+// standing, which is also what the fresh spawn the others are sent says.
+class StanceReporter {
+public:
+    static constexpr int kMaxPackets = 2;
+
+    // The packets this tick owes, at most `kMaxPackets` of them, into `out`.
+    // Nothing before the Login has given this player an id.
+    int tick(i32 entityId, bool sneaking, bool alive, Packet* out);
+
+    void reset() { *this = StanceReporter(); }
+
+private:
+    bool sneaking_ = false;
+    bool dead_ = false;
+};
+
 // `ha(dx)`: an item the player threw, as the Pickup Spawn that asks the server
 // to make it. A multiplayer client never keeps a thrown item for itself --
 // `la.a(dx)` sends it and lets it go -- and the stack's damage does not survive

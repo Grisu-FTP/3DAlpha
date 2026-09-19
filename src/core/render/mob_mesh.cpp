@@ -24,16 +24,10 @@ constexpr float kDegreesPerRadian = 57.295776f;
 constexpr float kLegFrequency = 0.6662f;
 constexpr float kLegAmplitude = 1.4f;
 
-// `dn`'s own numbers: the model unit, the lift, and the twenty ticks a corpse
-// takes to fall over.
+// `dn`'s own numbers: the model unit and the lift. The fall and the hurt
+// flash are `deathFall` and `kHurtChannel`, which the player pass shares.
 constexpr float kModelHeight = 24.0f;
 constexpr float kFootLift = 0.0078125f;
-constexpr float kDeathSpin = 1.6f;
-constexpr float kDeathMaxRotation = 90.0f;
-
-// How far the hurt flash pulls green and blue down. The original blends a red
-// at 0.4 alpha over the model; this multiplies instead -- see the header.
-constexpr u8 kHurtChannel = 90;
 
 // Where the parts of a quadruped live in the array, so the pose can name them.
 enum QuadrupedPart { kHead = 0, kBody, kLegFrontLeft, kLegFrontRight, kLegBackLeft, kLegBackRight, kQuadrupedParts };
@@ -466,18 +460,8 @@ Placement placeMob(const entity::Mob& mob, double originX, double originY, doubl
     const float bodyYaw = interpolate(mob.prevRenderYaw, mob.renderYaw, partial);
     const float turn = (180.0f - bodyYaw) * kPi / 180.0f;
 
-    float death = 0.0f;
-    if (mob.deathTime > 0) {
-        // `sqrt((deathTime + partial - 1) / 20 * 1.6)`, clamped at one, times
-        // ninety degrees -- so an animal falls on its side over the twenty
-        // ticks it lies there, quickly at first.
-        float fall = MathHelper::sqrtFloat((float(mob.deathTime) + partial - 1.0f) / 20.0f
-                                           * kDeathSpin);
-        if (fall > 1.0f) {
-            fall = 1.0f;
-        }
-        death = fall * kDeathMaxRotation * kPi / 180.0f;
-    }
+    // An animal falls on its side over the twenty ticks it lies there.
+    const float death = deathFall(mob.deathTime, partial);
 
     const float sinY = MathHelper::sin(turn);
     const float cosY = MathHelper::cos(turn);

@@ -21,6 +21,7 @@
 #include "core/net/world_server.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <thread>
@@ -1110,6 +1111,243 @@ TEST(an_animal_is_announced_moved_and_destroyed)
     fixture.herd.clear();
     server.pump(9300);
     CHECK(sink.count(kGuest, packet::DestroyEntity) == destroyedBefore + 1);
+    server.close();
+}
+
+// **A hit and a death here are told to the guests**, which protocol 2 has no
+// packet for: `packet::EntityStatus`, 2 then 3, as they happen.
+TEST(an_animal_hit_or_killed_here_is_reported_to_the_guests)
+{
+    MobWorldFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    CHECK(fixture.herd.spawn(*fixture.ticks, entity::MobType::Pig, 8.5, 42.0, 8.5, 0.0f));
+    server.pump(9000);
+    const i32 mobId = fixture.herd.at(0).entityId;
+    CHECK_EQ(sink.count(kGuest, packet::EntityStatus), 0);
+
+    CHECK(fixture.herd.attack(*fixture.ticks, 0, 1, true));
+    server.pump(9010);  // not on the move clock: a hit goes straight away
+    CHECK_EQ(sink.count(kGuest, packet::EntityStatus), 1);
+    const Packet hurt = sink.last(kGuest, packet::EntityStatus);
+    CHECK(hurt.integer(0) == i64(mobId));
+    CHECK(hurt.integer(1) == entity::kStatusHurt);
+
+    // Said once per hit, however many pumps it stays red for.
+    server.pump(9100);
+    server.pump(9200);
+    CHECK_EQ(sink.count(kGuest, packet::EntityStatus), 1);
+
+    // One blow that hurts and kills: 2, then 3.
+    fixture.herd.at(0).hurtResistant = 0;
+    CHECK(fixture.herd.attack(*fixture.ticks, 0, 100, true));
+    server.pump(9300);
+    CHECK_EQ(sink.count(kGuest, packet::EntityStatus), 3);
+    const Packet dead = sink.last(kGuest, packet::EntityStatus);
+    CHECK(dead.integer(1) == entity::kStatusDead);
+    server.pump(9400);
+    CHECK_EQ(sink.count(kGuest, packet::EntityStatus), 3);
+    server.close();
+}
+
+// The host has no stream of its own, so its swing has to be put on the wire by
+// the server it is running -- `la.w()`'s Arm Animation, to every guest.
+TEST(the_hosts_swing_is_shown_to_its_guests)
+{
+    FakeWorld world;
+    world.add(0, 0);
+    Sink sink;
+    WorldServer server;
+    server.open(&world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    const int before = sink.count(kGuest, packet::ArmAnimation);
+    server.hostSwing();
+    server.pump(9000);
+    CHECK_EQ(sink.count(kGuest, packet::ArmAnimation), before + 1);
+    const Packet swing = sink.last(kGuest, packet::ArmAnimation);
+    CHECK(swing.integer(0) != 0);
+    CHECK(swing.integer(0) != i64(kGuest));  // the host, not the guest
+    server.close();
+}
+
+// **A guest's crouch, death and respawn reach everybody else**, host included.
+// Only the guest's own console knows any of them -- the crouch is its input and
+// the health is its own -- so it says so, and the host passes it on.
+TEST(a_guests_crouch_death_and_respawn_are_passed_to_the_others)
+{
+    constexpr u8 kOther = 3;
+    struct Seen {
+        std::vector<Packet> packets;
+        static void take(void* ctx, const Packet& packet)
+        {
+            static_cast<Seen*>(ctx)->packets.push_back(packet);
+        }
+        int count(u8 id, i64 entity) const
+        {
+            int n = 0;
+            for (const Packet& packet : packets) {
+                n += packet.id == id && packet.integer(0) == entity ? 1 : 0;
+            }
+            return n;
+        }
+    };
+    Seen seen;
+
+    FakeWorld world;
+    world.add(0, 0);
+    Sink sink;
+    WorldServer server;
+    server.open(&world, &Sink::send, &sink, "host");
+    server.setLocalSink(&Seen::take, &seen);
+    server.addPlayer(kGuest, "Ada");
+    server.addPlayer(kOther, "Bea");
+    settle(server, 60);
+
+    feedPacket(server, kGuest, makeEntityAction(kGuest, kActionCrouch));
+    feedPacket(server, kGuest, makeEntityAction(kGuest, kActionCrouch));  // not news
+    server.pump(20000);
+    CHECK_EQ(sink.count(kOther, packet::EntityAction), 1);
+    const Packet crouch = sink.last(kOther, packet::EntityAction);
+    CHECK(crouch.integer(0) == i64(kGuest));
+    CHECK(crouch.integer(1) == i64(kActionCrouch));
+    CHECK_EQ(sink.count(kGuest, packet::EntityAction), 0);  // not back to themselves
+    CHECK_EQ(seen.count(packet::EntityAction, kGuest), 1);  // and the host draws it
+
+    // A death, which a guest may say only about itself.
+    feedPacket(server, kGuest, makeEntityStatus(kOther, entity::kStatusDead));
+    feedPacket(server, kGuest, makeEntityStatus(kGuest, entity::kStatusHurt));
+    server.pump(20100);
+    CHECK_EQ(sink.count(kOther, packet::EntityStatus), 0);
+    feedPacket(server, kGuest, makeEntityStatus(kGuest, entity::kStatusDead));
+    feedPacket(server, kGuest, makeEntityStatus(kGuest, entity::kStatusDead));
+    server.pump(20200);
+    CHECK_EQ(sink.count(kOther, packet::EntityStatus), 1);
+    CHECK(sink.last(kOther, packet::EntityStatus).integer(1) == i64(entity::kStatusDead));
+    CHECK_EQ(seen.count(packet::EntityStatus, kGuest), 1);
+
+    // Back at the spawn point: the position first, as `NetPlay::tick` sends
+    // it, and then the Respawn, answered with a fresh spawn standing there.
+    const int spawnsBefore = sink.count(kOther, packet::NamedEntitySpawn);
+    movePlayer(server, kGuest, 40.5, 8.5);
+    feedPacket(server, kGuest, makeRespawn());
+    feedPacket(server, kGuest, makeRespawn());  // alive already
+    server.pump(20300);
+    CHECK_EQ(sink.count(kOther, packet::NamedEntitySpawn), spawnsBefore + 1);
+    const Packet again = sink.last(kOther, packet::NamedEntitySpawn);
+    CHECK(again.integer(0) == i64(kGuest));
+    CHECK(again.integer(1) == i64(std::floor(40.5 * 32.0)));
+    CHECK(seen.count(packet::NamedEntitySpawn, kGuest) >= 2);
+    server.close();
+}
+
+// The host has no stream, so its stance goes out through the server it runs --
+// and a console that joins later is told how everybody already stands.
+TEST(the_hosts_crouch_and_death_reach_its_guests_and_a_later_joiner)
+{
+    FakeWorld world;
+    world.add(0, 0);
+    Sink sink;
+    WorldServer server;
+    server.open(&world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    server.setHostStance(false, true);  // standing is what everyone assumes
+    server.setHostStance(true, true);
+    server.setHostStance(true, true);
+    server.pump(9000);
+    CHECK_EQ(sink.count(kGuest, packet::EntityAction), 1);
+    const Packet crouch = sink.last(kGuest, packet::EntityAction);
+    CHECK(crouch.integer(0) == i64(kFirstPlayerEntityId));
+    CHECK(crouch.integer(1) == i64(kActionCrouch));
+
+    // A guest joining now sees the host crouched.
+    constexpr u8 kLate = 3;
+    server.addPlayer(kLate, "Bea");
+    settle(server, 40);
+    CHECK_EQ(sink.count(kLate, packet::EntityAction), 1);
+    CHECK(sink.last(kLate, packet::EntityAction).integer(0) == i64(kFirstPlayerEntityId));
+
+    server.setHostStance(true, false);
+    server.setHostStance(false, false);
+    server.pump(20000);
+    CHECK_EQ(sink.count(kGuest, packet::EntityStatus), 1);
+    CHECK(sink.last(kGuest, packet::EntityStatus).integer(0) == i64(kFirstPlayerEntityId));
+    CHECK_EQ(sink.count(kLate, packet::EntityStatus), 1);
+
+    // ...and one joining while the host lies dead is told that instead.
+    constexpr u8 kLater = 4;
+    server.addPlayer(kLater, "Cy");
+    settle(server, 40);
+    CHECK_EQ(sink.count(kLater, packet::EntityStatus), 1);
+    CHECK_EQ(sink.count(kLater, packet::EntityAction), 0);
+
+    const int spawns = sink.count(kGuest, packet::NamedEntitySpawn);
+    server.setHostStance(false, true);
+    server.pump(30000);
+    CHECK_EQ(sink.count(kGuest, packet::NamedEntitySpawn), spawns + 1);
+    CHECK(sink.last(kGuest, packet::NamedEntitySpawn).integer(0) == i64(kFirstPlayerEntityId));
+    server.close();
+}
+
+// **A guest whose link has fallen behind is not sent positions it cannot use.**
+// Every teleport used to be queued, in order, however far behind the link was,
+// so a slow link grew a queue of places animals used to be -- the guest saw
+// them frozen and its digs were confirmed after the client had put the block
+// back. Now the queue stops growing with them, and once it drains the guest is
+// given where everything is *now*.
+TEST(a_guest_that_falls_behind_gets_current_positions_not_a_queue_of_old_ones)
+{
+    MobWorldFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    for (int n = 0; n < 10; ++n) {
+        CHECK(fixture.herd.spawn(*fixture.ticks, entity::MobType::Pig, 4.5 + n, 42.0, 8.5,
+                                 0.0f));
+    }
+    server.pump(9000);
+    CHECK(server.mobsSpawned() == 10);
+
+    // The link takes nothing, and the herd walks for ten seconds.
+    sink.refuse = true;
+    i64 now = 9000;
+    for (int step = 1; step <= 200; ++step) {
+        now += 50;
+        for (int n = 0; n < fixture.herd.count(); ++n) {
+            fixture.herd.at(n).body.setFeet(4.5 + n, 42.0, 8.5 + step * 0.05);
+        }
+        server.pump(now);
+    }
+    // Two hundred moves of ten animals would be some 46 KB of teleports.
+    CHECK(server.outboundBytes() < 16u * 1024u);
+
+    // The link comes back. What arrives is where they are now.
+    sink.refuse = false;
+    for (int i = 0; i < 20; ++i) {
+        now += 50;
+        server.pump(now);
+    }
+    const i64 finalZ = i64(std::floor((8.5 + 200 * 0.05) * 32.0));
+    for (int n = 0; n < fixture.herd.count(); ++n) {
+        const i32 id = fixture.herd.at(n).entityId;
+        bool current = false;
+        for (const Packet& packet : sink.packets(kGuest)) {
+            if (packet.id == packet::EntityTeleport && packet.integer(0) == i64(id)) {
+                current = packet.integer(3) == finalZ;  // the last one wins
+            }
+        }
+        CHECK(current);
+    }
     server.close();
 }
 

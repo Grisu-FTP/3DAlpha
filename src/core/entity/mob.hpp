@@ -250,6 +250,11 @@ inline constexpr int kHurtTime = 10;
 // entity is gone.
 inline constexpr int kDeathTicks = 20;
 
+// The two Entity Status values a mob answers to -- later versions' `ge.a(B)V`
+// switch, and what `packet::EntityStatus` carries between two consoles.
+inline constexpr int kStatusHurt = 2;
+inline constexpr int kStatusDead = 3;
+
 // `ge.z()` -- spawnExplosionParticle: twenty `explode` puffs, each drifting on
 // a **Gaussian** fiftieth of a block, and each placed ten times that drift back
 // along it. See `MobSystem::explosionPuff`.
@@ -536,6 +541,12 @@ struct Mob {
     i32 entityAge = 0;       // `U`, and what despawning counts
     i32 livingSoundTime = 0; // `a`, the idle-noise clock
 
+    // **Ours: how many hits have landed**, counted where `hurtTime` is set. A
+    // host compares it against what it last told its guests, because protocol
+    // 2 has no packet for a hit and the timer alone cannot say that two hits
+    // happened between two looks. Wraps, and only inequality is ever asked.
+    u8 hurtSerial = 0;
+
     // `kh`'s `aR` -- **ticksExisted**, which is not `entityAge`: this one only
     // ever goes up, and `entityAge` is reset by a hit and by a nearby player.
     // Exactly one thing reads it, and it is a renderer: `cb`'s zombie arms sway
@@ -788,6 +799,14 @@ public:
     // `gy.a(ju)` -- a look with no move. Same three ticks, position untouched.
     bool turnById(i32 entityId, float yaw, float pitch);
 
+    // **Entity Status, which protocol 2 does not have** -- `packet::EntityStatus`
+    // -- and later versions' `ge.a(B)V`, `handleHealthUpdate`, as its model. 2
+    // is a hit: the legs flail, the red tint runs its ten ticks and the hurt
+    // noise plays. 3 is the death: the death noise, health to zero, and the
+    // twenty ticks of falling over that `tick` then counts. Anything else is
+    // ignored. False when no such mob is here.
+    bool statusFromServer(tick::TickWorld& world, i32 entityId, int status);
+
     // One 20 Hz tick of `ge.e_()` for every live animal.
     void tick(tick::TickWorld& world, const MobSurroundings& around);
 
@@ -1004,6 +1023,11 @@ private:
     // through `attack` is what makes those deaths drop what a punched one does
     // and make the same noise.
     bool updateCounters(tick::TickWorld& world, int index, const MobSurroundings& around);
+
+    // The part of `updateCounters` a mob the server owns still runs here: the
+    // idle noise, the hurt timers and the death count. False when the corpse
+    // has lain its twenty ticks and goes. See `tick`'s remote branch.
+    bool remoteCounters(tick::TickWorld& world, int index);
 
     SegmentedPool<Mob, kInitialCapacity> mobs_;
 

@@ -6,6 +6,7 @@
 
 #include "core/entity/item_entity.hpp"
 #include "core/item/inventory.hpp"
+#include "core/entity/mob.hpp"
 #include "core/net/player_sync.hpp"
 
 using namespace mc;
@@ -150,6 +151,44 @@ TEST(digging_says_start_every_tick_and_stop_and_says_when_it_broke)
     CHECK_EQ(h.integer(1), i64(276));
     CHECK(!held.changed(276, &h));
     CHECK(held.changed(0, &h));
+}
+
+// **The stance goes on a change and never again**, like the held item: b1.2's
+// `of.W()` sends 1 when the crouch starts and 2 when it ends, the death is this
+// player's own 3, and `of.u()`'s Respawn brings them back standing.
+TEST(a_crouch_a_death_and_a_respawn_are_each_reported_once)
+{
+    StanceReporter stance;
+    Packet out[StanceReporter::kMaxPackets];
+
+    // Nothing before the Login has given this player an id.
+    CHECK_EQ(stance.tick(0, true, true, out), 0);
+
+    CHECK_EQ(stance.tick(5, false, true, out), 0);  // standing, as everyone assumes
+    CHECK_EQ(stance.tick(5, true, true, out), 1);
+    CHECK_EQ(out[0].id, packet::EntityAction);
+    CHECK_EQ(out[0].integer(0), i64(5));
+    CHECK_EQ(out[0].integer(1), i64(kActionCrouch));
+    CHECK_EQ(stance.tick(5, true, true, out), 0);
+    CHECK_EQ(stance.tick(5, false, true, out), 1);
+    CHECK_EQ(out[0].integer(1), i64(kActionUncrouch));
+
+    // Died crouching: the death alone, and nothing more while dead.
+    CHECK_EQ(stance.tick(5, true, true, out), 1);
+    CHECK_EQ(stance.tick(5, true, false, out), 1);
+    CHECK_EQ(out[0].id, packet::EntityStatus);
+    CHECK_EQ(out[0].integer(0), i64(5));
+    CHECK_EQ(out[0].integer(1), i64(entity::kStatusDead));
+    CHECK_EQ(stance.tick(5, false, false, out), 0);
+    CHECK_EQ(stance.tick(5, true, false, out), 0);
+
+    // Back, and already crouching on the first tick: the respawn first, then
+    // the crouch against the standing body the respawn stands up.
+    CHECK_EQ(stance.tick(5, true, true, out), 2);
+    CHECK_EQ(out[0].id, packet::Respawn);
+    CHECK_EQ(out[1].id, packet::EntityAction);
+    CHECK_EQ(out[1].integer(1), i64(kActionCrouch));
+    CHECK_EQ(stance.tick(5, true, true, out), 0);
 }
 
 TEST(a_thrown_item_is_sent_in_32nds_floored_and_its_motion_in_128ths_truncated)

@@ -32,9 +32,16 @@ Placement placeRemotePlayer(const net::RemotePlayer& player, double originX, dou
     // other way from the angle the wire carries. **`placeModel`, not
     // `placeAt`**: a body built out of `ModelPart`s hangs upside down from a
     // point above its feet until the renderer's flip and lift are applied.
+    //
+    // **Lower by an eighth when crouched**, as b1.2's `RenderPlayer` draws
+    // one -- the crouch pose alone leaves the feet three pixels up -- and
+    // tipped over while dying, as `dn` draws any living thing.
     const float yaw = interpolate(player.prevYaw, player.yaw, partial);
-    return placeModel(player.renderX(partial) - originX, player.renderY(partial) - originY,
-                      player.renderZ(partial) - originZ, (180.0f - yaw) * kPi / 180.0f);
+    const double drop = player.sneaking ? kSneakModelDrop : 0.0;
+    return placeModel(player.renderX(partial) - originX,
+                      player.renderY(partial) - originY - drop,
+                      player.renderZ(partial) - originZ, (180.0f - yaw) * kPi / 180.0f,
+                      deathFall(player.deathTime, partial));
 }
 
 int buildRemotePlayers(const net::RemoteEntities& entities, double originX, double originY,
@@ -79,15 +86,24 @@ int buildRemotePlayers(const net::RemoteEntities& entities, double originX, doub
         const float amount =
             player.prevLimbAmount + (player.limbAmount - player.prevLimbAmount) * partial;
         posePlayer(parts, player.limbSwing, amount, float(player.ticksExisted) + partial, 0.0f,
-                   pitch);
+                   pitch, player.swingProgress(partial), player.sneaking);
 
         const Placement place = placeRemotePlayer(player, originX, originY, originZ, partial);
+        const int before = written;
         for (int part = 0; part < kBipedParts; ++part) {
             // **Not `EntitySkin::Player`**: that page is whatever skin this
             // console's owner picked for themselves, and other people are not
             // them. See the note on `EntitySkin::OtherPlayer`.
             written += buildBox(parts[part], place, texture::EntitySkin::OtherPlayer,
                                 player.light, out + written, max - written);
+        }
+
+        // A dying body is red while it falls, as `dn` draws any living thing.
+        if (player.deathTime > 0) {
+            for (int v = before; v < written; ++v) {
+                out[v].g = kHurtChannel;
+                out[v].b = kHurtChannel;
+            }
         }
     }
     return written;

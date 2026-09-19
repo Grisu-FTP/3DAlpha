@@ -29,6 +29,8 @@ constexpr Row kRows[] = {
     // `Packet7UseEntity`, so if a1.2.6 is ever built the row moves rather than
     // changes.
     {packet::UseEntity, {"UseEntity (ours; protocol 4's 0x07)", 3, {F::Int, F::Int, F::Bool}}},
+    // Ours; see the note beside `packet::Respawn`. Protocol 5's, which is empty.
+    {packet::Respawn, {"Respawn (ours; protocol 5's 0x09)", 0, {}}},
     {packet::Flying, {"Flying eh/gf", 1, {F::Bool}}},
     {packet::PlayerPosition,
      {"PlayerPosition s/aa", 5, {F::Double, F::Double, F::Double, F::Double, F::Bool}}},
@@ -42,6 +44,9 @@ constexpr Row kRows[] = {
     {packet::BlockItemSwitch, {"BlockItemSwitch dz/fv", 2, {F::Int, F::Short}}},
     {packet::AddToInventory, {"AddToInventory ld/en", 3, {F::Short, F::Byte, F::Short}}},
     {packet::ArmAnimation, {"ArmAnimation hf/o", 2, {F::Int, F::Byte}}},
+    // Ours; see the note beside `packet::EntityAction`. b1.2's `on` -- a1.2.6
+    // does not have it -- the entity and one byte.
+    {packet::EntityAction, {"EntityAction (ours; b1.2's 0x13)", 2, {F::Int, F::Byte}}},
     {packet::NamedEntitySpawn,
      {"NamedEntitySpawn gp/c",
       8,
@@ -55,6 +60,9 @@ constexpr Row kRows[] = {
     {packet::MobSpawn,
      {"MobSpawn ez/gv", 7, {F::Int, F::Byte, F::Int, F::Int, F::Int, F::Byte, F::Byte}}},
     {packet::DestroyEntity, {"DestroyEntity ju/ct", 1, {F::Int}}},
+    // Ours; see the note beside `packet::EntityStatus`. Protocol 5's
+    // `Packet38EntityStatus`: the entity and one signed byte.
+    {packet::EntityStatus, {"EntityStatus (ours; protocol 5's 0x26)", 2, {F::Int, F::Byte}}},
     {packet::Entity, {"Entity lq/ex", 1, {F::Int}}},
     {packet::RelEntityMove, {"RelEntityMove kp/dr", 4, {F::Int, F::Byte, F::Byte, F::Byte}}},
     {packet::EntityLook, {"EntityLook jx/cx", 3, {F::Int, F::Byte, F::Byte}}},
@@ -455,6 +463,31 @@ Packet makeUseEntity(i32 fromEntityId, i32 toEntityId, bool leftClick)
     p.pushInt(fromEntityId);
     p.pushInt(toEntityId);
     p.pushInt(leftClick ? 1 : 0);
+    return p;
+}
+
+Packet makeEntityStatus(i32 entityId, int status)
+{
+    Packet p;
+    p.reset(packet::EntityStatus);
+    p.pushInt(entityId);
+    p.pushInt(status);
+    return p;
+}
+
+Packet makeEntityAction(i32 entityId, int action)
+{
+    Packet p;
+    p.reset(packet::EntityAction);
+    p.pushInt(entityId);
+    p.pushInt(action);
+    return p;
+}
+
+Packet makeRespawn()
+{
+    Packet p;
+    p.reset(packet::Respawn);
     return p;
 }
 

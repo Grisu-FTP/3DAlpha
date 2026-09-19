@@ -54,7 +54,7 @@ void bipedModel(ModelPart* out)
 }
 
 void posePlayer(ModelPart* parts, float limbSwing, float limbAmount, float ageTicks,
-                float headYaw, float headPitch)
+                float headYaw, float headPitch, float swingProgress, bool sneaking)
 {
     parts[kBipedHead].angleY = headYaw / kDegreesPerRadian;
     parts[kBipedHead].angleX = headPitch / kDegreesPerRadian;
@@ -73,21 +73,54 @@ void posePlayer(ModelPart* parts, float limbSwing, float limbAmount, float ageTi
     parts[kBipedArmRight].angleY = 0.0f;
     parts[kBipedArmLeft].angleY = 0.0f;
 
-    // The swing block with `swingProgress` at zero: the body does not turn and
-    // the arms hang from their constructor's points.
-    parts[kBipedBody].angleY = 0.0f;
+    // **The swing block**, `cr.a(FFFFFF)` offsets 311 to 617. At zero the body
+    // does not turn and the arms hang from their constructor's points. The
+    // right arm's X is worked in doubles, as the class file does it.
+    const float k = swingProgress;
+    const float bodyTurn = MathHelper::sin(MathHelper::sqrtFloat(k) * kPi * 2.0f) * 0.2f;
+    parts[kBipedBody].angleY = bodyTurn;
     parts[kBipedBody].angleX = 0.0f;
-    parts[kBipedArmRight].pivotX = -5.0f;
-    parts[kBipedArmRight].pivotZ = 0.0f;
-    parts[kBipedArmLeft].pivotX = 5.0f;
-    parts[kBipedArmLeft].pivotZ = 0.0f;
+    parts[kBipedArmRight].pivotZ = MathHelper::sin(bodyTurn) * 5.0f;
+    parts[kBipedArmRight].pivotX = -MathHelper::cos(bodyTurn) * 5.0f;
+    parts[kBipedArmLeft].pivotZ = -MathHelper::sin(bodyTurn) * 5.0f;
+    parts[kBipedArmLeft].pivotX = MathHelper::cos(bodyTurn) * 5.0f;
+    parts[kBipedArmRight].angleY += bodyTurn;
+    parts[kBipedArmLeft].angleY += bodyTurn;
+    parts[kBipedArmLeft].angleX += bodyTurn;
+    float eased = 1.0f - k;
+    eased *= eased;
+    eased *= eased;
+    eased = 1.0f - eased;
+    const float lift = MathHelper::sin(eased * kPi);
+    const float reach =
+        MathHelper::sin(k * kPi) * -(parts[kBipedHead].angleX - 0.7f) * 0.75f;
+    parts[kBipedArmRight].angleX =
+        float(double(parts[kBipedArmRight].angleX) - (double(lift) * 1.2 + double(reach)));
+    parts[kBipedArmRight].angleY += bodyTurn * 2.0f;
+    parts[kBipedArmRight].angleZ = MathHelper::sin(k * kPi) * -0.4f;
 
-    // Not riding: the legs stand at twelve and the head at zero.
-    parts[kBipedLegRight].pivotZ = 0.0f;
-    parts[kBipedLegLeft].pivotZ = 0.0f;
-    parts[kBipedLegRight].pivotY = 12.0f;
-    parts[kBipedLegLeft].pivotY = 12.0f;
-    parts[kBipedHead].pivotY = 0.0f;
+    // **The crouch, `cr.j`**, offsets 621 to 784: the body leans forward, the
+    // arms come with it, and the legs move up and forward under it. The head
+    // drops a pixel and **the hat does not** -- nothing here copies a pivot to
+    // it, only the two angles at the top. Standing, the legs are back at twelve
+    // and the head at zero.
+    if (sneaking) {
+        parts[kBipedBody].angleX = 0.5f;
+        parts[kBipedArmRight].angleX += 0.4f;
+        parts[kBipedArmLeft].angleX += 0.4f;
+        parts[kBipedLegRight].pivotZ = 4.0f;
+        parts[kBipedLegLeft].pivotZ = 4.0f;
+        parts[kBipedLegRight].pivotY = 9.0f;
+        parts[kBipedLegLeft].pivotY = 9.0f;
+        parts[kBipedHead].pivotY = 1.0f;
+    } else {
+        parts[kBipedBody].angleX = 0.0f;
+        parts[kBipedLegRight].pivotZ = 0.0f;
+        parts[kBipedLegLeft].pivotZ = 0.0f;
+        parts[kBipedLegRight].pivotY = 12.0f;
+        parts[kBipedLegLeft].pivotY = 12.0f;
+        parts[kBipedHead].pivotY = 0.0f;
+    }
 
     const float sway = MathHelper::cos(ageTicks * 0.09f) * 0.05f + 0.05f;
     const float roll = MathHelper::sin(ageTicks * 0.067f) * 0.05f;

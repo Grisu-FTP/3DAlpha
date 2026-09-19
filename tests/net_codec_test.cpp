@@ -197,7 +197,7 @@ TEST(an_unknown_id_and_a_negative_length_are_not_waited_for)
     CHECK(parsePacket(partial.data(), partial.size(), &p, &consumed) == ParseResult::NeedMore);
 }
 
-TEST(the_table_holds_the_jars_thirty_three_packets_and_the_one_addition)
+TEST(the_table_holds_the_jars_thirty_three_packets_and_the_four_additions)
 {
     int registered = 0;
     for (int id = 0; id < 256; ++id) {
@@ -206,12 +206,30 @@ TEST(the_table_holds_the_jars_thirty_three_packets_and_the_one_addition)
         }
     }
     // **Thirty-three is the jar's number** -- `fn` in the client and `hp` in the
-    // server both register exactly that many -- and the thirty-fourth is ours
-    // and is listed here so it can never grow quietly. A 3DAlpha host sends
-    // `0x07` so a guest can hit an animal, which protocol 2 otherwise has no
-    // way to say; it is never sent to a Java server. See
-    // protocol-a1.1.2.md, "What a 3DAlpha host adds to protocol 2".
-    CHECK_EQ(registered, 34);
+    // server both register exactly that many -- and the four past it are ours,
+    // listed here so the table can never grow quietly. A 3DAlpha host sends
+    // `0x07` so a guest can hit an animal, `0x26` so a guest sees the animal
+    // was hit or died, and `0x13` and `0x09` so a player's crouch, death and
+    // respawn are seen by the others -- protocol 2 has no way to say any of it,
+    // and none of it is ever sent to a Java server. See protocol-a1.1.2.md,
+    // "What a 3DAlpha host adds to protocol 2".
+    CHECK_EQ(registered, 37);
+
+    const PacketShape* status = shapeOf(packet::EntityStatus);
+    CHECK(status != nullptr);
+    CHECK_EQ(int(status->fieldCount), 2);
+    CHECK(status->fields[0] == FieldType::Int);
+    CHECK(status->fields[1] == FieldType::Byte);
+
+    // b1.2's `on` and `kr`, at their own ids and shapes.
+    const PacketShape* action = shapeOf(packet::EntityAction);
+    CHECK(action != nullptr);
+    CHECK_EQ(int(action->fieldCount), 2);
+    CHECK(action->fields[0] == FieldType::Int);
+    CHECK(action->fields[1] == FieldType::Byte);
+    const PacketShape* respawn = shapeOf(packet::Respawn);
+    CHECK(respawn != nullptr);
+    CHECK_EQ(int(respawn->fieldCount), 0);
 
     const PacketShape* ours = shapeOf(packet::UseEntity);
     CHECK(ours != nullptr);
@@ -223,7 +241,6 @@ TEST(the_table_holds_the_jars_thirty_three_packets_and_the_one_addition)
     // Added in later protocols; a server for this one never sends them, and
     // nothing here has a reason to add them.
     CHECK(shapeOf(0x08) == nullptr);
-    CHECK(shapeOf(0x09) == nullptr);
     CHECK(shapeOf(0x1C) == nullptr);
     CHECK(shapeOf(0x3C) == nullptr);
     CHECK(shapeOf(0x64) == nullptr);

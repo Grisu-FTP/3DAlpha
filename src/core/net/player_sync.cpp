@@ -2,6 +2,8 @@
 
 #include "core/net/player_sync.hpp"
 
+#include "core/entity/mob.hpp"
+
 #include <cmath>
 
 namespace mc::net {
@@ -202,6 +204,30 @@ bool HeldItemReporter::changed(int itemId, Packet* out)
     last_ = itemId;
     *out = makeHoldingChange(itemId);
     return true;
+}
+
+int StanceReporter::tick(i32 entityId, bool sneaking, bool alive, Packet* out)
+{
+    if (entityId == 0) {
+        return 0;
+    }
+    int n = 0;
+    if (dead_ && alive) {
+        out[n++] = makeRespawn();
+        dead_ = false;
+        sneaking_ = false;
+    }
+    if (!dead_ && !alive) {
+        out[n++] = makeEntityStatus(entityId, entity::kStatusDead);
+        dead_ = true;
+        sneaking_ = false;
+        return n;
+    }
+    if (alive && sneaking != sneaking_) {
+        out[n++] = makeEntityAction(entityId, sneaking ? kActionCrouch : kActionUncrouch);
+        sneaking_ = sneaking;
+    }
+    return n;
 }
 
 Packet pickupSpawnFor(const entity::ItemEntity& item)

@@ -295,6 +295,16 @@ public:
     // where a1.1.2's own client reports one.
     void setHostPose(double x, double feetY, double z, float yaw, float pitch);
 
+    // **The host's arm swinging**, which is `la.w()`'s Arm Animation from the
+    // one player with no stream of its own. Every guest draws it.
+    void hostSwing();
+
+    // **How the host's own player stands**: crouched, dead, or back. Every
+    // guest is told on a change, with the packets a guest's own
+    // `StanceReporter` sends about itself -- see `packet::EntityAction`.
+    // Called every tick; nothing goes out unless something changed.
+    void setHostStance(bool sneaking, bool alive);
+
     // **The host swinging at a guest.** The host has no stream of its own, so
     // a blow it lands has to be put on the wire here rather than falling out
     // of `feed`. False when `targetEntityId` is not a guest in this session.
@@ -407,6 +417,15 @@ private:
         bool displaced = false;
         bool spawned = false;  // the others have been told about this one
 
+        // How they stand, as they last said: crouched, and dead until a
+        // Respawn. Kept so a console that joins later is told too.
+        bool sneaking = false;
+        bool dead = false;
+
+        // Positions were withheld while this guest's outbox was backed up, and
+        // the current ones are owed. See `broadcastMove`.
+        bool movesOwed = false;
+
         // The centre the sent set was built around.
         i32 viewX = 0, viewZ = 0;
         bool viewSet = false;
@@ -458,10 +477,24 @@ private:
 
     // By the id everything on the wire names them with, host included.
     Player* playerByEntity(i32 entityId);
+
+    // `packet_` as the Named Entity Spawn that puts `player` on somebody's
+    // screen, where they are now.
+    void fillNamedSpawn(const Player& player);
     const Player* find(u8 playerId) const;
 
     void write(Player& player, const Packet& packet);
     void broadcast(const Packet& packet, u8 exceptPlayerId);
+
+    // **A position, which is state and not an event.** `broadcast`, except that
+    // a guest whose outbox is already backed up is not given it: a newer one
+    // will exist before it could be delivered, and queueing it would put every
+    // block change behind a wall of places things used to be. Such a guest is
+    // marked owed and sent every current position once it has caught up; see
+    // `resendPositions`. `announceMove` tells the host too, as `announce` does.
+    void broadcastMove(const Packet& packet, u8 exceptPlayerId);
+    void announceMove(const Packet& packet, u8 exceptPlayerId);
+    void resendPositions(Player& player);
 
     // `broadcast`, and the host is told too. For the packets that describe a
     // player -- see `setLocalSink`.
@@ -525,6 +558,10 @@ private:
         i32 x = 0, y = 0, z = 0;
         i8 yaw = 0, pitch = 0;
         bool seen = false;
+        // What the guests have been told about its hits and its death. See
+        // `packet::EntityStatus`.
+        u8 hurtSerial = 0;
+        bool deathSent = false;
     };
     std::vector<KnownMob> knownMobs_;
 

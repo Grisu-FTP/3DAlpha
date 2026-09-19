@@ -28,6 +28,15 @@ constexpr usize kChunkBytes = 1024;
 // walked away from a second ago.
 constexpr usize kOutboxHighWater = 24u << 10;
 
+// **Past this, a guest is sent no more positions until it catches up** -- and
+// below the second, it is sent them all again, current. Twenty-odd bytes a
+// teleport, twenty times a second for every animal, item and player in view:
+// on a link carrying less than that, a queue of them grew without bound and
+// the guest watched the world further and further in the past, block changes
+// and all. Eight kilobytes is under half a second of it at the worst.
+constexpr usize kMoveHighWater = 8u << 10;
+constexpr usize kMoveLowWater = 2u << 10;
+
 // A guest's stream is a player, not a server: nothing it can legitimately send
 // is large, and a buffer that grows past this is a stream that has lost its
 // place.
@@ -471,6 +480,59 @@ void WorldServer::broadcast(const Packet& packet, u8 exceptPlayerId)
     }
 }
 
+void WorldServer::broadcastMove(const Packet& packet, u8 exceptPlayerId)
+{
+    for (int i = 1; i < kMaxPlayers; ++i) {
+        Player& player = players_[i];
+        if (!player.used || !player.loggedIn || player.id == exceptPlayerId) {
+            continue;
+        }
+        if (player.movesOwed || player.outbox.size() > kMoveHighWater) {
+            player.movesOwed = true;
+            continue;
+        }
+        write(player, packet);
+    }
+}
+
+void WorldServer::announceMove(const Packet& packet, u8 exceptPlayerId)
+{
+    broadcastMove(packet, exceptPlayerId);
+    if (localSink_ != nullptr) {
+        localSink_(localCtx_, packet);
+    }
+}
+
+void WorldServer::resendPositions(Player& player)
+{
+    const auto teleport = [&](i32 entityId, i32 x, i32 y, i32 z, i32 yaw, i32 pitch) {
+        packet_.reset(packet::EntityTeleport);
+        packet_.pushInt(entityId);
+        packet_.pushInt(x);
+        packet_.pushInt(y);
+        packet_.pushInt(z);
+        packet_.pushInt(yaw);
+        packet_.pushInt(pitch);
+        write(player, packet_);
+    };
+    for (int i = 0; i < kMaxPlayers; ++i) {
+        const Player& subject = players_[i];
+        if (!subject.used || !subject.loggedIn || !subject.everSent || subject.id == player.id
+            || !(i == 0 || subject.spawned)) {
+            continue;
+        }
+        teleport(subject.entityId, subject.lastSentX, subject.lastSentY, subject.lastSentZ,
+                 subject.lastSentYaw, subject.lastSentPitch);
+    }
+    for (const KnownItem& item : knownItems_) {
+        teleport(item.entityId, item.x, item.y, item.z, 0, 0);
+    }
+    for (const KnownMob& mob : knownMobs_) {
+        teleport(mob.entityId, mob.x, mob.y, mob.z, mob.yaw, mob.pitch);
+    }
+    player.movesOwed = false;
+}
+
 void WorldServer::announce(const Packet& packet, u8 exceptPlayerId)
 {
     broadcast(packet, exceptPlayerId);
@@ -552,28 +614,20 @@ void WorldServer::login(Player& player)
         if (!other.used || other.id == player.id || !other.loggedIn) {
             continue;
         }
-        packet_.reset(packet::NamedEntitySpawn);
-        packet_.pushInt(other.entityId);
-        packet_.pushString(other.name);
-        packet_.pushInt(toWirePosition(other.x));
-        packet_.pushInt(toWirePosition(other.feetY));
-        packet_.pushInt(toWirePosition(other.z));
-        packet_.pushInt(toWireAngle(other.yaw));
-        packet_.pushInt(toWireAngle(other.pitch));
-        packet_.pushInt(other.heldItem);
+        fillNamedSpawn(other);
         write(player, packet_);
+        // **And how they stand**, which the spawn cannot say: somebody already
+        // crouching is drawn crouching, and somebody lying dead falls over and
+        // goes, as they did on everyone else's screen.
+        if (other.dead) {
+            write(player, makeEntityStatus(other.entityId, entity::kStatusDead));
+        } else if (other.sneaking) {
+            write(player, makeEntityAction(other.entityId, kActionCrouch));
+        }
     }
 
     // ...and everyone else hears about this one.
-    packet_.reset(packet::NamedEntitySpawn);
-    packet_.pushInt(player.entityId);
-    packet_.pushString(player.name);
-    packet_.pushInt(toWirePosition(player.x));
-    packet_.pushInt(toWirePosition(player.feetY));
-    packet_.pushInt(toWirePosition(player.z));
-    packet_.pushInt(toWireAngle(player.yaw));
-    packet_.pushInt(toWireAngle(player.pitch));
-    packet_.pushInt(player.heldItem);
+    fillNamedSpawn(player);
     announce(packet_, player.id);
     player.spawned = true;
 
@@ -949,6 +1003,43 @@ void WorldServer::sendBlockChanges()
 
 // ---- entities --------------------------------------------------------------
 
+void WorldServer::hostSwing()
+{
+    const Player& self = players_[0];
+    if (!self.used || self.entityId == 0) {
+        return;
+    }
+    broadcast(makeArmSwing(self.entityId), self.id);
+}
+
+void WorldServer::setHostStance(bool sneaking, bool alive)
+{
+    Player& self = players_[0];
+    if (!self.used || self.entityId == 0) {
+        return;
+    }
+    // The same three transitions `StanceReporter` makes for a guest, answered
+    // the way `feed` answers them -- except that the host draws nothing of
+    // itself, so the guests are told and the local sink is not.
+    if (self.dead && alive) {
+        self.dead = false;
+        self.sneaking = false;
+        fillNamedSpawn(self);
+        broadcast(packet_, self.id);
+    }
+    if (!self.dead && !alive) {
+        self.dead = true;
+        self.sneaking = false;
+        broadcast(makeEntityStatus(self.entityId, entity::kStatusDead), self.id);
+        return;
+    }
+    if (alive && sneaking != self.sneaking) {
+        self.sneaking = sneaking;
+        broadcast(makeEntityAction(self.entityId, sneaking ? kActionCrouch : kActionUncrouch),
+                  self.id);
+    }
+}
+
 void WorldServer::setHostPose(double x, double feetY, double z, float yaw, float pitch)
 {
     hostPosed_ = true;
@@ -959,6 +1050,19 @@ void WorldServer::setHostPose(double x, double feetY, double z, float yaw, float
     self.z = z;
     self.yaw = yaw;
     self.pitch = pitch;
+}
+
+void WorldServer::fillNamedSpawn(const Player& player)
+{
+    packet_.reset(packet::NamedEntitySpawn);
+    packet_.pushInt(player.entityId);
+    packet_.pushString(player.name);
+    packet_.pushInt(toWirePosition(player.x));
+    packet_.pushInt(toWirePosition(player.feetY));
+    packet_.pushInt(toWirePosition(player.z));
+    packet_.pushInt(toWireAngle(player.yaw));
+    packet_.pushInt(toWireAngle(player.pitch));
+    packet_.pushInt(player.heldItem);
 }
 
 WorldServer::Player* WorldServer::playerByEntity(i32 entityId)
@@ -1033,9 +1137,9 @@ void WorldServer::sendEntities(i64 nowMillis)
         // **Slot zero is this console walking**, and it is drawn from the
         // player's own body rather than from a packet about itself.
         if (i == 0) {
-            broadcast(packet_, subject.id);
+            broadcastMove(packet_, subject.id);
         } else {
-            announce(packet_, subject.id);
+            announceMove(packet_, subject.id);
         }
     }
 }
@@ -1170,7 +1274,7 @@ void WorldServer::syncItems(i64 nowMillis)
         packet_.pushInt(wz);
         packet_.pushInt(0);
         packet_.pushInt(0);
-        broadcast(packet_, 0);
+        broadcastMove(packet_, 0);
     }
 
     // What the pool no longer holds: aged out, blown up, or picked up by the
@@ -1231,7 +1335,11 @@ void WorldServer::syncMobs(i64 nowMillis)
         }
 
         if (known == nullptr) {
-            knownMobs_.push_back(KnownMob{mob.entityId, wx, wy, wz, wyaw, wpitch, true});
+            KnownMob fresh{mob.entityId, wx, wy, wz, wyaw, wpitch, true};
+            // Hits from before a guest ever saw it are not news.
+            fresh.hurtSerial = mob.hurtSerial;
+            fresh.deathSent = mob.health <= 0;
+            knownMobs_.push_back(fresh);
             packet_.reset(packet::MobSpawn);
             packet_.pushInt(mob.entityId);
             packet_.pushInt(RemoteEntities::wireTypeForMob(mob));
@@ -1246,6 +1354,20 @@ void WorldServer::syncMobs(i64 nowMillis)
         }
 
         known->seen = true;
+
+        // **A hit and a death, as they happen and not on the move clock.** The
+        // tint is ten ticks long, so waiting for the next move would cost half
+        // of it. A hit first, then the death, which is the order a1.2's server
+        // sends them in when one blow does both.
+        if (mob.hurtSerial != known->hurtSerial) {
+            known->hurtSerial = mob.hurtSerial;
+            broadcast(makeEntityStatus(mob.entityId, entity::kStatusHurt), 0);
+        }
+        if (mob.health <= 0 && !known->deathSent) {
+            known->deathSent = true;
+            broadcast(makeEntityStatus(mob.entityId, entity::kStatusDead), 0);
+        }
+
         if (!moveDue
             || (wx == known->x && wy == known->y && wz == known->z && wyaw == known->yaw
                 && wpitch == known->pitch)) {
@@ -1263,7 +1385,7 @@ void WorldServer::syncMobs(i64 nowMillis)
         packet_.pushInt(wz);
         packet_.pushInt(wyaw);
         packet_.pushInt(wpitch);
-        broadcast(packet_, 0);
+        broadcastMove(packet_, 0);
     }
 
     // Killed, despawned, or driven off the end of the pool.
@@ -1455,6 +1577,46 @@ void WorldServer::onPacket(Player& player, const Packet& p)
         break;
     }
 
+    case packet::EntityAction: {
+        // Ours; see `packet::EntityAction`. Field 0 is the guest's own id, and
+        // the frame already said who it was. A corpse does not crouch.
+        const int action = int(p.integer(1));
+        if (player.dead || (action != kActionCrouch && action != kActionUncrouch)) {
+            break;
+        }
+        const bool sneaking = action == kActionCrouch;
+        if (sneaking != player.sneaking) {
+            player.sneaking = sneaking;
+            announce(makeEntityAction(player.entityId, action), player.id);
+        }
+        break;
+    }
+
+    case packet::EntityStatus:
+        // **A guest saying it died**, which only it can know: its health is its
+        // own. Anything but a death, or a death about somebody else, is not a
+        // guest's to say.
+        if (int(p.integer(1)) == entity::kStatusDead && i32(p.integer(0)) == player.entityId
+            && !player.dead) {
+            player.dead = true;
+            player.sneaking = false;
+            announce(makeEntityStatus(player.entityId, entity::kStatusDead), player.id);
+        }
+        break;
+
+    case packet::Respawn:
+        // **Back from the dead**, and the others are given the player afresh
+        // -- where they are now, standing -- because the body they were drawing
+        // fell over and went. The guest's position report goes ahead of this
+        // one in the same tick, so "now" is the spawn point.
+        if (player.dead) {
+            player.dead = false;
+            player.sneaking = false;
+            fillNamedSpawn(player);
+            announce(packet_, player.id);
+        }
+        break;
+
     case packet::ArmAnimation: {
         packet_.reset(packet::ArmAnimation);
         packet_.pushInt(player.entityId);
@@ -1519,6 +1681,15 @@ void WorldServer::pump(i64 nowMillis)
     streamColumns();
     takeOven();
     placeStragglers();
+    // A guest that was sent no positions while it was behind, and has caught
+    // up, is given every current one before anything newer is written.
+    for (int i = 1; i < kMaxPlayers; ++i) {
+        Player& player = players_[i];
+        if (player.used && player.loggedIn && player.movesOwed
+            && player.outbox.size() < kMoveLowWater) {
+            resendPositions(player);
+        }
+    }
     sendEntities(nowMillis);
     syncItems(nowMillis);
     syncMobs(nowMillis);

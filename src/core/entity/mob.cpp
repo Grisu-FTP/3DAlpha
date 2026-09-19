@@ -604,6 +604,7 @@ bool MobSystem::attack(tick::TickWorld& world, int index, int amount, bool fromP
         mob.health = i16(mob.health - amount);
         mob.hurtTime = i16(kHurtTime);
         mob.maxHurtTime = i16(kHurtTime);
+        ++mob.hurtSerial;
     }
 
     if (knockback && mob.health > 0) {
@@ -1549,6 +1550,83 @@ bool MobSystem::updateCounters(tick::TickWorld& world, int index,
     return true;
 }
 
+bool MobSystem::remoteCounters(tick::TickWorld& world, int index)
+{
+    Mob& mob = mobs_[index];
+    const MobDef& def = mobDef(mob.type);
+
+    // The idle noise, drawn exactly as `updateCounters` draws it. The two
+    // consoles' generators are their own, so a cow moos at a different moment
+    // on each -- which is also true between two a1.1.2 clients.
+    if (mob.health > 0) {
+        const int draw = rand_.nextInt(1000);
+        const int before = mob.livingSoundTime++;
+        if (draw < before) {
+            mob.livingSoundTime = -def.talkInterval;
+            const float pitch = (rand_.nextFloat() - rand_.nextFloat()) * 0.2f + 1.0f;
+            if (def.livingSound != nullptr) {
+                world.playSoundAt(def.livingSound, mob.body.x,
+                                  mob.body.y + double(mob.body.height) * 0.5, mob.body.z,
+                                  def.soundVolume, pitch);
+            }
+        }
+    }
+
+    if (mob.hurtTime > 0) {
+        --mob.hurtTime;
+    }
+    if (mob.hurtResistant > 0) {
+        --mob.hurtResistant;
+    }
+
+    // **The corpse lies its twenty ticks here too, and goes in the same puff.**
+    // The host's Destroy Entity for it arrives about now and finds nothing,
+    // which is what a1.2's clients do as well. A slime's split is not done
+    // here: the new slimes are the host's, and arrive as spawns.
+    if (mob.health <= 0) {
+        ++mob.deathTime;
+        if (mob.deathTime > kDeathTicks) {
+            explosionPuff(world, index);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MobSystem::statusFromServer(tick::TickWorld& world, i32 entityId, int status)
+{
+    Mob* mob = findById(entityId);
+    if (mob == nullptr) {
+        return false;
+    }
+    const MobDef& def = mobDef(mob->type);
+    const double midY = mob->body.y + double(mob->body.height) * 0.5;
+    const float pitch = (rand_.nextFloat() - rand_.nextFloat()) * 0.2f + 1.0f;
+
+    if (status == kStatusHurt) {
+        // `handleHealthUpdate(2)`: what `attackEntityFrom` does to a body that
+        // was hit, less the damage -- which is the host's to count.
+        mob->limbYaw = 1.5f;
+        mob->hurtResistant = i16(kHurtResistantTime);
+        mob->hurtTime = i16(kHurtTime);
+        mob->maxHurtTime = i16(kHurtTime);
+        world.playSoundAt(def.hurtSound, mob->body.x, midY, mob->body.z, def.soundVolume,
+                          pitch);
+        return true;
+    }
+    if (status == kStatusDead) {
+        // `handleHealthUpdate(3)`. A second 3 for a corpse already falling is
+        // not a second death.
+        if (mob->health > 0) {
+            world.playSoundAt(def.deathSound, mob->body.x, midY, mob->body.z,
+                              def.soundVolume, pitch);
+            mob->health = 0;
+        }
+        return true;
+    }
+    return true;
+}
+
 void MobSystem::shove(Mob& mob, double otherX, double otherZ, double* otherMotionX,
                       double* otherMotionZ)
 {
@@ -1712,6 +1790,13 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
             mob.prevRenderYaw = mob.renderYaw;
             mob.prevPitch = mob.pitch;
             ++mob.ticksExisted;
+            // `ge.y()` is `onEntityUpdate` and is not what `ge.B` suppresses:
+            // the idle noise, the hurt timers and the fall-over all run on the
+            // console that is only watching.
+            if (!remoteCounters(world, i)) {
+                removeAt(i);
+                continue;
+            }
             interpolateToServer(mob);
             headingAndLight(world, mob, beforeX, beforeZ);
             ++i;

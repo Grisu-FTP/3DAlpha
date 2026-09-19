@@ -41,9 +41,12 @@ public:
               gui::ChatLog& chat, const u8* fontWidths, entity::PlayerBody& body, Camera& camera);
 
     // The end of one player tick: `la.J()`, and the other entities' own tick --
-    // the walk toward wherever the server last put them.
+    // the walk toward wherever the server last put them. `alive` is the
+    // player's own vitals; with the crouch it is what the others are told
+    // about how this player stands, when the host is one that understands it.
+    // See `net::StanceReporter`.
     void tick(const entity::PlayerBody& body, const Camera& camera,
-              const item::Inventory& inventory, const tick::TickWorld* world);
+              const item::Inventory& inventory, const tick::TickWorld* world, bool alive);
 
     // The other players and the items on the ground, for the renderer and the
     // debug page. See core/net/entities.hpp.
@@ -71,11 +74,13 @@ public:
     // a sword the server has not heard about would punch for one.
     void attackEntity(i32 targetEntityId, int heldItem);
 
-    // Whether the other end understands `packet::UseEntity`. Off by default,
-    // because the other end is usually a Java server that would end the
-    // connection over an id its table does not have.
-    void allowUseEntity(bool allow) { useEntity_ = allow; }
-    bool useEntityAllowed() const { return useEntity_; }
+    // **Whether the other end is this port**, and so understands the packets
+    // protocol 2 does not have: `packet::UseEntity`, and the stance --
+    // `EntityAction`, `EntityStatus` and `Respawn`. Off by default, because the
+    // other end is usually a Java server that would end the connection over an
+    // id its table does not have.
+    void allowExtensions(bool allow) { extensions_ = allow; }
+    bool extensionsAllowed() const { return extensions_; }
 
     // **Somebody hit this player.** True once per blow, and then the blow is
     // gone -- the caller applies it to the player's own vitals, which is the
@@ -122,7 +127,9 @@ private:
     net::InventoryReporter inventory_;
     net::DigReporter dig_;
     net::HeldItemReporter held_;
+    net::StanceReporter stance_;
     net::Packet scratch_[3];
+    static_assert(net::StanceReporter::kMaxPackets <= 3, "the stance reports into scratch_");
     net::PacketChannel::Event event_;
     net::RemoteEntities entities_;
     net::IncomingHit hit_;
@@ -131,7 +138,7 @@ private:
     int columns_ = 0;
     bool placed_ = false;
     bool closed_ = false;
-    bool useEntity_ = false;
+    bool extensions_ = false;
     std::string title_;
     std::string detail_;
 };

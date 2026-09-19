@@ -2,6 +2,7 @@
 
 #include "core/net/entities.hpp"
 
+#include "core/entity/particle.hpp"
 #include "core/util/math_helper.hpp"
 
 #include <cmath>
@@ -242,7 +243,11 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
 {
     switch (packet.id) {
     case packet::NamedEntitySpawn: {
-        // `gp`: id, name, x, y, z, yaw, pitch, currentItem.
+        // `gp`: id, name, x, y, z, yaw, pitch, currentItem. **A spawn replaces**
+        // whatever was here under that id rather than updating it, as both the
+        // other pools do: a player back from the dead is sent one, and must not
+        // come back still crouched or still falling.
+        removePlayer(i32(packet.integer(0)));
         RemotePlayer* player = addPlayer(i32(packet.integer(0)));
         if (player == nullptr) {
             ++unhandledSpawns_;  // more players in view than this pool holds
@@ -310,6 +315,28 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         }
         return true;
 
+    case packet::EntityStatus:
+        // Ours; see `packet::EntityStatus`. **A player answers only a death**:
+        // `handleHealthUpdate(3)`'s death noise -- `random.hurt`, which `dm`
+        // uses for both -- and the fall that `tick` counts. A second 3 for a
+        // body already falling is not a second death.
+        if (RemotePlayer* player = findPlayer(i32(packet.integer(0)))) {
+            if (int(packet.integer(1)) == entity::kStatusDead && !player->dead) {
+                player->dead = true;
+                player->sneaking = false;
+                const float pitch = (rand_.nextFloat() - rand_.nextFloat()) * 0.2f + 1.0f;
+                if (world != nullptr) {
+                    world->playSoundAt("random.hurt", player->x, player->y, player->z, 1.0f,
+                                       pitch);
+                }
+            }
+            return true;
+        }
+        if (mobs_ != nullptr && world != nullptr) {
+            mobs_->statusFromServer(*world, i32(packet.integer(0)), int(packet.integer(1)));
+        }
+        return true;
+
     case packet::Entity:
         // `lq`: a keep-alive for one entity, which says only that it still
         // exists. Nothing to do, but it is ours rather than unhandled.
@@ -353,8 +380,27 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         }
         return true;
 
+    case packet::EntityAction:
+        // Ours; see `packet::EntityAction`. `cr.j` for whoever it names. A body
+        // that is falling over does not crouch on the way down.
+        if (RemotePlayer* player = findPlayer(i32(packet.integer(0)))) {
+            const int action = int(packet.integer(1));
+            if (!player->dead && action == kActionCrouch) {
+                player->sneaking = true;
+            } else if (action == kActionUncrouch) {
+                player->sneaking = false;
+            }
+        }
+        return true;
+
     case packet::ArmAnimation:
-        // Nothing is drawn for a swing yet; the packet is still ours.
+        // `gy.a(hf)`: whoever it names swings, whatever the second field says
+        // -- a1.1.2 does not look at it. `swingProgressInt = -1`, so the first
+        // tick lands on zero.
+        if (RemotePlayer* player = findPlayer(i32(packet.integer(0)))) {
+            player->swingTicks = -1;
+            player->swinging = true;
+        }
         return true;
 
     case packet::MobSpawn: {
@@ -433,6 +479,34 @@ void RemoteEntities::tick(const tick::TickWorld* world)
         player.limbAmount += (speed - player.limbAmount) * 0.4f;
         player.limbSwing += player.limbAmount;
 
+        // `dm.b_`'s swing counter, exactly as the local hand runs it.
+        player.prevSwing = player.swing;
+        if (player.swinging) {
+            ++player.swingTicks;
+            if (player.swingTicks == 8) {
+                player.swingTicks = 0;
+                player.swinging = false;
+            }
+        } else {
+            player.swingTicks = 0;
+        }
+        player.swing = float(player.swingTicks) / 8.0f;
+
+        // **`ge.y()`'s death count**: past twenty ticks, the puff and
+        // `setEntityDead`. The last player moves into this slot, so the slot is
+        // looked at again.
+        if (player.dead) {
+            ++player.deathTime;
+            if (player.deathTime > kDeathTicks) {
+                if (world != nullptr) {
+                    puff(player, *world);
+                }
+                removePlayer(player.id);
+                --i;
+                continue;
+            }
+        }
+
         if (world != nullptr) {
             const i32 bx = MathHelper::floorDouble(player.x);
             const int by = int(MathHelper::floorDouble(player.y));
@@ -440,6 +514,27 @@ void RemoteEntities::tick(const tick::TickWorld* world)
             player.light = u8((world->skyLightAt(bx, by, bz) << 4)
                               | world->blockLightAt(bx, by, bz));
         }
+    }
+}
+
+void RemoteEntities::puff(const RemotePlayer& player, const tick::TickWorld& world)
+{
+    // `MobSystem::explosionPuff`, around a player's box: the three Gaussians
+    // first, then the place, in the order the jar draws them.
+    constexpr double kWidth = double(entity::kPlayerWidth);
+    constexpr double kHeight = double(entity::kPlayerHeight);
+    for (int n = 0; n < entity::kExplosionPuffs; ++n) {
+        const double driftX = rand_.nextGaussian() * entity::kExplosionPuffDrift;
+        const double driftY = rand_.nextGaussian() * entity::kExplosionPuffDrift;
+        const double driftZ = rand_.nextGaussian() * entity::kExplosionPuffDrift;
+        const double px = player.x + double(rand_.nextFloat()) * kWidth * 2.0 - kWidth
+                          - driftX * entity::kExplosionPuffThrowBack;
+        const double py = player.y + double(rand_.nextFloat()) * kHeight
+                          - driftY * entity::kExplosionPuffThrowBack;
+        const double pz = player.z + double(rand_.nextFloat()) * kWidth * 2.0 - kWidth
+                          - driftZ * entity::kExplosionPuffThrowBack;
+        world.spawnParticle(int(entity::ParticleKind::Explode), px, py, pz, driftX, driftY,
+                            driftZ);
     }
 }
 

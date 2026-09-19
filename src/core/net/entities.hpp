@@ -32,6 +32,7 @@
 #include "core/entity/mob.hpp"
 #include "core/net/packets.hpp"
 #include "core/tick/tick_world.hpp"
+#include "core/util/java_random.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::net {
@@ -99,6 +100,34 @@ struct RemotePlayer {
     u8 light = 0;
     bool used = false;
 
+    // **The arm swing**, which an Arm Animation starts -- `gy.a(hf)` calls
+    // `dm.w()` on whoever it names -- and `dm.b_`'s counter then runs in eighths
+    // of a swing, one a tick. The same counter `render::HeldItemState` runs for
+    // this console's own hand.
+    int swingTicks = 0;
+    bool swinging = false;
+    float swing = 0.0f, prevSwing = 0.0f;
+
+    // `swingProgress(partial)`, with the wrap at the end of a swing that keeps
+    // the arm from snapping back through it in one frame.
+    float swingProgress(float partial) const
+    {
+        float f = swing - prevSwing;
+        if (f < 0.0f) {
+            f += 1.0f;
+        }
+        return prevSwing + f * partial;
+    }
+
+    // **How they stand**, which protocol 2 never says and a 3DAlpha host does
+    // -- see `packet::EntityAction`. `sneaking` is `cr.j`, the model's crouch.
+    // `dead` is a 3 in an Entity Status, and `deathTime` then counts the
+    // twenty ticks `ge.y()` gives a body to fall over before it goes in a
+    // puff: `dm` overrides none of it, so a player dies the way an animal does.
+    bool sneaking = false;
+    bool dead = false;
+    int deathTime = 0;
+
     double renderX(float partial) const { return prevX + (x - prevX) * double(partial); }
     double renderY(float partial) const { return prevY + (y - prevY) * double(partial); }
     double renderZ(float partial) const { return prevZ + (z - prevZ) * double(partial); }
@@ -129,6 +158,9 @@ public:
     // position update opens.
     static constexpr int kSmoothTicks = 3;
     static constexpr int kMaxPlayers = 8;
+
+    // `ge.y()`'s death count: past this many ticks a dead player goes.
+    static constexpr int kDeathTicks = entity::kDeathTicks;
 
     // The pool remote items are spawned into. Null leaves them untracked, which
     // is what a caller with no world wants.
@@ -164,8 +196,9 @@ public:
     // one, which leaves it for the caller to deal with.
     bool apply(const Packet& packet, tick::TickWorld* world);
 
-    // One 20 Hz tick: the walk toward what the server last said, the limbs, and
-    // the light each body is standing in.
+    // One 20 Hz tick: the walk toward what the server last said, the limbs, the
+    // light each body is standing in, and a dead one's fall -- after which it
+    // goes in `ge.z()`'s puff, and is gone until the host spawns it again.
     void tick(const tick::TickWorld* world);
 
     void clear();
@@ -187,8 +220,14 @@ private:
     void moveTo(i32 id, double x, double y, double z, bool hasLook, float yaw, float pitch,
                 bool relative);
 
+    // `ge.z()` -- the puff a dead body goes in, around its feet.
+    void puff(const RemotePlayer& player, const tick::TickWorld& world);
+
     RemotePlayer players_[kMaxPlayers];
     int playerCount_ = 0;
+    // The death noise's pitch and the puff's scatter. Nothing else draws on
+    // it, and two consoles never agree on either.
+    JavaRandom rand_;
     entity::ItemEntitySystem* items_ = nullptr;
     entity::MobSystem* mobs_ = nullptr;
     u32 unhandledSpawns_ = 0;

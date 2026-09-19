@@ -74,20 +74,25 @@ i16 sheetV(int originTexels, float pageFractionRaw)
 
 }  // namespace
 
-Placement placeModel(double x, double y, double z, float yawRadians)
+Placement placeModel(double x, double y, double z, float yawRadians, float fallRadians)
 {
-    // The same two steps `placeMob` takes with no death spin and no per-axis
-    // scale: the flip, and then the lift expressed in the flipped frame so a
-    // downward shift in the model's own axes is an upward one in the world.
+    // The same two steps `placeMob` takes with no per-axis scale: the flip,
+    // and then the lift expressed in the flipped frame so a downward shift in
+    // the model's own axes is an upward one in the world. The fall is `Rz`,
+    // nearer the vertex than the yaw's `Ry`, as `placeMob` composes them.
     constexpr float kModelHeight = 24.0f;
     constexpr float kFootLift = 0.0078125f;
 
     const float s = MathHelper::sin(yawRadians);
     const float c = MathHelper::cos(yawRadians);
+    const float sz = MathHelper::sin(fallRadians);
+    const float cz = MathHelper::cos(fallRadians);
     const auto turn = [&](float mx, float my, float mz, float* out) {
-        out[0] = mx * c + mz * s;
-        out[1] = my;
-        out[2] = mz * c - mx * s;
+        const float rx = mx * cz - my * sz;
+        const float ry = mx * sz + my * cz;
+        out[0] = rx * c + mz * s;
+        out[1] = ry;
+        out[2] = mz * c - rx * s;
     };
 
     Placement place;
@@ -101,6 +106,21 @@ Placement placeModel(double x, double y, double z, float yawRadians)
     place.y = y + double(lift[1]);
     place.z = z + double(lift[2]);
     return place;
+}
+
+float deathFall(int deathTime, float partial)
+{
+    constexpr float kDeathSpin = 1.6f;
+    constexpr float kDeathMaxRotation = 90.0f;
+    constexpr float kPi = 3.1415927f;
+    if (deathTime <= 0) {
+        return 0.0f;
+    }
+    float fall = MathHelper::sqrtFloat((float(deathTime) + partial - 1.0f) / 20.0f * kDeathSpin);
+    if (fall > 1.0f) {
+        fall = 1.0f;
+    }
+    return fall * kDeathMaxRotation * kPi / 180.0f;
 }
 
 Placement placeAt(double x, double y, double z, float yawRadians, float scale)

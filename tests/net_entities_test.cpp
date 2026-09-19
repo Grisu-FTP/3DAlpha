@@ -12,6 +12,7 @@
 #include "core/net/entities.hpp"
 #include "core/render/remote_player_mesh.hpp"
 #include "scene_world.hpp"
+#include "sound_catcher.hpp"
 
 #include <cmath>
 
@@ -342,6 +343,242 @@ TEST(a_mob_the_server_owns_is_drawn_here_and_decided_there)
     CHECK(entities.apply(giant, &scene.w()));
     CHECK_EQ(herd.count(), 0);
     CHECK_EQ(entities.unhandledSpawns(), u32(1));
+}
+
+namespace {
+
+Packet mobSpawn(i32 id, int wireType)
+{
+    Packet spawn;
+    spawn.reset(packet::MobSpawn);
+    spawn.pushInt(id);
+    spawn.pushInt(wireType);
+    spawn.pushInt(i64(std::floor(4.5 * 32.0)));
+    spawn.pushInt(i64(std::floor(64.0 * 32.0)));
+    spawn.pushInt(i64(std::floor(-2.5 * 32.0)));
+    spawn.pushInt(0);
+    spawn.pushInt(0);
+    return spawn;
+}
+
+}  // namespace
+
+// **A hit on somebody else's animal, as the watching console sees it.** Protocol
+// 2 never said an animal was hurt, so a guest's punch drew no red and made no
+// noise, and a kill vanished without the fall. The host's Entity Status is
+// later versions' `handleHealthUpdate`: 2 is the flail, the tint and the hurt
+// noise; 3 the death noise and twenty ticks lying there, then the puff.
+TEST(a_server_mobs_hit_and_death_are_seen_and_heard_here)
+{
+    test::SceneWorld scene(0, 0);
+    test::SoundCatcher heard;
+    heard.watch(scene.w());
+    entity::MobSystem herd(99);
+    RemoteEntities entities;
+    entities.bindMobs(&herd);
+    CHECK(entities.apply(mobSpawn(77, 90), &scene.w()));  // a pig
+    CHECK_EQ(herd.count(), 1);
+    const entity::MobDef& pig = entity::mobDef(entity::MobType::Pig);
+
+    CHECK(entities.apply(makeEntityStatus(77, entity::kStatusHurt), &scene.w()));
+    CHECK_EQ(int(herd[0].hurtTime), entity::kHurtTime);
+    CHECK_EQ(int(herd[0].maxHurtTime), entity::kHurtTime);
+    CHECK(herd[0].limbYaw == 1.5f);
+    CHECK_EQ(heard.countOf(pig.hurtSound), 1);
+    CHECK(herd[0].health > 0);  // the damage is the host's to count
+
+    // The tint runs down on this console's own ticks.
+    entity::MobSurroundings around;
+    for (int i = 0; i < entity::kHurtTime; ++i) {
+        herd.tick(scene.w(), around);
+    }
+    CHECK_EQ(int(herd[0].hurtTime), 0);
+
+    CHECK(entities.apply(makeEntityStatus(77, entity::kStatusDead), &scene.w()));
+    CHECK(herd[0].health <= 0);
+    CHECK_EQ(heard.countOf(pig.deathSound), 1);
+    // A second word of the same death is not a second death.
+    CHECK(entities.apply(makeEntityStatus(77, entity::kStatusDead), &scene.w()));
+    CHECK_EQ(heard.countOf(pig.deathSound), 1);
+
+    for (int i = 0; i < entity::kDeathTicks; ++i) {
+        herd.tick(scene.w(), around);
+    }
+    CHECK_EQ(herd.count(), 1);
+    CHECK_EQ(int(herd[0].deathTime), entity::kDeathTicks);  // lying there, falling over
+    herd.tick(scene.w(), around);
+    CHECK_EQ(herd.count(), 0);  // and gone in the puff
+
+    // The host's own Destroy Entity for it then finds nothing, harmlessly.
+    Packet destroyed;
+    destroyed.reset(packet::DestroyEntity);
+    destroyed.pushInt(77);
+    CHECK(entities.apply(destroyed, &scene.w()));
+
+    // A status for an animal this console never met is nothing.
+    CHECK(entities.apply(makeEntityStatus(123, entity::kStatusHurt), &scene.w()));
+}
+
+// **Another player's swing**, which a1.1.2 draws and this did not: `gy.a(hf)`
+// starts `dm.w()` on whoever the Arm Animation names, and the counter then
+// runs in eighths, one a tick, back to rest after eight.
+TEST(another_players_arm_swings_when_the_server_says_so)
+{
+    RemoteEntities entities;
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 0.0, 64.0, 0.0, 0, 0, 0), nullptr));
+    CHECK(entities.apply(makeArmSwing(7), nullptr));
+    const RemotePlayer& player = entities.player(0);
+
+    entities.tick(nullptr);
+    CHECK(player.swinging);
+    CHECK(player.swing == 0.0f);  // `-1`, so the first tick lands on zero
+    entities.tick(nullptr);
+    CHECK(player.swing == 1.0f / 8.0f);
+    CHECK(player.swingProgress(0.5f) == 1.0f / 16.0f);
+    for (int i = 0; i < 6; ++i) {
+        entities.tick(nullptr);
+    }
+    CHECK(player.swing == 7.0f / 8.0f);
+    entities.tick(nullptr);
+    CHECK(!player.swinging);
+    CHECK(player.swing == 0.0f);
+    // The last eighth runs 7/8 -> 1 rather than back through the swing.
+    CHECK(player.swingProgress(0.5f) == 15.0f / 16.0f);
+
+    // A swing for somebody who is not here is nothing.
+    CHECK(entities.apply(makeArmSwing(99), nullptr));
+}
+
+// **Another player's crouch**, which protocol 2 has no way to say and a 3DAlpha
+// host says with b1.2's Entity Action: 1 down, 2 up. Drawn with `cr.j`'s pose
+// and an eighth of a block lower, as b1.2's `RenderPlayer` draws it -- so the
+// drawn-up legs still reach the ground.
+TEST(another_player_crouches_when_the_server_says_so)
+{
+    constexpr double kGround = 64.0;
+    RemoteEntities entities;
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 0.5, kGround, 0.5, 0, 0, 0), nullptr));
+    const RemotePlayer& player = entities.player(0);
+    CHECK(!player.sneaking);
+
+    const auto extent = [&](double* lowest, double* highest) {
+        static std::vector<mesh::DetailVertex> verts(render::kRemotePlayerVerticesEach);
+        const int written = render::buildRemotePlayers(entities, 0.0, kGround, 0.0, 1.0f,
+                                                       verts.data(), int(verts.size()));
+        CHECK_EQ(written, render::kRemotePlayerVerticesEach);
+        *lowest = 1e9;
+        *highest = -1e9;
+        for (int i = 0; i < written; ++i) {
+            const double y = kGround + double(verts[i].y) / double(mesh::kDetailUnitsPerBlock);
+            *lowest = y < *lowest ? y : *lowest;
+            *highest = y > *highest ? y : *highest;
+        }
+    };
+    double standLow = 0.0;
+    double standHigh = 0.0;
+    extent(&standLow, &standHigh);
+
+    CHECK(entities.apply(makeEntityAction(7, kActionCrouch), nullptr));
+    CHECK(player.sneaking);
+    double crouchLow = 0.0;
+    double crouchHigh = 0.0;
+    extent(&crouchLow, &crouchHigh);
+    // The legs are drawn up three pixels and the body lowered two: the feet
+    // end a pixel above the ground. The top is the hat, which does not drop
+    // the pixel the head does, so it comes down by the eighth alone.
+    CHECK(std::fabs(crouchLow - (kGround + 1.0 / 16.0)) < 0.02);
+    CHECK(std::fabs(crouchHigh - (standHigh - 0.125)) < 0.02);
+
+    CHECK(entities.apply(makeEntityAction(7, kActionUncrouch), nullptr));
+    CHECK(!player.sneaking);
+
+    // A crouch for somebody who is not here is nothing.
+    CHECK(entities.apply(makeEntityAction(99, kActionCrouch), nullptr));
+}
+
+// **Another player's death**, which only their own console knows about and a
+// 3DAlpha host passes on as an Entity Status 3. `dm` overrides none of `ge`'s
+// dying, so a player goes the way an animal does: `random.hurt`, twenty ticks of
+// falling over in red, and the puff. A Named Entity Spawn brings them back.
+TEST(another_player_falls_over_dies_and_comes_back_when_they_respawn)
+{
+    constexpr double kGround = 64.0;
+    test::SceneWorld scene(0, 0);
+    test::SoundCatcher heard;
+    heard.watch(scene.w());
+    RemoteEntities entities;
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 0.5, kGround, 0.5, 0, 0, 0), &scene.w()));
+    CHECK(entities.apply(makeEntityAction(7, kActionCrouch), &scene.w()));
+
+    CHECK(entities.apply(makeEntityStatus(7, entity::kStatusDead), &scene.w()));
+    const RemotePlayer& player = entities.player(0);
+    CHECK(player.dead);
+    CHECK(!player.sneaking);  // a body falling over does not stay crouched
+    CHECK_EQ(heard.countOf("random.hurt"), 1);
+    // A second word of the same death is not a second death, and a corpse
+    // does not crouch.
+    CHECK(entities.apply(makeEntityStatus(7, entity::kStatusDead), &scene.w()));
+    CHECK_EQ(heard.countOf("random.hurt"), 1);
+    CHECK(entities.apply(makeEntityAction(7, kActionCrouch), &scene.w()));
+    CHECK(!player.sneaking);
+
+    for (int i = 0; i < RemoteEntities::kDeathTicks; ++i) {
+        entities.tick(&scene.w());
+    }
+    CHECK_EQ(entities.playerCount(), 1);
+    CHECK_EQ(player.deathTime, RemoteEntities::kDeathTicks);
+
+    // Flat on its side by now, and red.
+    static std::vector<mesh::DetailVertex> verts(render::kRemotePlayerVerticesEach);
+    const int written = render::buildRemotePlayers(entities, 0.0, kGround, 0.0, 1.0f,
+                                                   verts.data(), int(verts.size()));
+    CHECK_EQ(written, render::kRemotePlayerVerticesEach);
+    double highest = -1e9;
+    for (int i = 0; i < written; ++i) {
+        const double y = kGround + double(verts[i].y) / double(mesh::kDetailUnitsPerBlock);
+        highest = y > highest ? y : highest;
+        CHECK_EQ(int(verts[i].g), int(render::kHurtChannel));
+    }
+    CHECK(highest < kGround + 0.6);
+
+    // One more tick and the body goes. Its name goes with it.
+    entities.tick(&scene.w());
+    CHECK_EQ(entities.playerCount(), 0);
+
+    // The host's answer to a Respawn is a fresh spawn: standing, alive, and
+    // wherever they came back.
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 20.5, kGround, 0.5, 0, 0, 0), &scene.w()));
+    CHECK_EQ(entities.playerCount(), 1);
+    CHECK(!entities.player(0).dead);
+    CHECK_EQ(entities.player(0).deathTime, 0);
+
+    // **A spawn for somebody already here replaces them** rather than
+    // updating them, so a crouch does not survive it either.
+    CHECK(entities.apply(makeEntityAction(7, kActionCrouch), &scene.w()));
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 20.5, kGround, 0.5, 0, 0, 0), &scene.w()));
+    CHECK_EQ(entities.playerCount(), 1);
+    CHECK(!entities.player(0).sneaking);
+}
+
+// `ge.y()`'s idle noise is `onEntityUpdate`, which a multiplayer entity still
+// runs -- only `b_()` is suppressed -- so a cow on somebody else's console moos.
+TEST(a_server_mob_makes_its_idle_noise_here)
+{
+    test::SceneWorld scene(0, 0);
+    test::SoundCatcher heard;
+    heard.watch(scene.w());
+    entity::MobSystem herd(5);
+    RemoteEntities entities;
+    entities.bindMobs(&herd);
+    CHECK(entities.apply(mobSpawn(80, 93), &scene.w()));  // ours: a cow
+    CHECK(herd[0].type == entity::MobType::Cow);
+
+    entity::MobSurroundings around;
+    for (int i = 0; i < 2400; ++i) {
+        herd.tick(scene.w(), around);
+    }
+    CHECK(heard.countOf(entity::mobDef(entity::MobType::Cow).livingSound) > 0);
+    CHECK_EQ(herd.count(), 1);
 }
 
 TEST(every_console_works_out_the_same_colour_for_the_same_player)

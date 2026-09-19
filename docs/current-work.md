@@ -3,6 +3,78 @@
 Last verified: 2026-09-18. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## Other players never crouched or died on anyone else's screen (2026-09-19)
+
+"Players don't visually have a dead or sneaking state." Protocol 2 says neither: a1.1.2's
+`isSneaking` is a hard-wired false, and each console owns its player's health. Now, between two
+3DAlpha consoles only (`NetPlay::allowExtensions`, renamed from `allowUseEntity`):
+
+- **Crouch**: `0x13` Entity Action at b1.2's id and shape (1 crouched, 2 stood up; a1.2.6 has no
+  such packet), sent on a change by `net::StanceReporter` and relayed server to client. Drawn with
+  `cr.a(FFFFFF)`'s sneak branch (dead code in a1.1.2, transcribed with javap into `posePlayer`) and
+  lowered 0.125, as b1.2's `RenderPlayer` (`co`) does -- without that the feet float 3/16 up.
+- **Death**: the dying console sends `0x26` status 3 about itself; the host relays it. The others
+  run `ge.y()` (`dm` overrides none of it): `random.hurt`, twenty ticks of `deathFall` in red, the
+  puff, then the body goes. **Respawn**: an empty `0x09` (protocol 5's), which the host answers with
+  a fresh Named Entity Spawn; a spawn for an id already present now replaces it.
+- The host's own stance goes out through `WorldServer::setHostStance`; a joiner is told how everyone
+  already stands. `deathFall`/`kHurtChannel` moved to box_model and are shared with the mob pass.
+- Not done: another player's hurt tint (the victim could send its own status 2 the same way).
+
+Tests: `a_crouch_a_death_and_a_respawn_are_each_reported_once`,
+`another_player_crouches_when_the_server_says_so`,
+`another_player_falls_over_dies_and_comes_back_when_they_respawn`,
+`a_guests_crouch_death_and_respawn_are_passed_to_the_others`,
+`the_hosts_crouch_and_death_reach_its_guests_and_a_later_joiner`,
+`player_pose_crouched_leans_the_body_and_draws_the_legs_up_under_it`; the table test counts four
+additions. **Not seen on hardware.**
+
+## A guest's world fell further and further behind while poses stayed live (2026-09-19)
+
+"After a short time the guest sees no entity moving and cannot mine, but both still move on each
+other's map." Poses are unreliable and never queue; everything else rides the host's reliable,
+in-order stream to the guest. **Not reproduced on consoles** -- reproduced in simulation
+(`tests/link_stress_test.cpp`): with a six-datagram receive buffer and 15 % loss the host's queue
+for the guest ended ten minutes 4,264 pieces (~4 MB) behind and growing, a third of all datagrams
+retransmissions. Minutes-old mob positions, and dig confirmations arriving after the 80-tick
+revert, are the symptom exactly. Three changes:
+
+- **`link::kFlushBurst` = 12**: a flush sent a whole window at once, and after a loss re-fired the
+  whole window into the same small buffer. Swept 4/6/8/12/uncapped and a retransmit-only cap; 12
+  empties the queue (backlog 8) and still carries ~500 KB/s at 30 fps.
+- **`WorldServer::broadcastMove`**: positions are state. A guest whose outbox is over
+  `kMoveHighWater` (8 KB) is sent none and marked owed; under `kMoveLowWater` it gets every current
+  position once (`resendPositions`). Events -- block changes, spawns, statuses -- still all queue.
+- **`SO_RCVBUF` 64 KB** requested on the UDP socket, best effort; what a 3DS grants is unmeasured.
+
+At 30 % loss nothing keeps 60 KB/s; the second change is what bounds the lag there.
+
+## A guest's animals were mute, stiff and never hurt; other players never swung (2026-09-19)
+
+"Entities don't make sounds, have animations or the red hurt tint when playing online."
+
+- **Hits and deaths now cross.** Protocol 2 has no packet for either, so a guest's punch drew no
+  tint, no noise, no flail, and a kill vanished without falling over. A 3DAlpha host now sends
+  `0x26` Entity Status (protocol 5's id and shape, like `UseEntity`; never to a Java server):
+  `WorldServer::syncMobs` watches the new `Mob::hurtSerial` and the health, and the guest runs
+  later versions' `handleHealthUpdate` in `MobSystem::statusFromServer` -- 2 is the flail, ten ticks
+  of tint and the hurt noise, 3 the death noise and the twenty-tick fall, then the puff.
+- **Idle noises.** A remote mob skipped `updateCounters`; `MobSystem::remoteCounters` is the part
+  a1.1.2 still runs for a multiplayer entity (`ge.y()` -- only `b_()` is suppressed): the idle
+  noise, the hurt timers and the death count.
+- **Other players' arm swing.** Nothing ever sent a swing from a host, a guest's right-click swing
+  was never sent, and a received Arm Animation drew nothing. `la.w()` sends one on every swing, so
+  both buttons now do (`HostPlay::swing` -> `WorldServer::hostSwing` for the host), `RemotePlayer`
+  runs `dm.b_`'s counter, and `posePlayer` gained `cr.a(FFFFFF)`'s swing block, transcribed.
+- Not done: another *player's* hurt tint. Each console owns its player's health, so it would need
+  the victim to announce its own hit.
+
+Tests: `a_server_mobs_hit_and_death_are_seen_and_heard_here`,
+`a_server_mob_makes_its_idle_noise_here`, `an_animal_hit_or_killed_here_is_reported_to_the_guests`,
+`another_players_arm_swings_when_the_server_says_so`, `the_hosts_swing_is_shown_to_its_guests`,
+`player_pose_mid_swing_...`; the packet table test now counts two additions. **Not seen on
+hardware.**
+
 ## Internet joins: the relay was never registered, and a login raced itself (2026-09-18)
 
 "A right code says the server did not answer, a wrong one says wrong code." **The protocol

@@ -127,7 +127,21 @@ Placement placeAt(double x, double y, double z, float yawRadians, float scale = 
 // half above the entity's feet. A `ModelPart` mesh placed with `placeAt`
 // instead comes out upside down and buried, which is exactly what it looked
 // like on hardware. `y` is the entity's `posY`, as the mob pass takes it.
-Placement placeModel(double x, double y, double z, float yawRadians);
+//
+// `fallRadians` is a dying body's turn about the model's Z -- `deathFall` --
+// which `rotateCorpse` applies inside the yaw and before the flip's lift, so
+// the body tips over about its feet.
+Placement placeModel(double x, double y, double z, float yawRadians, float fallRadians = 0.0f);
+
+// **`dn.a(ge, F)`'s fall**, in radians: `sqrt((deathTime + partial - 1) / 20 *
+// 1.6)`, clamped at one, of ninety degrees -- quickly at first, and flat on its
+// side for the last few of the twenty ticks. Zero for a body that is not dying.
+float deathFall(int deathTime, float partial);
+
+// **The hurt flash**, and a dying body keeps it while it falls: how far green
+// and blue are pulled down. The original blends a red at 0.4 alpha over the
+// model; this multiplies instead -- see mob_mesh.hpp.
+inline constexpr u8 kHurtChannel = 90;
 
 // How many vertices one part writes. Six quads, four corners each -- always,
 // with no face ever skipped: a box model has no neighbours to hide behind.

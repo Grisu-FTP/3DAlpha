@@ -197,6 +197,14 @@ public:
     // The end of the player's own tick, where `la.J()` reports a position.
     void reportPose(const entity::PlayerBody& body, const Camera& camera);
 
+    // **How this console's player stands** -- crouched, dead, or back -- for
+    // every guest to draw. Once a tick; see `WorldServer::setHostStance`.
+    void reportStance(bool sneaking, bool alive) { server_.setHostStance(sneaking, alive); }
+
+    // The host's arm swinging, for the guests to draw. See
+    // `net::WorldServer::hostSwing`.
+    void swing();
+
     // A line the host typed, to everyone. The host's own chat log is written
     // by the caller, which is where a1.1.2 writes it too.
     void say(const std::string& text);

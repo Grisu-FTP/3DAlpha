@@ -61,6 +61,10 @@ namespace mc::tick {
 class TickWorld;
 }
 
+namespace mc::item {
+struct Inventory;
+}  // namespace mc::item
+
 namespace mc::entity {
 class BoatSystem;
 class MinecartSystem;
@@ -159,6 +163,35 @@ struct Arrow {
     // a skeleton across a world reload should still drop a record.
     ArrowShooter shooter = ArrowShooter::Player;
 
+    // **Which player fired it**, as `kg.b(dm)`'s `shootingEntity == player`
+    // needs: `kLocalShooter` for this console's own player, a guest's entity id
+    // for an arrow a host fired on a guest's behalf, and 0 for nobody -- a
+    // skeleton, or anything read off the card. It decides who may take the
+    // arrow back and which player it owes its five ticks of grace.
+    //
+    // **Not saved, because the reference is not**: `kg.a(Lhm;)V` writes the
+    // tile, the shake and `inGround` and nothing about who fired it, so an
+    // arrow read back off the card has no shooter and nobody can collect it --
+    // in a1.1.2 as here.
+    i32 shooterPlayer = 0;
+
+    // **The wire's name for it**, between two consoles only -- a1.1.2 never
+    // puts an arrow on the wire at all (see core/net/world_server.hpp). A host
+    // gives one out the first time it tells anybody about the arrow; a guest's
+    // copy carries the id it was spawned under. Zero until then.
+    i32 entityId = 0;
+
+    // **A guest's copy of the host's arrow**: drawn, never simulated. The
+    // host runs the ray, the strike and the sticking; this end is told where
+    // the arrow is each tick and walks the drawing there, so two consoles can
+    // never disagree about what an arrow hit. `target*` is the last place the
+    // host gave, applied at the next tick so the renderer interpolates across
+    // it.
+    bool remote = false;
+    bool targetSet = false;
+    double targetX = 0.0, targetY = 0.0, targetZ = 0.0;
+    float targetYaw = 0.0f, targetPitch = 0.0f;
+
     // **Not hitting whoever fired it**, which `kg.e_()` does by reference:
     // `entity != shootingEntity || ticksInAir >= 5`. A skeleton's arrow starts
     // 1.3 blocks up inside the skeleton's own 0.6 x 1.8 box, so without this it
@@ -214,6 +247,27 @@ struct Arrow {
     }
 };
 
+// `Arrow::shooterPlayer` for the player sitting at this console.
+inline constexpr i32 kLocalShooter = -1;
+
+// **Another player, as a host sees one**: where they stand and the id the
+// wire knows them by. A host's arrows strike its guests as well as its own
+// player; the blow is handed back to the host to put on the wire, because a
+// guest's health is the guest's console's to spend. See `ArrowTargets`.
+struct RemoteTarget {
+    i32 entityId = 0;
+    AABB box{};
+};
+
+// Whether `a` is one `shooter` may walk over and take: `kg.b(dm)`'s first
+// three conditions -- in the ground, fired by them, and still. The fourth,
+// room in the inventory, is the caller's.
+inline bool arrowCollectableBy(const Arrow& a, i32 shooter)
+{
+    return a.alive && !a.remote && a.inGround && a.shooterPlayer != 0
+           && a.shooterPlayer == shooter && a.shake <= 0;
+}
+
 // The pools an arrow may strike, any of which may be absent.
 struct ArrowTargets {
     PaintingSystem* paintings = nullptr;
@@ -242,6 +296,17 @@ struct ArrowTargets {
     void (*hurtPlayer)(void* ctx, int amount, DamageSource source, double fromX,
                        double fromZ) = nullptr;
     void* hurtPlayerCtx = nullptr;
+
+    // **The other players, on a host.** Struck exactly as the local player
+    // is -- the nearest box along the segment, the shooter spared for five
+    // ticks by identity -- and then handed to `hurtRemote` rather than hurt
+    // here: the host puts "that arrow hit you" on the wire and the guest's
+    // own console spends its own health. The arrow is passed mutable so the
+    // host can give it a wire id before it names it.
+    const RemoteTarget* remotePlayers = nullptr;
+    int remotePlayerCount = 0;
+    void (*hurtRemote)(void* ctx, i32 playerEntityId, Arrow& arrow) = nullptr;
+    void* hurtRemoteCtx = nullptr;
 };
 
 // **No cap**, as the original has none. The first 128 are held from
@@ -262,8 +327,11 @@ public:
     //
     // Returns false when the heap would not hold another arrow, in which case
     // nothing was fired.
+    //
+    // `shooter` is who the arrow belongs to: this console's player unless a
+    // host is firing for a guest, when it is the guest's entity id.
     bool shoot(const tick::TickWorld& world, double eyeX, double eyeY, double eyeZ,
-               float yawDegrees, float pitchDegrees);
+               float yawDegrees, float pitchDegrees, i32 shooter = kLocalShooter);
 
     // `cw.a(Lkh;F)V`'s spawn: the arrow is placed by the caller -- which has
     // already applied the constructor's muzzle offset and the skeleton's own
@@ -280,6 +348,32 @@ public:
     bool shootFrom(const tick::TickWorld& world, double x, double y, double z, double dx,
                    double dy, double dz, float velocity, float inaccuracy,
                    ArrowShooter shooter, u32 shooterMob = 0);
+
+    // **`kg.b(dm)` -- onCollideWithPlayer -- for every arrow in `reach`**, the
+    // player's box grown by a block sideways as `EntityPlayer.onLivingUpdate`
+    // grows it for everything it touches. An arrow is taken only when all
+    // four of the jar's conditions hold: it is in the ground, **this player
+    // fired it** (`arrowCollectableBy`), it has stopped shaking (`arrowShake
+    // <= 0`), and one arrow fits in the inventory. Taken arrows are removed and
+    // counted; the caller plays one `random.pop` each, as for an item.
+    int collect(const AABB& reach, item::Inventory& inventory);
+
+    // **A guest's copy of an arrow the host announced**, at the host's
+    // position and not yet moving. See `Arrow::remote`. False when the heap
+    // would not hold it, which costs a drawing and nothing else.
+    bool spawnRemote(const tick::TickWorld& world, i32 entityId, double x, double y,
+                     double z);
+    // Where the host says it is now. False for an id this pool does not hold.
+    bool placeRemote(i32 entityId, double x, double y, double z, float yawDegrees,
+                     float pitchDegrees);
+    // Gone -- collected, spent on a target, or aged out. False for an id this
+    // pool does not hold.
+    bool removeById(i32 entityId);
+
+    // **Mutable access for the host's bookkeeping**, which hands out wire ids
+    // and removes what a guest collected. Null past the end.
+    Arrow* at(int i) { return i >= 0 && i < arrows_.size() ? &arrows_[i] : nullptr; }
+    Arrow* findById(i32 entityId);
 
     // One 20 Hz tick of `kg.e_()` for every live arrow.
     // **Mutable**, since an arrow can now kill a mob and a mob's death drops

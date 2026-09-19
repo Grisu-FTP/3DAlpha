@@ -1045,6 +1045,17 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
             overlay.inventoryEdited();
         }
     }
+    // **A guest's bow is the host's to fire**, when the host is this port:
+    // a1.1.2 keeps the shot on the shooter's own screen, and between two
+    // consoles that meant nobody else ever saw an arrow. The host fires it as
+    // this player's and says where it is every tick; this end only hears the
+    // twang. Against a Java server `useItem` answers false and the arrow is
+    // fired here, as the jar does. See `net::makeUseItem`.
+    if (net != nullptr && mc::item::def(heldItem).spawns == mc::item::SpawnsEntity::Arrow
+        && net->useItem(int(heldItem), body, camera)) {
+        mc::item::playBowSound(effects, camera.x, camera.y, camera.z);
+        return;
+    }
     const mc::item::ItemUse used = world.useItem(chunks, heldItem, camera.x, camera.y,
                                                  camera.z, double(dx), double(dy),
                                                  double(dz), effects);
@@ -1878,6 +1889,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     if (net != nullptr) {
         net->entities().bind(droppedItems.get());
         net->entities().bindMobs(mobs.get());
+        net->entities().bindArrows(arrows.get());
     }
 
     world.bindEntities(mc::entity::EntityPools{paintings.get(), arrows.get(), boats.get(),
@@ -3735,10 +3747,17 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // server decides who collected what and says so with
                     // Collect and Add To Inventory; a client that also took it
                     // would be holding an item the server never gave it.
+                    //
+                    // **The player's own arrows are in the same sweep** --
+                    // `kg.b(dm)` is called from the same loop as `dx.b(dm)`,
+                    // with the same pop. Only arrows this session's player
+                    // loosed, stuck and still: see `ArrowSystem::collect`.
                     const AABB reach = body.box.expand(1.0, 0.0, 1.0);
-                    const int picked = vitals.alive() && net == nullptr
-                                           ? overlay.collectItems(*droppedItems, reach)
-                                           : 0;
+                    const bool sweeps = vitals.alive() && net == nullptr;
+                    int picked = sweeps ? overlay.collectItems(*droppedItems, reach) : 0;
+                    if (sweeps && arrows != nullptr) {
+                        picked += overlay.collectArrows(*arrows, reach);
+                    }
                     for (int p = 0; p < picked; ++p) {
                         // `random.pop` at volume 0.2, and the pitch is the
                         // original's expression rather than a constant: two
@@ -3795,14 +3814,21 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                                         : host != nullptr ? host->takeHit(&hit)
                                                           : false;
                     if (struck) {
+                        // **An arrow is `kg`'s four, scaled by difficulty**
+                        // as `DamageSource::Arrow` -- the host's own player
+                        // takes it that way, so a guest does too.
                         const int amount =
-                            int(mc::item::def(mc::item::ItemId(hit.item)).damageVsEntity);
+                            hit.arrow ? mc::entity::kArrowDamage
+                                      : int(mc::item::def(mc::item::ItemId(hit.item))
+                                                .damageVsEntity);
                         if (amount > 0) {
                             harm.world = tickWorld;
                             harm.difficulty = int(difficulty);
                             harm.yawDegrees = camera.yaw * 180.0f / kPi;
-                            harm.deal(amount, mc::entity::DamageSource::Other, hit.fromX,
-                                      hit.fromZ);
+                            harm.deal(amount,
+                                      hit.arrow ? mc::entity::DamageSource::Arrow
+                                                : mc::entity::DamageSource::Other,
+                                      hit.fromX, hit.fromZ);
                         }
                     }
                 }
@@ -4111,6 +4137,16 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                         hits.playerBox = body.box;
                         hits.hurtPlayer = &PlayerHarm::hurt;
                         hits.hurtPlayerCtx = &harm;
+                    }
+                    // **And the guests, on a host**: an arrow that reaches one
+                    // is named to them and they spend their own health on it.
+                    mc::entity::RemoteTarget guests[mc::net::WorldServer::kMaxPlayers];
+                    if (host != nullptr) {
+                        hits.remotePlayers = guests;
+                        hits.remotePlayerCount =
+                            host->arrowTargets(guests, mc::net::WorldServer::kMaxPlayers);
+                        hits.hurtRemote = &ctr::HostPlay::arrowStruck;
+                        hits.hurtRemoteCtx = host;
                     }
                     arrows->tick(*fxWorld, hits);
                 }

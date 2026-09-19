@@ -724,10 +724,10 @@ TEST(a_drawn_animal_stands_on_its_own_feet)
     const int cow = field.add(MobType::Cow, 0.5, 0.5);
     field.mobs.at(cow).body.snapRenderPosition();
 
-    // **The origin has to be near the animal.** A `DetailVertex` position is a
-    // signed short in 1/1024 of a block, so the builder skips anything more
-    // than about 31 blocks from the origin -- the renderer passes the eye's own
-    // block for exactly this reason.
+    // **The origin has to be near the animal.** A mob vertex's position is a
+    // signed short in 1/256 of a block, so the builder skips anything more
+    // than about 124 blocks from the origin -- the renderer passes the eye's
+    // own block for exactly this reason.
     static std::vector<mesh::DetailVertex> verts(render::kMobMaxVertices);
     const int written = render::buildMobs(field.mobs, 0.0, Field::kGround, 0.0, 1.0f,
                                           verts.data(), render::kMobMaxVertices);
@@ -737,7 +737,7 @@ TEST(a_drawn_animal_stands_on_its_own_feet)
     double highest = -1e9;
     for (int i = 0; i < written; ++i) {
         const double y = Field::kGround
-                         + double(verts[i].y) / double(mesh::kDetailUnitsPerBlock);
+                         + double(verts[i].y) / double(render::kEntityUnitsPerBlock);
         if (y < lowest) {
             lowest = y;
         }
@@ -751,6 +751,101 @@ TEST(a_drawn_animal_stands_on_its_own_feet)
     CHECK(std::abs(lowest - Field::kGround) < 0.02);
     CHECK(highest > Field::kGround + 1.0);
     CHECK(highest < Field::kGround + 2.0);
+}
+
+namespace {
+
+// Where the vertices of one drawn mob actually land, relative to the origin
+// that was passed -- so a vertex that wrapped round the short shows up as a
+// value on the far side of the eye.
+struct Spread {
+    int written = 0;
+    double lo[3] = {1e9, 1e9, 1e9};
+    double hi[3] = {-1e9, -1e9, -1e9};
+};
+
+Spread drawnFrom(const MobSystem& mobs, double ox, double oy, double oz)
+{
+    static std::vector<mesh::DetailVertex> verts(render::kMobMaxVertices);
+    Spread s;
+    s.written = render::buildMobs(mobs, ox, oy, oz, 1.0f, verts.data(), render::kMobMaxVertices);
+    for (int i = 0; i < s.written; ++i) {
+        const double at[3] = {double(verts[i].x), double(verts[i].y), double(verts[i].z)};
+        for (int a = 0; a < 3; ++a) {
+            const double blocks = at[a] / double(render::kEntityUnitsPerBlock);
+            s.lo[a] = blocks < s.lo[a] ? blocks : s.lo[a];
+            s.hi[a] = blocks > s.hi[a] ? blocks : s.hi[a];
+        }
+    }
+    return s;
+}
+
+}  // namespace
+
+TEST(a_mob_at_the_edge_of_the_short_is_not_stretched_across_the_screen)
+{
+    // The bug as it was seen: a zombie whose feet were 31 blocks below the
+    // eye's block passed the old centre-only test (31 < 31.25), and its head,
+    // a block and a half higher, overflowed the 1/1024 short and wrapped to
+    // 31 blocks *above* -- one box spanning the whole view. Whatever is drawn
+    // now has to lie where the zombie is.
+    Field field;
+    const int zombie = field.add(MobType::Zombie, 0.5, 0.5);
+    CHECK(zombie >= 0);
+    field.mobs.at(zombie).body.snapRenderPosition();
+
+    for (double below : {31.0, 31.2, 60.0}) {
+        const Spread s = drawnFrom(field.mobs, 0.0, Field::kGround - below, 0.0);
+        CHECK(s.written > 0);
+        CHECK(s.lo[1] > below - 0.1);
+        CHECK(s.hi[1] < below + 2.5);
+        CHECK(s.lo[0] > -1.5 && s.hi[0] < 2.5);
+        CHECK(s.lo[2] > -1.5 && s.hi[2] < 2.5);
+    }
+}
+
+TEST(a_mob_is_drawn_as_far_as_its_box_says_and_no_further)
+{
+    // `kh.a(D)Z`: the average edge of the box, times 64. A zombie's box is
+    // 0.6 x 1.8 x 0.6, so 64 blocks; a chicken's 0.3 x 0.4 x 0.3, so 21.3.
+    // Moving the origin rather than the mob keeps both in the loaded field.
+    Field field;
+    const int zombie = field.add(MobType::Zombie, 0.5, 0.5);
+    CHECK(zombie >= 0);
+    field.mobs.at(zombie).body.snapRenderPosition();
+
+    CHECK(drawnFrom(field.mobs, -50.0, Field::kGround, 0.0).written > 0);
+    const Spread near = drawnFrom(field.mobs, -63.0, Field::kGround, 0.0);
+    CHECK(near.written > 0);
+    CHECK(near.lo[0] > 62.0 && near.hi[0] < 65.0);
+    CHECK_EQ(drawnFrom(field.mobs, -65.0, Field::kGround, 0.0).written, 0);
+
+    Field coop;
+    const int chicken = coop.add(MobType::Chicken, 0.5, 0.5);
+    CHECK(chicken >= 0);
+    coop.mobs.at(chicken).body.snapRenderPosition();
+    CHECK(drawnFrom(coop.mobs, -20.0, Field::kGround, 0.0).written > 0);
+    CHECK_EQ(drawnFrom(coop.mobs, -22.0, Field::kGround, 0.0).written, 0);
+}
+
+TEST(a_box_the_short_cannot_hold_is_dropped_rather_than_wrapped)
+{
+    // `buildBox`'s backstop: at detail units a box 40 blocks out cannot be
+    // written, and writing it anyway is the stretch. At the mob pass's units
+    // the same box fits.
+    render::ModelPart part{};
+    part.w = 8;
+    part.h = 8;
+    part.d = 8;
+    const render::Placement far = render::placeAt(40.0, 0.0, 0.0, 0.0f);
+    mesh::DetailVertex out[render::kBoxVertices];
+    CHECK_EQ(render::buildBox(part, far, texture::EntitySkin::Pig, 0xFF, out,
+                              render::kBoxVertices),
+             0);
+    CHECK_EQ(render::buildBox(part, far, texture::EntitySkin::Pig, 0xFF, out,
+                              render::kBoxVertices, render::kEntityUnitsPerBlock),
+             render::kBoxVertices);
+    CHECK(double(out[0].x) / double(render::kEntityUnitsPerBlock) > 39.0);
 }
 
 TEST(a_hurt_animal_is_tinted_and_a_well_one_is_not)

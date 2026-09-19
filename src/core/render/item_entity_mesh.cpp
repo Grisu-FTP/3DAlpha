@@ -8,6 +8,7 @@
 #include "core/item/registry.hpp"
 #include "core/mesh/box.hpp"
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/math_helper.hpp"
 
@@ -15,9 +16,11 @@ namespace mc::render {
 namespace {
 
 // The detail position is a signed short of 1/1024 blocks, so a little under 32
-// blocks either way of the origin. The same bound `buildParticles` uses.
+// blocks either way of the origin -- and a stack is never drawn that far:
+// `kh.a(D)Z` of its quarter-block box is 16 blocks. See
+// core/render/entity_range.hpp.
 constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-constexpr double kLimit = 32000.0 / kUnits;
+constexpr double kLimit = kDetailPlacementLimit;
 
 constexpr float kPi = 3.1415927f;
 // `57.295776F` -- the class file's own literal for radians to degrees, and it
@@ -211,8 +214,7 @@ int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegre
         *px = e.prevX + (e.x - e.prevX) * double(partial) - originX;
         *pz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
         *py = e.prevY + (e.y - e.prevY) * double(partial) - originY;
-        return *px >= -kLimit && *px <= kLimit && *py >= -kLimit && *py <= kLimit
-               && *pz >= -kLimit && *pz <= kLimit;
+        return entityInDrawRange(*px, *py, *pz, entity::kItemSize, entity::kItemSize, kLimit);
     };
     // At most what the build below writes for it: every copy, and every box of
     // a block or one quad of a sprite.

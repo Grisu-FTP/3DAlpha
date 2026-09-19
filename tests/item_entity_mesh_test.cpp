@@ -249,3 +249,21 @@ TEST(an_item_too_far_from_the_origin_is_skipped_rather_than_clamped)
                                        IconSheet::Terrain, verts.data(), int(verts.size())),
              0);
 }
+
+TEST(a_dropped_stack_is_drawn_to_sixteen_blocks_and_not_past_them)
+{
+    // `kh.a(D)Z` of a quarter-block box: 0.25 * 64. The origin moves rather
+    // than the stack, so the stack stays in the scene.
+    const ItemId id = firstBlockItem();
+    Bare b;
+    CHECK(b.items.spawn(b.world.w(), 0.5, 4.0, 0.5, id, 1, 0));
+
+    std::vector<mesh::DetailVertex> out(4096);
+    const auto from = [&](double originX) {
+        return render::buildItemEntities(b.items, 0.0f, originX, 4.0, 0.5, 0.0f,
+                                         IconSheet::Terrain, out.data(), int(out.size()));
+    };
+    CHECK(from(-15.0) > 0);
+    CHECK_EQ(from(-16.5), 0);
+    CHECK_EQ(from(-30.0), 0);
+}

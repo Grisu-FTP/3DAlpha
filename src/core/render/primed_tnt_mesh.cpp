@@ -4,15 +4,14 @@
 
 #include "core/block/registry.hpp"
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_range.hpp"
 
 namespace mc::render {
 namespace {
 
-// The detail position is a signed short of 1/1024 blocks, so a little under 32
-// blocks either way of the origin. The same bound the items and the falling
-// blocks use.
-constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-constexpr double kLimit = 32000.0 / kUnits;
+// 1/256 of a block, so a 0.98 box reaches the 63 blocks `kh.a(D)Z` gives it --
+// see core/render/entity_range.hpp. The draw scales the matrix back.
+constexpr double kUnits = double(kEntityUnitsPerBlock);
 
 i16 toUnits(double blocks)
 {
@@ -95,8 +94,7 @@ int buildPrimedTnt(const entity::PrimedTntSystem& system, double originX, double
         *cx = e.prevX + (e.x - e.prevX) * double(partial) - originX;
         *cy = e.prevY + (e.y - e.prevY) * double(partial) - originY;
         *cz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
-        return *cx >= -kLimit && *cx <= kLimit && *cy >= -kLimit && *cy <= kLimit
-               && *cz >= -kLimit && *cz <= kLimit;
+        return entityInDrawRange(*cx, *cy, *cz, entity::kPrimedTntSize, entity::kPrimedTntSize);
     };
     DrawCutoff cutoff;
     if (system.count() * kPrimedTntVerticesEach > max) {
@@ -167,19 +165,26 @@ int buildPrimedTntFlash(const entity::PrimedTnt& e, double originX, double origi
     const double cx = e.prevX + (e.x - e.prevX) * double(partial) - originX;
     const double cy = e.prevY + (e.y - e.prevY) * double(partial) - originY;
     const double cz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
+    // No flash where the textured pass drew no cube to flash.
+    if (!entityInDrawRange(cx, cy, cz, entity::kPrimedTntSize, entity::kPrimedTntSize)) {
+        return 0;
+    }
 
     // **The same cube the textured pass drew, to the bit.** `hw` reuses one
     // `glScalef` for both draws, so any disagreement here would show as a white
-    // rind round the block.
+    // rind round the block -- and the overlay is depth-tested `GEQUAL` against
+    // what that pass wrote, so a corner a rounding step behind it would not
+    // draw at all. Hence the corners are snapped to the textured pass's grid.
     const double half = 0.5 * double(primedTntScale(e.fuse, partial));
     const double lo[3] = {cx - half, cy - half, cz - half};
     const double hi[3] = {cx + half, cy + half, cz + half};
+    const auto snap = [](double blocks) { return float(double(toUnits(blocks)) / kUnits); };
 
     float px[8], py[8], pz[8];
     for (int c = 0; c < 8; ++c) {
-        px[c] = float((c & 1) != 0 ? hi[0] : lo[0]);
-        py[c] = float((c & 2) != 0 ? hi[1] : lo[1]);
-        pz[c] = float((c & 4) != 0 ? hi[2] : lo[2]);
+        px[c] = snap((c & 1) != 0 ? hi[0] : lo[0]);
+        py[c] = snap((c & 2) != 0 ? hi[1] : lo[1]);
+        pz[c] = snap((c & 4) != 0 ? hi[2] : lo[2]);
     }
 
     int written = 0;

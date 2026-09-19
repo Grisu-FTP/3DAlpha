@@ -2,6 +2,7 @@
 
 #include "core/render/remote_player_mesh.hpp"
 
+#include "core/render/mob_mesh.hpp"
 #include "core/util/math_helper.hpp"
 
 #include <cmath>
@@ -51,11 +52,11 @@ int buildRemotePlayers(const net::RemoteEntities& entities, double originX, doub
         return 0;
     }
 
-    // The detail vertex is a short of sixteenths, so a body far enough away to
-    // overflow it is drawn nowhere rather than somewhere wrong. The same bound
-    // the mob pass keeps.
-    constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-    constexpr double kLimit = 32000.0 / kUnits;
+    // A body far enough away to overflow the short is drawn nowhere rather
+    // than somewhere wrong. The same units and the same bound the mob pass
+    // keeps, since this rides its buffer; `nt` sets `ac` to 10, so a1.1.2's
+    // own range for another player (640 blocks) is never the nearer limit.
+    constexpr double kLimit = kEntityPlacementLimit;
 
     int written = 0;
     for (int index = 0; index < entities.playerCount(); ++index) {
@@ -95,7 +96,7 @@ int buildRemotePlayers(const net::RemoteEntities& entities, double originX, doub
             // console's owner picked for themselves, and other people are not
             // them. See the note on `EntitySkin::OtherPlayer`.
             written += buildBox(parts[part], place, texture::EntitySkin::OtherPlayer,
-                                player.light, out + written, max - written);
+                                player.light, out + written, max - written, kEntityUnitsPerBlock);
         }
 
         // A dying body is red while it falls, as `dn` draws any living thing.

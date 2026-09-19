@@ -15,6 +15,7 @@
 #include "core/entity/minecart.hpp"
 #include "core/entity/painting.hpp"
 #include "core/entity/player_body.hpp"
+#include "core/item/inventory.hpp"
 #include "core/item/registry.hpp"
 #include "core/item/use.hpp"
 #include "core/render/arrow_mesh.hpp"
@@ -23,6 +24,7 @@
 #include "drop_catcher.hpp"
 #include "framework.hpp"
 #include "low_heap.hpp"
+#include "items.hpp"  // generated; see tools/configure.py
 #include "scene_world.hpp"
 
 #include <cmath>
@@ -719,4 +721,135 @@ TEST(an_arrow_shot_by_a_flying_player_still_knocks_the_painting_off_the_wall)
     CHECK_EQ(paintings.count(), 0);
     CHECK_EQ(arrows.count(), 0);
     CHECK_EQ(caught.countOf(u16(mcver::Item::Painting)), 1);
+}
+
+namespace {
+
+// Shot straight down from above the floor, so it sticks where it can be
+// reached, and ticked until it has. False if it was never fired or never
+// landed.
+bool landAtFeet(Range& range, bool bySkeleton = false)
+{
+    const bool fired =
+        bySkeleton ? range.arrows.shootFrom(range.w(), 0.5, 66.0, 0.5, 0.0, -1.0, 0.0, 0.6f,
+                                            0.0f, entity::ArrowShooter::Skeleton)
+                   : range.arrows.shoot(range.w(), 0.5, 66.0, 0.5, 0.0f, 90.0f);
+    if (!fired) {
+        return false;
+    }
+    for (int t = 0; t < 40 && !range.arrows[0].inGround; ++t) {
+        range.arrows.tick(range.w());
+    }
+    return range.arrows.count() == 1 && range.arrows[0].inGround;
+}
+
+AABB reachAround(const Arrow& a)
+{
+    return AABB{a.x - 1.3, a.y - 0.5, a.z - 1.3, a.x + 1.3, a.y + 1.3, a.z + 1.3};
+}
+
+int arrowsHeld(const item::Inventory& inventory)
+{
+    int n = 0;
+    for (const auto& slot : inventory.main) {
+        if (int(slot.id) == int(mcver::Item::Arrow)) {
+            n += int(slot.count);
+        }
+    }
+    return n;
+}
+
+}  // namespace
+
+TEST(the_player_takes_back_their_own_arrow_once_it_stops_shaking)
+{
+    // `kg.b(dm)`: in the ground, fired by this player, `arrowShake <= 0`, and
+    // one arrow into the inventory -- and then the arrow is gone.
+    Range range;
+    CHECK(landAtFeet(range));
+    const Arrow& a = range.arrows[0];
+    const AABB reach = reachAround(a);
+    item::Inventory inventory;
+    inventory.clear();
+
+    // Still quivering from the impact: not yet.
+    CHECK(a.shake > 0);
+    CHECK_EQ(range.arrows.collect(reach, inventory), 0);
+
+    range.run(entity::kArrowShake);
+    CHECK_EQ(range.arrows[0].shake, 0);
+    CHECK_EQ(range.arrows.collect(reach, inventory), 1);
+    CHECK_EQ(range.arrows.count(), 0);
+    CHECK_EQ(arrowsHeld(inventory), 1);
+}
+
+TEST(nobody_takes_an_arrow_they_did_not_fire)
+{
+    // A skeleton's arrow has a shooter, and it is not the player. An arrow
+    // read back off the card has none at all -- `kg` does not save it -- which
+    // is the same answer: `shooterPlayer` starts at nobody.
+    Range range;
+    CHECK(landAtFeet(range, true));
+    range.run(entity::kArrowShake + 1);
+    item::Inventory inventory;
+    inventory.clear();
+    CHECK_EQ(range.arrows.collect(reachAround(range.arrows[0]), inventory), 0);
+    CHECK_EQ(range.arrows.count(), 1);
+    CHECK_EQ(Arrow{}.shooterPlayer, 0);
+}
+
+TEST(a_full_inventory_leaves_the_arrow_where_it_is)
+{
+    Range range;
+    CHECK(landAtFeet(range));
+    range.run(entity::kArrowShake + 1);
+    item::Inventory inventory;
+    inventory.clear();
+    for (int slot = 0; slot < int(sizeof(inventory.main) / sizeof(inventory.main[0])); ++slot) {
+        inventory.set(slot, item::ItemId(mcver::Block::Stone), 64);
+    }
+    CHECK_EQ(range.arrows.collect(reachAround(range.arrows[0]), inventory), 0);
+    CHECK_EQ(range.arrows.count(), 1);
+}
+
+namespace {
+
+struct RemoteHits {
+    std::vector<i32> victims;
+    static void hurt(void* ctx, i32 victim, Arrow& arrow)
+    {
+        (void)arrow;
+        static_cast<RemoteHits*>(ctx)->victims.push_back(victim);
+    }
+};
+
+}  // namespace
+
+TEST(a_hosts_arrow_strikes_a_guest_and_spares_the_guest_who_fired_it)
+{
+    // On a host, the guests are targets as the local player is -- struck by
+    // the nearest box along the segment, and the one who fired it spared for
+    // five ticks by identity. The blow is handed back, never resolved here.
+    Range range;
+    constexpr i32 kShooter = 2;
+    constexpr i32 kVictim = 3;
+    entity::RemoteTarget guests[2];
+    guests[0].entityId = kShooter;
+    guests[0].box = AABB{0.2, 64.0, 0.2, 0.8, 65.8, 0.8};   // the archer, at the muzzle
+    guests[1].entityId = kVictim;
+    guests[1].box = AABB{0.2, 64.0, 5.2, 0.8, 65.8, 5.8};   // five blocks down range
+    RemoteHits hits;
+    entity::ArrowTargets targets;
+    targets.remotePlayers = guests;
+    targets.remotePlayerCount = 2;
+    targets.hurtRemote = &RemoteHits::hurt;
+    targets.hurtRemoteCtx = &hits;
+
+    CHECK(range.arrows.shoot(range.w(), 0.5, 65.62, 0.5, 0.0f, 0.0f, kShooter));
+    for (int t = 0; t < 10 && range.arrows.count() > 0; ++t) {
+        range.arrows.tick(range.w(), targets);
+    }
+    CHECK_EQ(int(hits.victims.size()), 1);
+    CHECK_EQ(hits.victims[0], kVictim);
+    CHECK_EQ(range.arrows.count(), 0);
 }

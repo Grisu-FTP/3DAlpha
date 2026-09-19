@@ -77,6 +77,12 @@ inline constexpr double kSpawnerPivotLift = 0.4;
 inline constexpr float kSpawnerTilt = -30.0f;
 inline constexpr float kSpawnerSpinFactor = 10.0f;
 
+// `4096.0D`, the squared distance under which `fz.a(Lic;F)V` -- the tile entity
+// render dispatcher -- draws any tile entity, the cage's miniature as much as a
+// sign (`kSignDrawDistanceSq`). Before the mob pass took coarser units the short
+// ran out first, at 31.25 blocks.
+inline constexpr double kTileEntityDrawDistanceSq = 4096.0;
+
 // **What one frame draws.** A dungeon has one spawner and a render distance
 // rarely holds two; four is slack, not a limit players meet. Each is one mob's
 // worth of parts.

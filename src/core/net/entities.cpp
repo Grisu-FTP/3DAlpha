@@ -226,6 +226,14 @@ void RemoteEntities::moveTo(i32 id, double x, double y, double z, bool hasLook, 
         return;
     }
 
+    // **An arrow walks nowhere**: it goes where it is told, one tick later,
+    // and the renderer draws the step between. Relative moves are never sent
+    // for one.
+    if (arrows_ != nullptr && !relative && hasLook
+        && arrows_->placeRemote(id, x, y, z, yaw, pitch)) {
+        return;
+    }
+
     if (items_ == nullptr) {
         return;
     }
@@ -302,6 +310,9 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         if (items_ != nullptr) {
             items_->removeById(i32(packet.integer(0)));
         }
+        if (arrows_ != nullptr) {
+            arrows_->removeById(i32(packet.integer(0)));
+        }
         removePlayer(i32(packet.integer(0)));
         return true;
 
@@ -312,6 +323,9 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         }
         if (mobs_ != nullptr) {
             mobs_->removeById(i32(packet.integer(0)));
+        }
+        if (arrows_ != nullptr) {
+            arrows_->removeById(i32(packet.integer(0)));
         }
         return true;
 
@@ -420,6 +434,13 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
     }
 
     case packet::VehicleSpawn:
+        // **An arrow, from a 3DAlpha host** -- see `kObjectArrow`; a Java
+        // server never sends 60. Its heading follows in a teleport.
+        if (int(packet.integer(1)) == kObjectArrow && arrows_ != nullptr && world != nullptr) {
+            arrows_->spawnRemote(*world, i32(packet.integer(0)), fromFixed(packet.integer(2)),
+                                 fromFixed(packet.integer(3)), fromFixed(packet.integer(4)));
+            return true;
+        }
         // **Received, understood, and not drawn.** A boat and a cart are two
         // more pools, and a cart is tilted along the track it stands on rather
         // than by anything the packet carries. Counted so the debug page can

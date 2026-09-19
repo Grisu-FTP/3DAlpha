@@ -4,15 +4,14 @@
 
 #include "core/block/registry.hpp"
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_range.hpp"
 
 namespace mc::render {
 namespace {
 
-// The detail position is a signed short of 1/1024 blocks, so a little under 32
-// blocks either way of the origin. The same bound the items and the particles
-// use.
-constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-constexpr double kLimit = 32000.0 / kUnits;
+// 1/256 of a block, so a 0.98 box reaches the 63 blocks `kh.a(D)Z` gives it --
+// see core/render/entity_range.hpp. The draw scales the matrix back.
+constexpr double kUnits = double(kEntityUnitsPerBlock);
 
 i16 toUnits(double blocks)
 {
@@ -67,8 +66,7 @@ int buildFallingBlocks(const entity::FallingBlockSystem& system, double originX,
         *cx = e.prevX + (e.x - e.prevX) * double(partial) - originX;
         *cy = e.prevY + (e.y - e.prevY) * double(partial) - originY;
         *cz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
-        return *cx >= -kLimit && *cx <= kLimit && *cy >= -kLimit && *cy <= kLimit
-               && *cz >= -kLimit && *cz <= kLimit;
+        return entityInDrawRange(*cx, *cy, *cz, entity::kFallingBlockSize, entity::kFallingBlockSize);
     };
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
     DrawCutoff cutoff;

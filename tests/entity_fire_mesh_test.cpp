@@ -5,6 +5,7 @@
 // See core/render/entity_fire_mesh.hpp for the eight numbers this pins.
 
 #include "core/render/entity_fire_mesh.hpp"
+#include "core/render/mob_mesh.hpp"
 #include "core/texture/texture_fx.hpp"
 #include "framework.hpp"
 #include "scene_world.hpp"
@@ -34,8 +35,11 @@ constexpr float kTallHeight = 1.8f;
 // The tile the flame lives in, asked the way the builder asks for it.
 int flame() { return texture::flameTile(0); }
 
-// Detail units, which is what a vertex holds: 1/1024 of a block.
-float blocks(i16 units) { return float(units) / float(mesh::kDetailUnitsPerBlock); }
+// The mob pass's units, which is what a flame vertex holds: 1/256 of a block.
+float blocks(i16 units) { return float(units) / float(mc::render::kEntityUnitsPerBlock); }
+
+// How far a sheet's corner may be from the origin: 125 blocks.
+constexpr float kReach = 32000.0f / float(mc::render::kEntityUnitsPerBlock);
 
 bool near(float a, float b, float tolerance = 0.002f)
 {
@@ -186,24 +190,26 @@ TEST(a_sheet_that_does_not_fit_the_position_is_dropped)
     }
     std::vector<mesh::DetailVertex> verts(size_t(mc::render::kEntityFireMaxVertices));
 
-    // A detail position reaches a little under 32 blocks and a zombie's stack
-    // is nearly three tall, so a mob at the top of that window has sheets that
-    // cannot be written. They are dropped one at a time; the ones that fit are
-    // still drawn, and nothing wraps round to the far side of the world.
-    const int high = buildEntityFire(0.0, 30.0, 0.0, kTallWidth, kTallHeight, flame(),
-                                     fireFacing(0.0f), verts.data(), int(verts.size()));
-    CHECK_EQ(high, 4);  // the first sheet clears 31.25; the two above it do not
+    // A flame position reaches 125 blocks and a zombie's stack is nearly
+    // three tall, so a mob at the top of that window has sheets that cannot be
+    // written. They are dropped one at a time; the ones that fit are still
+    // drawn, and nothing wraps round to the far side of the world.
+    const int high = buildEntityFire(0.0, double(kReach) - 1.25, 0.0, kTallWidth, kTallHeight,
+                                     flame(), fireFacing(0.0f), verts.data(),
+                                     int(verts.size()));
+    CHECK_EQ(high, 4);  // the first sheet clears the top; the two above it do not
     for (int v = 0; v < high; ++v) {
-        CHECK(blocks(verts[v].y) >= 29.9f && blocks(verts[v].y) <= 31.25f);
+        CHECK(blocks(verts[v].y) >= kReach - 1.35f && blocks(verts[v].y) <= kReach);
     }
 
     // The same mob at the bottom of the window keeps its *upper* sheets, which
     // is why the builder drops a sheet rather than stopping the stack.
-    const int low = buildEntityFire(0.0, -31.5, 0.0, kTallWidth, kTallHeight, flame(),
-                                    fireFacing(0.0f), verts.data(), int(verts.size()));
+    const int low = buildEntityFire(0.0, -double(kReach) - 0.25, 0.0, kTallWidth, kTallHeight,
+                                    flame(), fireFacing(0.0f), verts.data(),
+                                    int(verts.size()));
     CHECK_EQ(low, 2 * 4);
     for (int v = 0; v < low; ++v) {
-        CHECK(blocks(verts[v].y) >= -31.25f);
+        CHECK(blocks(verts[v].y) >= -kReach);
     }
 }
 

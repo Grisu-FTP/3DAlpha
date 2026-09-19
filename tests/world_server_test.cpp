@@ -19,6 +19,7 @@
 #include "core/tick/tick_world.hpp"
 #include "core/net/packets.hpp"
 #include "core/net/world_server.hpp"
+#include "items.hpp"  // generated; see tools/configure.py
 
 #include <chrono>
 #include <cmath>
@@ -97,6 +98,11 @@ public:
     entity::ItemEntitySystem* items() override { return drops; }
 
     entity::MobSystem* mobs() override { return herd; }
+
+    entity::ArrowSystem* arrows() override { return quiver; }
+    void useItem(const UseRequest& request) override { used.push_back(request); }
+    entity::ArrowSystem* quiver = nullptr;
+    std::vector<UseRequest> used;
 
     void attackEntity(const AttackRequest& request) override { hits.push_back(request); }
 
@@ -1543,5 +1549,182 @@ TEST(the_host_can_swing_at_a_guest_and_the_guest_hears_about_it)
 
     // Nobody who is not here.
     CHECK(!server.hostAttack(99, 268));
+    server.close();
+}
+
+// ---- arrows -----------------------------------------------------------------
+
+namespace {
+
+// A floor at y = 42 over nine columns, and a quiver on it.
+struct ArrowWorldFixture {
+    FakeWorld world;
+    entity::ArrowSystem quiver{77};
+    std::unique_ptr<tick::TickWorld> ticks;
+
+    ArrowWorldFixture()
+    {
+        for (i32 cx = -1; cx <= 1; ++cx) {
+            for (i32 cz = -1; cz <= 1; ++cz) {
+                world.add(cx, cz);
+            }
+        }
+        tick::TickAccess access;
+        access.ctx = &world;
+        access.column = [](void* ctx, i32 cx, i32 cz) -> world::ChunkColumn* {
+            return static_cast<FakeWorld*>(ctx)->mutableColumn(cx, cz);
+        };
+        ticks = std::make_unique<tick::TickWorld>(access, 12345LL);
+        world.quiver = &quiver;
+    }
+
+    // Down into the floor from three blocks up, and ticked until it is stuck
+    // and still.
+    void landAt(double x, double z, i32 shooter)
+    {
+        quiver.shoot(*ticks, x, 45.0, z, 0.0f, 90.0f, shooter);
+        for (int t = 0; t < 40; ++t) {
+            quiver.tick(*ticks);
+        }
+    }
+};
+
+}  // namespace
+
+TEST(a_guests_bow_shot_reaches_the_host_as_theirs)
+{
+    // a1.1.2 never sends a bow shot anywhere; a 3DAlpha guest says it as a
+    // Place at (-1, 255, -1) facing 255, and the host fires from where they
+    // stand, the way they face, in their name.
+    FakeWorld world;
+    world.add(0, 0);
+    Sink sink;
+    WorldServer server;
+    server.open(&world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 60);
+
+    feedPacket(server, kGuest, makePositionLook(6.5, 42.0, 43.62, 8.5, 90.0f, -10.0f, true));
+    feedPacket(server, kGuest, makeUseItem(261));
+    CHECK_EQ(int(world.used.size()), 1);
+    CHECK_EQ(world.used[0].item, 261);
+    CHECK_EQ(world.used[0].shooterEntityId, i32(kGuest));
+    CHECK(std::abs(world.used[0].eyeY - 43.62) < 1e-6);
+    CHECK(std::abs(world.used[0].eyeX - 6.5) < 1e-6);
+    CHECK(std::abs(world.used[0].yawDegrees - 90.0f) < 1e-4f);
+    CHECK(std::abs(world.used[0].pitchDegrees + 10.0f) < 1e-4f);
+    // It is not a placement.
+    CHECK(world.placed.empty());
+
+    // ...and a real click on a face still is.
+    feedPacket(server, kGuest, makePlace(4, 3, 41, 5, 1));
+    CHECK_EQ(int(world.placed.size()), 1);
+    CHECK_EQ(int(world.used.size()), 1);
+    server.close();
+}
+
+TEST(an_arrow_is_announced_to_the_guests_moved_and_destroyed)
+{
+    ArrowWorldFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    CHECK(fixture.quiver.shoot(*fixture.ticks, 8.5, 50.0, 8.5, 0.0f, 0.0f));
+    server.pump(9000);
+
+    // A Vehicle Spawn under the arrow's type, then its heading.
+    const Packet spawned = sink.last(kGuest, packet::VehicleSpawn);
+    CHECK(spawned.id == packet::VehicleSpawn);
+    CHECK_EQ(int(spawned.integer(1)), kObjectArrow);
+    const i32 id = i32(spawned.integer(0));
+    CHECK(id != 0);
+    CHECK_EQ(fixture.quiver[0].entityId, id);
+    const int teleportsAtSpawn = sink.count(kGuest, packet::EntityTeleport);
+    CHECK(teleportsAtSpawn >= 1);
+
+    // In flight, it is placed again every tick it moves.
+    fixture.quiver.tick(*fixture.ticks);
+    server.pump(9100);
+    CHECK(sink.count(kGuest, packet::EntityTeleport) > teleportsAtSpawn);
+    const Packet moved = sink.last(kGuest, packet::EntityTeleport);
+    CHECK_EQ(i32(moved.integer(0)), id);
+    CHECK(moved.integer(3) > i64(8.5 * 32.0));  // it went along +z
+
+    // Announced once, not every frame.
+    server.pump(9200);
+    CHECK_EQ(sink.count(kGuest, packet::VehicleSpawn), 1);
+
+    fixture.quiver.clear();
+    server.pump(9300);
+    const Packet gone = sink.last(kGuest, packet::DestroyEntity);
+    CHECK(gone.id == packet::DestroyEntity);
+    CHECK_EQ(i32(gone.integer(0)), id);
+    server.close();
+}
+
+TEST(a_guest_takes_back_their_own_stuck_arrow_and_nobody_elses)
+{
+    ArrowWorldFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server);
+
+    // Theirs and the host's, both at their feet.
+    fixture.landAt(8.5, 8.5, i32(kGuest));
+    fixture.landAt(8.8, 8.5, entity::kLocalShooter);
+    CHECK_EQ(fixture.quiver.count(), 2);
+    CHECK(fixture.quiver[0].inGround && fixture.quiver[1].inGround);
+
+    movePlayer(server, kGuest, 8.5, 8.5);
+    server.pump(9000);
+    server.pump(9100);
+
+    CHECK_EQ(fixture.quiver.count(), 1);
+    CHECK_EQ(fixture.quiver[0].shooterPlayer, entity::kLocalShooter);
+    CHECK_EQ(sink.count(kGuest, packet::Collect), 1);
+    const Packet added = sink.last(kGuest, packet::AddToInventory);
+    CHECK(added.id == packet::AddToInventory);
+    CHECK_EQ(int(added.integer(0)), int(mcver::Item::Arrow));
+    CHECK_EQ(int(added.integer(1)), 1);
+    server.close();
+}
+
+TEST(an_arrow_that_strikes_a_guest_is_named_to_them)
+{
+    ArrowWorldFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server);
+    movePlayer(server, kGuest, 8.5, 8.5);
+    server.pump(9000);
+
+    // The guest is a target where they stand.
+    entity::RemoteTarget targets[WorldServer::kMaxPlayers];
+    const int n = server.arrowTargets(targets, WorldServer::kMaxPlayers);
+    CHECK_EQ(n, 1);
+    CHECK_EQ(targets[0].entityId, i32(kGuest));
+    CHECK(targets[0].box.minY > 41.9 && targets[0].box.minY < 42.1);
+
+    // Loosed at point blank, so it strikes before any sync has named it.
+    CHECK(fixture.quiver.shoot(*fixture.ticks, 8.5, 43.0, 6.0, 0.0f, 0.0f));
+    entity::Arrow& arrow = *fixture.quiver.at(0);
+    CHECK_EQ(arrow.entityId, 0);
+    server.arrowStruck(i32(kGuest), arrow);
+    server.pump(9100);
+
+    CHECK(arrow.entityId != 0);
+    const Packet spawned = sink.last(kGuest, packet::VehicleSpawn);
+    CHECK_EQ(i32(spawned.integer(0)), arrow.entityId);
+    const Packet blow = sink.last(kGuest, packet::UseEntity);
+    CHECK(blow.id == packet::UseEntity);
+    CHECK_EQ(i32(blow.integer(0)), arrow.entityId);  // "that arrow hit you"
+    CHECK_EQ(i32(blow.integer(1)), i32(kGuest));
     server.close();
 }

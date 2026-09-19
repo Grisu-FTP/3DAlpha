@@ -12,8 +12,10 @@
 #include "core/entity/painting.hpp"
 #include "core/entity/particle.hpp"
 #include "core/entity/ray_trace.hpp"
+#include "core/item/inventory.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/math_helper.hpp"
+#include "items.hpp"  // generated; see tools/configure.py
 
 #include <cmath>
 
@@ -88,7 +90,7 @@ bool segmentBoxHit(const AABB& box, double ox, double oy, double oz, double dx, 
 }
 
 struct EntityHit {
-    enum Kind { None, Painting, Boat, Minecart, Mob, Player };
+    enum Kind { None, Painting, Boat, Minecart, Mob, Player, RemotePlayer };
     Kind kind = None;
     int index = -1;
     double distance = 0.0;
@@ -97,7 +99,7 @@ struct EntityHit {
 // `entityHit.attackEntityFrom(shootingEntity, 4)`. Each pool drops what it
 // leaves through the world's drop sink, exactly as the hand's hit does.
 bool strike(tick::TickWorld& world, const ArrowTargets& targets, const EntityHit& hit,
-            const Arrow& a)
+            Arrow& a)
 {
     switch (hit.kind) {
     case EntityHit::Painting:
@@ -125,6 +127,16 @@ bool strike(tick::TickWorld& world, const ArrowTargets& targets, const EntityHit
         // means here: it struck. An invulnerable Creative player still takes
         // the arrow out of the air.
         return true;
+    case EntityHit::RemotePlayer:
+        // **Another console's player**, and so another console's health. The
+        // host names the arrow to them and they work out the cost -- see
+        // `ArrowTargets::hurtRemote`. Spent either way, as the local player's
+        // is.
+        if (targets.hurtRemote != nullptr) {
+            targets.hurtRemote(targets.hurtRemoteCtx,
+                               targets.remotePlayers[hit.index].entityId, a);
+        }
+        return true;
     case EntityHit::None:
         break;
     }
@@ -134,7 +146,7 @@ bool strike(tick::TickWorld& world, const ArrowTargets& targets, const EntityHit
 }  // namespace
 
 bool ArrowSystem::shoot(const tick::TickWorld& world, double eyeX, double eyeY, double eyeZ,
-                        float yawDegrees, float pitchDegrees)
+                        float yawDegrees, float pitchDegrees, i32 shooter)
 {
     // Taken first, so a refused shot draws nothing from the random stream --
     // the order the fixed pool's refusal had.
@@ -169,6 +181,10 @@ bool ArrowSystem::shoot(const tick::TickWorld& world, double eyeX, double eyeY, 
     // beyond the window itself -- `shooterMob` stays zero, because no mob fired
     // this. See `Arrow::shooterGrace`.
     a.shooterGrace = i8(kArrowSelfGrace);
+
+    // `new kg(world, player)` keeps the player as `shootingEntity`, which is
+    // what lets them take it back. See `Arrow::shooterPlayer`.
+    a.shooterPlayer = shooter;
 
     // The launch heading, straight out of the constructor. Note motionX uses
     // **-sin(yaw)** and motionZ **+cos(yaw)** -- the opposite pairing to the
@@ -275,6 +291,110 @@ bool ArrowSystem::shootFrom(const tick::TickWorld& world, double x, double y, do
     return true;
 }
 
+bool ArrowSystem::spawnRemote(const tick::TickWorld& world, i32 entityId, double x, double y,
+                              double z)
+{
+    if (entityId == 0) {
+        return false;
+    }
+    // **A second spawn replaces the first**: a host re-announces everything
+    // when somebody joins, and the guests who already had it are told again.
+    removeById(entityId);
+    Arrow* slot = arrows_.push();
+    if (slot == nullptr) {
+        ++refused_;
+        return false;
+    }
+    Arrow a{};
+    a.alive = true;
+    a.remote = true;
+    a.entityId = entityId;
+    a.setPosition(x, y, z);
+    a.prevX = x;
+    a.prevY = y;
+    a.prevZ = z;
+    a.light = packedLightAt(world, x, y, z);
+    *slot = a;
+    return true;
+}
+
+bool ArrowSystem::placeRemote(i32 entityId, double x, double y, double z, float yawDegrees,
+                              float pitchDegrees)
+{
+    Arrow* a = findById(entityId);
+    if (a == nullptr || !a->remote) {
+        return false;
+    }
+    // A byte of a turn comes back in whichever half-circle it likes; the one
+    // nearest the last heading is the one the drawing should turn through.
+    const float reference = a->targetSet ? a->targetYaw : a->yaw;
+    while (yawDegrees - reference > 180.0f) {
+        yawDegrees -= 360.0f;
+    }
+    while (yawDegrees - reference < -180.0f) {
+        yawDegrees += 360.0f;
+    }
+    // Never moved yet: face where it is going from the first frame, rather
+    // than swinging round from nothing.
+    if (!a->targetSet && a->x == a->prevX && a->y == a->prevY && a->z == a->prevZ
+        && a->yaw == 0.0f && a->pitch == 0.0f) {
+        a->yaw = a->prevYaw = yawDegrees;
+        a->pitch = a->prevPitch = pitchDegrees;
+    }
+    a->targetX = x;
+    a->targetY = y;
+    a->targetZ = z;
+    a->targetYaw = yawDegrees;
+    a->targetPitch = pitchDegrees;
+    a->targetSet = true;
+    return true;
+}
+
+Arrow* ArrowSystem::findById(i32 entityId)
+{
+    if (entityId == 0) {
+        return nullptr;
+    }
+    for (int i = 0; i < arrows_.size(); ++i) {
+        if (arrows_[i].entityId == entityId) {
+            return &arrows_[i];
+        }
+    }
+    return nullptr;
+}
+
+bool ArrowSystem::removeById(i32 entityId)
+{
+    if (entityId == 0) {
+        return false;
+    }
+    for (int i = 0; i < arrows_.size(); ++i) {
+        if (arrows_[i].entityId == entityId) {
+            arrows_.swapRemove(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+int ArrowSystem::collect(const AABB& reach, item::Inventory& inventory)
+{
+    int taken = 0;
+    for (int i = 0; i < arrows_.size();) {
+        const Arrow& a = arrows_[i];
+        // `f && g == player && a <= 0`, in the jar's order, and only then the
+        // inventory -- so a full inventory costs a stuck arrow nothing.
+        if (!arrowCollectableBy(a, kLocalShooter) || !a.box.intersects(reach)
+            || inventory.addStack(item::ItemId(mcver::Item::Arrow), 1) != 0) {
+            ++i;
+            continue;
+        }
+        ++taken;
+        arrows_.swapRemove(i);
+    }
+    return taken;
+}
+
 void ArrowSystem::tick(tick::TickWorld& world, const ArrowTargets& targets)
 {
     for (int i = 0; i < arrows_.size();) {
@@ -282,6 +402,25 @@ void ArrowSystem::tick(tick::TickWorld& world, const ArrowTargets& targets)
         a.prevX = a.x;
         a.prevY = a.y;
         a.prevZ = a.z;
+
+        // **A guest's copy moves only where the host says**, and draws from
+        // where it was to there. See `Arrow::remote`.
+        if (a.remote) {
+            a.prevYaw = a.yaw;
+            a.prevPitch = a.pitch;
+            if (a.targetSet) {
+                a.x = a.targetX;
+                a.y = a.targetY;
+                a.z = a.targetZ;
+                a.yaw = a.targetYaw;
+                a.pitch = a.targetPitch;
+                a.targetSet = false;
+            }
+            a.setPosition(a.x, a.y, a.z);
+            a.light = packedLightAt(world, a.x, a.y, a.z);
+            ++i;
+            continue;
+        }
 
         // `Entity.onEntityUpdate`'s last line. Everything else that method does
         // -- fire, drowning, the portal counter -- has no counterpart here.
@@ -400,13 +539,17 @@ void ArrowSystem::tick(tick::TickWorld& world, const ArrowTargets& targets)
             // Nothing else is ever the shooter, so nothing else is excluded: a
             // painting, a boat or a cart the player is standing inside is a
             // target from the first tick, as it is in the jar.
-            const bool byPlayer = a.shooter == ArrowShooter::Player;
+            //   * On a host, an arrow a guest fired skips **that guest**, by
+            //     the entity id the wire knows them by.
             auto isShooter = [&](EntityHit::Kind kind, u32 handle) {
                 if (a.shooterGrace <= 0) {
                     return false;
                 }
-                if (byPlayer) {
-                    return kind == EntityHit::Player;
+                if (kind == EntityHit::Player) {
+                    return a.shooterPlayer == kLocalShooter;
+                }
+                if (kind == EntityHit::RemotePlayer) {
+                    return a.shooterPlayer > 0 && handle == u32(a.shooterPlayer);
                 }
                 // Zero never matches: an arrow with no shooter excludes nobody,
                 // and a mob with no handle is not a thing this pool makes.
@@ -458,6 +601,10 @@ void ArrowSystem::tick(tick::TickWorld& world, const ArrowTargets& targets)
             }
             if (targets.playerPresent) {
                 consider(EntityHit::Player, -1, targets.playerBox);
+            }
+            for (int n = 0; n < targets.remotePlayerCount; ++n) {
+                consider(EntityHit::RemotePlayer, n, targets.remotePlayers[n].box,
+                         u32(targets.remotePlayers[n].entityId));
             }
             if (nearest.kind != EntityHit::None && strike(world, targets, nearest, a)) {
                 playStruck(world, a);

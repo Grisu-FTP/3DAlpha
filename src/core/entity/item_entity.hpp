@@ -129,6 +129,14 @@ inline constexpr int kItemDropPickupDelay = 40;
 // up before it has landed, and short enough that you do not wait for it.
 inline constexpr int kBlockDropPickupDelay = 10;
 
+// **What a server gives a stack a client threw**: `id.a(Lk;)V` (the a1.1.2
+// server's `handlePickupSpawn`) builds the `EntityItem` at the packet's place
+// and motion and sets `delayBeforeCanPickup = 10` -- not the constructor's 5
+// and not the 40 a thrown stack gets in single player. At 0.3 a tick along the
+// look, ten ticks carry it out of the thrower's one-block reach; five do not,
+// which is how a guest's drop used to land straight back in their hand.
+inline constexpr int kThrownByClientPickupDelay = 10;
+
 // `je`, from core/entity/explosion.hpp. Only `takeBlast` names it.
 class Explosion;
 
@@ -243,12 +251,13 @@ public:
                      item::ItemId id, int count, i16 damage, JavaRandom& thrower);
 
     // **A stack put into the world with a velocity chosen for it** -- a broken
-    // chest's spill, which builds the entity and then overwrites its motion.
-    // Evicts rather than refuses, for the death drop's reason: the stack has
-    // already left the chest.
+    // chest's spill, which builds the entity and then overwrites its motion,
+    // and a guest's throw (`kThrownByClientPickupDelay`). Evicts rather than
+    // refuses, for the death drop's reason: the stack has already left the
+    // chest.
     bool spawnMoving(const tick::TickWorld& world, double px, double py, double pz,
                      item::ItemId id, int count, i16 damage, double motionX, double motionY,
-                     double motionZ);
+                     double motionZ, int pickupDelay = kItemPickupDelay);
 
     // `dx.<init>` on its own, for a drop that is not thrown by anybody: the
     // upward hop and the small horizontal scatter, and nothing else.

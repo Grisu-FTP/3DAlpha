@@ -26,8 +26,12 @@
 
 namespace mc::render {
 
-// Half a block each, out to 64 blocks. Nothing is drawn past 32 blocks on any
-// axis -- a detail vertex cannot reach -- so the last ring is never crowded.
+// Half a block each, out to 64 blocks. The detail passes stop at 31.25 blocks
+// and the signs at 64, so for them the last ring is never crowded. The passes
+// in core/render/entity_range.hpp reach further (a spider to 79 blocks, a boat
+// to 77), and everything past 63.5 shares the last ring -- which only means
+// that of two far-off spiders over budget, the one kept is not always the
+// nearer.
 inline constexpr int kDrawRings = 128;
 inline constexpr double kDrawRingsPerBlock = 2.0;
 

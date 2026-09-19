@@ -378,9 +378,9 @@ bool ItemEntitySystem::dropOnDeath(const tick::TickWorld& world, double eyeX, do
 
 bool ItemEntitySystem::spawnMoving(const tick::TickWorld& world, double px, double py, double pz,
                                    item::ItemId id, int count, i16 damage, double motionX,
-                                   double motionY, double motionZ)
+                                   double motionY, double motionZ, int pickupDelay)
 {
-    ItemEntity* spawned = place(world, px, py, pz, id, count, damage, kItemPickupDelay, true);
+    ItemEntity* spawned = place(world, px, py, pz, id, count, damage, pickupDelay, true);
     if (spawned == nullptr) {
         return false;
     }

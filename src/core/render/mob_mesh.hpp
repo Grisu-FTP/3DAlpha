@@ -82,6 +82,7 @@
 #include "core/entity/mob.hpp"
 #include "core/mesh/vertex.hpp"
 #include "core/render/box_model.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::render {
@@ -96,7 +97,9 @@ inline constexpr int kMobVerticesEach = kMobMaxParts * kBoxVertices;
 // **What one frame draws**, which is not what exists. a1.1.2 caps *spawning* at
 // 15 animals (core/entity/mob_spawn.hpp) and nothing caps a pen somebody bred,
 // so past this many in range the nearest are drawn -- see draw_budget.hpp.
-inline constexpr int kMobDrawBudget = 16;
+// Twenty-four since mobs are drawn out to a1.1.2's 64 blocks rather than 31:
+// four times the area holds more of the spawner's monsters at once.
+inline constexpr int kMobDrawBudget = 24;
 inline constexpr int kMobMaxVertices = kMobDrawBudget * kMobVerticesEach;
 
 // `dn.a(Lge;DDDFF)V` for every live animal, nearest first when the buffer

@@ -106,6 +106,11 @@ int entityFireLayers(float width, float height);
 // One burning entity's sheets, at a position already made relative to the
 // caller's origin. `tile` is the atlas tile the flame lives in. Returns how
 // many vertices were written, which is a multiple of four.
+//
+// **Positions are in `kEntityUnitsPerBlock`** (1/256 of a block), not the
+// detail format's, so that a zombie burning at dawn keeps its flames out to the
+// 64 blocks it is drawn at. The draw scales the matrix by `kEntityUnitScale`.
+// See core/render/entity_range.hpp.
 int buildEntityFire(double relX, double relY, double relZ, float width, float height,
                     int tile, FireFacing facing, mesh::DetailVertex* out, int max);
 
@@ -129,6 +134,11 @@ struct FireScene {
 
 // Every burning entity in `scene`, nearest first when the buffer cannot hold
 // them all. Returns 0 for a version whose block table has no fire in it.
+//
+// **Each entity's flames reach as far as the entity is drawn**, which is
+// `kh.a(D)Z` of its own box (`entityInDrawRange`) -- so nothing burns in the
+// distance with no entity inside the fire, and a dropped stack's flames stop at
+// the 16 blocks the stack does.
 //
 // **The stack stands on the entity's `posY`**, which is not the same place for
 // everything here: a mob's is its feet, and for the five entities whose

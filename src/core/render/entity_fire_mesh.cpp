@@ -3,6 +3,7 @@
 #include "core/render/entity_fire_mesh.hpp"
 
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/texture/texture_fx.hpp"
 #include "core/util/math_helper.hpp"
 
@@ -11,9 +12,10 @@ namespace {
 
 constexpr float kPi = 3.1415927f;
 
-// The detail position is a signed short of 1/1024 blocks, so a little under 32
-// blocks either way of the origin. The same bound `buildParticles` uses.
-constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
+// 1/256 of a block, which reaches 125 blocks either way of the origin -- see
+// the header. `kLimit` is what one sheet's corner may reach; how far an
+// entity's flames are drawn at all is its own range, in `buildPool`.
+constexpr double kUnits = double(kEntityUnitsPerBlock);
 constexpr double kLimit = 32000.0 / kUnits;
 
 i16 toUnits(double blocks)
@@ -188,8 +190,8 @@ int buildPool(int count, At at, double originX, double originY, double originZ, 
         const double px = b.x - originX;
         const double py = b.y - originY;
         const double pz = b.z - originZ;
-        if (px < -kLimit || px > kLimit || py < -kLimit || py > kLimit || pz < -kLimit
-            || pz > kLimit) {
+        // The same `kh.a(D)Z` the entity's own pass admits it by.
+        if (!entityInDrawRange(px, py, pz, b.width, b.height)) {
             continue;
         }
         const int cost = entityFireLayers(b.width, b.height) * 4;

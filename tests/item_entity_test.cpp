@@ -615,3 +615,30 @@ TEST(handing_thrown_items_to_a_server_leaves_the_servers_own_alone)
     CHECK_EQ(g.items.removeUnowned(), 0);
     CHECK_EQ(g.items.count(), 1);
 }
+
+TEST(a_guests_throw_is_out_of_their_reach_by_the_time_it_can_be_taken)
+{
+    // "Dropping an item as a guest picks it straight back up." The host spawns
+    // a guest's throw from the packet the guest sent, and the a1.1.2 server
+    // (`id.a(Lk;)V`) gives it ten ticks; the constructor's five left it inside
+    // the thrower's reach on the tick it became collectable. A guest standing
+    // at (0.5, 64, 0.5), eye 65.62, looking 30 degrees down along +z: the
+    // throw is 0.3 along the look plus 0.1 up.
+    const AABB reach{0.2 - 1.0, 64.0, 0.2 - 1.0, 0.8 + 1.0, 65.8, 0.8 + 1.0};
+    // 1 when the stack is in reach on the tick it may first be taken, 0 when
+    // it is not, -1 when it was never spawned.
+    const auto collectableInReach = [&](int delay) {
+        Ground g;
+        if (!g.items.spawnMoving(g.world.w(), 0.5, 65.62 - 0.3 + 0.12, 0.5, stoneItem(), 1, 0,
+                                 0.0, -0.05, 0.2598, delay)) {
+            return -1;
+        }
+        while (g.items[0].pickupDelay > 0) {
+            g.items.tick(g.world.w());
+        }
+        return g.items[0].box.intersects(reach) ? 1 : 0;
+    };
+    CHECK_EQ(collectableInReach(entity::kThrownByClientPickupDelay), 0);
+    // The old delay, kept as the proof of what the report was.
+    CHECK_EQ(collectableInReach(entity::kItemPickupDelay), 1);
+}

@@ -92,8 +92,9 @@ inline bool primedTntFlashing(int fuse) { return (fuse / kPrimedTntFlashPeriod) 
 // cannot hold them all -- and returns how many vertices it wrote. `partial` is
 // the fraction of a tick elapsed.
 //
-// An entity further from the origin than a 16-bit detail position can express
-// is **skipped rather than clamped**, exactly as an item and a particle are.
+// Written in `kEntityUnitsPerBlock` and drawn out to the 63 blocks `kh.a(D)Z`
+// gives a 0.98 box -- see core/render/entity_range.hpp. Past that it is
+// **skipped rather than clamped**, exactly as an item and a particle are.
 int buildPrimedTnt(const entity::PrimedTntSystem& system, double originX, double originY,
                    double originZ, float partial, mesh::DetailVertex* out, int max);
 

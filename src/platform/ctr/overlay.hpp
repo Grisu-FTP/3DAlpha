@@ -92,6 +92,7 @@
 // panels behind the text are drawn once on a page change and the text over them
 // only when the number in it moved.
 
+#include "core/entity/arrow.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/gui/container_layout.hpp"
 #include "core/gui/stick_cursor.hpp"
@@ -402,6 +403,10 @@ public:
     // Here for the same reason `dropHeldItem` is: it writes to the inventory,
     // so it is what marks the screen dirty.
     int collectItems(mc::entity::ItemEntitySystem& items, const AABB& playerBox);
+
+    // `kg.b(dm)`, the same walk for arrows: the player's own, stuck and still,
+    // one at a time into the inventory. See `ArrowSystem::collect`.
+    int collectArrows(mc::entity::ArrowSystem& arrows, const AABB& playerBox);
 
     // True once after anything in the inventory changed, and false until it
     // changes again. The caller writes it back to the world on a true.

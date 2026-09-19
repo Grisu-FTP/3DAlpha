@@ -41,6 +41,7 @@
 // Serialising happens on the main thread, where the grid is settled and a
 // borrowed column pointer is safe; only the deflate crosses. See `ColumnOven`.
 
+#include "core/entity/arrow.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/entity/mob.hpp"
 #include "core/net/packet_channel.hpp"
@@ -156,6 +157,25 @@ public:
     // are, exactly as a client is told by a server. Null for a world with no
     // pool.
     virtual entity::MobSystem* mobs() { return nullptr; }
+
+    // **What is in flight or stuck in the ground**, the host's own pool. An
+    // arrow a guest fires is fired here, on their behalf, and the guests are
+    // told where every arrow is -- see `WorldServer::syncArrows`. Null for a
+    // world with no pool.
+    virtual entity::ArrowSystem* arrows() { return nullptr; }
+
+    // **A guest's right click in the air** -- `makeUseItem`. Only the bow
+    // means anything at protocol 2's end of the game: the host fires the
+    // arrow from the guest's eye along their look, as theirs. The ammunition
+    // is the guest's and was spent on their own console before they asked.
+    struct UseRequest {
+        int item = 0;
+        i32 shooterEntityId = 0;
+        double eyeX = 0.0, eyeY = 0.0, eyeZ = 0.0;
+        float yawDegrees = 0.0f;
+        float pitchDegrees = 0.0f;
+    };
+    virtual void useItem(const UseRequest& request) { (void)request; }
 
     // A guest threw something. `mx/my/mz` are blocks per tick.
     virtual void spawnItem(double x, double y, double z, item::ItemId id, int count,
@@ -323,6 +343,18 @@ public:
     // Whether this player is standing outside what the host has loaded, so
     // nothing more can be sent to them. For a line on the screen.
     bool starved(u8 playerId) const;
+
+    // **The guests, as targets for the host's arrows**: where each one who is
+    // in the world and alive is standing. Writes at most `max` and returns how
+    // many. The host's own player is not here -- it is the local player of the
+    // arrow tick already.
+    int arrowTargets(entity::RemoteTarget* out, int max) const;
+
+    // **One of the host's arrows struck a guest.** The guest is told "that
+    // arrow hit you" -- a Use Entity from the arrow's id, announced first if
+    // it never was -- and works out the cost on their own console, as they do
+    // for a blow. See `packet::UseEntity`.
+    void arrowStruck(i32 victimEntityId, entity::Arrow& arrow);
 
     // For the debug page.
     u32 columnsSent() const { return columnsSent_; }
@@ -516,6 +548,17 @@ private:
     void syncMobs(i64 nowMillis);
     void collectFor(Player& player, entity::ItemEntitySystem& items);
 
+    // **The arrows, as the guests see them.** Not in a1.1.2 at all -- see
+    // `packet::kObjectArrow` -- and otherwise `syncItems` again: an id and a
+    // Vehicle Spawn for a new one, a teleport each tick for one that moved, a
+    // Destroy for one that went, and a guest walking over their own stuck
+    // arrow takes it back.
+    void syncArrows(i64 nowMillis);
+    void collectArrowsFor(Player& player, entity::ArrowSystem& arrows);
+    // Tells every guest about `arrow` now, if they have not been told; gives it
+    // an id first when it has none.
+    void announceArrow(entity::Arrow& arrow);
+
     // A guest still waiting for ground that is never coming. See
     // `kPlacementPatienceMs`.
     void placeStragglers();
@@ -565,6 +608,15 @@ private:
     };
     std::vector<KnownMob> knownMobs_;
 
+    // And for the arrows, which also carry a heading worth sending.
+    struct KnownArrow {
+        i32 entityId = 0;
+        i32 x = 0, y = 0, z = 0;
+        i8 yaw = 0, pitch = 0;
+        bool seen = false;
+    };
+    std::vector<KnownArrow> knownArrows_;
+
     std::vector<SavedPlayer> saved_;
 
     i64 nowMs_ = 0;
@@ -572,6 +624,7 @@ private:
     i64 lastEntityMs_ = 0;
     i64 lastItemMs_ = 0;
     i64 lastMobMs_ = 0;
+    i64 lastArrowMs_ = 0;
     // Whether the host's own player has reported a position yet, which decides
     // where a joiner lands. See `addPlayer`.
     bool hostPosed_ = false;
@@ -581,6 +634,7 @@ private:
     u32 blockPacketsSent_ = 0;
     u32 itemsSpawned_ = 0;
     u32 mobsSpawned_ = 0;
+    u32 arrowsSpawned_ = 0;
 };
 
 }  // namespace mc::net

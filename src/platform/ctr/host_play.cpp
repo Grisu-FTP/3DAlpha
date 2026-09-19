@@ -1,6 +1,8 @@
 #include "platform/ctr/host_play.hpp"
 
 #include "core/entity/ray_trace.hpp"
+#include "core/item/registry.hpp"
+#include "items.hpp"  // generated; see tools/configure.py
 #include "platform/ctr/renderer.hpp"
 
 #include <3ds.h>
@@ -594,8 +596,38 @@ void HostPlay::spawnItem(double x, double y, double z, item::ItemId id, int coun
     // client has already animated the throw and the two should agree about
     // where it lands. The damage does not survive the wire -- `ha` has nowhere
     // to put it -- so a thrown tool comes back undamaged, exactly as it does
-    // against a real a1.1.2 server.
-    drops_->spawnMoving(*world, x, y, z, id, count, 0, mx, my, mz);
+    // against a real a1.1.2 server. **And the server's ten ticks before anyone
+    // can take it**, without which it fell back into the thrower's reach.
+    drops_->spawnMoving(*world, x, y, z, id, count, 0, mx, my, mz,
+                        entity::kThrownByClientPickupDelay);
+}
+
+void HostPlay::useItem(const UseRequest& request)
+{
+    if (streamer_ == nullptr || effects_ == nullptr || effects_->entities.arrows == nullptr) {
+        return;
+    }
+    // **Only the bow**, which is the one right click in the air a guest
+    // cannot finish on its own console. An id the table does not have is
+    // somebody else's bug and is ignored.
+    if (request.item <= 0 || request.item >= mcver::kItemTableSize) {
+        return;
+    }
+    const item::ItemDef& def = item::def(item::ItemId(request.item));
+    if (!def.known || def.spawns != item::SpawnsEntity::Arrow) {
+        return;
+    }
+    tick::TickWorld* world = streamer_->worldTick();
+    if (world == nullptr) {
+        return;
+    }
+    // `jg.a(...)`'s spawn and its sound, as the guest's -- so it spares them
+    // for five ticks and only they can take it back.
+    if (effects_->entities.arrows->shoot(*world, request.eyeX, request.eyeY, request.eyeZ,
+                                         request.yawDegrees, request.pitchDegrees,
+                                         request.shooterEntityId)) {
+        item::playBowSound(*effects_, request.eyeX, request.eyeY, request.eyeZ);
+    }
 }
 
 void HostPlay::setWorldRules(settings::Gamemode gamemode, settings::Difficulty difficulty)

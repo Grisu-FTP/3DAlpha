@@ -4,13 +4,11 @@
 
 #include "core/render/box_model.hpp"
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/util/math_helper.hpp"
 
 namespace mc::render {
 namespace {
-
-constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-constexpr double kLimit = 32000.0 / kUnits;
 
 constexpr float kPi = 3.1415927f;
 constexpr float kDegrees = kPi / 180.0f;
@@ -61,7 +59,8 @@ int buildBoats(const entity::BoatSystem& system, double originX, double originY,
     }
 
     // Where a boat is drawn relative to the origin, and whether it is drawn at
-    // all. Shared by the nearest-first count and the build, which must agree.
+    // all -- `kh.a(D)Z` of a 1.5 x 0.6 box, 77 blocks; see entity_range.hpp.
+    // Shared by the nearest-first count and the build, which must agree.
     const auto place = [&](int index, double* rx, double* ry, double* rz) {
         const entity::Boat& b = system[index];
         if (!b.alive) {
@@ -70,8 +69,7 @@ int buildBoats(const entity::BoatSystem& system, double originX, double originY,
         *rx = b.prevX + (b.x - b.prevX) * double(partial) - originX;
         *ry = b.prevY + (b.y - b.prevY) * double(partial) - originY;
         *rz = b.prevZ + (b.z - b.prevZ) * double(partial) - originZ;
-        return *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
-               && *rz >= -kLimit && *rz <= kLimit;
+        return entityInDrawRange(*rx, *ry, *rz, entity::kBoatWidth, entity::kBoatHeight);
     };
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
     DrawCutoff cutoff;
@@ -151,7 +149,7 @@ int buildBoats(const entity::BoatSystem& system, double originX, double originY,
 
         for (int part = 0; part < kBoatParts; ++part) {
             written += buildBox(boatPart(part), place, texture::EntitySkin::Boat, b.light,
-                                out + written, max - written);
+                                out + written, max - written, kEntityUnitsPerBlock);
         }
     }
     return written;

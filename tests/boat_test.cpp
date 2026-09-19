@@ -17,6 +17,7 @@
 #include "core/item/registry.hpp"
 #include "core/item/use.hpp"
 #include "core/render/boat_mesh.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/texture/entity_skins.hpp"
 #include "core/tick/tick_world.hpp"
 #include "drop_catcher.hpp"
@@ -326,9 +327,9 @@ TEST(the_boat_meshes_into_five_boxes)
     double lo[3] = {1e30, 1e30, 1e30};
     double hi[3] = {-1e30, -1e30, -1e30};
     for (int i = 0; i < written; ++i) {
-        const double p[3] = {double(verts[i].x) / double(mesh::kDetailUnitsPerBlock),
-                             double(verts[i].y) / double(mesh::kDetailUnitsPerBlock),
-                             double(verts[i].z) / double(mesh::kDetailUnitsPerBlock)};
+        const double p[3] = {double(verts[i].x) / double(render::kEntityUnitsPerBlock),
+                             double(verts[i].y) / double(render::kEntityUnitsPerBlock),
+                             double(verts[i].z) / double(render::kEntityUnitsPerBlock)};
         for (int a = 0; a < 3; ++a) {
             lo[a] = p[a] < lo[a] ? p[a] : lo[a];
             hi[a] = p[a] > hi[a] ? p[a] : hi[a];
@@ -449,4 +450,29 @@ TEST(attacking_a_boat_that_is_not_there_does_nothing)
     Pond pond;
     CHECK(!pond.boats.attack(pond.w(), 0, 1));
     CHECK(!pond.boats.attack(pond.w(), -1, 1));
+}
+
+TEST(a_boat_is_drawn_to_seventy_seven_blocks)
+{
+    // `kh.a(D)Z` of a 1.5 x 0.6 x 1.5 box is 1.2 * 64 = 76.8 blocks -- past the
+    // 31.25 a detail vertex reaches, which is why the pass writes 1/256 of a
+    // block. The origin moves rather than the boat.
+    Pond pond;
+    CHECK(pond.boats.place(pond.w(), 0, 63, 0));
+    const double y = pond.boats[0].y;
+
+    static mesh::DetailVertex verts[render::kBoatMaxVertices];
+    const auto from = [&](double originX) {
+        return render::buildBoats(pond.boats, originX, y, 0.5, 0.0f, verts,
+                                  render::kBoatMaxVertices);
+    };
+    CHECK_EQ(from(-60.0), render::kBoatVerticesEach);
+    // Where it was drawn is where it is: sixty blocks out, not wrapped round.
+    double lo = 1e30;
+    for (int i = 0; i < render::kBoatVerticesEach; ++i) {
+        const double x = double(verts[i].x) / double(render::kEntityUnitsPerBlock);
+        lo = x < lo ? x : lo;
+    }
+    CHECK(lo > 59.0 && lo < 61.0);
+    CHECK_EQ(from(-78.0), 0);
 }

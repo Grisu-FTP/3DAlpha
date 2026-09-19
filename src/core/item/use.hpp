@@ -180,6 +180,11 @@ struct ItemUse {
     ItemId becomes = 0;
 };
 
+// `random.bow` at `jg`'s pitch, which `useItem` plays for a shot it fires.
+// Public for the two shots it does not fire: a guest's, which the host fires
+// and the guest still hears at its own ear, and the host firing for a guest.
+void playBowSound(const Effects& effects, double x, double y, double z);
+
 ItemUse useItem(tick::TickWorld& world, ItemId held, double eyeX, double eyeY, double eyeZ,
                 double dirX, double dirY, double dirZ, const Effects& effects = {});
 

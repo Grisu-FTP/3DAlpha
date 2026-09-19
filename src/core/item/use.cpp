@@ -869,11 +869,11 @@ ItemUse useItem(tick::TickWorld& world, ItemId held, double eyeX, double eyeY, d
     // `onItemRightClick` this build can perform.
     //
     // `jg.a(...)`'s three steps in its order: take an arrow, play `random.bow`,
-    // spawn one `kg`. **The first is not done here** -- see
-    // core/entity/arrow.hpp: this build has no stack depletion anywhere, so
-    // requiring ammunition would be the one place a Creative hand was a stock
-    // rather than a catalogue. The pitch is the original's,
-    // `1 / (rand * 0.4 + 0.8)`.
+    // spawn one `kg`. **The first is not done here**: Survival takes the arrow
+    // before it calls this (`main.cpp`, beside the food), and Creative's hand
+    // is a catalogue rather than a stock. The player gets it back by walking
+    // over it once it has stuck -- `ArrowSystem::collect`. The pitch is the
+    // original's, `1 / (rand * 0.4 + 0.8)`.
     if (heldDef.spawns == SpawnsEntity::Arrow) {
         if (effects.entities.arrows == nullptr) {
             return ItemUse{false, held};
@@ -1179,6 +1179,11 @@ const char* limitMessage(LimitedEntity which)
         break;
     }
     return nullptr;
+}
+
+void playBowSound(const Effects& effects, double x, double y, double z)
+{
+    playBowShot(effects, x, y, z);
 }
 
 }  // namespace mc::item

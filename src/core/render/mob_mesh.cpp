@@ -733,9 +733,9 @@ int buildMobRun(const entity::MobSystem& system, double originX, double originY,
         return 0;
     }
 
-    constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-    constexpr double kLimit = 32000.0 / kUnits;
-
+    // `kh.a(D)Z`, and the short's reach less the model's own -- see
+    // core/render/entity_range.hpp. Measured from the eye's block, as every
+    // entity pass measures, rather than from the eye.
     const auto place = [&](int index, double* rx, double* ry, double* rz) {
         const entity::Mob& mob = system[index];
         if (!mob.alive) {
@@ -744,8 +744,7 @@ int buildMobRun(const entity::MobSystem& system, double originX, double originY,
         *rx = mob.body.renderX(partial) - originX;
         *ry = mob.body.renderEyeY(partial) - originY;
         *rz = mob.body.renderZ(partial) - originZ;
-        return *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
-               && *rz >= -kLimit && *rz <= kLimit;
+        return entityInDrawRange(*rx, *ry, *rz, mob.body.width, mob.body.height);
     };
 
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
@@ -794,7 +793,7 @@ int buildMobRun(const entity::MobSystem& system, double originX, double originY,
                 continue;
             }
             written += buildBox(parts[part], placement, skins[part], mob.light, out + written,
-                                max - written);
+                                max - written, kEntityUnitsPerBlock);
         }
 
         // The hurt flash, and a dying animal keeps flashing while it falls.

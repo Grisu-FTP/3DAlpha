@@ -8,6 +8,7 @@
 #include "core/util/compress.hpp"
 #include "core/util/span.hpp"
 #include "core/util/worker.hpp"
+#include "items.hpp"  // generated; see tools/configure.py
 
 #include <algorithm>
 #include <cmath>
@@ -300,8 +301,10 @@ void WorldServer::open(ServerWorld* world, SendFn send, void* ctx, const std::st
     dirty_.clear();
     knownItems_.clear();
     knownMobs_.clear();
+    knownArrows_.clear();
     lastItemMs_ = 0;
     lastMobMs_ = 0;
+    lastArrowMs_ = 0;
 
     for (Player& player : players_) {
         player = Player{};
@@ -334,6 +337,7 @@ void WorldServer::close()
     dirty_.clear();
     knownItems_.clear();
     knownMobs_.clear();
+    knownArrows_.clear();
 }
 
 WorldServer::Player* WorldServer::find(u8 playerId)
@@ -530,6 +534,9 @@ void WorldServer::resendPositions(Player& player)
     for (const KnownMob& mob : knownMobs_) {
         teleport(mob.entityId, mob.x, mob.y, mob.z, mob.yaw, mob.pitch);
     }
+    for (const KnownArrow& arrow : knownArrows_) {
+        teleport(arrow.entityId, arrow.x, arrow.y, arrow.z, arrow.yaw, arrow.pitch);
+    }
     player.movesOwed = false;
 }
 
@@ -643,8 +650,10 @@ void WorldServer::login(Player& player)
     // confused by it: `spawnFromServer` on both pools removes the id first, so
     // a second spawn replaces rather than twins. The cost is one burst per
     // join, which is the right price for a world that is actually there.
+    // The arrows the same way; `ArrowSystem::spawnRemote` replaces too.
     knownItems_.clear();
     knownMobs_.clear();
+    knownArrows_.clear();
 
     rebuildView(player);
 }
@@ -1292,6 +1301,203 @@ void WorldServer::syncItems(i64 nowMillis)
     }
 }
 
+// ---- the arrows ------------------------------------------------------------
+
+void WorldServer::announceArrow(entity::Arrow& arrow)
+{
+    if (arrow.entityId == 0) {
+        arrow.entityId = nextEntityId_++;
+    }
+    for (const KnownArrow& known : knownArrows_) {
+        if (known.entityId == arrow.entityId) {
+            return;
+        }
+    }
+    const i32 wx = toWirePosition(arrow.x);
+    const i32 wy = toWirePosition(arrow.y);
+    const i32 wz = toWirePosition(arrow.z);
+    const i8 wyaw = toWireAngle(arrow.yaw);
+    const i8 wpitch = toWireAngle(arrow.pitch);
+    knownArrows_.push_back(KnownArrow{arrow.entityId, wx, wy, wz, wyaw, wpitch, true});
+
+    // **The spawn and then the heading**, because a Vehicle Spawn has no
+    // angles: without the teleport a guest would draw the first tick of the
+    // arrow pointing north.
+    packet_.reset(packet::VehicleSpawn);
+    packet_.pushInt(arrow.entityId);
+    packet_.pushInt(kObjectArrow);
+    packet_.pushInt(wx);
+    packet_.pushInt(wy);
+    packet_.pushInt(wz);
+    broadcast(packet_, 0);
+
+    packet_.reset(packet::EntityTeleport);
+    packet_.pushInt(arrow.entityId);
+    packet_.pushInt(wx);
+    packet_.pushInt(wy);
+    packet_.pushInt(wz);
+    packet_.pushInt(wyaw);
+    packet_.pushInt(wpitch);
+    broadcast(packet_, 0);
+    ++arrowsSpawned_;
+}
+
+void WorldServer::collectArrowsFor(Player& player, entity::ArrowSystem& arrows)
+{
+    // The reach `collectFor` uses, because `kg.b(dm)` is called from the same
+    // loop in `EntityPlayer.onLivingUpdate` as `dx.b(dm)`.
+    AABB reach;
+    reach.minX = player.x - 0.3 - 1.0;
+    reach.maxX = player.x + 0.3 + 1.0;
+    reach.minY = player.feetY;
+    reach.maxY = player.feetY + 1.8;
+    reach.minZ = player.z - 0.3 - 1.0;
+    reach.maxZ = player.z + 0.3 + 1.0;
+
+    for (int i = arrows.count() - 1; i >= 0; --i) {
+        entity::Arrow& arrow = *arrows.at(i);
+        if (!entity::arrowCollectableBy(arrow, player.entityId)
+            || !arrow.box.intersects(reach)) {
+            continue;
+        }
+        // Everybody sees it go; the one who fired it gets it back. The host
+        // cannot see into the guest's pack, so "does it fit" is theirs --
+        // as it is for an item, see `collectFor`. An arrow is announced within
+        // a frame of being loosed and cannot be collected for seven ticks after
+        // it lands, so it always has its id by now; named here regardless.
+        announceArrow(arrow);
+        const i32 arrowId = arrow.entityId;
+        packet_.reset(packet::Collect);
+        packet_.pushInt(arrowId);
+        packet_.pushInt(player.entityId);
+        broadcast(packet_, 0);
+        packet_.reset(packet::AddToInventory);
+        packet_.pushInt(i64(mcver::Item::Arrow));
+        packet_.pushInt(1);
+        packet_.pushInt(0);
+        write(player, packet_);
+
+        arrows.removeById(arrowId);
+        for (usize k = 0; k < knownArrows_.size(); ++k) {
+            if (knownArrows_[k].entityId == arrowId) {
+                knownArrows_[k] = knownArrows_.back();
+                knownArrows_.pop_back();
+                break;
+            }
+        }
+    }
+}
+
+void WorldServer::syncArrows(i64 nowMillis)
+{
+    entity::ArrowSystem* arrows = world_->arrows();
+    if (arrows == nullptr) {
+        return;
+    }
+
+    for (int i = 1; i < kMaxPlayers; ++i) {
+        Player& player = players_[i];
+        if (player.used && player.loggedIn && player.placed && !player.dead) {
+            collectArrowsFor(player, *arrows);
+        }
+    }
+
+    const bool moveDue = nowMillis - lastArrowMs_ >= kEntityIntervalMs;
+    if (moveDue) {
+        lastArrowMs_ = nowMillis;
+    }
+    for (KnownArrow& known : knownArrows_) {
+        known.seen = false;
+    }
+
+    for (int i = 0; i < arrows->count(); ++i) {
+        entity::Arrow& arrow = *arrows->at(i);
+        if (!arrow.alive || arrow.remote) {
+            continue;
+        }
+        KnownArrow* known = nullptr;
+        if (arrow.entityId != 0) {
+            for (KnownArrow& candidate : knownArrows_) {
+                if (candidate.entityId == arrow.entityId) {
+                    known = &candidate;
+                    break;
+                }
+            }
+        }
+        if (known == nullptr) {
+            announceArrow(arrow);
+            continue;
+        }
+        known->seen = true;
+
+        const i32 wx = toWirePosition(arrow.x);
+        const i32 wy = toWirePosition(arrow.y);
+        const i32 wz = toWirePosition(arrow.z);
+        const i8 wyaw = toWireAngle(arrow.yaw);
+        const i8 wpitch = toWireAngle(arrow.pitch);
+        if (!moveDue
+            || (wx == known->x && wy == known->y && wz == known->z && wyaw == known->yaw
+                && wpitch == known->pitch)) {
+            continue;
+        }
+        known->x = wx;
+        known->y = wy;
+        known->z = wz;
+        known->yaw = wyaw;
+        known->pitch = wpitch;
+        packet_.reset(packet::EntityTeleport);
+        packet_.pushInt(arrow.entityId);
+        packet_.pushInt(wx);
+        packet_.pushInt(wy);
+        packet_.pushInt(wz);
+        packet_.pushInt(wyaw);
+        packet_.pushInt(wpitch);
+        broadcastMove(packet_, 0);
+    }
+
+    // Spent on a target, aged out, fallen out of the world, or taken back by
+    // the host's own player.
+    for (usize i = 0; i < knownArrows_.size();) {
+        if (knownArrows_[i].seen) {
+            ++i;
+            continue;
+        }
+        packet_.reset(packet::DestroyEntity);
+        packet_.pushInt(knownArrows_[i].entityId);
+        broadcast(packet_, 0);
+        knownArrows_[i] = knownArrows_.back();
+        knownArrows_.pop_back();
+    }
+}
+
+int WorldServer::arrowTargets(entity::RemoteTarget* out, int max) const
+{
+    int n = 0;
+    for (int i = 1; i < kMaxPlayers && n < max; ++i) {
+        const Player& player = players_[i];
+        if (!player.used || !player.loggedIn || !player.placed || player.dead) {
+            continue;
+        }
+        entity::RemoteTarget& target = out[n++];
+        target.entityId = player.entityId;
+        target.box = AABB{player.x - 0.3, player.feetY, player.z - 0.3,
+                          player.x + 0.3, player.feetY + 1.8, player.z + 0.3};
+    }
+    return n;
+}
+
+void WorldServer::arrowStruck(i32 victimEntityId, entity::Arrow& arrow)
+{
+    Player* victim = playerByEntity(victimEntityId);
+    if (victim == nullptr || victim->id == players_[0].id || !victim->loggedIn) {
+        return;
+    }
+    // Named before it is spent, so the guest can find it: an arrow loosed at
+    // point blank strikes on its first tick, before `syncArrows` has run.
+    announceArrow(arrow);
+    write(*victim, makeUseEntity(arrow.entityId, victim->entityId, true));
+}
+
 void WorldServer::syncMobs(i64 nowMillis)
 {
     entity::MobSystem* mobs = world_->mobs();
@@ -1523,6 +1729,24 @@ void WorldServer::onPacket(Player& player, const Packet& p)
     }
 
     case packet::Place: {
+        // **A right click in the air**, which only a 3DAlpha guest sends. See
+        // `makeUseItem`: the arrow is fired here, from where they stand and
+        // the way they face, and it is theirs.
+        if (isUseItem(p)) {
+            if (player.dead || !player.placed) {
+                break;
+            }
+            ServerWorld::UseRequest request;
+            request.item = int(p.integer(0));
+            request.shooterEntityId = player.entityId;
+            request.eyeX = player.x;
+            request.eyeY = player.eyeY;
+            request.eyeZ = player.z;
+            request.yawDegrees = player.yaw;
+            request.pitchDegrees = player.pitch;
+            world_->useItem(request);
+            break;
+        }
         // **An empty hand is -1 and still reaches the block.** `activeBlockOrUseItem`
         // asks `Block.blockActivated` before it looks at the stack at all, which
         // is why a bare hand opens a chest, flips a lever and lights redstone
@@ -1692,6 +1916,7 @@ void WorldServer::pump(i64 nowMillis)
     }
     sendEntities(nowMillis);
     syncItems(nowMillis);
+    syncArrows(nowMillis);
     syncMobs(nowMillis);
 
     if (nowMillis - lastTimeMs_ >= kTimeIntervalMs) {

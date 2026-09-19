@@ -10,6 +10,7 @@
 #include "core/entity/item_entity.hpp"
 #include "core/entity/mob.hpp"
 #include "core/net/entities.hpp"
+#include "core/render/mob_mesh.hpp"
 #include "core/render/remote_player_mesh.hpp"
 #include "scene_world.hpp"
 #include "sound_catcher.hpp"
@@ -257,7 +258,7 @@ TEST(a_drawn_player_stands_on_their_own_feet_the_right_way_up)
     double lowest = 1e9;
     double highest = -1e9;
     for (int i = 0; i < written; ++i) {
-        const double y = kGround + double(verts[i].y) / double(mesh::kDetailUnitsPerBlock);
+        const double y = kGround + double(verts[i].y) / double(render::kEntityUnitsPerBlock);
         lowest = y < lowest ? y : lowest;
         highest = y > highest ? y : highest;
     }
@@ -469,7 +470,7 @@ TEST(another_player_crouches_when_the_server_says_so)
         *lowest = 1e9;
         *highest = -1e9;
         for (int i = 0; i < written; ++i) {
-            const double y = kGround + double(verts[i].y) / double(mesh::kDetailUnitsPerBlock);
+            const double y = kGround + double(verts[i].y) / double(render::kEntityUnitsPerBlock);
             *lowest = y < *lowest ? y : *lowest;
             *highest = y > *highest ? y : *highest;
         }
@@ -535,7 +536,7 @@ TEST(another_player_falls_over_dies_and_comes_back_when_they_respawn)
     CHECK_EQ(written, render::kRemotePlayerVerticesEach);
     double highest = -1e9;
     for (int i = 0; i < written; ++i) {
-        const double y = kGround + double(verts[i].y) / double(mesh::kDetailUnitsPerBlock);
+        const double y = kGround + double(verts[i].y) / double(render::kEntityUnitsPerBlock);
         highest = y > highest ? y : highest;
         CHECK_EQ(int(verts[i].g), int(render::kHurtChannel));
     }
@@ -616,4 +617,87 @@ TEST(every_console_works_out_the_same_colour_for_the_same_player)
     CHECK_EQ(int(r), 255);
     CHECK_EQ(int(g), 255);
     CHECK_EQ(int(b), 255);
+}
+
+namespace {
+
+Packet vehicleSpawn(i32 id, int type, double x, double y, double z)
+{
+    Packet p;
+    p.reset(packet::VehicleSpawn);
+    p.pushInt(id);
+    p.pushInt(type);
+    p.pushInt(i64(std::floor(x * 32.0)));
+    p.pushInt(i64(std::floor(y * 32.0)));
+    p.pushInt(i64(std::floor(z * 32.0)));
+    return p;
+}
+
+Packet teleportTo(i32 id, double x, double y, double z, int yawByte, int pitchByte)
+{
+    Packet p;
+    p.reset(packet::EntityTeleport);
+    p.pushInt(id);
+    p.pushInt(i64(std::floor(x * 32.0)));
+    p.pushInt(i64(std::floor(y * 32.0)));
+    p.pushInt(i64(std::floor(z * 32.0)));
+    p.pushInt(yawByte);
+    p.pushInt(pitchByte);
+    return p;
+}
+
+}  // namespace
+
+TEST(an_arrow_from_a_3dalpha_host_is_drawn_where_the_host_says)
+{
+    // Type 60 is ours between two consoles -- a1.1.2's `gy.a(kj)` knows boats
+    // and carts only -- and the guest's copy is a drawing: it goes where each
+    // teleport says, one tick later, and never simulates a thing.
+    test::SceneWorld scene(0, 0);
+    entity::ArrowSystem arrows(5);
+    RemoteEntities entities;
+    entities.bindArrows(&arrows);
+
+    CHECK(entities.apply(vehicleSpawn(77, kObjectArrow, 2.5, 70.0, -6.5), &scene.w()));
+    CHECK_EQ(arrows.count(), 1);
+    CHECK(arrows[0].remote);
+    CHECK_EQ(arrows[0].entityId, i32(77));
+    CHECK_EQ(arrows[0].shooterPlayer, 0);  // nothing here may collect it
+    CHECK(near(arrows[0].x, 2.5));
+
+    // The heading arrives with the first teleport and is faced at once.
+    CHECK(entities.apply(teleportTo(77, 2.5, 70.0, -6.5, 64, 0), &scene.w()));
+    arrows.tick(scene.w());
+    CHECK(std::abs(arrows[0].yaw - 90.0f) < 1.5f);
+    CHECK(std::abs(arrows[0].prevYaw - 90.0f) < 1.5f);
+
+    // Moved: applied on the next tick, drawn from where it was.
+    CHECK(entities.apply(teleportTo(77, 4.0, 69.5, -6.5, 64, 0), &scene.w()));
+    CHECK(near(arrows[0].x, 2.5));
+    arrows.tick(scene.w());
+    CHECK(near(arrows[0].x, 4.0));
+    CHECK(near(arrows[0].prevX, 2.5));
+
+    // Across the back of the circle: 127 and then -128 bytes are the short
+    // way round, not a full turn.
+    CHECK(entities.apply(teleportTo(77, 4.0, 69.5, -6.5, 127, 0), &scene.w()));
+    arrows.tick(scene.w());
+    CHECK(entities.apply(teleportTo(77, 4.0, 69.5, -6.5, -128, 0), &scene.w()));
+    arrows.tick(scene.w());
+    CHECK(std::abs(arrows[0].yaw - arrows[0].prevYaw) < 5.0f);
+
+    // A cart is still received and not drawn.
+    CHECK(entities.apply(vehicleSpawn(78, 10, 0.0, 70.0, 0.0), &scene.w()));
+    CHECK_EQ(arrows.count(), 1);
+
+    // Collected by somebody, or spent: gone either way.
+    CHECK(entities.apply(destroy(77), &scene.w()));
+    CHECK_EQ(arrows.count(), 0);
+    CHECK(entities.apply(vehicleSpawn(79, kObjectArrow, 0.0, 70.0, 0.0), &scene.w()));
+    Packet collect;
+    collect.reset(packet::Collect);
+    collect.pushInt(79);
+    collect.pushInt(2);
+    CHECK(entities.apply(collect, &scene.w()));
+    CHECK_EQ(arrows.count(), 0);
 }

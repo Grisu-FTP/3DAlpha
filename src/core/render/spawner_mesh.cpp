@@ -116,8 +116,9 @@ int buildSpawnerMobs(const entity::MobSpawnerStore& store, double originX, doubl
         return 0;
     }
 
-    constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-    constexpr double kLimit = 32000.0 / kUnits;
+    // The mob pass's units, since a miniature rides its buffer -- see
+    // `kEntityUnitsPerBlock`.
+    constexpr double kLimit = kEntityPlacementLimit;
 
     // **A spawner with a name this build cannot make draws nothing**, which is
     // the same answer the tick gives it -- see `MobSpawnerBlock::known`.
@@ -129,7 +130,8 @@ int buildSpawnerMobs(const entity::MobSpawnerStore& store, double originX, doubl
         *rx = double(s.x) + 0.5 - originX;
         *ry = double(s.y) + 0.5 - originY;
         *rz = double(s.z) + 0.5 - originZ;
-        return *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
+        return *rx * *rx + *ry * *ry + *rz * *rz < kTileEntityDrawDistanceSq
+               && *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
                && *rz >= -kLimit && *rz <= kLimit;
     };
 
@@ -172,7 +174,7 @@ int buildSpawnerMobs(const entity::MobSpawnerStore& store, double originX, doubl
         const Placement placement = placeSpawnerMob(s, originX, originY, originZ, partial);
         for (int part = 0; part < count; ++part) {
             written += buildBox(parts[part], placement, skins[part], s.light, out + written,
-                                max - written);
+                                max - written, kEntityUnitsPerBlock);
         }
     }
     return written;

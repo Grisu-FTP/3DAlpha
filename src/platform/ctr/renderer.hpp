@@ -811,8 +811,8 @@ private:
     static constexpr int kMaxMinecartVertices = mc::render::kMinecartMaxVertices;
     static constexpr int kMaxMinecartBlockVertices = mc::render::kMinecartBlockMaxVertices;
 
-    // Sixteen animals in range at up to twelve boxes each -- a fleeced sheep is
-    // two models -- which is 4,608 vertices and 72 KB; past that, the nearest.
+    // Twenty-four mobs in range at up to twelve boxes each -- a fleeced sheep is
+    // two models -- which is 6,912 vertices and 108 KB; past that, the nearest.
     //
     // **The mob spawners' miniatures share it**, and share the bind and the
     // draw call with them: they are the same models out of the same sheet, and
@@ -821,7 +821,7 @@ private:
     static constexpr int kMaxMobVertices =
         mc::render::kMobMaxVertices + mc::render::kSpawnerMaxVertices;
 
-    // Thirty-two burning entities at once -- the frame's sixteen animals plus
+    // Thirty-two burning entities at once -- the frame's twenty-four mobs plus
     // the carts, boats and stacks a fire in a storeroom lights -- at four
     // sheets each, which is one more than anything in a1.1.2 can need. 16 KB,
     // one buffer and one draw for all of them. See

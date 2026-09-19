@@ -3,6 +3,63 @@
 Last verified: 2026-09-19. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## A guest's drop came straight back; arrows could not be picked up (2026-09-19)
+
+"Dropping an item as a guest instantly picks it back up unless walking backwards." The host spawned
+a guest's `PickupSpawn` with the constructor's 5-tick delay. The a1.1.2 server (`id.a(Lk;)V` in
+`srv/a0.2.1.jar`) sets **10** (`entity::kThrownByClientPickupDelay`, passed by
+`HostPlay::spawnItem`). Looking 30 degrees down, the stack was still inside the guest's reach at
+tick 5 and is outside it by tick 10 (`a_guests_throw_is_out_of_their_reach_by_the_time_it_can_be_taken`).
+**Arrows**: `kg.b(dm)` collects an arrow only when it is in the ground, *its shooter is this
+player*, `arrowShake <= 0`, and one arrow fits in the inventory. Pickup had never been built,
+because the bow once cost nothing; Survival has spent an arrow per shot since then.
+`ArrowSystem::collect` is now in the player's pickup sweep, with the pop.
+`Arrow::playerMayCollect` is set by `shoot()` and is not saved, because `kg` saves no shooter. So
+skeleton arrows, and arrows reloaded from disk (including a column unloaded and read back), cannot
+be collected, as in a1.1.2. 1944/1944 host tests, `make` clean. **Not seen on hardware.**
+
+## Arrows travel between consoles (2026-09-19)
+
+a1.1.2 never puts a bow shot on the wire: `Minecraft.clickMouse` calls the item's right click directly,
+so on a real server only the shooter sees their arrow. Between two 3DAlpha consoles the host now runs
+every arrow. A guest's shot is a Place at (-1, 255, -1) facing 255 (`net::makeUseItem`, sent after a
+fresh pose), which the host fires from the guest's eye (`HostPlay::useItem`,
+`Arrow::shooterPlayer` = the guest's entity id). Every arrow is announced as `0x17` type 60
+(`kObjectArrow`), teleported each tick it moves, and destroyed when it goes (`WorldServer::syncArrows`).
+Guests draw `Arrow::remote` copies and never simulate them. Guests are targets for the host's arrows
+(`ArrowTargets::remotePlayers`); a hit is `0x07` from the arrow's id, and the guest takes
+`kArrowDamage` as `DamageSource::Arrow`. A guest collects their own stuck arrow through `0x16`/`0x11`.
+Against a Java server nothing changes (`allowExtensions`). **Not done**: other consoles hear no
+`random.bow`/`random.drr` (protocol 2 has no sound packet), a guest's copy of a stuck arrow does not
+quiver, and a guest sees their own shot after a round trip. Protocol table in `protocol-a1.1.2.md`.
+Tests: `world_server_test` (the four `arrow` cases), `net_entities_test`
+(`an_arrow_from_a_3dalpha_host_is_drawn_where_the_host_says`), `arrow_test`
+(`a_hosts_arrow_strikes_a_guest_and_spares_the_guest_who_fired_it`, which fails with the grace
+removed). 1950/1950 host tests, `make` clean. **Not run on hardware or between two consoles.**
+
+## Entities drawn to a1.1.2's range; mobs no longer stretch at the edge (2026-09-19)
+
+"Enemies at the end of their render distance start stretching over the whole screen." A mob
+vertex was a detail short at 1/1024 of a block, so it could only reach 31.25 blocks.
+`buildMobRun` tested only the mob's *position* against that. A zombie whose feet were just inside
+had its head outside, and the short wrapped to the far side of the eye (reproduced: 33800 units,
+flagged by UBSan). a1.1.2 draws every entity out to `averageEdge * 64` (`kh.a(D)Z`, with no
+override and `ac` = 1.0; only `nt`, the other player, sets 10). The rule and the units are in
+**`render/entity_range.hpp`**: `kEntityUnitsPerBlock` = 256 (125 blocks) and `entityInDrawRange`,
+bounded by `kEntityPlacementLimit` (121, which is 125 less 4 blocks of model reach). The 1/256
+passes are the mob buffer (mobs, shells, spider eyes, spawner miniatures, other players), boats,
+minecarts plus their blocks, falling blocks, primed TNT and entity fire. Their draws use
+`entityMatrix` in `renderer.cpp`. The TNT flash snaps to the same grid so its `GEQUAL` overlay
+still lands. Dropped items keep 1/1024 but now stop at **16 blocks** (0.25 box), as a1.1.2 does.
+Spawner miniatures use the dispatcher's 4096. `buildBox` returns 0 for a box it cannot represent
+instead of wrapping it. The mob draw budget went from 16 to **24** (108 KB linear, was 72).
+Deviation: a size-4 slime (range 154) stops at 121. Arrows (32 blocks) and paintings are unchanged.
+Tests: `entity_range_test.cpp`, `a_mob_at_the_edge_of_the_short_is_not_stretched_across_the_screen`
+(fails under the old rules), `a_boat_is_drawn_to_seventy_seven_blocks`,
+`a_dropped_stack_is_drawn_to_sixteen_blocks_and_not_past_them`, and the flash-grid case.
+1940/1940 host tests, `make` clean. **Not seen on hardware; frame cost of the longer range and the
+larger budget unmeasured.**
+
 ## Internet sessions played under the friend-list name (2026-09-19)
 
 "It doesn't take its online display name for online sessions when logged in." Online host
@@ -944,7 +1001,7 @@ same `item::attackEntity` its own left click does, so the shear, the knockback, 
 death are one implementation. See `protocol-a1.1.2.md` for the table of what a host adds and why.
 
 **Still not crossing.** Sign text (`0x3B` both ways, plus an NBT round trip), chests and furnaces
-(refused with a chat line, as on a Java server), boats, carts, paintings, arrows, falling blocks and
+(refused with a chat line, as on a Java server), boats, carts, paintings, falling blocks and
 primed TNT. None of this has run on hardware.
 
 ## The world crosses the link: two consoles in one world (2026-09-15)

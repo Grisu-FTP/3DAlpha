@@ -6,6 +6,7 @@
 #include "core/mesh/box.hpp"
 #include "core/render/box_model.hpp"
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/math_helper.hpp"
 
@@ -14,8 +15,10 @@
 namespace mc::render {
 namespace {
 
-constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-constexpr double kLimit = 32000.0 / kUnits;
+// Both passes write 1/256 of a block, so a cart reaches the 57 blocks
+// `kh.a(D)Z` gives a 0.98 x 0.7 box -- see core/render/entity_range.hpp.
+constexpr double kUnits = double(kEntityUnitsPerBlock);
+constexpr double kLimit = kEntityPlacementLimit;
 
 constexpr float kPi = 3.1415927f;
 constexpr float kDegrees = kPi / 180.0f;
@@ -226,8 +229,8 @@ int buildMinecarts(const entity::MinecartSystem& system, const tick::TickWorld& 
         *rx = c.prevX + (c.x - c.prevX) * double(partial) - originX;
         *ry = c.prevY + (c.y - c.prevY) * double(partial) - originY;
         *rz = c.prevZ + (c.z - c.prevZ) * double(partial) - originZ;
-        return *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
-               && *rz >= -kLimit && *rz <= kLimit;
+        return entityInDrawRange(*rx, *ry, *rz, entity::kMinecartWidth,
+                                 entity::kMinecartHeight);
     };
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
     DrawCutoff cutoff;
@@ -277,7 +280,7 @@ int buildMinecarts(const entity::MinecartSystem& system, const tick::TickWorld& 
 
         for (int part = 0; part < kMinecartParts; ++part) {
             written += buildBox(cartPart(part), place, texture::EntitySkin::Minecart,
-                                c.light, out + written, max - written);
+                                c.light, out + written, max - written, kEntityUnitsPerBlock);
         }
     }
     return written;
@@ -301,8 +304,8 @@ int buildMinecartBlocks(const entity::MinecartSystem& system, const tick::TickWo
         *rx = c.prevX + (c.x - c.prevX) * double(partial) - originX;
         *ry = c.prevY + (c.y - c.prevY) * double(partial) - originY;
         *rz = c.prevZ + (c.z - c.prevZ) * double(partial) - originZ;
-        return *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
-               && *rz >= -kLimit && *rz <= kLimit;
+        return entityInDrawRange(*rx, *ry, *rz, entity::kMinecartWidth,
+                                 entity::kMinecartHeight);
     };
     DrawCutoff cutoff;
     if (system.count() * kMinecartBlockVerticesEach > max) {

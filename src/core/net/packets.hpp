@@ -224,6 +224,27 @@ inline constexpr int kActionUncrouch = 2;
 Packet makeEntityAction(i32 entityId, int action);
 // See `packet::Respawn`.
 Packet makeRespawn();
+
+// **A right click with nothing under the crosshair, from a 3DAlpha guest.**
+// a1.1.2's `Minecraft.clickMouse` hands such a click straight to
+// `ItemStack.useItemRightClick` and never to the controller, so a bow shot
+// never reaches the server: the arrow lives in the shooter's world alone and
+// nobody else ever sees it. Between two consoles running this port that is a
+// hole rather than a decision, so a guest says it with the shape later
+// protocols chose for it -- a Place at (-1, 255, -1) facing 255 -- and the
+// host fires the arrow. **Never sent to a Java server**; see
+// `NetPlay::allowExtensions`.
+inline constexpr int kUseItemFace = 255;
+Packet makeUseItem(int itemId);
+bool isUseItem(const Packet& place);
+
+// **The object type an arrow is announced under**, in a Vehicle Spawn from a
+// 3DAlpha host. a1.1.2's `gy.a(kj)` knows 1 (boat) and 10-12 (carts) only;
+// 60 is the number later versions gave `EntityArrow`, and it is used here at
+// the packet's own shape so nothing new has to be parsed. A host sends it
+// only to its own guests, never to a Java client.
+inline constexpr int kObjectArrow = 60;
+
 Packet makeInventory(int type, const WireStack* stacks, int count);
 // Position in 1/32 of a block and motion in 1/128 of a block per tick, the way
 // `ha(dx)` packs a thrown item: **the last three bytes are its velocity**, not a

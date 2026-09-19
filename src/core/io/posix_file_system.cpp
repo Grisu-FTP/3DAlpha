@@ -276,11 +276,29 @@ bool PosixFileSystem::makeDirectories(const char* path)
     }
     std::memcpy(buffer, path, length + 1);
 
-    // Walk the components, creating each in turn. Starting at 1 skips a leading
-    // slash, whose "parent" is the root and always exists.
-    for (usize i = 1; i <= length; ++i) {
+    // Skip the root, which always exists: a device prefix ("sdmc:") and any
+    // slashes after it. They are not ours to create, and trying is not
+    // harmless. libctru resolves a bare "sdmc:" to the working directory. That
+    // is the launch folder under the homebrew launcher, so mkdir fails with
+    // EEXIST. A CIA has no launch path, so the working directory is the SD
+    // root itself, and creating that fails with an error that is not EEXIST.
+    usize start = 0;
+    const char* colon = std::strchr(buffer, ':');
+    const char* slash = std::strchr(buffer, '/');
+    if (colon != nullptr && (slash == nullptr || colon < slash)) {
+        start = usize(colon - buffer) + 1;
+    }
+    while (buffer[start] == '/') {
+        ++start;
+    }
+
+    // Walk the components, creating each in turn.
+    for (usize i = start + 1; i <= length; ++i) {
         if (buffer[i] != '/' && buffer[i] != '\0') {
             continue;
+        }
+        if (buffer[i - 1] == '/') {
+            continue;  // an empty component from a doubled or trailing slash
         }
         const char saved = buffer[i];
         buffer[i] = '\0';

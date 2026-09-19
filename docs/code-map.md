@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 265 modules, 141,316 lines.**
+**23 directories, 265 modules, 141,334 lines.**
 
 ## `src/core/audio/`
 
@@ -86,7 +86,7 @@ weight is, not what is important.
 | Module | Lines | What it is |
 |---|--:|---|
 | `file_system.hpp` | 134 | The file-system interface, one of the narrow platform seams. |
-| `posix_file_system.{hpp,cpp}` | 432 | FileSystem on POSIX file descriptors. |
+| `posix_file_system.{hpp,cpp}` | 450 | FileSystem on POSIX file descriptors. |
 | `volume_info.{hpp,cpp}` | 89 | How big a cluster is on the card, and how much of the card is left. |
 
 ## `src/core/item/` -- Item stacks

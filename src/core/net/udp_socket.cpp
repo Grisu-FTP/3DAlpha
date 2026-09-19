@@ -147,6 +147,16 @@ bool UdpSocket::open(const ac::Endpoint& server, u32 bindAddress, std::string* e
         return false;
     }
 
+    // **Room for a burst**, asked for and not insisted on. The link sends up to
+    // `link::kFlushBurst` datagrams a frame to each peer and a receiver reads
+    // sixteen a frame, so a buffer of a few kilobytes -- which is what a stack
+    // that was never asked keeps -- drops most of a burst and makes the sender
+    // fire it again. A stack that refuses keeps its own size, and the link's
+    // pacing is what copes with that.
+    const int wanted = 64 * 1024;
+    ::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&wanted),
+                 sizeof(wanted));
+
     // The port the stack chose, when it was asked to choose. When a port was
     // named there is nothing to ask about, which matters on a console whose
     // `getsockname` is one more service call that can decline.

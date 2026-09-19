@@ -790,6 +790,8 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
         hand->swing();
         if (net != nullptr) {
             net->swing();
+        } else if (host != nullptr) {
+            host->swing();
         }
         // **An entity in the way is hit instead of the block behind it**, the
         // same precedence the right-click branch below already gives one. This
@@ -802,7 +804,7 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
             // well would be a second world arguing with the first, and the
             // host's next position update would overwrite everything except
             // the health it had already taken off. See `packet::UseEntity`.
-            if (net != nullptr && net->useEntityAllowed()
+            if (net != nullptr && net->extensionsAllowed()
                 && target.kind == mc::item::EntityTarget::Kind::Mob
                 && effects.entities.mobs != nullptr) {
                 const i32 targetId = effects.entities.mobs->at(target.index).entityId;
@@ -825,7 +827,7 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                 && effects.entities.players != nullptr) {
                 const i32 targetId = effects.entities.players->player(target.index).id;
                 bool sent = false;
-                if (net != nullptr && net->useEntityAllowed()) {
+                if (net != nullptr && net->extensionsAllowed()) {
                     net->attackEntity(targetId, int(heldItem));
                     sent = true;
                 } else if (host != nullptr) {
@@ -980,7 +982,16 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
         // `clickMouse`'s split: the hand swing after the right-click handler
         // reports success.
         // Waving at a wall that refuses the block does not swing.
+        //
+        // **And the others are told**, as for a left click: a method of another original class is the
+        // multiplayer player's `swingItem`, and it sends an Arm Animation on
+        // every swing, whichever button caused it.
         hand->swing();
+        if (net != nullptr) {
+            net->swing();
+        } else if (host != nullptr) {
+            host->swing();
+        }
         if (survival && itemTook) {
             wearHeld(overlay, mc::item::wearOnUse(heldItem));
             spendHeld(overlay, mc::item::spendOnUse(heldItem));
@@ -3761,7 +3772,8 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // a method of another original class, at the end of the player's tick, and the other
                     // entities' own.
                     if (net != nullptr) {
-                        net->tick(body, camera, overlay.inventory(), tickWorld);
+                        net->tick(body, camera, overlay.inventory(), tickWorld,
+                                  vitals.alive());
                     }
                     // **A host has the same bodies to walk and no session to
                     // do it.** Its guests are entities exactly as they are on
@@ -3770,6 +3782,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // `WorldServer::setLocalSink`.
                     if (host != nullptr) {
                         host->tickEntities(tickWorld);
+                        host->reportStance(body.sneaking, vitals.alive());
                     }
 
                     // **A blow from another console, on the tick it arrived.**
@@ -4430,9 +4443,9 @@ int runJoinedLocal(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::So
     // On the heap for the same reason the server one is: NetPlay's scratch
     // packets have no business on a 32 KB main-thread stack.
     auto net = std::make_unique<ctr::NetPlay>(guest->channel());
-    // The other end is this port, so it understands the one packet protocol 2
-    // does not have. See `packet::UseEntity`.
-    net->allowUseEntity(true);
+    // The other end is this port, so it understands the packets protocol 2
+    // does not have. See `packet::UseEntity` and `packet::EntityAction`.
+    net->allowExtensions(true);
 
     const int result = runGame(choice, menu, sound, audio, isNew3DS, haveCstick, net.get(),
                                nullptr, guest.get());

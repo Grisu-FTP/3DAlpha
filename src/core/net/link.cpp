@@ -353,7 +353,10 @@ bool Peer::nextDatagram(u32 nowMs, u8* out, usize capacity, usize* size)
 bool Peer::flush(u32 nowMs, Datagrams& datagrams, u16 node)
 {
     usize size = 0;
-    while (nextDatagram(nowMs, outgoing_.data(), outgoing_.size(), &size)) {
+    int burst = 0;
+    while (burst < kFlushBurst
+           && nextDatagram(nowMs, outgoing_.data(), outgoing_.size(), &size)) {
+        ++burst;
         if (!datagrams.send(node, outgoing_.data(), size)) {
             return false;
         }

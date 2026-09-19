@@ -200,7 +200,7 @@ void NetPlay::apply(const net::Packet& p, render::WorldStreamer& world,
 }
 
 void NetPlay::tick(const entity::PlayerBody& body, const Camera& camera,
-                   const item::Inventory& inventory, const tick::TickWorld* world)
+                   const item::Inventory& inventory, const tick::TickWorld* world, bool alive)
 {
     entities_.tick(world);
 
@@ -219,6 +219,15 @@ void NetPlay::tick(const entity::PlayerBody& body, const Camera& camera,
     pose.pitch = camera.pitch * kDegreesPerRadian;
     pose.onGround = body.onGround;
     session_.send(movement_.tick(pose));
+
+    // **After the move**, so a Respawn reaches the host with the spawn point
+    // already reported and the fresh spawn it answers with stands there.
+    if (extensions_) {
+        const int n = stance_.tick(entityId_, body.sneaking, alive, scratch_);
+        for (int i = 0; i < n; ++i) {
+            session_.send(scratch_[i]);
+        }
+    }
 }
 
 void NetPlay::digStart(i32 x, int y, i32 z, int face, bool broke, int heldItem)
@@ -268,7 +277,7 @@ void NetPlay::swing()
 
 void NetPlay::attackEntity(i32 targetEntityId, int heldItem)
 {
-    if (!useEntity_ || targetEntityId == 0) {
+    if (!extensions_ || targetEntityId == 0) {
         return;
     }
     net::Packet held;

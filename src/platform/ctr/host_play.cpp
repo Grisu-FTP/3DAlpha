@@ -343,6 +343,14 @@ void HostPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     }
 }
 
+void HostPlay::swing()
+{
+    if (link_ == nullptr || !link_->active() || session_.guestCount() == 0) {
+        return;
+    }
+    server_.hostSwing();
+}
+
 void HostPlay::reportPose(const entity::PlayerBody& body, const Camera& camera)
 {
     if (link_ == nullptr || !link_->active()) {

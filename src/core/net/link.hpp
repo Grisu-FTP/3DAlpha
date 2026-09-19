@@ -96,6 +96,20 @@ inline constexpr u32 kAppletAwayMs = 45000;
 // this; a suspension is two orders of magnitude above it.
 inline constexpr u32 kStallMs = 1000;
 
+// **At most this many datagrams leave in one `flush`**, which is once a frame.
+//
+// Without it a flush sent everything it had: a whole window of fresh
+// datagrams, and after a loss a whole window of retransmissions at once. A
+// receiver with a small buffer -- a console's socket, a relay's queue -- keeps
+// the first few of a burst and drops the rest, so the next retry fired the
+// same burst into the same buffer. Measured in tests/link_stress_test.cpp with
+// a six-datagram buffer and 15 % loss: a third of everything sent was a
+// retransmission, and the host's queue for the guest grew by 4,000 pieces in
+// ten minutes -- the world arriving later and later on the guest's screen,
+// while poses, which never queue, stayed current. Twelve a frame empties that
+// queue and still carries some 500 KB/s at 30 fps.
+inline constexpr int kFlushBurst = 12;
+
 // Retransmission bounds around the measured round trip. The floor is above a
 // local round trip so a late acknowledgement is not mistaken for a loss; the
 // ceiling stops one bad sample from stalling the link for a second.

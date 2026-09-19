@@ -208,9 +208,10 @@ void HostSession::onMessage(Guest& guest, Msg kind, const u8* body, usize size)
             return;  // a retransmitted Hello, already answered
         }
         // Through the same filter a server name goes through: what arrives is
-        // another console's friend-list name, and it has to be something this
-        // game can draw and a chat line can carry.
-        guest.name = usernameFrom(hello.name);
+        // another console's friend-list name, or over the internet its
+        // display name, and it has to be something this game can draw and a
+        // chat line can carry.
+        guest.name = usernameFrom(hello.name, kMaxDisplayNameChars);
         guest.welcomed = true;
 
         // **Whether this console may ever be asked to make terrain.** Same

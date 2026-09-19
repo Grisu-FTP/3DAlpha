@@ -337,6 +337,23 @@ TEST(a_guest_joining_is_welcomed_with_the_world_and_the_player_list)
     CHECK(guestLog.has("join 1 Grisu"));
 }
 
+TEST(a_guest_keeps_all_24_characters_of_an_alphacomputer_display_name)
+{
+    Wire wire;
+    HostSession host;
+    GuestSession guest;
+    Log hostLog;
+    Log guestLog;
+    u32 now = 1000;
+
+    host.open("Hollow Hill", "Grisu", testWorld(), now, &hostLog);
+    guest.join("Ada the Very Long Builder", testWorld(), now, &guestLog);
+    step(wire, host, guest, &now, 4);
+
+    CHECK(guest.state() == GuestSession::State::Playing);
+    CHECK(hostLog.has("join 2 Ada_the_Very_Long_Builde"));
+}
+
 TEST(a_session_survives_losing_every_third_frame)
 {
     Wire wire;

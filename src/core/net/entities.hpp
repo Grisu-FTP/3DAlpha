@@ -68,7 +68,9 @@ void playerColour(i32 entityId, u8* red, u8* green, u8* blue);
 // service which has not existed for years, so everyone wears the skin this
 // console is set to.
 struct RemotePlayer {
-    static constexpr int kMaxNameBytes = 32;
+    // A display name's 24 characters at three UTF-8 bytes each, the most a
+    // font glyph takes, and the terminator: `usernameFrom` never has to be cut.
+    static constexpr int kMaxNameBytes = 24 * 3 + 1;
 
     i32 id = 0;
     char name[kMaxNameBytes] = {};

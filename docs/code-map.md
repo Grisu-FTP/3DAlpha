@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 267 modules, 143,800 lines.**
+**23 directories, 267 modules, 143,822 lines.**
 
 ## `src/core/audio/`
 
@@ -148,15 +148,15 @@ weight is, not what is important.
 | `chunk_payload.{hpp,cpp}` | 363 | Map Chunk (0x33) payloads: inflating them, writing them into columns, and making them, the last for tests and the host harness. |
 | `client_session.{hpp,cpp}` | 476 | One connection to a protocol-2 server, run on a thread of its own and talked to through two queues. |
 | `dns.{hpp,cpp}` | 363 | **A DNS resolver of our own**, because the console's is not reliably one. |
-| `entities.{hpp,cpp}` | 786 | The entities a server owns: the other players, and the items on the ground. |
+| `entities.{hpp,cpp}` | 788 | The entities a server owns: the other players, and the items on the ground. |
 | `link.{hpp,cpp}` | 1168 | The link two 3DAlpha sessions talk over when they have found each other directly -- console to console -- rather than through a Java server. |
 | `local_channel.{hpp,cpp}` | 355 | The guest's end of a local session, as a protocol-2 stream. |
 | `packet_channel.hpp` | 77 | A protocol-2 stream, whichever wire it runs over. |
 | `packets.{hpp,cpp}` | 763 | The protocol-2 packet table: every packet a1.1.2 and server 0.2.1 register, its shape as a list of wire fields, and one parser and one encoder driven by that list. |
 | `pending_edits.{hpp,cpp}` | 124 | A multiplayer client's own block edits are provisional for four seconds: unless the server says something about that block in the meantime, the edit is put back. |
 | `player_sync.{hpp,cpp}` | 426 | What a multiplayer client tells the server about its own player every tick: where it is, which way it faces, and -- once a second -- what it carries. |
-| `server_list.{hpp,cpp}` | 279 | The multiplayer server list on the card, the address a player types, and the name the client logs in with. a1.1.2 has neither a list nor a name to choose: its Multiplayer screen (`gc`) is one text field whose last value goes to `options.txt` as `lastServer`, and the name is whatever the launcher passed. |
-| `session.{hpp,cpp}` | 1104 | A 3DAlpha session as the two ends see it: one console hosting a world it has open, and up to three others that found it and joined. |
+| `server_list.{hpp,cpp}` | 285 | The multiplayer server list on the card, the address a player types, and the name the client logs in with. a1.1.2 has neither a list nor a name to choose: its Multiplayer screen (`gc`) is one text field whose last value goes to `options.txt` as `lastServer`, and the name is whatever the launcher passed. |
+| `session.{hpp,cpp}` | 1105 | A 3DAlpha session as the two ends see it: one console hosting a world it has open, and up to three others that found it and joined. |
 | `tcp_socket.{hpp,cpp}` | 388 | A non-blocking TCP connection over the BSD socket API, which is the one network interface both targets share. |
 | `terrain_share.{hpp,cpp}` | 490 | Terrain generated on one console for another's world. |
 | `udp_socket.{hpp,cpp}` | 304 | The one socket an online session lives on, over the BSD calls both targets share. |
@@ -367,9 +367,9 @@ weight is, not what is important.
 | `host_play.{hpp,cpp}` | 1011 | Hosting, as the game loop sees it: the world is the player's own, open the way it always is, with a session running beside it and a server inside it. |
 | `hud.{hpp,cpp}` | 1644 | The bottom screen's furniture: the hotbar along the top, the tab strip along the bottom, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
 | `local_link.{hpp,cpp}` | 587 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
-| `main.cpp` | 4706 | The 3DS entry point. |
+| `main.cpp` | 4708 | The 3DS entry point. |
 | `map_screen.{hpp,cpp}` | 1533 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 9771 | The main menu: the title screen, the world list, and creating a world. |
+| `menu.{hpp,cpp}` | 9782 | The main menu: the title screen, the world list, and creating a world. |
 | `menu_preview.{hpp,cpp}` | 1800 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
 | `net_play.{hpp,cpp}` | 470 | A multiplayer session as the game loop sees it: what the server's packets do to the world and the player, and what the player's ticks and clicks become. |
 | `network.{hpp,cpp}` | 312 | The console's half of multiplayer: its socket service, and the name it logs in with. |

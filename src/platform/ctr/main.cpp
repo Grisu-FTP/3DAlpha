@@ -1567,7 +1567,9 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         world.setBlockWatcher(&ctr::HostPlay::blockWatcher, host);
 
         std::string sessionError;
-        if (!host->open(choice.worldName, ctr::loginName(), id, &sessionError)) {
+        // The menu's name for this road: the server's display name online.
+        const std::string hostName = choice.username.empty() ? ctr::loginName() : choice.username;
+        if (!host->open(choice.worldName, hostName, id, &sessionError)) {
             // The world is open and playable; only the session failed. Say so
             // where the player is about to be looking rather than dropping
             // them back to a menu with a world half-loaded behind it.

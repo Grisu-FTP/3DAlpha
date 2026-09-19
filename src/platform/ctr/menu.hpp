@@ -676,6 +676,9 @@ private:
     // `settings::GameSettings::accountHandle`.
     void rememberAccount();
 
+    // The name an internet session plays under. See the definition.
+    std::string onlineUsername();
+
     void handleOnlinePrivacy(u32 down);
     void drawOnlinePrivacy();
 

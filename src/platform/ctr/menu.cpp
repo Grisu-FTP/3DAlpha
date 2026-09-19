@@ -6092,6 +6092,23 @@ void Menu::rememberAccount()
     saveSettings();
 }
 
+// **What the server calls this console, where the server is who introduced
+// it.** Logged in, that is the account's display name once linked and the
+// friend-list name with its tag before that -- the name the join list and the
+// Profile screen already show, so a guest must not arrive in the world under
+// another one. Cut at the server's own 24, and filtered as any other name. Not
+// logged in, the friend-list name, as on every other road.
+std::string Menu::onlineUsername()
+{
+    if (online_ && online_->ready() && !online_->client().displayName().empty()) {
+        return net::usernameFrom(online_->client().displayName(), net::kMaxDisplayNameChars);
+    }
+    if (username_.empty()) {
+        username_ = ctr::loginName();
+    }
+    return username_;
+}
+
 const char* Menu::profileStatusText() const
 {
     if (!online_) {
@@ -6402,9 +6419,6 @@ void Menu::beginOnlineHost()
     onlineJoinCode_.clear();
     lobbyPlayers_.clear();
     host_.reset();
-    if (username_.empty()) {
-        username_ = ctr::loginName();
-    }
     startOnline(true);
     setScreen(Screen::OnlineHost);
 }
@@ -6446,11 +6460,8 @@ void Menu::openOnlineLobby()
     world.version = net::link::generatorVersion();
     peek.close();
 
-    if (username_.empty()) {
-        username_ = ctr::loginName();
-    }
     host_ = std::make_unique<HostPlay>();
-    host_->openLobby(online_->link(), onlineWorldName_, username_, world);
+    host_->openLobby(online_->link(), onlineWorldName_, onlineUsername(), world);
     // **Before anybody joins, because the Welcome carries it.** A guest in a
     // Survival world must not arrive flying. See `net::link::WorldRules`.
     host_->setWorldRules(worldSettings.gamemode, worldSettings.difficulty);
@@ -6533,7 +6544,7 @@ bool Menu::handleOnlineHost(u32 down, MenuChoice* choice)
     // the world behind it.
     choice->action = MenuChoice::Action::Host;
     choice->link = MenuChoice::Link::Online;
-    choice->username = username_;
+    choice->username = onlineUsername();
     choice->worldPath = onlineWorldPath_;
     choice->worldName = onlineWorldName_;
     choice->created = false;
@@ -6638,9 +6649,6 @@ void Menu::beginOnlineJoin(const std::string& code, u64 sessionId)
         consoleDirty_ = true;
         return;
     }
-    if (username_.empty()) {
-        username_ = ctr::loginName();
-    }
     onlineJoining_ = true;
     onlineMessage_ = "Asking to join...";
     if (!code.empty()) {
@@ -6663,7 +6671,7 @@ bool Menu::handleOnlineJoin(u32 down, MenuChoice* choice)
         if (!guest_) {
             guest_ = std::make_unique<GuestPlay>();
         }
-        guest_->joinOnline(online_->link(), username_);
+        guest_->joinOnline(online_->link(), onlineUsername());
         guestOnline_ = true;
         onlineMessage_.clear();
         message_ = nullptr;
@@ -7150,7 +7158,7 @@ bool Menu::handleSession(u32 down, MenuChoice* choice)
         choice->worldName = guest_->worldName();
         choice->worldPath.clear();
         choice->serverName = guest_->hostName();
-        choice->username = username_;
+        choice->username = guestOnline_ ? onlineUsername() : username_;
         choice->created = false;
         // **The host's world is played the host's way.** Without this a joiner
         // gets `MenuChoice`'s default, which is Spectator -- the right answer

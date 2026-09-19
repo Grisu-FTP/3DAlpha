@@ -3,6 +3,18 @@
 Last verified: 2026-09-19. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## Internet sessions played under the friend-list name (2026-09-19)
+
+"It doesn't take its online display name for online sessions when logged in." Online host
+(`openLobby`, the Host choice) and online join (`joinOnline`, the Join choice) passed `username_`,
+which is always `ctr::loginName()`. They now go through `Menu::onlineUsername()`: the server's
+`displayName()` (account name once linked, tagged friend name before that) through
+`net::usernameFrom`, cut at `kMaxDisplayNameChars` (24, AlphaComputer's `MAX_DISPLAY_NAME_LEN`),
+with spaces becoming `_`. A host keeps 24 of a guest's Hello name too, and `RemotePlayer`'s name
+field holds 24 three-byte characters. Java servers stay at 16. The friend-list name is the
+fallback. `runGame` opens its session under `choice.username` in place of `loginName()`.
+1933/1933 host tests, `make` clean. **Not seen on hardware.**
+
 ## Import and Export over the internet; ACMP protocol 3 (2026-09-19)
 
 Internet on Import/Export now works, through AlphaComputer's new TCP world-sharing port (its

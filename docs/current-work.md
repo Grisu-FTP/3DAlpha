@@ -3,6 +3,19 @@
 Last verified: 2026-09-18. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## The CIA build could not create any folder (2026-09-19)
+
+"The CIA can't create folders, so it can't extract texture packs or create worlds." The cause is
+`PosixFileSystem::makeDirectories`, which walked the path from the start, so its first `mkdir`
+was on `"sdmc:"`. libctru's `archive_fixpath` resolves a bare device to the working directory.
+Under the homebrew launcher that is the .3dsx's folder, which exists, so the call failed with
+`EEXIST` and was ignored. A CIA has no sdmc `argv[0]`, so its working directory stays `/`.
+`FSUSER_CreateDirectory` on the SD root returns something other than `0xC82044BE`, and every
+call aborted. That includes `ensureChunkDir`, so a CIA also never saved chunks, even in existing
+worlds. Now the device prefix and root slashes are skipped, along with empty components.
+Test file: `tests/make_directories_test.cpp`; `make_directories_never_creates_the_device_prefix`
+fails against the old walk. **Not seen on hardware.**
+
 ## Other players never crouched or died on anyone else's screen (2026-09-19)
 
 "Players don't visually have a dead or sneaking state." Protocol 2 says neither: a1.1.2's

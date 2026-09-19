@@ -78,7 +78,7 @@ TEST(another_player_appears_where_the_server_put_them_and_faces_where_it_said)
     CHECK(near(player.y, std::floor(65.62 * 32.0) / 32.0));
 
     // A name longer than the field is cut rather than overrunning it.
-    CHECK(entities.apply(namedSpawn(8, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", 0, 64, 0, 0, 0, 0),
+    CHECK(entities.apply(namedSpawn(8, std::string(100, 'A').c_str(), 0, 64, 0, 0, 0, 0),
                          nullptr));
     CHECK_EQ(entities.playerCount(), 2);
     CHECK(std::string(entities.player(1).name).size() == usize(RemotePlayer::kMaxNameBytes - 1));

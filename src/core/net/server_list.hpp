@@ -31,6 +31,11 @@ inline constexpr u16 kDefaultPort = 25565;
 // is cut to whatever its source.
 inline constexpr int kMaxUsernameChars = 16;
 
+// **The ceiling for a name AlphaComputer gave out**, which is its own cap on a
+// display name. Only 3DAlpha consoles ever see one: it is what an internet
+// session plays under, and what a host lets a guest's Hello carry.
+inline constexpr int kMaxDisplayNameChars = 24;
+
 // What the client calls itself when there is no usable name at all.
 inline constexpr char kFallbackUsername[] = "Player";
 
@@ -77,7 +82,8 @@ std::string utf16ToUtf8(const u16* units, usize maxUnits);
 // a name -- a space splits it in two for every console command that takes one
 // (`op`, `kick`, `tp`), and a path separator or a colon puts it outside the
 // players folder it is saved under. A name with nothing left in it but
-// underscores is no name, and falls back to `kFallbackUsername`.
-std::string usernameFrom(std::string_view utf8);
+// underscores is no name, and falls back to `kFallbackUsername`. Cut to
+// `maxChars` characters.
+std::string usernameFrom(std::string_view utf8, int maxChars = kMaxUsernameChars);
 
 }  // namespace mc::net

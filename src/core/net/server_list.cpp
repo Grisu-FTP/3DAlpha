@@ -164,14 +164,14 @@ std::string utf16ToUtf8(const u16* units, usize maxUnits)
     return out;
 }
 
-std::string usernameFrom(std::string_view utf8)
+std::string usernameFrom(std::string_view utf8, int maxChars)
 {
     std::string out;
     int chars = 0;
     bool meaningful = false;
 
     usize pos = 0;
-    while (pos < utf8.size() && chars < kMaxUsernameChars) {
+    while (pos < utf8.size() && chars < maxChars) {
         u32 cp = nextUtf8(utf8, &pos);
         const bool unsafe = cp <= 0x20 || cp == 0xA7 || cp == '/' || cp == '\\' || cp == ':'
                             || cp == '*' || cp == '?' || cp == '"' || cp == '<' || cp == '>'

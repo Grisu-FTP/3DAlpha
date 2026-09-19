@@ -285,6 +285,10 @@ TEST(the_friend_list_name_is_the_login_name_as_far_as_the_game_allows)
     CHECK(usernameFrom("\xE3\x81\x82\xE3\x81\x84") == kFallbackUsername);
     CHECK(usernameFrom("Ab\xE3\x81\x82") == "Ab_");
     CHECK(usernameFrom("ABCDEFGHIJKLMNOPQRSTUVWXYZ") == "ABCDEFGHIJKLMNOP");
+    // A display name from AlphaComputer keeps its 24.
+    CHECK(usernameFrom("ABCDEFGHIJKLMNOPQRSTUVWXYZ", kMaxDisplayNameChars)
+          == "ABCDEFGHIJKLMNOPQRSTUVWX");
+    CHECK(usernameFrom("Grisu the Builder", kMaxDisplayNameChars) == "Grisu_the_Builder");
 
     const u16 screenName[11] = {'M', 'i', 'i', 0xD83D, 0xDE00, 0, 'x'};
     CHECK(utf16ToUtf8(screenName, 11) == "Mii\xF0\x9F\x98\x80");

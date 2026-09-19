@@ -1,7 +1,33 @@
 # Current work
 
-Last verified: 2026-09-18. A compact handoff, not a substitute for inspecting the current diff.
+Last verified: 2026-09-19. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
+
+## Import and Export over the internet; ACMP protocol 3 (2026-09-19)
+
+Internet on Import/Export now works, through AlphaComputer's new TCP world-sharing port (its
+uncommitted `src/transfer/`). **Both repos moved to protocol 3**: `AuthOk` carries
+`transfer_port` (0 = sharing off); vectors regenerated, now with the `ACWT` frames. Core:
+`net/world_share` (framing, the zlib `3DAW` archive, `Upload`/`Download` jobs); console:
+`platform/ctr/online_share` (a `Net` worker) and `Screen::OnlineTransfer`; harness:
+`--online <server> export|import`. Deflate level 2, because level 1 *grew* the real world 2.9%.
+1932/1932 host tests, cargo 155; real-server round trip of a real world copy identical, also
+under TSan. **Not run on hardware.** `status.md` 62.
+
+## Internet stayed off after any local wireless use (2026-09-19)
+
+"Consoles don't switch back to internet mode after using local connection until game is
+closed." libctru's `udsInit` enters NDM's local-communication exclusive state and only
+`udsExit` leaves it (`nm` on `libctru.a`'s `uds.o`: `NDMU_EnterExclusiveState` /
+`NDMU_LeaveExclusiveState`). `stopLocalWireless` ran only at process exit, so one scan kept the
+console off its access point for the rest of the run. Now `local_link.cpp` counts open
+`LocalLink`s and `releaseLocalWireless()` calls `udsExit` when none is open. That happens when
+the last link leaves, after every scan, in `startNetwork`, and in `setScreen(Title)`.
+`host`/`join` now `leave()` before starting the service. The console takes seconds to rejoin
+the AP, so two paths wait for an address. `Online::start` holds the name lookup in
+`WaitingForAddress` (`lookupPending_`), without blocking. `runMultiplayer` blocks in
+`waitForAddress` for up to 10 s, and only if UDS was released in the last 10 s. **Not seen on
+hardware**, including whether `gethostid()` reads 0 while the console rejoins.
 
 ## CIA: Import World crashed opening its keyboard (2026-09-19)
 

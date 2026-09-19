@@ -4,6 +4,7 @@
 
 #include "core/net/dns.hpp"
 #include "core/net/server_list.hpp"
+#include "platform/ctr/local_link.hpp"
 
 #include <3ds.h>
 
@@ -87,6 +88,13 @@ int consoleNameServers(void*, mc::u32* out, int max)
 
 bool startNetwork(std::string* error)
 {
+    // **The internet and local wireless do not share the radio.** While UDS is
+    // up the console is in local communication mode and has no access point to
+    // reach anything through, so whatever a scan or a transfer left behind is
+    // let go before a socket is asked for. An open session keeps it; nothing
+    // runs a local link and the internet at once.
+    releaseLocalWireless();
+
     if (!gSocUp) {
         if (gSocBuffer == nullptr) {
             gSocBuffer = static_cast<u32*>(memalign(0x1000, kSocBufferBytes));
@@ -132,6 +140,21 @@ u32 localAddress()
     // `gethostid` reports it in network byte order, like an `in_addr`; every
     // caller here wants a number it can compare and print.
     return ntohl(u32(gethostid()));
+}
+
+bool waitForAddress(u32 timeoutMs)
+{
+    if (!gSocUp) {
+        return false;
+    }
+    const u64 start = osGetTime();
+    while (gethostid() == 0) {
+        if (osGetTime() - start >= timeoutMs) {
+            return false;
+        }
+        svcSleepThread(100 * 1000000LL);
+    }
+    return true;
 }
 
 void stopNetwork()

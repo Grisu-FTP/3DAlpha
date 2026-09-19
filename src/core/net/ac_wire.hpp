@@ -33,8 +33,9 @@ namespace mc::net::ac {
 
 // Bumped whenever a message changes shape. 1 was the server's first cut; 2
 // added Unlink, so that a console can leave an account from the console that
-// joined it rather than only from the website.
-inline constexpr u16 kProtocol = 2;
+// joined it rather than only from the website; 3 added `transferPort` to
+// AuthOk, which is where world sharing listens -- see core/net/world_share.hpp.
+inline constexpr u16 kProtocol = 3;
 
 // "ACMP".
 inline constexpr u8 kMagic[4] = {0x41, 0x43, 0x4d, 0x50};
@@ -202,6 +203,9 @@ struct ServerMsg {
     // something to compare against if the identity is ever disputed.
     bool firstClaim = false;
     std::string keyFingerprint;
+    // Protocol 3. The TCP port world sharing listens on, on the host this
+    // console reached the server at; 0 when the server does not share worlds.
+    u16 transferPort = 0;
 
     std::string reason;
 

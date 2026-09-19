@@ -81,6 +81,11 @@ public:
     // connecting.
     const std::string& host() const { return host_; }
 
+    // The address that name resolved to, host byte order; 0 before the lookup
+    // has answered. World sharing connects to it rather than looking the name
+    // up a second time.
+    u32 serverAddress() const { return serverAddress_; }
+
     // This console's identity string, and whether its key was made just now.
     const std::string& identity() const { return identity_.name; }
     bool keyIsNew() const { return identity_.created; }
@@ -111,6 +116,7 @@ private:
     struct Lookup;
 
     static void resolveEntry(void* arg);
+    void beginLookup();
     void finishLookup();
 
     // Opens the socket and starts the login, once the console has an address to
@@ -132,6 +138,10 @@ private:
 
     std::unique_ptr<Lookup> lookup_;
     void* lookupThread_ = nullptr;
+    // In `WaitingForAddress` before the lookup rather than after it: the
+    // console had no address when `start` was called, so the name is looked
+    // up once it does.
+    bool lookupPending_ = false;
 
     // The answer the lookup gave, kept because the socket may not be openable
     // for another second or two after it arrives.

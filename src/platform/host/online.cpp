@@ -15,6 +15,8 @@
 //     ./build-host/3dalpha --online <server> unlink  [principal]
 //     ./build-host/3dalpha --online <server> host    [principal]
 //     ./build-host/3dalpha --online <server> join <code> [principal]
+//     ./build-host/3dalpha --online <server> export <world dir> [principal]
+//     ./build-host/3dalpha --online <server> import <code> <saves dir> <name> [principal]
 //
 // `AC_TYPING_MS=<ms>` makes `join` wait the way a console does before it sends
 // the code: the menu pumping, then the keyboard applet with nothing pumped.
@@ -33,6 +35,14 @@
 // socket instead of a radio. If the player list prints on both ends, everything
 // from the signature to the session is working together.
 //
+// **`export` and `import` are world sharing**, on the server's TCP port rather
+// than through a session. `export` uploads the world, prints `SHARECODE` the
+// moment the server hands one out -- before the upload is done -- and keeps its
+// login alive for `AC_SHARE_SECONDS` (default 120) after, because the share
+// lives exactly as long as the login; then it withdraws it. `import`, in another
+// terminal, downloads with that code into `<saves dir>/<name>`. Diff the two
+// trees afterwards; that is the test.
+//
 // The identity defaults to a friend code derived from a fixed principal ID, so
 // two runs are the same player and the second one exercises the *returning*
 // path rather than the first claim. `host` and `join` use different ones,
@@ -48,11 +58,13 @@
 #include "core/net/terrain_share.hpp"
 #include "core/net/tcp_socket.hpp"
 #include "core/net/udp_socket.hpp"
+#include "core/net/world_share.hpp"
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -151,14 +163,30 @@ int runOnline(int argc, char** argv)
     const bool hosting = mode == "host";
     const bool joining = mode == "join";
     const bool unlinking = mode == "unlink";
-    const char* joinCode = joining && argc > 4 ? argv[4] : "";
-    const int principalArg = joining ? 5 : 4;
+    const bool exporting = mode == "export";
+    const bool importing = mode == "import";
+    const bool sharing = exporting || importing;
+    const char* joinCode = (joining || importing) && argc > 4 ? argv[4] : "";
+    const char* exportDir = exporting && argc > 4 ? argv[4] : "";
+    const char* importSaves = importing && argc > 5 ? argv[5] : "";
+    const char* importName = importing && argc > 6 ? argv[6] : "";
+    const int principalArg = joining ? 5 : (exporting ? 5 : (importing ? 7 : 4));
+    // The downloading end is a different console: one identity logged in twice
+    // is one login, and the second would end the first one's share.
     const u32 principal = argc > principalArg
                               ? u32(std::strtoul(argv[principalArg], nullptr, 10))
-                              : (joining ? 0x22222222u : 0x11111111u);
+                              : (joining || importing ? 0x22222222u : 0x11111111u);
 
     if (joining && joinCode[0] == '\0') {
         std::printf("--online <server> join <code>\n");
+        return 1;
+    }
+    if (exporting && exportDir[0] == '\0') {
+        std::printf("--online <server> export <world dir>\n");
+        return 1;
+    }
+    if (importing && (joinCode[0] == '\0' || importSaves[0] == '\0' || importName[0] == '\0')) {
+        std::printf("--online <server> import <code> <saves dir> <name>\n");
         return 1;
     }
 
@@ -204,7 +232,8 @@ int runOnline(int argc, char** argv)
     std::memcpy(login.seed, identity.seed, sizeof(login.seed));
     std::memcpy(login.publicKey, identity.publicKey, sizeof(login.publicKey));
     login.hasPlatformName = true;
-    login.platformName = hosting ? "HarnessHost" : (joining ? "HarnessGuest" : "HostHarness");
+    login.platformName = hosting || exporting ? "HarnessHost"
+                         : (joining || importing ? "HarnessGuest" : "HostHarness");
 
     // **`AC_TYPING_MS=<ms>` joins the way a console does**: two seconds of menu,
     // then that long with the loop stopped for the keyboard, then the code.
@@ -240,7 +269,25 @@ int runOnline(int argc, char** argv)
     // An errand is answered in a round trip; a session is watched for a while.
     // Longer by the typing, on both ends: a host that is to be joined after a
     // minute in the keyboard has to still be there.
-    const u32 deadline = (hosting || joining) ? 45000 + typingMs : 8000;
+    // World sharing: the job runs on a thread of its own, as it does on the
+    // console, and this loop goes on pumping the login under it -- a share
+    // whose owner stops sending keep-alives is deleted.
+    const char* shareSecondsText = std::getenv("AC_SHARE_SECONDS");
+    const u32 shareMs =
+        (shareSecondsText != nullptr ? u32(std::strtoul(shareSecondsText, nullptr, 10)) : 120u)
+        * 1000u;
+    std::unique_ptr<mc::net::share::Upload> upload;
+    std::unique_ptr<mc::net::share::Download> download;
+    mc::net::share::Job* job = nullptr;
+    mc::net::TcpSocket transferSocket;
+    std::thread worker;
+    int shareResult = -1;
+    u32 sharedAtMs = 0;
+    mc::net::share::Stage lastStage = mc::net::share::Stage::Connecting;
+    u64 lastPrintedBytes = 0;
+    bool codeShown = false;
+
+    const u32 deadline = (hosting || joining) ? 45000 + typingMs : (sharing ? 0xFFFFFFFFu : 8000);
     while (nowMs() < deadline) {
         connection.pump(nowMs());
 
@@ -329,10 +376,46 @@ int runOnline(int argc, char** argv)
                     std::this_thread::sleep_for(std::chrono::milliseconds(typingMs));
                 }
                 connection.client().joinByCode(joinCode);
+            } else if (sharing && job == nullptr) {
+                const u16 port = connection.client().transferPort();
+                std::printf("transfer port %u\n", unsigned(port));
+                if (!mc::net::share::connectTransfer(transferSocket, resolved, port, &error)) {
+                    std::printf("failed   %s\n", error.c_str());
+                    return 1;
+                }
+                if (exporting) {
+                    const char* slash = std::strrchr(exportDir, '/');
+                    const std::string name = slash != nullptr && slash[1] != '\0' ? slash + 1
+                                                                                  : exportDir;
+                    upload = std::make_unique<mc::net::share::Upload>(fs, exportDir, name,
+                                                                      connection.client().token());
+                    if (!upload->prepare()) {
+                        std::printf("failed   %s\n", upload->error().c_str());
+                        return 1;
+                    }
+                    job = upload.get();
+                    std::printf("world    %s, %u files, %llu bytes\n", name.c_str(),
+                                unsigned(upload->progress().filesTotal),
+                                static_cast<unsigned long long>(upload->progress().bytesTotal));
+                    worker = std::thread([&] {
+                        mc::net::share::TcpStream stream(transferSocket);
+                        upload->run(stream);
+                        transferSocket.close();
+                    });
+                } else {
+                    download = std::make_unique<mc::net::share::Download>(
+                        fs, importSaves, importName, joinCode, connection.client().token());
+                    job = download.get();
+                    worker = std::thread([&] {
+                        mc::net::share::TcpStream stream(transferSocket);
+                        download->run(stream);
+                        transferSocket.close();
+                    });
+                }
             } else if (unlinking && !asked) {
                 asked = true;
                 connection.client().unlink();
-            } else if (!hosting && !joining && !unlinking && !asked) {
+            } else if (!hosting && !joining && !unlinking && !sharing && !asked) {
                 asked = true;
                 connection.client().requestLinkCode();
             }
@@ -384,7 +467,71 @@ int runOnline(int argc, char** argv)
             }
         }
 
+        if (job != nullptr && shareResult < 0) {
+            const mc::net::share::Progress progress = job->progress();
+            if (progress.stage != lastStage) {
+                lastStage = progress.stage;
+                std::printf("stage    %s\n", mc::net::share::describeStage(progress.stage));
+            }
+            if (exporting && !codeShown && (progress.stage == mc::net::share::Stage::Sending
+                                            || progress.stage == mc::net::share::Stage::Finishing
+                                            || progress.stage == mc::net::share::Stage::Shared)) {
+                codeShown = true;
+                std::printf("SHARECODE %s\n", job->code().c_str());
+            }
+            if (progress.wireBytes >= lastPrintedBytes + (1u << 20)) {
+                lastPrintedBytes = progress.wireBytes;
+                std::printf("progress %llu / %llu bytes, %u / %u files, %llu on the wire\n",
+                            static_cast<unsigned long long>(progress.bytesDone),
+                            static_cast<unsigned long long>(progress.bytesTotal),
+                            unsigned(progress.filesDone), unsigned(progress.filesTotal),
+                            static_cast<unsigned long long>(progress.wireBytes));
+            }
+            if (job->finished()) {
+                worker.join();
+                std::printf("progress %llu / %llu bytes, %u / %u files, %llu on the wire\n",
+                            static_cast<unsigned long long>(progress.bytesDone),
+                            static_cast<unsigned long long>(progress.bytesTotal),
+                            unsigned(progress.filesDone), unsigned(progress.filesTotal),
+                            static_cast<unsigned long long>(progress.wireBytes));
+                if (progress.stage == mc::net::share::Stage::Failed) {
+                    std::printf("failed   %s\n", job->error().c_str());
+                    return 1;
+                }
+                if (importing) {
+                    std::printf("imported \"%s\" as %s/%s\n", job->worldName().c_str(),
+                                importSaves, importName);
+                    shareResult = 0;
+                    break;
+                }
+                std::printf("shared   for %u s while this login lasts\n", unsigned(shareMs / 1000));
+                sharedAtMs = nowMs();
+                shareResult = 0;
+            }
+        }
+        if (exporting && shareResult == 0 && nowMs() - sharedAtMs >= shareMs) {
+            mc::net::TcpSocket stopSocket;
+            if (mc::net::share::connectTransfer(stopSocket, resolved,
+                                                connection.client().transferPort(), &error)) {
+                mc::net::share::TcpStream stream(stopSocket);
+                if (mc::net::share::stopSharing(stream, connection.client().token(), &error)) {
+                    std::printf("stopped  the share is withdrawn\n");
+                } else {
+                    std::printf("stop     %s\n", error.c_str());
+                }
+            } else {
+                std::printf("stop     %s\n", error.c_str());
+            }
+            break;
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (worker.joinable()) {
+        if (job != nullptr) {
+            job->cancel();
+        }
+        worker.join();
     }
 
     if (sessionStarted && hosting) {

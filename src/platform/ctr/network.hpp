@@ -35,6 +35,12 @@ bool haveAddress();
 // for that reason.
 u32 localAddress();
 
+// Waits up to `timeoutMs` for `localAddress` to be non-zero, and says whether it
+// got there. **Blocks**, so it is for the one moment that has nothing to draw:
+// the console has just handed the radio back from local wireless and a
+// connection is about to be tried. See `localWirelessReleasedWithin`.
+bool waitForAddress(u32 timeoutMs);
+
 // The screen name in the console's friend list, made into something a1.1.2
 // accepts as a player name -- see `net::usernameFrom` -- and "Player" when the
 // friend service cannot say.

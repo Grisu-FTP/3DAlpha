@@ -4374,6 +4374,17 @@ int runMultiplayer(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::So
         return 0;
     }
 
+    // **A scan of the room a moment ago leaves the console off its access
+    // point** for the few seconds it takes to rejoin it -- the Java servers and
+    // the local sessions share the Multiplayer screen, so that is a single
+    // button press away. The session thread would connect into that gap and
+    // fail for want of an address, so this waits it out, bounded, and only on
+    // that road: with no radio handed back just now it returns at once.
+    constexpr u32 kRejoinMs = 10000;
+    if (ctr::localWirelessReleasedWithin(kRejoinMs)) {
+        ctr::waitForAddress(kRejoinMs);
+    }
+
     // On the heap: the session's parser buffers and queue, and NetPlay's
     // scratch packets, have no business on a 32 KB main-thread stack.
     auto session = std::make_unique<mc::net::ClientSession>();

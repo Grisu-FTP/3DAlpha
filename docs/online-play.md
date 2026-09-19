@@ -120,7 +120,8 @@ C -> S  0x01 Hello            u16 protocol, string identity, [32] public_key
 S -> C  0x02 Challenge        [32] nonce, addr reflexive
 C -> S  0x03 Auth             [64] signature, opt<string> platform_name
 S -> C  0x04 AuthOk           [16] token, string display_name, opt<string> handle,
-                              bool first_claim, string key_fingerprint
+                              bool first_claim, string key_fingerprint,
+                              u16 transfer_port
         0x05 AuthFail         string reason
 C -> S  0x10 Keepalive        [16] token          (every 10 s)
 S -> C  0x11 KeepaliveAck     addr reflexive
@@ -144,7 +145,8 @@ S -> C  0xFF Error            string reason
 
 `0x2C`/`0x2D` are protocol 2 and were added for this feature: before them the
 only way off an account was the website, which a player holding a 3DS does not
-necessarily have to hand.
+necessarily have to hand. `transfer_port` is protocol 3, and is where world
+sharing listens -- see below.
 
 **Strings are plain UTF-8**, not Java's modified form — this is our protocol and
 not Minecraft's — and they truncate on a character boundary, never splitting a
@@ -354,11 +356,55 @@ is simply not a row.
 with the server, and a punch landing mid-game is handled inside `HostPlay::pump`
 by the same `Connection` that handles one landing in the lobby.
 
+## Sharing a world: Import and Export over the internet
+
+**World Settings → Export → Internet** uploads a world and shows a six-character
+code; **the world list's Import row → a name → Internet → the code** downloads
+it. It is not `net::world_copy` over the relay, which moves a world in
+`link::Msg` frames with no flow control of its own: AlphaComputer has a TCP port
+for it (its `docs/transfer.md`), which this console finds from `AuthOk`'s
+`transfer_port` -- the reason for protocol 3 -- and authenticates on with the
+login's own token.
+
+**The server holds the world without opening it**, so everything about what the
+bytes are is ours, in `core/net/world_share`:
+
+```
+ACWT u16 1, then frames: u8 kind, u32 length, payload      (the server's)
+zlib( "3DAW" u16 1  u32 files  u64 bytes
+      { u16 length  path  u64 size  bytes } x files )     (ours, inside Data)
+```
+
+The receiving console holds the archive to the rules a copy over local wireless
+is held to: `world::safeRelativePath` on every path, `world_transfer.hpp`'s size
+limits, the declared counts checked against what arrived, nothing after the end,
+and all of it in the `.importing` staging directory until `ImportStaging::commit`
+agrees it is a world. The server never looked, so a hostile archive is the case
+the tests spend the most on.
+
+**Level 2 deflate, from a measurement.** On the real 1122-file a1.1.2 world
+(1121 of the files gzip already): level 1 makes it **2.9% larger**, level 2 5.9%
+smaller, 6 and 9 only 0.1% more for more time. Every download pays for the size
+again. Not timed on an ARM11.
+
+**The code is on screen before the upload finishes** -- the server hands it out
+before the first byte -- and a download may start while the upload is running;
+it follows it. **The share lives as long as the login**: the screen keeps
+`Online` pumped while it is up, B withdraws the world (`Stop`, one round trip on
+the worker), and a login that was replaced -- `ac::Client` logs in again on its
+own after a long suspension -- shows "No longer shared".
+
+**All of it runs on a `Net` worker** (`platform/ctr/online_share`): the walk,
+the deflate, the inflate, the card writes and the blocking socket. The menu reads
+atomics. The only wait on the main thread is the destructor's join, bounded by
+the eight-second connect.
+
 ## Single player waits for none of it
 
 **Nothing above exists in a single-player session.** `Menu::online_` is null
-until `ensureOnline` is called, and it is called from exactly two places:
-opening the Profile screen, and choosing Internet on the multiplayer menu.
+until `ensureOnline` is called, and it is called from exactly three places:
+opening the Profile screen, choosing Internet on the multiplayer menu, and
+choosing Internet for an Import or an Export.
 Opening a world, playing one and saving one touch none of it, so a game that is
 never played online opens no socket, looks up no name and waits no frames.
 
@@ -385,6 +431,12 @@ cd ../AlphaComputer && cargo run --example wire_vectors > ../3DAlpha/tests/ac_wi
 ./build-host/3dalpha --online 127.0.0.1:7717 join <code>
 ./build-host/3dalpha --online 127.0.0.1:7717 profile       # asks for a link code
 ./build-host/3dalpha --online 127.0.0.1:7717 unlink
+
+# World sharing. Export prints SHARECODE before its upload is done; import it in
+# the other terminal, even mid-upload, then diff the two trees.
+AC_SHARE_SECONDS=60 ./build-host/3dalpha --online 127.0.0.1:7717 export <copy of a world>
+./build-host/3dalpha --online 127.0.0.1:7717 import <code> <saves dir> Imported
+./build-host/3dalpha_tests every_transfer     # the ACWT frames against the server's bytes
 
 # The relay path, which a PC's punch never needs. Both ends.
 AC_FORCE_RELAY=1 ./build-host/3dalpha --online 127.0.0.1:7717 host

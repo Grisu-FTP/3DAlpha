@@ -52,6 +52,7 @@
 #include "platform/ctr/guest_play.hpp"
 #include "platform/ctr/host_play.hpp"
 #include "platform/ctr/online.hpp"
+#include "platform/ctr/online_share.hpp"
 #include "platform/ctr/world_transfer.hpp"
 #include "platform/ctr/local_link.hpp"
 #include "core/audio/sound_engine.hpp"
@@ -497,6 +498,12 @@ private:
         // and a way out -- and the two halves differ only in which of them is
         // reading the card. See platform/ctr/world_transfer.hpp.
         Transfer,
+        // **A world going through AlphaComputer**, from either end. The same
+        // bar as `Transfer`, plus the one thing a room does not need: on the
+        // sending console, the code the other one types -- shown before the
+        // upload is done, and for as long as the world stays shared, which is
+        // as long as this screen is up. See platform/ctr/online_share.hpp.
+        OnlineTransfer,
         // **Who this console is online**, at the bottom of Options: which
         // server it talks to, what that server calls it, and the one button
         // that puts it on an account or takes it off one. It is the only screen
@@ -742,6 +749,19 @@ private:
 
     void handleImportScan(u32 down);
     void handleTransfer(u32 down);
+
+    // **The Internet answer to Import and Export.** Export logs in and
+    // uploads the world World Settings is about; Import asks for the code on
+    // a keyboard -- before anything is connected, for the reason `openImport`
+    // asks for the name first -- and then logs in and downloads it.
+    void startOnlineExport();
+    void startOnlineImport();
+    // Once a frame: starts the job when the login lands, collects the worker,
+    // and leaves once a cancel or a withdrawal has gone through.
+    void pumpOnlineShare();
+    // Down, and back to where it was started from -- or to the new world.
+    void endOnlineShare();
+    void handleOnlineShare(u32 down);
 
     // How many rows the multiplayer list has under its two buttons, and what
     // the row at `index` is.
@@ -1014,6 +1034,7 @@ private:
     void drawSession();
     void drawImportScan();
     void drawTransfer();
+    void drawOnlineShare();
     void drawEditServer();
     void drawConfirmDeleteServer();
     void drawDisconnected();
@@ -1367,6 +1388,15 @@ private:
     // screens above need to draw it. Null except while one is running; see
     // platform/ctr/world_transfer.hpp.
     std::unique_ptr<WorldTransfer> transfer_;
+
+    // **A world going through AlphaComputer.** Null except on
+    // `Screen::OnlineTransfer`. `shareLeaving_` is the screen waiting for the
+    // worker to finish a cancel or a withdrawal before it goes; `shareError_`
+    // is a job that could not start at all.
+    std::unique_ptr<OnlineShare> share_;
+    bool shareLeaving_ = false;
+    std::string shareError_;
+    net::share::Progress shareDrawn_;
 
     // What an incoming world will be called on this card. Asked on a keyboard
     // before the radio is touched, because a keyboard suspends the console --

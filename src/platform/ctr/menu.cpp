@@ -1212,6 +1212,14 @@ void Menu::setScreen(Screen screen)
     if (inWorldSettings(screen_) && !inWorldSettings(screen)) {
         sizeScan_.cancel();
     }
+    // **Back at the title, nothing local is running**, so the radio goes back
+    // to the access point. Most paths have let it go already -- a scan and the
+    // last link out each do -- but the wireless check behind Local, and a host
+    // or transfer that failed after the service came up, leave it held with
+    // nothing using it. See `releaseLocalWireless`.
+    if (screen == Screen::Title) {
+        releaseLocalWireless();
+    }
     screen_ = screen;
     consoleDirty_ = true;
     infoPage_ = 0;
@@ -1786,6 +1794,19 @@ void Menu::printConsoleHelp()
         std::printf("stops half way leaves nothing\n");
         std::printf("behind on either console.\n");
         break;
+    case Screen::OnlineTransfer:
+        std::printf("B        stop, or stop sharing\n");
+        std::printf("A        close when it is done\n\n");
+        std::printf("The world goes through the server\n");
+        std::printf("in your Profile, compressed, and\n");
+        std::printf("is only read on this console.\n\n");
+        std::printf("\x1b[33mA shared world lasts as long as\x1b[0m\n");
+        std::printf("\x1b[33mthis screen is open.\x1b[0m The server\n");
+        std::printf("deletes it when you leave, and\n");
+        std::printf("nobody can download it after.\n\n");
+        std::printf("The code is unlisted, not secret:\n");
+        std::printf("anyone who types it gets a copy.\n");
+        break;
     case Screen::EditServer:
         std::printf("Up/Down  choose\n");
         std::printf("A        change or select\n");
@@ -2010,6 +2031,7 @@ MenuChoice Menu::run()
         // is. Nothing when there is no lobby up.
         pumpOnlineLobby();
         pumpTransfer();
+        pumpOnlineShare();
 
         hidScanInput();
         const u32 down = hidKeysDown();
@@ -2072,6 +2094,9 @@ MenuChoice Menu::run()
             break;
         case Screen::Transfer:
             handleTransfer(down);
+            break;
+        case Screen::OnlineTransfer:
+            handleOnlineShare(down);
             break;
         case Screen::EditServer:
             handleEditServer(down);
@@ -4865,6 +4890,9 @@ void Menu::drawScreen()
     case Screen::Transfer:
         drawTransfer();
         break;
+    case Screen::OnlineTransfer:
+        drawOnlineShare();
+        break;
     case Screen::EditServer:
         drawEditServer();
         break;
@@ -5919,8 +5947,9 @@ MpRow mpRowAt(int index, int sessions, int* sub)
 // The Profile screen, and the object behind it.
 //
 // **Nothing above this line exists in a single-player session.** `online_` is
-// null until `ensureOnline` is called, and it is called from exactly two
-// places: opening this screen, and choosing Internet on the multiplayer menu.
+// null until `ensureOnline` is called, and it is called from exactly three
+// places: opening this screen, choosing Internet on the multiplayer menu, and
+// choosing Internet for an Import or an Export.
 // Opening a world, playing one and saving one never touch any of it, so a game
 // that is never played online never opens a socket, never looks up a name and
 // never waits a frame for either.
@@ -5992,7 +6021,7 @@ void Menu::pumpOnline()
     // Profile screen would go on blanking the multiplayer list's message for
     // the rest of the session.
     const bool ours = screen_ == Screen::Profile || screen_ == Screen::OnlineHost
-                      || screen_ == Screen::OnlineJoin;
+                      || screen_ == Screen::OnlineJoin || screen_ == Screen::OnlineTransfer;
     const Online::Stage before = online_->stage();
     online_->pump(u32(osGetTime()));
 
@@ -6969,13 +6998,18 @@ bool Menu::handleNetMode(u32 down, MenuChoice* choice)
             setScreen(Screen::OnlineJoin);
             return false;
         case NetPurpose::Import:
+            // **Not `net::world_copy` over the relay.** That moves a world in
+            // `link::Msg` frames with no flow control of its own, which a
+            // room's radio carries and a relay with a byte budget does not. The
+            // server has a TCP port for exactly this instead -- see
+            // core/net/world_share.hpp.
+            message_ = nullptr;
+            startOnlineImport();
+            return false;
         case NetPurpose::Export:
-            // Still local-only, and for a reason that is not the network:
-            // `net::world_copy` moves a whole world in `link::Msg` frames with
-            // no flow control of its own, which a room's radio carries and a
-            // relay with a byte budget does not.
-            message_ = "Sending a world over the internet is not in this build yet.";
-            break;
+            message_ = nullptr;
+            startOnlineExport();
+            return false;
         }
         consoleDirty_ = true;
         return false;
@@ -7567,6 +7601,289 @@ void Menu::drawTransfer()
                transfer_->finished() ? "A  Done" : "B  Stop", true, true);
 }
 
+// ---------------------------------------------------------------------------
+// Import and Export over the internet.
+//
+// **One screen, one object, and the login under both.** The world goes through
+// AlphaComputer's world-sharing port (core/net/world_share.hpp) on a worker
+// (platform/ctr/online_share.hpp); this is the screen that watches it. The
+// login is the Profile screen's `Online`, pumped by `pumpOnline` every frame,
+// because the server keeps a shared world exactly as long as its owner's login.
+// ---------------------------------------------------------------------------
+
+void Menu::startOnlineExport()
+{
+    if (inGame_ || selectedWorldPath_.empty()) {
+        return;
+    }
+    // Stopped for the reason `startExport` stops them: the card serves one
+    // reader faster than three, and the upload is the one that matters.
+    if (preview_ != nullptr) {
+        preview_->quiesce(selectedWorldPath_);
+    }
+    sizeScan_.cancel();
+
+    share_ = std::make_unique<OnlineShare>(fs_);
+    share_->exportWorld(selectedWorldPath_, selectedWorldName_);
+    shareLeaving_ = false;
+    shareError_.clear();
+    shareDrawn_ = net::share::Progress();
+    onlineMessage_.clear();
+    startOnline(false);
+    setScreen(Screen::OnlineTransfer);
+}
+
+void Menu::startOnlineImport()
+{
+    // **The code on a keyboard, before the socket.** Typing suspends the
+    // console, and a login started first would sit through it for nothing.
+    std::string typed;
+    if (!askServerText("Code for the world", "", int(net::share::kMaxCode), &typed)) {
+        return;
+    }
+    std::string code;
+    if (!net::share::cleanCode(typed, &code)) {
+        message_ = "That is not a world code: six letters and numbers.";
+        consoleDirty_ = true;
+        return;
+    }
+
+    share_ = std::make_unique<OnlineShare>(fs_);
+    share_->importWorld(kSavesDir, importName_, code);
+    shareLeaving_ = false;
+    shareError_.clear();
+    shareDrawn_ = net::share::Progress();
+    onlineMessage_.clear();
+    startOnline(false);
+    setScreen(Screen::OnlineTransfer);
+}
+
+void Menu::pumpOnlineShare()
+{
+    if (!share_) {
+        return;
+    }
+    share_->pump();
+
+    // The job starts on the frame the login lands, and not before: the token
+    // it proves itself with is the login's.
+    if (!share_->started() && !shareLeaving_ && shareError_.empty() && online_
+        && online_->ready()) {
+        if (!share_->start(*online_, &shareError_)) {
+            consoleDirty_ = true;
+        }
+    }
+
+    // **Leaving waits for the worker**, a tenth of a second for a cancel and a
+    // round trip for a withdrawal, with "Stopping" on screen meanwhile.
+    if (shareLeaving_ && !share_->busy()) {
+        endOnlineShare();
+        return;
+    }
+
+    const net::share::Progress now = share_->progress();
+    if (now.stage != shareDrawn_.stage || now.bytesDone != shareDrawn_.bytesDone
+        || now.filesDone != shareDrawn_.filesDone || now.bytesTotal != shareDrawn_.bytesTotal) {
+        shareDrawn_ = now;
+        consoleDirty_ = true;
+    }
+}
+
+void Menu::endOnlineShare()
+{
+    const bool exporting = share_ && share_->exporting();
+    const bool imported = share_ && !exporting && share_->stage() == net::share::Stage::Done;
+    // Nothing is running by now -- `pumpOnlineShare` waited -- so this does not
+    // block. The login goes with it: nothing else on the way back uses it.
+    share_.reset();
+    shareLeaving_ = false;
+    shareError_.clear();
+    stopOnline();
+    onlineMessage_.clear();
+    message_ = nullptr;
+
+    if (imported) {
+        worldCursorName_ = importName_;
+        refreshWorlds();
+        setScreen(Screen::Worlds);
+        return;
+    }
+    // A failed import goes back to the question, with the name still typed, so
+    // a mistyped code is one press and one keyboard from a second try.
+    setScreen(exporting ? Screen::WorldSettings : Screen::NetMode);
+}
+
+void Menu::handleOnlineShare(u32 down)
+{
+    if (!share_) {
+        setScreen(Screen::Worlds);
+        return;
+    }
+    if (shareLeaving_ || (down & (KEY_A | KEY_B | KEY_START)) == 0) {
+        return;
+    }
+    const bool back = (down & (KEY_B | KEY_START)) != 0;
+    const bool loginFailed = online_ && online_->stage() == Online::Stage::Failed;
+
+    // **A live share ends on B and on nothing else**: A is what a player
+    // presses without thinking, and it would take the world away from whoever
+    // is half way through downloading it.
+    if (share_->stage() == net::share::Stage::Shared) {
+        if (!back) {
+            return;
+        }
+        playClick();
+        if (online_) {
+            share_->withdraw(*online_);
+        }
+        shareLeaving_ = true;
+        consoleDirty_ = true;
+        return;
+    }
+    if (share_->finished() || !shareError_.empty() || loginFailed) {
+        playClick();
+        endOnlineShare();
+        return;
+    }
+    if (!back) {
+        return;
+    }
+    playClick();
+    if (share_->started()) {
+        share_->cancel();
+        shareLeaving_ = true;
+        consoleDirty_ = true;
+        return;
+    }
+    endOnlineShare();
+}
+
+void Menu::drawOnlineShare()
+{
+    if (!share_) {
+        return;
+    }
+    const bool exporting = share_->exporting();
+    const float mid = kScreenWidth * 0.5f;
+    drawLabelCentered(exporting ? "Export World" : "Import World", mid, 16.0f, 0.7f, kInk, true);
+    drawLabelCentered("over the Internet", mid, 38.0f, 0.4f, kInkDim, true);
+
+    const net::share::Progress progress = share_->progress();
+    const net::share::Stage stage = progress.stage;
+    const bool started = share_->started();
+
+    // The world: the one being sent, or -- once the server has said -- what
+    // the other console calls it, and what it will be called here.
+    //
+    // The other console's name is read only from the stages after the worker
+    // published it: before those it may be writing it.
+    std::string name = exporting ? selectedWorldName_ : std::string();
+    if (!exporting) {
+        const bool named = started
+                           && (stage == net::share::Stage::Receiving
+                               || stage == net::share::Stage::Finishing
+                               || stage == net::share::Stage::Done);
+        name = named ? "\"" + share_->sourceName() + "\", saved here as \"" + importName_ + "\""
+                     : "saved here as \"" + importName_ + "\"";
+    }
+    drawLabelCentered(name.c_str(), mid, 56.0f, 0.5f, kInk, true);
+
+    // **What it is doing, in the words of the thing it is waiting for.**
+    const char* state = nullptr;
+    bool warn = false;
+    std::string line;
+    if (shareLeaving_) {
+        state = stage == net::share::Stage::Shared ? "Withdrawing the world..." : "Stopping...";
+    } else if (!shareError_.empty()) {
+        state = shareError_.c_str();
+        warn = true;
+    } else if (!started) {
+        warn = online_ && online_->stage() == Online::Stage::Failed;
+        state = message_ != nullptr ? message_ : profileStatusText();
+    } else {
+        switch (stage) {
+        case net::share::Stage::Connecting:
+        case net::share::Stage::Asking:
+            state = exporting ? "Asking the server for a code..." : "Looking for that code...";
+            break;
+        case net::share::Stage::Sending:
+            state = "Uploading. They can start downloading now.";
+            break;
+        case net::share::Stage::Receiving:
+            state = "Downloading...";
+            break;
+        case net::share::Stage::Finishing:
+            state = exporting ? "Waiting for the server to confirm..." : "Checking the world...";
+            break;
+        case net::share::Stage::Shared:
+            if (online_ && share_->loginChanged(*online_)) {
+                state = "No longer shared: the connection to the server was lost.";
+                warn = true;
+            } else {
+                state = "Shared. Keep this screen open while they download.";
+            }
+            break;
+        case net::share::Stage::Done:
+            state = "Imported.";
+            break;
+        case net::share::Stage::Stopped:
+            state = "No longer shared.";
+            break;
+        case net::share::Stage::Failed:
+            line = share_->error();
+            state = line.c_str();
+            warn = true;
+            break;
+        }
+    }
+    drawLabelCentered(state, mid, 76.0f, 0.42f, warn ? kInkWarn : kInkDim, true);
+
+    // **The code is the screen**, as the join code is on `OnlineHost`: it is
+    // read out loud across a room or typed into a message, so it is drawn at
+    // the size of a thing to be read, from the moment the server hands it out.
+    const bool codeLive = exporting && started && !share_->code().empty()
+                          && (stage == net::share::Stage::Sending
+                              || stage == net::share::Stage::Finishing
+                              || stage == net::share::Stage::Shared);
+    if (codeLive) {
+        drawLabelCentered("Code", mid, 98.0f, 0.45f, kInkDim, true);
+        drawLabelCentered(share_->code().c_str(), mid, 116.0f, 1.3f, kInk, true);
+    }
+
+    const float barX = 40.0f;
+    const float barW = kScreenWidth - 2.0f * barX;
+    const float barY = 156.0f;
+    drawButton(Rect{barX, barY, barW, 18.0f}, "", false, false);
+    if (progress.bytesTotal > 0) {
+        const double done = double(progress.bytesDone) / double(progress.bytesTotal);
+        const float filled = float(done > 1.0 ? 1.0 : done) * (barW - 4.0f);
+        if (filled > 0.0f) {
+            C2D_DrawRectSolid(barX + 2.0f, barY + 2.0f, 0.3f, filled, 14.0f, kFillSelected);
+        }
+        char doneText[24];
+        char totalText[24];
+        formatBytes(progress.bytesDone, doneText, sizeof(doneText));
+        formatBytes(progress.bytesTotal, totalText, sizeof(totalText));
+        char text[128];
+        std::snprintf(text, sizeof(text), "%s of %s   %u / %u files", doneText, totalText,
+                      unsigned(progress.filesDone), unsigned(progress.filesTotal));
+        drawLabelCentered(text, mid, 180.0f, 0.4f, kInkDim, true);
+    }
+
+    const bool closable = share_->finished() || !shareError_.empty()
+                          || (online_ && online_->stage() == Online::Stage::Failed);
+    const char* hint = "B  Cancel";
+    if (shareLeaving_) {
+        hint = "Stopping";
+    } else if (stage == net::share::Stage::Shared) {
+        hint = "B  Stop sharing";
+    } else if (closable) {
+        hint = "A  Done";
+    }
+    drawButton(Rect{(kScreenWidth - kButtonWidth) * 0.5f, 204.0f, kButtonWidth, kButtonHeight},
+               hint, true, !shareLeaving_);
+}
+
 int Menu::multiplayerRows() const
 {
     // The two buttons, the sessions a scan found, "+ Add Server", and the
@@ -7848,19 +8165,14 @@ void Menu::drawNetMode()
     drawLabelCentered("another 3DS in the same room", kScreenWidth * 0.5f, 114.0f, 0.4f,
                       kInkDim, true);
 
-    // **Enabled for a session and not for a world.** Host and Join go out
-    // through AlphaComputer, which introduces two consoles and never holds a
-    // world; Import and Export move a whole world in `link::Msg` frames with
-    // no flow control of their own, which a room's radio carries and a relay
-    // with a byte budget does not. So the row is live for the first two and
-    // drawn disabled for the other two, which is what says the answer there is
-    // "not yet" rather than "never".
-    const bool internetReady =
-        netPurpose_ == NetPurpose::Host || netPurpose_ == NetPurpose::Join;
+    // **Live for all four.** Host and Join are introduced by AlphaComputer and
+    // then talk directly; Import and Export go through its world-sharing port,
+    // with a code the way a session has one.
+    const bool world = netPurpose_ == NetPurpose::Import || netPurpose_ == NetPurpose::Export;
     drawButton(Rect{x, 136.0f, kButtonWidth, kButtonHeight}, "Internet", netModeCursor_ == 1,
-               internetReady);
-    drawLabelCentered(internetReady ? "another 3DS anywhere, through AlphaComputer"
-                                    : "not in this build yet",
+               true);
+    drawLabelCentered(world ? "another 3DS anywhere, with a code"
+                            : "another 3DS anywhere, through AlphaComputer",
                       kScreenWidth * 0.5f, 174.0f, 0.4f, kInkDim, true);
 
     if (message_ != nullptr) {

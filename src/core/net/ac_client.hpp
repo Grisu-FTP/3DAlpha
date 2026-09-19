@@ -169,6 +169,15 @@ public:
     bool firstClaim() const { return firstClaim_; }
     const std::string& keyFingerprint() const { return keyFingerprint_; }
 
+    // **The login's own credential, which world sharing borrows.** The transfer
+    // port has no login of its own: a console proves who it is there with the
+    // token this login was given. It changes on every login, and a share ends
+    // with the login that made it -- see core/net/world_share.hpp.
+    const u8* token() const { return token_; }
+
+    // Where the server said world sharing is; 0 for a server that has none.
+    u16 transferPort() const { return transferPort_; }
+
     // This console's public address, as the server saw it. Refreshed on every
     // keep-alive answer, so it follows a NAT that rebinds.
     const Endpoint& reflexive() const { return reflexive_; }
@@ -250,6 +259,7 @@ private:
     std::string accountHandle_;
     std::string keyFingerprint_;
     bool firstClaim_ = false;
+    u16 transferPort_ = 0;
     Endpoint reflexive_;
 
     Pending pending_ = Pending::None;

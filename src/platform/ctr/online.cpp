@@ -25,6 +25,15 @@ struct Online::Lookup {
     std::string error;
 };
 
+// **How long to wait for the console to have an address.** An association and
+// a DHCP lease take a second or two from cold; ten is generous and still short
+// enough that a player with the wireless switched off is told so rather than
+// left watching a screen that never changes.
+constexpr u32 kAddressWaitMs = 10000;
+
+constexpr const char* kNoAddress =
+    "This console has no network address. Check the wireless switch.";
+
 Online::Online() = default;
 
 Online::~Online()
@@ -92,6 +101,23 @@ void Online::start(const std::string& serverUrl, bool hosting)
         return;
     }
 
+    // **No address, no lookup.** Every resolver needs the console to be on a
+    // network, and the usual reason it is not is that local wireless has just
+    // handed the radio back and the access point is a few seconds from taking
+    // it again. A lookup started now would fail and blame the name.
+    if (localAddress() == 0) {
+        lookupPending_ = true;
+        stage_ = Stage::WaitingForAddress;
+        waitingSinceMs_ = u32(osGetTime());
+        message_ = "Waiting for the network...";
+        return;
+    }
+    beginLookup();
+}
+
+void Online::beginLookup()
+{
+    lookupPending_ = false;
     lookup_ = std::make_unique<Lookup>();
     lookup_->host = host_;
     stage_ = Stage::Resolving;
@@ -107,12 +133,6 @@ void Online::start(const std::string& serverUrl, bool hosting)
         resolveEntry(lookup_.get());
     }
 }
-
-// **How long to wait for the console to have an address.** An association and
-// a DHCP lease take a second or two from cold; ten is generous and still short
-// enough that a player with the wireless switched off is told so rather than
-// left watching a screen that never changes.
-constexpr u32 kAddressWaitMs = 10000;
 
 void Online::finishLookup()
 {
@@ -153,7 +173,7 @@ bool Online::openSocket(u32 nowMs)
     const u32 bindAddress = localAddress();
     if (bindAddress == 0) {
         if (nowMs - waitingSinceMs_ > kAddressWaitMs) {
-            fail("This console has no network address. Check the wireless switch.");
+            fail(kNoAddress);
         }
         return false;
     }
@@ -191,7 +211,13 @@ void Online::pump(u32 nowMs)
         finishLookup();
         return;
     case Stage::WaitingForAddress:
-        openSocket(nowMs);
+        if (!lookupPending_) {
+            openSocket(nowMs);
+        } else if (localAddress() != 0) {
+            beginLookup();
+        } else if (nowMs - waitingSinceMs_ > kAddressWaitMs) {
+            fail(kNoAddress);
+        }
         return;
     case Stage::Connecting:
     case Stage::Ready:
@@ -279,6 +305,7 @@ void Online::stop()
         lookupThread_ = nullptr;
     }
     lookup_.reset();
+    lookupPending_ = false;
 
     if (stage_ == Stage::Connecting || stage_ == Stage::Ready) {
         connection_.end();

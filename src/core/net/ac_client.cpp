@@ -32,6 +32,8 @@ void Client::begin(const Endpoint& server, const Login& login, UdpTransport* tra
     accountHandle_.clear();
     keyFingerprint_.clear();
     firstClaim_ = false;
+    transferPort_ = 0;
+    std::memset(token_, 0, kTokenSize);
     reflexive_ = Endpoint();
     sessionId_ = 0;
     joinCode_.clear();
@@ -284,6 +286,7 @@ bool Client::onDatagram(const u8* data, usize size, u32 nowMs)
         accountHandle_ = msg.hasAccount ? msg.accountHandle : std::string();
         firstClaim_ = msg.firstClaim;
         keyFingerprint_ = msg.keyFingerprint;
+        transferPort_ = msg.transferPort;
         state_ = State::Ready;
         message_.clear();
         pending_ = Pending::None;

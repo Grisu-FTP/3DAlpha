@@ -147,6 +147,7 @@ TEST(every_server_message_decodes_to_what_the_server_put_in_it)
     CHECK_EQ(msg.accountHandle, std::string("Grisu"));
     CHECK(!msg.firstClaim);
     CHECK_EQ(msg.keyFingerprint, std::string("abcd-ef01-2345-6789"));
+    CHECK_EQ(int(msg.transferPort), 7719);
 
     // The unlinked form is what the Profile screen decides "Link" against, so
     // the absent handle has to survive as absent rather than as empty.
@@ -155,6 +156,9 @@ TEST(every_server_message_decodes_to_what_the_server_put_in_it)
     CHECK(msg.accountHandle.empty());
     CHECK(msg.firstClaim);
     CHECK_EQ(msg.displayName, std::string("Steve#A1B2"));
+    // A server with sharing off says so, rather than leaving a console to find
+    // a closed port.
+    CHECK_EQ(int(msg.transferPort), 0);
 
     CHECK(decodes(test::kAcAuthFail, sizeof(test::kAcAuthFail), &msg));
     CHECK(msg.kind == ServerKind::AuthFail);

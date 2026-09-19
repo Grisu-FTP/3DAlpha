@@ -59,6 +59,13 @@ constexpr u8 kAppDataMagic[4] = {'3', 'D', 'A', 'L'};
 
 bool serviceUp = false;
 
+// **Links that are hosting or joined right now**, which is what decides whether
+// the service may be let go. See `releaseLocalWireless`.
+int openLinks = 0;
+
+// When `udsExit` last ran, in `osGetTime` milliseconds; 0 for never.
+u64 releasedAtMs = 0;
+
 // See `setLinkPauseHook`. Null when no session is open, which is every
 // single-player keyboard in the build.
 LinkPauseFn pauseHook = nullptr;
@@ -181,6 +188,19 @@ void stopLocalWireless()
     }
     udsExit();
     serviceUp = false;
+    releasedAtMs = osGetTime();
+}
+
+void releaseLocalWireless()
+{
+    if (openLinks == 0) {
+        stopLocalWireless();
+    }
+}
+
+bool localWirelessReleasedWithin(u32 ms)
+{
+    return !serviceUp && releasedAtMs != 0 && osGetTime() - releasedAtMs < ms;
 }
 
 bool localWirelessReady()
@@ -207,6 +227,14 @@ bool scanLocalSessions(std::vector<LocalSession>* out, std::string* error)
     if (!serviceUp && !startLocalWireless(error)) {
         return false;
     }
+    // **The radio is only borrowed for the scan.** A list of sessions is a
+    // picture of the room, not a connection to it, and the Java servers and the
+    // internet rows sit on the same screen: holding UDS up while the player
+    // reads the list would keep the console off its access point for as long
+    // as they look. A join brings the service back.
+    struct Release {
+        ~Release() { releaseLocalWireless(); }
+    } release;
 
     // The service parses beacons into this buffer and hands back pointers into
     // it, so it has to outlive the walk below. Heap rather than stack: the
@@ -257,10 +285,12 @@ LocalLink::~LocalLink()
 bool LocalLink::host(const std::string& worldName, const std::string& hostName,
                      LocalKind kind, std::string* error)
 {
+    // Leave first: leaving the last link lets the service go, and this one is
+    // about to need it.
+    leave();
     if (!serviceUp && !startLocalWireless(error)) {
         return false;
     }
-    leave();
 
     worldName_ = worldName;
     hostName_ = hostName;
@@ -272,11 +302,13 @@ bool LocalLink::host(const std::string& worldName, const std::string& hostName,
                                             &bind_, kDataChannel, kRecvBufferSize);
     if (R_FAILED(created)) {
         *error = wirelessError("could not open a local session", created);
+        releaseLocalWireless();
         return false;
     }
     bound_ = true;
     active_ = true;
     hosting_ = true;
+    ++openLinks;
     node_ = net::link::kHostNode;
     advertise(0);
     return true;
@@ -293,10 +325,10 @@ void LocalLink::advertise(int players)
 
 bool LocalLink::join(const LocalSession& session, std::string* error)
 {
+    leave();
     if (!serviceUp && !startLocalWireless(error)) {
         return false;
     }
-    leave();
 
     network_ = session.network;
     const Result connected =
@@ -305,11 +337,13 @@ bool LocalLink::join(const LocalSession& session, std::string* error)
                           kRecvBufferSize);
     if (R_FAILED(connected)) {
         *error = wirelessError("could not reach that session", connected);
+        releaseLocalWireless();
         return false;
     }
     bound_ = true;
     active_ = true;
     hosting_ = false;
+    ++openLinks;
 
     // Which node this console became. Only used for the debug page: everything
     // a guest sends goes to the host, which knows where it came from.
@@ -335,6 +369,16 @@ void LocalLink::leave()
     active_ = false;
     hosting_ = false;
     node_ = 0;
+
+    // **The last link out hands the radio back.** UDS holds the console's
+    // wireless in NDM's local-communication state from `udsInit` to `udsExit`
+    // -- libctru's own pair enters and leaves it -- and while it does, the
+    // console is off its access point: no internet, no Online row, and the HOME
+    // Menu's own services offline too, until the game is closed. Nothing keeps
+    // the service up between sessions for a reason; the next host, join or
+    // scan starts it again.
+    --openLinks;
+    releaseLocalWireless();
 }
 
 bool LocalLink::send(u16 node, const u8* data, usize size)

@@ -10154,3 +10154,65 @@ way, but that is two complete images, never a cleared one.
 **The cost is a copy a frame the bottom screen changes on**, and the map page changes on most of
 them. It is measured rather than estimated on the console: the debug page's map row is now
 `map <redraw>+<copy> us`. Host build is unaffected (platform code only); 3DS build clean.
+
+### 62. Import and Export over the internet: a code, and a world the server never opens
+
+Internet on Import and Export said "not in this build yet". AlphaComputer grew a TCP port for it
+(its `src/transfer/`, `docs/transfer.md`): one console uploads a blob and gets a six-character
+code, others download it with the code — even mid-upload — and the blob is deleted when the
+uploader's login ends. The server never opens it. This is the console's half.
+
+#### Protocol 3
+
+The transfer port has its own version (`TRANSFER_PROTOCOL` 1), but a console had no way to learn
+*where* it was, or that a server had it turned off. So `AuthOk` gained `u16 transfer_port` — the
+port the listener really bound, 0 with `transfer_enabled = false` — and `wire::PROTOCOL` /
+`ac::kProtocol` went to 3 on both sides. `Rendezvous::set_transfer_port` is called only once the
+listener is bound. `tests/ac_wire_vectors.hpp` was regenerated and now carries the transfer port's
+frames too (`kAcwt*`), from the Rust `Request::encode` and the server's own payload helpers.
+
+#### The archive
+
+`core/net/world_share` owns what the bytes are: a zlib stream of `"3DAW" u16 version, u32 files,
+u64 bytes`, then per file `u16 length, path, u64 size, bytes`. `ArchiveWriter` streams it off the
+card through `deflate`; `ArchiveReader` inflates whatever arrives, in any split, into
+`ImportStaging`. It holds the stream to the local copy's rules — `safeRelativePath`, the
+`world_transfer.hpp` limits, the declared counts against what came, nothing after the end — and
+`commit` decides whether it is a world.
+
+**Level 2, measured.** The real 1122-file world copied from PrismLauncher (3,403,877-byte raw
+archive, 1121 files already gzip): level 0 1.000, **level 1 1.029** (bigger), level 2 0.941,
+level 6 0.940, level 9 0.941; PC timings 3 / 45 / 75 / 89 / 130 ms. The first real-server run used
+level 1 and sent 3,504,181 bytes for a 3,377,986-byte world, which is how it was noticed. Not timed
+on an ARM11.
+
+#### The console
+
+`platform/ctr/online_share` runs a job on a `Net` worker — prepare, connect, run, and a `Stop` round
+trip for a withdrawal — and the menu reads atomics. `Screen::OnlineTransfer` shows the code from
+the moment the server gives it, the bar, and "Shared. Keep this screen open"; B cancels, or
+withdraws a live share. The login is the Profile screen's `Online`, kept pumped, because the share
+lives as long as it. A replaced login (the client re-logs after a long suspension) is detected by
+comparing tokens and shown as "No longer shared". Import asks for the name, then the code, both on
+keyboards before any socket.
+
+#### What was run
+
+- `tests/world_share_test.cpp`, 16 cases: the requests byte-for-byte against the Rust vectors and
+  the answers decoded; a world packed and unpacked in pieces of 1, 7, 4093 and 16384 bytes, compared
+  file content by file content; six climbing or absolute paths that write nothing anywhere; nine
+  broken archives (overlong, oversized, more/fewer files, no files, another version, junk, not
+  zlib, trailing bytes, cut short) that leave no staging directory; both jobs against a scripted
+  server, including a refusal mid-upload, a share ended mid-download, a wrong code and a cancel.
+- Full host suite 1932/1932. AlphaComputer `cargo test` 155, clippy clean.
+- **Against the real server** (release build, scratch config): `--online export` on a copy of the
+  real world, `--online import` started the moment `SHARECODE` printed, so it downloaded while the
+  upload ran. `diff -r`: identical except `1/1r`, an empty directory, which transfers do not carry
+  by design. The original world has no file newer than the run. A wrong code and a withdrawn code
+  are refused in the server's words; a server with sharing off gives "This server does not share
+  worlds."; the transfer directory is empty after `Stop`.
+- The same round trip on the ThreadSanitizer build: no reports.
+- 3DS build clean.
+
+**No hardware run.** Unmeasured: deflate and inflate speed on core 0 of an Old 3DS, the SOC TCP
+throughput, and whether the menu stays smooth while the worker writes to the card.

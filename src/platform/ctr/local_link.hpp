@@ -72,6 +72,19 @@ bool startLocalWireless(std::string* error);
 void stopLocalWireless();
 bool localWirelessReady();
 
+// **Lets the service go unless a link is still open**, which hands the console's
+// wireless back to its access point. While UDS is up the console is in local
+// communication mode and has no internet at all, so it is released whenever
+// nothing is using it: when the last link leaves, after a scan, and before
+// anything opens a socket. Safe to call at any time.
+void releaseLocalWireless();
+
+// Whether the service was let go less than `ms` ago and is still down. The
+// console takes a few seconds to rejoin its access point after that, and a
+// connection attempted inside the gap fails for want of an address rather than
+// for any reason a player could act on.
+bool localWirelessReleasedWithin(u32 ms);
+
 // **Somebody is about to hand the CPU to a library applet**, which suspends
 // this application outright: no thread runs, nothing is pulled off the radio,
 // and no keep-alive goes out. From the other console's side that is

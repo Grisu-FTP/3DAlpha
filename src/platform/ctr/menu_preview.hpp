@@ -96,8 +96,9 @@ public:
     // Row 0 is "+ Extract from a jar..."; row n is `packs[n - 1]`.
     void setPackList(const std::vector<texture::PackEntry>& packs);
     void setPackCursor(int row);
-    // Row 0 is "+ Create New World"; row n is `worlds[n - 1]`.
-    void setWorldList(const std::vector<world::WorldEntry>& worlds);
+    // The first `pinnedRows` rows ("+ Create New World", and "+ Import World"
+    // outside hosting) have no world; row n after them is `worlds[n - pinnedRows]`.
+    void setWorldList(const std::vector<world::WorldEntry>& worlds, int pinnedRows);
     void setWorldCursor(int row);
 
     // Stops every read of this world and waits for one in flight to notice.

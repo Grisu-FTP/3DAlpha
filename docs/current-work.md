@@ -3,6 +3,23 @@
 Last verified: 2026-09-18. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## CIA: Import World crashed opening its keyboard (2026-09-19)
+
+`crashlogs/011-cia-import-world/`. Opening a keyboard, libctru copies each screen's `framebuf0`
+as GSP reports it. For the bottom screen that address was in VRAM (`0x1F4C7800`), and the CIA had
+no mapping there. A 3DSX inherits one from the Homebrew Launcher. The RSF gains
+`MemoryMapping: 1f000000-1f5fffff:r` (the standard template's line), and the scan shows the
+descriptors in the new CIA. `make cia` also works in a fresh tree now: its target depends on the
+`.smdh`. **Fixed CIA not yet launched on a console.**
+
+## No "+ Import World" when picking a world to host (2026-09-19)
+
+The world list drops the Import row while `pickingHost_` is set (local and internet hosting).
+Its row layout goes through `firstWorldRow`/`isImportRow`/`rowCount` in `menu.cpp`, which all
+take the hosting flag. `MenuPreview::setWorldList` now takes the pinned-row count, so the table
+preview stays lined up with the rows. "+ Create New World" stays and still says to make the
+world first. **Not seen on hardware.**
+
 ## The CIA build could not create any folder (2026-09-19)
 
 "The CIA can't create folders, so it can't extract texture packs or create worlds." The cause is

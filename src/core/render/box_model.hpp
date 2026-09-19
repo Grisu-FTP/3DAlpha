@@ -154,11 +154,20 @@ inline constexpr int kBoxVertices = 6 * 4;
 // other detail vertex carries. `skin` picks the page of the entity sheet the
 // UVs are relative to.
 //
-// **An entity further from the origin than a 16-bit detail position can express
-// is the caller's problem, not this one's.** The item builder skips such an
-// entity rather than clamping it; a box model is drawn part by part and the
-// decision has to be made once for the whole model, so it belongs above here.
+// `unitsPerBlock` is what a vertex position counts in: the detail format's 1024,
+// or `kEntityUnitsPerBlock` for a pass that reaches further and scales its
+// matrix back -- see core/render/entity_range.hpp.
+//
+// **An entity further from the origin than a 16-bit position can express is
+// the caller's problem, not this one's.** A box model is drawn part by part and
+// the decision has to be made once for the whole model, so it belongs above
+// here. **This is only the backstop**: a box with any corner out of range
+// writes nothing and returns 0. Written anyway, the short wraps to the far side
+// of the eye and the box is stretched across the whole screen -- which is what
+// a mob at the edge of the old 31.25-block reach looked like, its centre inside
+// the caller's test and its feet or legs outside it.
 int buildBox(const ModelPart& part, const Placement& place, texture::EntitySkin skin, u8 light,
-             mesh::DetailVertex* out, int max);
+             mesh::DetailVertex* out, int max,
+             int unitsPerBlock = mesh::kDetailUnitsPerBlock);
 
 }  // namespace mc::render

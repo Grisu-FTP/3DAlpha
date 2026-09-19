@@ -17,6 +17,7 @@
 #include "core/entity/ray_trace.hpp"
 #include "core/item/registry.hpp"
 #include "core/item/use.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/render/minecart_mesh.hpp"
 #include "core/texture/entity_skins.hpp"
 #include "core/tick/tick_world.hpp"
@@ -440,9 +441,9 @@ TEST(the_minecart_meshes_into_six_boxes)
     double lo[3] = {1e30, 1e30, 1e30};
     double hi[3] = {-1e30, -1e30, -1e30};
     for (int i = 0; i < written; ++i) {
-        const double p[3] = {double(verts[i].x) / double(mesh::kDetailUnitsPerBlock),
-                             double(verts[i].y) / double(mesh::kDetailUnitsPerBlock),
-                             double(verts[i].z) / double(mesh::kDetailUnitsPerBlock)};
+        const double p[3] = {double(verts[i].x) / double(render::kEntityUnitsPerBlock),
+                             double(verts[i].y) / double(render::kEntityUnitsPerBlock),
+                             double(verts[i].z) / double(render::kEntityUnitsPerBlock)};
         for (int a = 0; a < 3; ++a) {
             lo[a] = p[a] < lo[a] ? p[a] : lo[a];
             hi[a] = p[a] > hi[a] ? p[a] : hi[a];
@@ -477,9 +478,9 @@ TEST(only_a_special_cart_carries_a_block_and_it_sits_in_the_cart)
     double lo[3] = {1e30, 1e30, 1e30};
     double hi[3] = {-1e30, -1e30, -1e30};
     for (int i = 0; i < written; ++i) {
-        const double p[3] = {double(verts[i].x) / double(mesh::kDetailUnitsPerBlock),
-                             double(verts[i].y) / double(mesh::kDetailUnitsPerBlock),
-                             double(verts[i].z) / double(mesh::kDetailUnitsPerBlock)};
+        const double p[3] = {double(verts[i].x) / double(render::kEntityUnitsPerBlock),
+                             double(verts[i].y) / double(render::kEntityUnitsPerBlock),
+                             double(verts[i].z) / double(render::kEntityUnitsPerBlock)};
         for (int a = 0; a < 3; ++a) {
             lo[a] = p[a] < lo[a] ? p[a] : lo[a];
             hi[a] = p[a] > hi[a] ? p[a] : hi[a];
@@ -503,7 +504,7 @@ TEST(only_a_special_cart_carries_a_block_and_it_sits_in_the_cart)
     double cartLo = 1e30;
     double cartHi = -1e30;
     for (int i = 0; i < cartWritten; ++i) {
-        const double y = double(cartVerts[i].y) / double(mesh::kDetailUnitsPerBlock);
+        const double y = double(cartVerts[i].y) / double(render::kEntityUnitsPerBlock);
         cartLo = y < cartLo ? y : cartLo;
         cartHi = y > cartHi ? y : cartHi;
     }

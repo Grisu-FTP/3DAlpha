@@ -438,6 +438,17 @@ Packet makePlace(int itemId, i32 x, int y, i32 z, int face)
     return p;
 }
 
+Packet makeUseItem(int itemId)
+{
+    return makePlace(itemId, -1, 255, -1, kUseItemFace);
+}
+
+bool isUseItem(const Packet& place)
+{
+    return place.id == packet::Place && place.integer(1) == -1 && place.integer(2) == 255
+           && place.integer(3) == -1 && place.integer(4) == kUseItemFace;
+}
+
 Packet makeHoldingChange(int itemId)
 {
     Packet p;

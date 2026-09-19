@@ -2015,6 +2015,15 @@ Overlay::DeathChoice Overlay::takeDeathChoice()
     return choice;
 }
 
+int Overlay::collectArrows(mc::entity::ArrowSystem& arrows, const AABB& playerBox)
+{
+    const int taken = arrows.collect(playerBox, inventory_);
+    if (taken > 0) {
+        inventoryWritten();
+    }
+    return taken;
+}
+
 int Overlay::collectItems(mc::entity::ItemEntitySystem& items, const AABB& playerBox)
 {
     const int taken = items.collect(playerBox, inventory_);

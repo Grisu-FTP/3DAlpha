@@ -16,6 +16,7 @@
 #include "core/entity/particle.hpp"
 #include "core/entity/primed_tnt.hpp"
 #include "core/item/use.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/render/primed_tnt_mesh.hpp"
 #include "core/tick/behaviour.hpp"
 #include "core/tick/drop.hpp"
@@ -382,7 +383,8 @@ TEST(the_flash_cube_is_the_same_cube_the_textured_pass_draws)
     e.fuse = 3;
 
     OutlineVertex flash[kPrimedTntFlashVerticesEach];
-    const int written = buildPrimedTntFlash(e, 0.0, 0.0, 0.0, 0.5f, flash,
+    // The origin is near it, or the flash is out of range and draws nothing.
+    const int written = buildPrimedTntFlash(e, 0.0, 64.0, 0.0, 0.5f, flash,
                                             kPrimedTntFlashVerticesEach);
     CHECK_EQ(written, kPrimedTntFlashVerticesEach);
 
@@ -393,12 +395,27 @@ TEST(the_flash_cube_is_the_same_cube_the_textured_pass_draws)
         maxX = flash[i].x > maxX ? flash[i].x : maxX;
         minX = flash[i].x < minX ? flash[i].x : minX;
     }
-    CHECK(std::abs((maxX - minX) - half * 2.0f) < 1e-4f);
-    CHECK(std::abs(maxX - (4.0f + half)) < 1e-4f);
+    // The textured cube is written in 1/256 of a block and the flash is
+    // snapped to the same grid, so the two land at the same depth and the
+    // overlay's `GEQUAL` passes -- every corner on the grid, and each extent
+    // where the textured pass rounds it.
+    const auto grid = [](double blocks) {
+        const double units = blocks * double(kEntityUnitsPerBlock);
+        return std::round(units) / double(kEntityUnitsPerBlock);
+    };
+    for (int i = 0; i < written; ++i) {
+        const float at[3] = {flash[i].x, flash[i].y, flash[i].z};
+        for (float v : at) {
+            CHECK(std::abs(double(v) - grid(double(v))) < 1e-6);
+        }
+    }
+    CHECK(std::abs(double(maxX) - grid(4.0 + double(half))) < 1e-6);
+    CHECK(std::abs(double(minX) - grid(4.0 - double(half))) < 1e-6);
+    CHECK(std::abs((maxX - minX) - half * 2.0f) < 1.0f / float(kEntityUnitsPerBlock));
 
     // And nothing at all on a tick it is not flashing.
     e.fuse = 7;
-    CHECK_EQ(buildPrimedTntFlash(e, 0.0, 0.0, 0.0, 0.5f, flash,
+    CHECK_EQ(buildPrimedTntFlash(e, 0.0, 64.0, 0.0, 0.5f, flash,
                                  kPrimedTntFlashVerticesEach),
              0);
 }

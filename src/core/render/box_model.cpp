@@ -7,8 +7,6 @@
 namespace mc::render {
 namespace {
 
-constexpr double kUnits = double(mesh::kDetailUnitsPerBlock);
-
 // **Full brightness on all three channels.** `ModelBase.render` never sets a
 // vertex colour; the light byte is what darkens a boat in a cave, exactly as it
 // is for a dropped item.
@@ -21,10 +19,17 @@ constexpr float kPageV = float(texture::kSkinPageHeight);  // 32.0f
 constexpr float kFudgeU = 0.1f / kPageU;
 constexpr float kFudgeV = 0.1f / kPageV;
 
-i16 toUnits(double blocks)
+// Rounded half away from zero, and **refused rather than wrapped** when the
+// short cannot hold it -- see the note on `buildBox`.
+bool toUnits(double blocks, double unitsPerBlock, i16* out)
 {
-    const double units = blocks * kUnits;
-    return i16(units >= 0.0 ? units + 0.5 : units - 0.5);
+    const double units = blocks * unitsPerBlock;
+    const double rounded = units >= 0.0 ? units + 0.5 : units - 0.5;
+    if (!(rounded > -32768.0 && rounded < 32768.0)) {
+        return false;
+    }
+    *out = i16(rounded);
+    return true;
 }
 
 // **The page fraction, clamped into its own page.**
@@ -146,7 +151,7 @@ Placement placeAt(double x, double y, double z, float yawRadians, float scale)
 }
 
 int buildBox(const ModelPart& part, const Placement& place, texture::EntitySkin skin, u8 light,
-             mesh::DetailVertex* out, int max)
+             mesh::DetailVertex* out, int max, int unitsPerBlock)
 {
     if (out == nullptr || max < kBoxVertices) {
         return 0;
@@ -219,6 +224,7 @@ int buildBox(const ModelPart& part, const Placement& place, texture::EntitySkin 
     const float sinZ = MathHelper::sin(part.angleZ);
     const float cosZ = MathHelper::cos(part.angleZ);
 
+    const double units = double(unitsPerBlock);
     int written = 0;
     for (int q = 0; q < 6; ++q) {
         const Quad& quad = quads[q];
@@ -273,9 +279,10 @@ int buildBox(const ModelPart& part, const Placement& place, texture::EntitySkin 
                                                + pz * place.az[2]);
 
             mesh::DetailVertex& v = out[written];
-            v.x = toUnits(wx);
-            v.y = toUnits(wy);
-            v.z = toUnits(wz);
+            if (!toUnits(wx, units, &v.x) || !toUnits(wy, units, &v.y)
+                || !toUnits(wz, units, &v.z)) {
+                return 0;
+            }
             v.face = 0;
             v.u = sheetU(originU, us[c]);
             v.v = sheetV(originV, vs[c]);

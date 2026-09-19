@@ -74,6 +74,13 @@ public:
     // a sword the server has not heard about would punch for one.
     void attackEntity(i32 targetEntityId, int heldItem);
 
+    // **A right click in the air, for the host to act on** -- the bow, which
+    // a1.1.2 never puts on the wire (see `net::makeUseItem`). The pose goes
+    // first, so the arrow leaves along the look the player has *now* rather
+    // than the one last tick reported. False when the other end is not this
+    // port, and then the caller fires the arrow locally, as a1.1.2 does.
+    bool useItem(int heldItem, const entity::PlayerBody& body, const Camera& camera);
+
     // **Whether the other end is this port**, and so understands the packets
     // protocol 2 does not have: `packet::UseEntity`, and the stance --
     // `EntityAction`, `EntityStatus` and `Respawn`. Off by default, because the

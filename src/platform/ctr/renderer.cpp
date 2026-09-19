@@ -365,6 +365,25 @@ bool drainGpu(float seconds)
 // wedged the GPU is told rather than left holding a dead console.
 constexpr float kGpuDrainSeconds = 0.5f;
 
+// **The matrix for a pass written in `render::kEntityUnitsPerBlock`**: the eye's
+// block folded in as a translation, as every entity pass folds it, and then the
+// scale from 1/256 of a block back to the 1/1024 the detail shader divides by.
+// Translation first, from the unscaled columns, because the scale belongs
+// inside it. `drawSigns` does the same at 1/512. See
+// core/render/entity_range.hpp.
+C3D_Mtx entityMatrix(const C3D_Mtx& viewProjection, float tx, float ty, float tz)
+{
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+        mvp.r[row].c[1] = r[1] * render::kEntityUnitScale;
+        mvp.r[row].c[2] = r[2] * render::kEntityUnitScale;
+        mvp.r[row].c[3] = r[3] * render::kEntityUnitScale;
+    }
+    return mvp;
+}
+
 }  // namespace
 
 bool beginFrameBounded(float seconds)
@@ -476,7 +495,7 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
     minecartVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMinecartVertices));
     minecartBlockVerts_ =
         linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMinecartBlockVertices));
-    // 72 KB more: sixteen animals at up to twelve boxes each.
+    // 108 KB more: twenty-four mobs at up to twelve boxes each.
     mobVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMobVertices));
     // 6 KB more, and a buffer of its own for the same reason the flames have
     // one: the slime's shell is a *pass* and not a box, so it cannot share a
@@ -858,11 +877,8 @@ void Renderer::drawFallingBlocks(const C3D_Mtx& viewProjection, i32 originChunkX
     const float ty = float(eyeBlockY);
     const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
 
-    C3D_Mtx mvp = viewProjection;
-    for (int row = 0; row < 4; ++row) {
-        const float* r = viewProjection.r[row].c;
-        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
-    }
+    // Scaled back from render::kEntityUnitsPerBlock, as `drawMobs` is.
+    const C3D_Mtx mvp = entityMatrix(viewProjection, tx, ty, tz);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
     C3D_BufInfo bufInfo;
@@ -924,14 +940,17 @@ void Renderer::drawPrimedTnt(const C3D_Mtx& viewProjection, i32 originChunkX,
     const float ty = float(eyeBlockY);
     const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
 
+    // The cube is in render::kEntityUnitsPerBlock and the flash in plain
+    // blocks, so they take the same translation and different scales.
     C3D_Mtx mvp = viewProjection;
     for (int row = 0; row < 4; ++row) {
         const float* r = viewProjection.r[row].c;
         mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
     }
+    const C3D_Mtx cubeMvp = entityMatrix(viewProjection, tx, ty, tz);
 
     bindPipeline(detailPipeline_);
-    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &cubeMvp);
 
     C3D_BufInfo bufInfo;
     BufInfo_Init(&bufInfo);
@@ -1185,11 +1204,8 @@ void Renderer::drawBoats(const C3D_Mtx& viewProjection, i32 originChunkX, i32 or
     const float ty = float(eyeBlockY);
     const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
 
-    C3D_Mtx mvp = viewProjection;
-    for (int row = 0; row < 4; ++row) {
-        const float* r = viewProjection.r[row].c;
-        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
-    }
+    // Scaled back from render::kEntityUnitsPerBlock; see `entityMatrix`.
+    const C3D_Mtx mvp = entityMatrix(viewProjection, tx, ty, tz);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
     C3D_BufInfo bufInfo;
@@ -1281,11 +1297,8 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
     const float ty = float(eyeBlockY);
     const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
 
-    C3D_Mtx mvp = viewProjection;
-    for (int row = 0; row < 4; ++row) {
-        const float* r = viewProjection.r[row].c;
-        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
-    }
+    // Scaled back from render::kEntityUnitsPerBlock; see `entityMatrix`.
+    const C3D_Mtx mvp = entityMatrix(viewProjection, tx, ty, tz);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
     C3D_BufInfo bufInfo;
@@ -1465,11 +1478,8 @@ void Renderer::drawEntityFire(const C3D_Mtx& viewProjection, i32 originChunkX,
     const float ty = float(eyeBlockY);
     const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
 
-    C3D_Mtx mvp = viewProjection;
-    for (int row = 0; row < 4; ++row) {
-        const float* r = viewProjection.r[row].c;
-        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
-    }
+    // The flames are in render::kEntityUnitsPerBlock too.
+    const C3D_Mtx mvp = entityMatrix(viewProjection, tx, ty, tz);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
     C3D_BufInfo bufInfo;
@@ -1511,11 +1521,8 @@ void Renderer::drawMinecarts(const C3D_Mtx& viewProjection, i32 originChunkX,
     const float ty = float(eyeBlockY);
     const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
 
-    C3D_Mtx mvp = viewProjection;
-    for (int row = 0; row < 4; ++row) {
-        const float* r = viewProjection.r[row].c;
-        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
-    }
+    // Scaled back from render::kEntityUnitsPerBlock; see `entityMatrix`.
+    const C3D_Mtx mvp = entityMatrix(viewProjection, tx, ty, tz);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
     C3D_BufInfo bufInfo;
@@ -1564,11 +1571,8 @@ void Renderer::drawMinecartBlocks(const C3D_Mtx& viewProjection, i32 originChunk
     const float ty = float(eyeBlockY);
     const float tz = float(eyeBlockZ - double(originChunkZ) * 16.0);
 
-    C3D_Mtx mvp = viewProjection;
-    for (int row = 0; row < 4; ++row) {
-        const float* r = viewProjection.r[row].c;
-        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
-    }
+    // Scaled back from render::kEntityUnitsPerBlock; see `entityMatrix`.
+    const C3D_Mtx mvp = entityMatrix(viewProjection, tx, ty, tz);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
 
     C3D_BufInfo bufInfo;

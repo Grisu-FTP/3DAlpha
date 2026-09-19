@@ -190,6 +190,18 @@ public:
     // costs is worked out by the frame loop here rather than by the server.
     bool takeHit(net::IncomingHit* out);
 
+    // **The guests, as targets for this world's arrows**, and where a hit on
+    // one goes: `arrowStruck` is an `ArrowTargets::hurtRemote` with this
+    // HostPlay as its context. See `net::WorldServer::arrowTargets`.
+    int arrowTargets(entity::RemoteTarget* out, int max) const
+    {
+        return server_.arrowTargets(out, max);
+    }
+    static void arrowStruck(void* context, i32 victimEntityId, entity::Arrow& arrow)
+    {
+        static_cast<HostPlay*>(context)->server_.arrowStruck(victimEntityId, arrow);
+    }
+
     // One 20 Hz tick of those bodies: the walk toward wherever each guest last
     // said they were, and the light they are standing in.
     void tickEntities(const tick::TickWorld* world) { entities_.tick(world); }
@@ -245,6 +257,11 @@ private:
     }
     void spawnItem(double x, double y, double z, item::ItemId id, int count, double mx,
                    double my, double mz) override;
+    entity::ArrowSystem* arrows() override
+    {
+        return effects_ != nullptr ? effects_->entities.arrows : nullptr;
+    }
+    void useItem(const UseRequest& request) override;
 
     // The server's way back onto the link. One player at a time; false is the
     // window being full, which is back-pressure rather than a failure.

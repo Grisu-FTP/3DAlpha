@@ -28,6 +28,7 @@
 // (`0x17`): boats and carts are two more pools, and a cart's tilt is read off
 // the track it is on rather than off the packet.
 
+#include "core/entity/arrow.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/entity/mob.hpp"
 #include "core/net/packets.hpp"
@@ -149,6 +150,10 @@ struct IncomingHit {
     bool present = false;
     // What the attacker was holding, for `ItemDef::damageVsEntity`.
     int item = 0;
+    // **An arrow, not a hand**: `kArrowDamage` as `DamageSource::Arrow`,
+    // which difficulty scales, and `item` means nothing. A 3DAlpha host says
+    // so by naming the arrow as the attacker -- see `WorldServer::arrowStruck`.
+    bool arrow = false;
     // Where they were standing, for the knockback.
     double fromX = 0.0;
     double fromZ = 0.0;
@@ -168,6 +173,10 @@ public:
     // is what a caller with no world wants.
     void bind(entity::ItemEntitySystem* items) { items_ = items; }
     void bindMobs(entity::MobSystem* mobs) { mobs_ = mobs; }
+    // **Arrows a 3DAlpha host announces** (`kObjectArrow`), drawn where it
+    // says and never simulated here. Null leaves them uncounted.
+    void bindArrows(entity::ArrowSystem* arrows) { arrows_ = arrows; }
+    entity::ArrowSystem* arrows() const { return arrows_; }
 
     // **What a Mob Spawn's type byte means.** `ew`'s table in the client jar,
     // read with javap: 50 creeper, 51 skeleton, 52 spider, 53 giant, 54 zombie,
@@ -232,6 +241,7 @@ private:
     JavaRandom rand_;
     entity::ItemEntitySystem* items_ = nullptr;
     entity::MobSystem* mobs_ = nullptr;
+    entity::ArrowSystem* arrows_ = nullptr;
     u32 unhandledSpawns_ = 0;
 };
 

@@ -129,9 +129,24 @@ void NetPlay::apply(const net::Packet& p, render::WorldStreamer& world,
             }
         }
         if (from == nullptr) {
+            // **An arrow the host fired**, named as the attacker -- see
+            // `WorldServer::arrowStruck`. Knocked back from where the arrow
+            // is, as the host's own player is.
+            entity::ArrowSystem* arrows = entities_.arrows();
+            const entity::Arrow* arrow =
+                arrows != nullptr ? arrows->findById(i32(p.integer(0))) : nullptr;
+            if (arrow == nullptr) {
+                break;
+            }
+            hit_.present = true;
+            hit_.arrow = true;
+            hit_.item = 0;
+            hit_.fromX = arrow->x;
+            hit_.fromZ = arrow->z;
             break;
         }
         hit_.present = true;
+        hit_.arrow = false;
         hit_.item = int(from->heldItem);
         hit_.fromX = from->x;
         hit_.fromZ = from->z;
@@ -285,6 +300,28 @@ void NetPlay::attackEntity(i32 targetEntityId, int heldItem)
         session_.send(held);
     }
     session_.send(net::makeUseEntity(entityId_, targetEntityId, true));
+}
+
+bool NetPlay::useItem(int heldItem, const entity::PlayerBody& body, const Camera& camera)
+{
+    if (!extensions_) {
+        return false;
+    }
+    net::Packet held;
+    if (held_.changed(heldItem, &held)) {
+        session_.send(held);
+    }
+    net::PlayerPose pose;
+    pose.x = body.x;
+    pose.feetY = body.box.minY;
+    pose.eyeY = body.posY;
+    pose.z = body.z;
+    pose.yaw = camera.yaw * kDegreesPerRadian;
+    pose.pitch = camera.pitch * kDegreesPerRadian;
+    pose.onGround = body.onGround;
+    session_.send(movement_.tick(pose));
+    session_.send(net::makeUseItem(heldItem));
+    return true;
 }
 
 bool NetPlay::takeHit(net::IncomingHit* out)

@@ -539,14 +539,13 @@ void MenuPreview::setPackCursor(int row)
     }
 }
 
-void MenuPreview::setWorldList(const std::vector<world::WorldEntry>& worlds)
+void MenuPreview::setWorldList(const std::vector<world::WorldEntry>& worlds, int pinnedRows)
 {
     worldRows_.clear();
-    worldRows_.reserve(worlds.size() + 2);
-    // The two pinned rows have no world behind them, so they have no table on
-    // them either: an empty key is what every walk below skips.
-    worldRows_.push_back(std::string());  // "+ Create New World"
-    worldRows_.push_back(std::string());  // "+ Import World"
+    worldRows_.reserve(worlds.size() + usize(pinnedRows));
+    // The pinned rows have no world behind them, so they have no table on them
+    // either: an empty key is what every walk below skips.
+    worldRows_.resize(usize(pinnedRows));
     for (const world::WorldEntry& entry : worlds) {
         worldRows_.push_back(entry.path);
     }

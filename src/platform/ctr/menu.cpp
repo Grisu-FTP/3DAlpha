@@ -69,21 +69,28 @@ constexpr float kRowGap = 4.0f;
 constexpr float kRowsTop = 36.0f;
 constexpr int kVisibleRows = 6;
 
-// The rows pinned above the worlds themselves: "+ Create New World" and
-// "+ Import World". A world's place in `worlds_` is its row minus this, and
-// every index on the world screen goes through one of the two names below
-// rather than through a literal 1.
-enum WorldListRow {
-    kWorldRowCreate = 0,
-    kWorldRowImport = 1,
-    kWorldRowFirst = 2,
-};
+// The rows pinned above the worlds themselves: "+ Create New World" and, unless
+// the list is picking a world to host, "+ Import World". Importing is for single
+// player; a host's guests are waiting for a world that already exists. A world's
+// place in `worlds_` is its row minus firstWorldRow, and every index on the
+// world screen goes through these rather than through a literal.
+constexpr int kWorldRowCreate = 0;
+
+int firstWorldRow(bool hosting)
+{
+    return hosting ? 1 : 2;
+}
+
+bool isImportRow(int row, bool hosting)
+{
+    return !hosting && row == 1;
+}
 
 // Anything above this and a2 is `- empty -` on a1.1.2's own screen; here it is
 // only the point at which the list scrolls.
-int rowCount(usize worlds)
+int rowCount(usize worlds, bool hosting)
 {
-    return int(worlds) + kWorldRowFirst;
+    return int(worlds) + firstWorldRow(hosting);
 }
 
 // A per-tile shade for the backdrop. Deterministic, so the menu does not
@@ -813,7 +820,7 @@ void Menu::refreshWorlds()
         bool found = false;
         for (usize i = 0; i < worlds_.size(); ++i) {
             if (worlds_[i].name == worldCursorName_) {
-                worldCursor_ = int(i) + kWorldRowFirst;
+                worldCursor_ = int(i) + firstWorldRow(pickingHost_);
                 found = true;
                 break;
             }
@@ -823,7 +830,7 @@ void Menu::refreshWorlds()
         }
     }
 
-    const int rows = rowCount(worlds_.size());
+    const int rows = rowCount(worlds_.size(), pickingHost_);
     if (worldCursor_ >= rows) {
         worldCursor_ = rows - 1;
     }
@@ -2428,7 +2435,8 @@ bool Menu::handlePause(u32 down, PauseChoice* choice)
 
 bool Menu::handleWorlds(u32 down, MenuChoice* choice)
 {
-    const int rows = rowCount(worlds_.size());
+    const int first = firstWorldRow(pickingHost_);
+    const int rows = rowCount(worlds_.size(), pickingHost_);
     worldCursor_ = step(down, worldCursor_, rows);
 
     // Keep the cursor on screen, scrolling by the smallest amount that does it.
@@ -2441,9 +2449,8 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
 
     // Remembered by name on every move, so the list can be re-read and
     // re-sorted underneath it -- which is what playing a world does.
-    worldCursorName_ = worldCursor_ >= kWorldRowFirst
-                               && usize(worldCursor_ - kWorldRowFirst) < worlds_.size()
-                           ? worlds_[usize(worldCursor_ - kWorldRowFirst)].name
+    worldCursorName_ = worldCursor_ >= first && usize(worldCursor_ - first) < worlds_.size()
+                           ? worlds_[usize(worldCursor_ - first)].name
                            : std::string();
 
     if (down & KEY_B) {
@@ -2469,9 +2476,9 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
     // still one press further in, behind the same confirmation it always had;
     // what changed is that X now also reaches size, format and copy, which had
     // nowhere to live when it went straight to a yes/no.
-    if ((down & KEY_X) != 0 && worldCursor_ >= kWorldRowFirst
-        && usize(worldCursor_ - kWorldRowFirst) < worlds_.size()) {
-        const world::WorldEntry& entry = worlds_[usize(worldCursor_ - kWorldRowFirst)];
+    if ((down & KEY_X) != 0 && worldCursor_ >= first
+        && usize(worldCursor_ - first) < worlds_.size()) {
+        const world::WorldEntry& entry = worlds_[usize(worldCursor_ - first)];
         message_ = nullptr;
         worldSettingsCursor_ = 0;
         worldSettingsScroll_ = 0;
@@ -2486,14 +2493,12 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
     }
     playClick();
 
-    if (worldCursor_ == kWorldRowCreate || worldCursor_ == kWorldRowImport) {
+    if (worldCursor_ == kWorldRowCreate || isImportRow(worldCursor_, pickingHost_)) {
         if (pickingHost_) {
             // Getting a world is a thing to do on the way into single player,
             // not on the way into a session: the others are waiting, and the
             // world they were told about is one that exists.
-            message_ = worldCursor_ == kWorldRowCreate
-                           ? "Make the world first, then host it."
-                           : "Import the world first, then host it.";
+            message_ = "Make the world first, then host it.";
             consoleDirty_ = true;
             return false;
         }
@@ -2509,7 +2514,7 @@ bool Menu::handleWorlds(u32 down, MenuChoice* choice)
         return false;
     }
 
-    const world::WorldEntry& entry = worlds_[usize(worldCursor_ - kWorldRowFirst)];
+    const world::WorldEntry& entry = worlds_[usize(worldCursor_ - first)];
     // **The same world, opened for company.** Hosting is not a different way
     // of playing a world -- the host plays it exactly as they would alone --
     // so everything below this line is the single-player path, and the only
@@ -5089,7 +5094,7 @@ void Menu::drawWorlds()
     drawLabelCentered(pickingHost_ ? "Host a World" : "Select World", kScreenWidth * 0.5f,
                       16.0f, 0.7f, kInk, true);
 
-    const int rows = rowCount(worlds_.size());
+    const int rows = rowCount(worlds_.size(), pickingHost_);
     const float rowX = 20.0f;
     const float rowWidth = kScreenWidth - 2.0f * rowX;
 
@@ -5106,7 +5111,7 @@ void Menu::drawWorlds()
             drawButton(rect, "+ Create New World", selected, true);
             continue;
         }
-        if (index == kWorldRowImport) {
+        if (isImportRow(index, pickingHost_)) {
             drawButton(rect, "+ Import World", selected, true);
             continue;
         }
@@ -5114,7 +5119,7 @@ void Menu::drawWorlds()
         // A world row is a button with two texts on it rather than a centred
         // label, so the name and when it was last played both fit.
         drawButton(rect, "", selected, true);
-        const world::WorldEntry& entry = worlds_[usize(index - kWorldRowFirst)];
+        const world::WorldEntry& entry = worlds_[usize(index - firstWorldRow(pickingHost_))];
 
         // Wide enough for the format's worst case rather than its usual one:
         // tm_year is an int and gmtime_r will hand back a five-digit year for a
@@ -5719,7 +5724,7 @@ void Menu::syncPreview()
         preview_->setPackList(packs_);
         break;
     case PreviewScreen::Worlds:
-        preview_->setWorldList(worlds_);
+        preview_->setWorldList(worlds_, firstWorldRow(pickingHost_));
         break;
     case PreviewScreen::Plain:
     case PreviewScreen::None:
@@ -5820,11 +5825,11 @@ void Menu::drawPreviewLabels()
         if (worldCursor_ == kWorldRowCreate) {
             name = "New World";
             hint = "A: Create   B: Back";
-        } else if (worldCursor_ == kWorldRowImport) {
+        } else if (isImportRow(worldCursor_, pickingHost_)) {
             name = "Import World";
             hint = "A: Import   B: Back";
-        } else if (usize(worldCursor_ - kWorldRowFirst) < worlds_.size()) {
-            name = worlds_[usize(worldCursor_ - kWorldRowFirst)].name.c_str();
+        } else if (usize(worldCursor_ - firstWorldRow(pickingHost_)) < worlds_.size()) {
+            name = worlds_[usize(worldCursor_ - firstWorldRow(pickingHost_))].name.c_str();
             hint = "A: Play   X: Settings   B: Back";
         }
         break;

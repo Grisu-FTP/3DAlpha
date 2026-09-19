@@ -148,108 +148,110 @@ grep -n 'geometry shader' docs/*.md   # find which section first
 
 ## `docs/current-work.md`
 
-3,044 lines, ~55,878 tokens.
+3,061 lines, ~56,144 tokens.
 
-- **6-18** The CIA build could not create any folder (2026-09-19)
-- **19-44** Other players never crouched or died on anyone else's screen (2026-09-19)
-- **45-64** A guest's world fell further and further behind while poses stayed live (2026-09-19)
-- **65-90** A guest's animals were mute, stiff and never hurt; other players never swung (2026-09-19)
-- **91-136** Internet joins: the relay was never registered, and a login raced itself (2026-09-18)
-- **137-146** The bottom screen is drawn off-screen and copied whole (2026-09-18)
-- **147-154** The flames over a burning player's view (2026-09-18)
-- **155-182** A lobby to host an internet session from, and how far a world reaches (2026-09-18)
-- **183-237** Sessions over the internet, and a Profile screen to be somebody on (2026-09-18)
-- **238-270** A Controls row: the port had one scheme, and it needed a C-stick (2026-09-18)
-- **271-294** The CIA crashed on launch: no DSP memory mapping in the exheader (2026-09-18)
-- **295-310** The host build did not link without a decoder (2026-09-18)
-- **311-329** CI runs the host suite, and the binaries wait on it (2026-09-18)
-- **330-380** The diorama stood next to the world, and four things on the bottom screen (2026-09-18)
-- **381-400** The bottom screen takes the stick, and the press that closes it (2026-09-17)
-- **401-421** A Sensitivity row, on a1.1.2's own curve (2026-09-17)
-- **422-453** Import and Export: a world crosses the room (2026-09-17)
-- **454-455** The spider's eyes, and a sweep for documentation that had stopped being true (2026-09-17)
-  - **456-483** The eyes are a blended pass now, and the alpha comes out of the lightmap (2026-09-17)
-  - **484-502** Four documented facts that had stopped being true (2026-09-17)
-- **503-504** The frame that did not add up, and two mob rules put back (2026-09-17)
-  - **505-527** `CPU busy` was answering a question nobody asked (2026-09-17)
-  - **528-540** An arrow now misses its own archer by identity, not by address (2026-09-17)
-  - **541-558** The one-path-search-a-tick budget is gone (2026-09-17)
-- **559-560** Two from play: pausing froze a session, and the map stopped at the render distance (2026-09-16)
-  - **561-580** START no longer stops a world somebody else is in (2026-09-16)
-  - **581-602** The map fills in the band no column will ever arrive for (2026-09-16)
-- **603-604** Three from play: the music skipped, a guest's mining dropped nothing, and a ring of the world was served by nobody (2026-09-16)
-  - **605-630** The scheduler, not the decoder (2026-09-16)
-  - **631-653** A guest mining dropped nothing, anywhere (2026-09-16)
-  - **654-678** A three-chunk ring at the end of the host's render distance where nothing generated (2026-09-16)
-- **679-780** Six from a session: dark mobs, a stepping herd, the slime's face, redstone, the wall a guest walked into, and a banner that moved screens (2026-09-15)
-- **781-844** Seven things the first two-console session found (2026-09-15)
-- **845-894** A guest plays the host's game: rules, where they land, and what is alive (2026-09-15)
-- **895-964** The world crosses the link: two consoles in one world (2026-09-15)
-- **965-1003** Terrain crosses the link: the expensive half of a chunk, made on somebody else's console (2026-09-14)
-- **1004-1041** Two consoles in one room: the link, the session, and the menu that opens one (2026-09-14)
-- **1042-1062** Three from the jukebox: the disc was free, breaking it voided it, and the record outlived the world (2026-09-14)
-- **1063-1103** Four more from play: DNS, a splash that repeated, a hollow door, and glass that was a stack of boxes (2026-09-14)
-- **1104-1151** Six reports from play: a port row, the fence and furnace icons, the jukebox, the special carts (2026-09-14)
-- **1152-1176** Checkout context
-- **1177-1297** Multiplayer is joinable (2026-09-13)
-- **1298-1314** Fences need ground again, and sign boards stopped sliding (2026-09-13)
-- **1315-1357** Six reports from play: an invisible join, far signs, stacked torches, buckets, X (2026-09-13)
-- **1358-1397** The chest connects, a third one goes in through water, and a seed breaks bedrock (2026-09-13)
-- **1398-1429** The near plane, the spawn lift's order, and a death screen that outlived its world (2026-09-13)
-- **1430-1468** The two screens: a square hotbar slot, Spectator's forty pixels, and a wear bar (2026-09-13)
-- **1469-1508** Survival is on (M3 step 4)
-- **1509-1545** Five things the first Survival playthrough found (2026-09-13)
-- **1546-1573** Create World is a screen now, not two keyboards
-- **1574-1639** Extra Settings: a per-world screen that is deliberately not a1.1.2
-- **1640-1660** World Settings measures a world on a thread, so a big world no longer freezes the menu
-- **1661-1775** Main-menu bottom-screen previews: a row of skins, a pack scene, a world diorama
-- **1776-1804** Options and World Settings: grouped scrolling lists, tooltips on a dirt bottom screen
-- **1805-1814** Explosions destroy dropped items
-- **1815-1833** Water and lava are generated textures now; fire's standing still is not yet explained
-- **1834-1858** The open inventory keeps up, the carried stack is visible, and X throws it
-- **1859-1895** The sky: colours from the clock, two flat planes, the sun, the moon and 780 stars
-- **1896-1929** Walking on a block: farmland is trampled, and redstone ore lights up
-- **1930-2007** You can stand on a minecart, and a minecart stops at what is standing on it
-- **2008-2059** The bottom map follows the world, and the game never waits for it
-- **2060-2093** `TileEntities` is modelled, so signs, spawners and dungeon loot all persist
-- **2094-2125** The mob spawner works, and the mob was in the world file all along
-- **2126-2152** A sword hits for what it is worth, and the hoe works
-- **2153-2181** Arrows are not eaten by the archer any more, and a flying player can shoot a painting down
-- **2182-2212** The stone button is a button in the hand and in the slot, not a stone block
-- **2213-2235** An arrow no longer shoots the player who fired it
-- **2236-2253** Dropped items do not stack on their own any more, and Beta 1.8 was the wrong date
-- **2254-2288** A cactus hurts what touches it, and an item cactus is the cell and not the inset box
-- **2289-2311** Fire burns entities now: `kh.c(DDD)V`'s tail, and a finding that was wrong
-- **2312-2341** A burning mob now shows it: `ak.a(Lkh;DDDF)V`
-- **2342-2392** TNT is complete: `jd`, and all four ways a1.1.2 lights it
-- **2393-2428** Sneaking is a toggle, it lowers the camera, and it slows you down
-- **2429-2458** All twelve particles
-- **2459-2477** A Creative player is not something a monster hunts
-- **2478-2501** Where the monsters actually go, and the chunk order that decided it
-- **2502-2528** Three fixes on top of the hostile mobs
-- **2529-2574** The hostile mobs are in: zombie, skeleton, creeper, spider, slime
-- **2575-2608** The entity sounds, and the boot list that was swallowing half of them
-- **2609-2645** The peaceful animals are in: pig, sheep, cow, chicken
-- **2646-2661** A door's texture now shows which side its hinge is on
-- **2662-2676** Item-sheet sprites were never uploaded at launch
-- **2677-2693** Teleport has no height range; cacti have spikes
-- **2694-2714** Greedy meshing is in, through a cube atlas and a seam
-- **2715-2728** The crosshair's entity pick is `getMouseOver`'s now
-- **2729-2741** Furnaces and stairs face their neighbours, and a furnace draws its mouth where it faces
-- **2742-2750** A sign whose support is broken now goes
-- **2751-2760** A minecart stack no longer overflows to NaN; a NaN entity no longer bricks a save
-- **2761-2799** Entity pools have no cap
-- **2800-2812** Breaking entities, and the crop's seeds
-- **2813-2828** Entity persistence
-- **2829-2855** The held item
-- **2856-2879** Skins
-- **2880-2911** Hardware save crash — cause found, previous verdict corrected
-- **2912-2932** Dungeons after the null-side-effects tweak
-- **2933-2953** Minecart placement and the crosshair, checked rather than assumed
-- **2954-2982** The crosshair was being back-face culled
-- **2983-3009** The compass no longer repaints a screen that has not changed
-- **3010-3030** Arrow and minecart follow-up
-- **3031-3044** Verification evidence
+- **6-14** CIA: Import World crashed opening its keyboard (2026-09-19)
+- **15-22** No "+ Import World" when picking a world to host (2026-09-19)
+- **23-35** The CIA build could not create any folder (2026-09-19)
+- **36-61** Other players never crouched or died on anyone else's screen (2026-09-19)
+- **62-81** A guest's world fell further and further behind while poses stayed live (2026-09-19)
+- **82-107** A guest's animals were mute, stiff and never hurt; other players never swung (2026-09-19)
+- **108-153** Internet joins: the relay was never registered, and a login raced itself (2026-09-18)
+- **154-163** The bottom screen is drawn off-screen and copied whole (2026-09-18)
+- **164-171** The flames over a burning player's view (2026-09-18)
+- **172-199** A lobby to host an internet session from, and how far a world reaches (2026-09-18)
+- **200-254** Sessions over the internet, and a Profile screen to be somebody on (2026-09-18)
+- **255-287** A Controls row: the port had one scheme, and it needed a C-stick (2026-09-18)
+- **288-311** The CIA crashed on launch: no DSP memory mapping in the exheader (2026-09-18)
+- **312-327** The host build did not link without a decoder (2026-09-18)
+- **328-346** CI runs the host suite, and the binaries wait on it (2026-09-18)
+- **347-397** The diorama stood next to the world, and four things on the bottom screen (2026-09-18)
+- **398-417** The bottom screen takes the stick, and the press that closes it (2026-09-17)
+- **418-438** A Sensitivity row, on a1.1.2's own curve (2026-09-17)
+- **439-470** Import and Export: a world crosses the room (2026-09-17)
+- **471-472** The spider's eyes, and a sweep for documentation that had stopped being true (2026-09-17)
+  - **473-500** The eyes are a blended pass now, and the alpha comes out of the lightmap (2026-09-17)
+  - **501-519** Four documented facts that had stopped being true (2026-09-17)
+- **520-521** The frame that did not add up, and two mob rules put back (2026-09-17)
+  - **522-544** `CPU busy` was answering a question nobody asked (2026-09-17)
+  - **545-557** An arrow now misses its own archer by identity, not by address (2026-09-17)
+  - **558-575** The one-path-search-a-tick budget is gone (2026-09-17)
+- **576-577** Two from play: pausing froze a session, and the map stopped at the render distance (2026-09-16)
+  - **578-597** START no longer stops a world somebody else is in (2026-09-16)
+  - **598-619** The map fills in the band no column will ever arrive for (2026-09-16)
+- **620-621** Three from play: the music skipped, a guest's mining dropped nothing, and a ring of the world was served by nobody (2026-09-16)
+  - **622-647** The scheduler, not the decoder (2026-09-16)
+  - **648-670** A guest mining dropped nothing, anywhere (2026-09-16)
+  - **671-695** A three-chunk ring at the end of the host's render distance where nothing generated (2026-09-16)
+- **696-797** Six from a session: dark mobs, a stepping herd, the slime's face, redstone, the wall a guest walked into, and a banner that moved screens (2026-09-15)
+- **798-861** Seven things the first two-console session found (2026-09-15)
+- **862-911** A guest plays the host's game: rules, where they land, and what is alive (2026-09-15)
+- **912-981** The world crosses the link: two consoles in one world (2026-09-15)
+- **982-1020** Terrain crosses the link: the expensive half of a chunk, made on somebody else's console (2026-09-14)
+- **1021-1058** Two consoles in one room: the link, the session, and the menu that opens one (2026-09-14)
+- **1059-1079** Three from the jukebox: the disc was free, breaking it voided it, and the record outlived the world (2026-09-14)
+- **1080-1120** Four more from play: DNS, a splash that repeated, a hollow door, and glass that was a stack of boxes (2026-09-14)
+- **1121-1168** Six reports from play: a port row, the fence and furnace icons, the jukebox, the special carts (2026-09-14)
+- **1169-1193** Checkout context
+- **1194-1314** Multiplayer is joinable (2026-09-13)
+- **1315-1331** Fences need ground again, and sign boards stopped sliding (2026-09-13)
+- **1332-1374** Six reports from play: an invisible join, far signs, stacked torches, buckets, X (2026-09-13)
+- **1375-1414** The chest connects, a third one goes in through water, and a seed breaks bedrock (2026-09-13)
+- **1415-1446** The near plane, the spawn lift's order, and a death screen that outlived its world (2026-09-13)
+- **1447-1485** The two screens: a square hotbar slot, Spectator's forty pixels, and a wear bar (2026-09-13)
+- **1486-1525** Survival is on (M3 step 4)
+- **1526-1562** Five things the first Survival playthrough found (2026-09-13)
+- **1563-1590** Create World is a screen now, not two keyboards
+- **1591-1656** Extra Settings: a per-world screen that is deliberately not a1.1.2
+- **1657-1677** World Settings measures a world on a thread, so a big world no longer freezes the menu
+- **1678-1792** Main-menu bottom-screen previews: a row of skins, a pack scene, a world diorama
+- **1793-1821** Options and World Settings: grouped scrolling lists, tooltips on a dirt bottom screen
+- **1822-1831** Explosions destroy dropped items
+- **1832-1850** Water and lava are generated textures now; fire's standing still is not yet explained
+- **1851-1875** The open inventory keeps up, the carried stack is visible, and X throws it
+- **1876-1912** The sky: colours from the clock, two flat planes, the sun, the moon and 780 stars
+- **1913-1946** Walking on a block: farmland is trampled, and redstone ore lights up
+- **1947-2024** You can stand on a minecart, and a minecart stops at what is standing on it
+- **2025-2076** The bottom map follows the world, and the game never waits for it
+- **2077-2110** `TileEntities` is modelled, so signs, spawners and dungeon loot all persist
+- **2111-2142** The mob spawner works, and the mob was in the world file all along
+- **2143-2169** A sword hits for what it is worth, and the hoe works
+- **2170-2198** Arrows are not eaten by the archer any more, and a flying player can shoot a painting down
+- **2199-2229** The stone button is a button in the hand and in the slot, not a stone block
+- **2230-2252** An arrow no longer shoots the player who fired it
+- **2253-2270** Dropped items do not stack on their own any more, and Beta 1.8 was the wrong date
+- **2271-2305** A cactus hurts what touches it, and an item cactus is the cell and not the inset box
+- **2306-2328** Fire burns entities now: `kh.c(DDD)V`'s tail, and a finding that was wrong
+- **2329-2358** A burning mob now shows it: `ak.a(Lkh;DDDF)V`
+- **2359-2409** TNT is complete: `jd`, and all four ways a1.1.2 lights it
+- **2410-2445** Sneaking is a toggle, it lowers the camera, and it slows you down
+- **2446-2475** All twelve particles
+- **2476-2494** A Creative player is not something a monster hunts
+- **2495-2518** Where the monsters actually go, and the chunk order that decided it
+- **2519-2545** Three fixes on top of the hostile mobs
+- **2546-2591** The hostile mobs are in: zombie, skeleton, creeper, spider, slime
+- **2592-2625** The entity sounds, and the boot list that was swallowing half of them
+- **2626-2662** The peaceful animals are in: pig, sheep, cow, chicken
+- **2663-2678** A door's texture now shows which side its hinge is on
+- **2679-2693** Item-sheet sprites were never uploaded at launch
+- **2694-2710** Teleport has no height range; cacti have spikes
+- **2711-2731** Greedy meshing is in, through a cube atlas and a seam
+- **2732-2745** The crosshair's entity pick is `getMouseOver`'s now
+- **2746-2758** Furnaces and stairs face their neighbours, and a furnace draws its mouth where it faces
+- **2759-2767** A sign whose support is broken now goes
+- **2768-2777** A minecart stack no longer overflows to NaN; a NaN entity no longer bricks a save
+- **2778-2816** Entity pools have no cap
+- **2817-2829** Breaking entities, and the crop's seeds
+- **2830-2845** Entity persistence
+- **2846-2872** The held item
+- **2873-2896** Skins
+- **2897-2928** Hardware save crash — cause found, previous verdict corrected
+- **2929-2949** Dungeons after the null-side-effects tweak
+- **2950-2970** Minecart placement and the crosshair, checked rather than assumed
+- **2971-2999** The crosshair was being back-face culled
+- **3000-3026** The compass no longer repaints a screen that has not changed
+- **3027-3047** Arrow and minecart follow-up
+- **3048-3061** Verification evidence
 
 ## `docs/entity-render-a1.1.2.md`
 

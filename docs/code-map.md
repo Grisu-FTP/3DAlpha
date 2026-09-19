@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 265 modules, 141,334 lines.**
+**23 directories, 265 modules, 141,339 lines.**
 
 ## `src/core/audio/`
 
@@ -368,7 +368,7 @@ weight is, not what is important.
 | `local_link.{hpp,cpp}` | 530 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
 | `main.cpp` | 4695 | The 3DS entry point. |
 | `map_screen.{hpp,cpp}` | 1533 | The map page: a picture of the world the player is standing in, with their coordinates beside it. |
-| `menu.{hpp,cpp}` | 9424 | The main menu: the title screen, the world list, and creating a world. |
+| `menu.{hpp,cpp}` | 9429 | The main menu: the title screen, the world list, and creating a world. |
 | `menu_preview.{hpp,cpp}` | 1800 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
 | `net_play.{hpp,cpp}` | 470 | A multiplayer session as the game loop sees it: what the server's packets do to the world and the player, and what the player's ticks and clicks become. |
 | `network.{hpp,cpp}` | 283 | The console's half of multiplayer: its socket service, and the name it logs in with. |

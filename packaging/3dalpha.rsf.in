@@ -47,6 +47,21 @@ AccessControlInfo:
   IORegisterMapping:
     - 1ff00000-1ff7ffff
 
+  # VRAM, 0x1F000000-0x1F5FFFFF, read-only. **The same inheritance as the DSP
+  # line above**: a 3DSX reads VRAM because the Homebrew Launcher's host title
+  # maps it, and a CIA without this line cannot read it at all. Every library
+  # applet launch reads it. Before a keyboard opens, libctru's
+  # aptScreenTransfer copies both screens into the applet's capture block,
+  # reading `framebuf0` of each as GSP reports it. That address can be in VRAM
+  # even though our own framebuffers are linear. Without the mapping, the
+  # import-name keyboard died in aptConvertScreenForCapture reading
+  # 0x1F4C7800 -- see crashlogs/011-cia-import-world/.
+  #
+  # Read-only, as in the standard homebrew template. The CPU still must not
+  # write VRAM, which gpu_memory.cpp relies on (crashlogs/002).
+  MemoryMapping:
+    - 1f000000-1f5fffff:r
+
   IdealProcessor                : 0
   AffinityMask                  : 1
   Priority                      : 16

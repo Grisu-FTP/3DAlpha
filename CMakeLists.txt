@@ -313,7 +313,9 @@ if(NINTENDO_3DS)
 				-target t -exefslogo
 				-elf "$<TARGET_FILE:3dalpha>"
 				-icon "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
-			DEPENDS 3dalpha
+			# The icon too, not just the ELF: only the 3DSX target otherwise
+			# asks for it, so `make cia` in a fresh tree had nothing to embed.
+			DEPENDS 3dalpha "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
 			COMMENT "Building CIA for ${MCVER_DISPLAY}"
 			VERBATIM
 		)

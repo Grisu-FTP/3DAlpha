@@ -45,10 +45,25 @@ release binary, which is linked against a newer glibc than the devkitPro image h
 comes from `ctr_generate_smdh` and the CIA takes it with `-icon`, but that is only the HOME Menu
 grid. The **top screen** is the banner, a CBMD built by `bannertool` from a 256x128 image and an
 audio clip, and passed with `-banner`. A CIA built without one installs and runs with a blank top
-screen, which is what every build before this had. `bannertool` lives at
-[Steveice10/bannertool](https://github.com/Steveice10/bannertool); the devkitPro installer's own
-prefix (`~/devkitpro/tools/bin`) is a common place for it, and CMake looks there as well as on
-`PATH`.
+screen, which is what every build before this had.
+
+**The original `Steveice10/bannertool` is gone** — the repository 404s, which is worth knowing
+before following an old README into it. The maintained fork is
+[Epicpkmn11/bannertool](https://github.com/Epicpkmn11/bannertool), and its release carries the same
+v1.2.0 binary:
+
+```sh
+curl -fsSL -o /tmp/bannertool.zip \
+  https://github.com/Epicpkmn11/bannertool/releases/download/v1.2.2/bannertool.zip
+unzip -qo /tmp/bannertool.zip -d /tmp/bannertool
+install -m755 /tmp/bannertool/linux-x86_64/bannertool "$DEVKITPRO/tools/bin/bannertool"
+```
+
+**Unlike makerom, this one is downloaded rather than built**, and that is a measurement and not a
+preference: the prebuilt binary needs at most `GLIBC_2.14` where makerom's release needed 2.38, so
+it runs on the CI image's 2.36 and makerom's did not. The devkitPro installer's own prefix
+(`~/devkitpro/tools/bin`) is a common place for it, and CMake looks there and in `$DEVKITPRO/tools/bin`
+as well as on `PATH`.
 
 The same four commands work locally, and take about two seconds:
 

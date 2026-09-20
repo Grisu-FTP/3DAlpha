@@ -92,9 +92,17 @@ bytes with `CBMD` and `CWAV` now present in it. `check3dsx.py` still accepts the
 3DSX. CI installs Pillow and bannertool and asserts both -- the icon is not
 byte-identical to `default_icon.png` and the CIA contains a `CBMD` -- because a
 build that loses either still installs and runs, and the only symptom is on a
-console. **The bannertool clone-and-build step in CI is the one piece not run
-here**; it is written to find the binary rather than assume its path, and the
-assertion is what will report it.
+console.
+
+**The first version of that CI step was wrong and red the build**: it cloned
+`Steveice10/bannertool`, which no longer exists (the repository 404s). The
+maintained fork is `Epicpkmn11/bannertool` and its release carries the same
+v1.2.0 binary, so it is downloaded rather than built -- which is a measurement,
+not a preference: it needs at most `GLIBC_2.14` where makerom's release needed
+2.38 against the image's 2.36, which is why makerom is still built from source
+next to it. The whole sequence was then rehearsed locally with an empty `HOME`
+and bannertool reachable only through `PATH`, which is the shape it has in the
+container.
 
 Not seen on hardware.
 

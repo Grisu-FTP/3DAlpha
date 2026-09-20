@@ -167,19 +167,27 @@ jobs:
       # default homebrew icon and a blank top screen is the bug this installs
       # them to prevent, and it is invisible until someone installs the CIA.
       #
-      # bannertool, like makerom, is not in the image. Its own Makefile decides
-      # where the binary lands, so it is found rather than assumed.
+      # bannertool, like makerom, is not in the image -- but unlike makerom it is
+      # taken from its release rather than built. The original Steveice10 repo
+      # is gone; `Epicpkmn11/bannertool` is the maintained fork, and it is the
+      # same v1.2.0 binary, from the same place `tools/fetch-cia-tools.sh`-style
+      # setups already use. **Its prebuilt Linux binary needs at most GLIBC_2.14
+      # and this image has 2.36**, which is the measurement that makes
+      # downloading safe here where it was not for makerom (2.38 against 2.36).
       - name: Install the art tools
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends python3-pil
-          git clone --depth 1 --branch 1.2.0 \
-            https://github.com/Steveice10/bannertool.git /tmp/bannertool
-          make -C /tmp/bannertool -j"$(nproc)"
-          bin="$(find /tmp/bannertool -type f -name bannertool -perm -u+x | head -1)"
-          install -m755 "$bin" /usr/local/bin/bannertool
+          apt-get install -y --no-install-recommends python3-pil curl unzip ca-certificates
+          curl -fsSL --retry 3 -o /tmp/bannertool.zip \
+            https://github.com/Epicpkmn11/bannertool/releases/download/v1.2.2/bannertool.zip
+          unzip -qo /tmp/bannertool.zip -d /tmp/bannertool
+          install -m755 /tmp/bannertool/linux-x86_64/bannertool /usr/local/bin/bannertool
           python3 -c "import PIL; print('Pillow', PIL.__version__)"
+          # Asserted by testing the file, not by running it: bannertool prints
+          # its usage and exits 255 when given no arguments, so its exit status
+          # says nothing about whether it works.
           test -x /usr/local/bin/bannertool
+          bannertool 2>&1 | head -1 || true
 
       # A build with no Vorbis decoder still succeeds and the console is simply
       # silent -- audio is never a startup dependency, see docs/assets.md -- so

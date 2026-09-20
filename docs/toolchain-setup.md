@@ -39,8 +39,16 @@ ls $DEVKITPRO/libctru/lib/libcitro3d.a
 [3DSGuy/Project_CTR](https://github.com/3DSGuy/Project_CTR) (or a maintained community fork) and go
 somewhere on `PATH`. CI builds `makerom` from source at a pinned tag rather than downloading the
 release binary, which is linked against a newer glibc than the devkitPro image has — see
-[build-versions.md §CI](build-versions.md#ci). `bannertool` is not needed: the icon comes from
-`ctr_generate_smdh` and the CIA takes it with `-icon`.
+[build-versions.md §CI](build-versions.md#ci).
+
+**`bannertool` is needed after all.** The icon and the banner are two different files: the icon
+comes from `ctr_generate_smdh` and the CIA takes it with `-icon`, but that is only the HOME Menu
+grid. The **top screen** is the banner, a CBMD built by `bannertool` from a 256x128 image and an
+audio clip, and passed with `-banner`. A CIA built without one installs and runs with a blank top
+screen, which is what every build before this had. `bannertool` lives at
+[Steveice10/bannertool](https://github.com/Steveice10/bannertool); the devkitPro installer's own
+prefix (`~/devkitpro/tools/bin`) is a common place for it, and CMake looks there as well as on
+`PATH`.
 
 The same four commands work locally, and take about two seconds:
 
@@ -55,7 +63,27 @@ install -m755 /tmp/project_ctr/makerom/bin/makerom ~/.local/bin/makerom
 `MAKEROM_EXE:FILEPATH=MAKEROM_EXE-NOTFOUND` sits in `build/<ver>/CMakeCache.txt` and CMake will not
 look again; the `cia` target simply does not exist, with no message saying why. Re-run the configure
 step (`arm-none-eabi-cmake -S . -B build/<ver> -DMCVER=<ver>`) after installing. Editing the cache
-entry out by hand corrupts it — the `//Path to a program.` line above it has to go too.
+entry out by hand corrupts it — the `//Path to a program.` line above it has to go too. The same is
+true of `BANNERTOOL_EXE`, where the symptom is quieter: the build says so at configure time and
+then produces a bannerless CIA.
+
+## Pillow, for the icon and the banner
+
+The HOME Menu art is drawn at build time by `tools/make_packaging_art.py`, which needs Pillow:
+
+```sh
+sudo pacman -S python-pillow     # or: apt install python3-pil, pip install Pillow
+```
+
+Its absence is not an error — the build says `Pillow not found` and falls back to devkitPro's
+default icon — so a fresh clone still produces a runnable 3DSX. The configure step prints which of
+the three it found, and that line is worth reading before wondering why an icon did not change:
+
+```
+-- Pillow found - drawing the icon and banner (badge a1.1.2)
+-- bannertool found - the CIA gets a HOME Menu banner
+-- makerom found - 'cia' target available (UniqueId 0xFF3A0)
+```
 
 This matters as soon as multiple versions are in play: `.3dsx` files coexist by filename, but
 installing several versions onto the HOME menu at once requires CIAs with distinct title IDs — see

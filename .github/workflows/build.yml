@@ -159,6 +159,28 @@ jobs:
           install -m755 /tmp/project_ctr/makerom/bin/makerom /usr/local/bin/makerom
           makerom 2>&1 | head -2 || true
 
+      # The HOME Menu art. Pillow draws the icon and the banner image
+      # (tools/make_packaging_art.py) and bannertool wraps the latter into the
+      # CBMD makerom wants. Both are optional to CMake -- it falls back to
+      # devkitPro's default icon and a bannerless CIA -- which is exactly why
+      # they are asserted here: a release artifact that quietly reverts to the
+      # default homebrew icon and a blank top screen is the bug this installs
+      # them to prevent, and it is invisible until someone installs the CIA.
+      #
+      # bannertool, like makerom, is not in the image. Its own Makefile decides
+      # where the binary lands, so it is found rather than assumed.
+      - name: Install the art tools
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3-pil
+          git clone --depth 1 --branch 1.2.0 \
+            https://github.com/Steveice10/bannertool.git /tmp/bannertool
+          make -C /tmp/bannertool -j"$(nproc)"
+          bin="$(find /tmp/bannertool -type f -name bannertool -perm -u+x | head -1)"
+          install -m755 "$bin" /usr/local/bin/bannertool
+          python3 -c "import PIL; print('Pillow', PIL.__version__)"
+          test -x /usr/local/bin/bannertool
+
       # A build with no Vorbis decoder still succeeds and the console is simply
       # silent -- audio is never a startup dependency, see docs/assets.md -- so
       # the failure mode this step guards against is a quietly mute artifact,
@@ -196,6 +218,21 @@ jobs:
       # Separate target, and it does not imply the 3dsx -- both are built.
       - name: Build CIA
         run: cmake --build "build-ci/${{ matrix.version }}" --target cia
+
+      # The icon and the banner are the two things a CIA can lose silently: it
+      # installs and runs either way, and the only symptom is the default
+      # homebrew icon on the grid and a blank top screen. Neither is worth
+      # finding out about on a console, so both are asserted on the artifacts.
+      - name: Check the icon and banner made it in
+        run: |
+          cia="build-ci/${{ matrix.version }}/3DAlpha-${{ matrix.version }}.cia"
+          smdh="build-ci/${{ matrix.version }}/3DAlpha-${{ matrix.version }}.smdh"
+          cmp -s "build-ci/${{ matrix.version }}/art/icon.png" \
+                 "$DEVKITPRO/libctru/default_icon.png" \
+            && { echo "icon is devkitPro's default"; exit 1; }
+          test -s "$smdh"
+          grep -qa CBMD "$cia" || { echo "CIA has no banner"; exit 1; }
+          echo "icon drawn, banner embedded"
 
       # A 3DSX Luma's loader would reject is indistinguishable on hardware from
       # a crash, so the file is checked here rather than on the console.

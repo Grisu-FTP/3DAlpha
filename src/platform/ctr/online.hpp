@@ -103,6 +103,7 @@ public:
     void leave() override;
     bool active() const override;
     void service(u32 nowMs) override;
+    void notePlaying(u32 nowMs) override;
     u32 sendOverflows() const override;
     bool send(u16 node, const u8* data, usize size) override;
     bool receive(u8* buffer, usize capacity, usize* size, u16* node) override;

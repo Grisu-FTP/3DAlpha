@@ -35,7 +35,9 @@ namespace mc::net::ac {
 // added Unlink, so that a console can leave an account from the console that
 // joined it rather than only from the website; 3 added `transferPort` to
 // AuthOk, which is where world sharing listens -- see core/net/world_share.hpp.
-inline constexpr u16 kProtocol = 3;
+// 4 added StillPlaying/PlaytimeAck, which is how playtime is counted: the
+// console says it is in a world and **the server decides what that is worth**.
+inline constexpr u16 kProtocol = 4;
 
 // "ACMP".
 inline constexpr u8 kMagic[4] = {0x41, 0x43, 0x4d, 0x50};
@@ -129,6 +131,12 @@ enum class ClientKind : u8 {
     // this the only way off was the website, which a player holding a 3DS does
     // not necessarily have to hand.
     Unlink = 0x2C,
+    // Protocol 4. "I am in a world right now", which is a different claim from
+    // Keepalive's "I am reachable": a console sitting on the online menu is
+    // reachable for hours and has played none of them. Same shape as a
+    // Keepalive -- the token and nothing else -- because the server needs no
+    // more than to know which console said it and when.
+    StillPlaying = 0x12,
 };
 
 // One struct with every field rather than a variant: the set is small, the
@@ -185,6 +193,8 @@ enum class ServerKind : u8 {
     LinkCode = 0x2B,
     // Protocol 2, the answer to `Unlink`.
     Unlinked = 0x2D,
+    // Protocol 4, the answer to `StillPlaying`.
+    PlaytimeAck = 0x13,
     Error = 0xFF,
 };
 
@@ -223,6 +233,14 @@ struct ServerMsg {
 
     std::string code;
     u16 expiresInS = 0;
+
+    // Protocol 4. **The console does not decide either of these.** It says it
+    // is playing and the server answers with what that ping bought and what
+    // the running total is -- zero for the first ping of a stretch, and capped
+    // after a gap too long to have been play, so a lid closed for an hour buys
+    // half a minute. See AlphaComputer's `PLAYTIME_MAX_STEP`.
+    u16 creditedS = 0;
+    u32 totalS = 0;
 };
 
 // False for anything that is not a whole, well-formed message of a kind this

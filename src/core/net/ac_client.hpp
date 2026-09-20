@@ -57,6 +57,25 @@ public:
 // time a lid closes and opens.
 inline constexpr u32 kKeepAliveMs = 10000;
 
+// How often a console that is *in a world* says so, which is a different
+// message from the keep-alive and answers a different question: a console
+// parked on the online menu is reachable for hours and has played none of them.
+//
+// **The server decides what a ping is worth**, and caps a single one at 30 s
+// (`PLAYTIME_MAX_STEP`). Five seconds is half that, so a dropped datagram or a
+// frame that took a moment still credits the whole stretch rather than losing
+// the difference; the datagram is 21 bytes and the cadence the server documents
+// is 5-10 s.
+inline constexpr u32 kStillPlayingMs = 5000;
+
+// How long after the last `notePlaying` a console still counts as in a world.
+//
+// **The signal is a heartbeat rather than a flag on purpose.** Leaving a world
+// happens down a dozen paths -- the pause menu, a lost host, a crash back to
+// the menu, the HOME button -- and a flag that has to be cleared on all of them
+// is a flag that eventually is not. Stopping the calls stops the counting.
+inline constexpr u32 kPlayingGraceMs = 2000;
+
 // An unanswered Hello, Auth or request is sent again after this. A 3DS on
 // hotel wireless is not fast; this is long enough not to double up on an answer
 // that is merely late.
@@ -178,6 +197,23 @@ public:
     // Where the server said world sharing is; 0 for a server that has none.
     u16 transferPort() const { return transferPort_; }
 
+    // **"The player is in a world right now."** Called every frame by whatever
+    // is running the world -- not by the menu, which is reachable rather than
+    // playing. Protocol 4; against a protocol 3 server this is never sent
+    // because the login would have been refused at Hello.
+    void notePlaying(u32 nowMs);
+
+    // What the server has credited this console, in seconds, as of the last
+    // PlaytimeAck. Zero until one arrives, which is not the same as zero
+    // playtime -- it is this console not having asked yet.
+    u32 playtimeSeconds() const { return playtimeSeconds_; }
+    bool playtimeKnown() const { return playtimeKnown_; }
+
+    // What the last ping alone was worth. Zero for the first of a stretch, and
+    // zero again for one that came too soon after the one before it -- the
+    // server measures from its own mark, so a burst of pings buys nothing.
+    u16 lastCreditedSeconds() const { return lastCreditedS_; }
+
     // This console's public address, as the server saw it. Refreshed on every
     // keep-alive answer, so it follows a NAT that rebinds.
     const Endpoint& reflexive() const { return reflexive_; }
@@ -268,6 +304,17 @@ private:
     u32 startedAtMs_ = 0;
     u32 lastHeardMs_ = 0;
     u32 keepAliveAtMs_ = 0;
+
+    // The playtime ping: when the world last said it was running, when this
+    // console last told the server, and whether a stretch is currently open.
+    // See `kStillPlayingMs`.
+    u32 playingAtMs_ = 0;
+    bool notedPlaying_ = false;
+    bool playing_ = false;
+    u32 stillPlayingAtMs_ = 0;
+    u32 playtimeSeconds_ = 0;
+    u16 lastCreditedS_ = 0;
+    bool playtimeKnown_ = false;
     // The time the last `pump` was given: this object's idea of "now" between
     // pumps, which is when a request asked for in between is started.
     u32 clockMs_ = 0;

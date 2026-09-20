@@ -276,6 +276,14 @@ void Online::service(u32 nowMs)
     }
 }
 
+// Straight through to the login, which does the deciding: whether it is logged
+// in at all, whether the cadence is due, and what to do about a gap. This end
+// only knows that a world is on screen.
+void Online::notePlaying(u32 nowMs)
+{
+    connection_.client().notePlaying(nowMs);
+}
+
 u32 Online::sendOverflows() const
 {
     return connection_.overflows();

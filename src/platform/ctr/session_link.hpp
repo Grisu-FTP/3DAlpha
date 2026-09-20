@@ -47,6 +47,13 @@ public:
     // of the two answers by doing nothing.
     virtual void service(u32 nowMs) { (void)nowMs; }
 
+    // **The player is in a world, as opposed to reachable.** Said every frame
+    // by whatever is running the world and by nothing else -- not the lobby,
+    // not the menu -- because it is what AlphaComputer counts playtime from.
+    // Local wireless answers by doing nothing: there is no account on the other
+    // end of it to count anything for.
+    virtual void notePlaying(u32 nowMs) { (void)nowMs; }
+
     // Frames this console could not put on the wire at all. Not the same as a
     // lost frame, and worth showing separately on the debug page: this one is
     // ours.

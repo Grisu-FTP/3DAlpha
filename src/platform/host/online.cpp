@@ -17,6 +17,13 @@
 //     ./build-host/3dalpha --online <server> join <code> [principal]
 //     ./build-host/3dalpha --online <server> export <world dir> [principal]
 //     ./build-host/3dalpha --online <server> import <code> <saves dir> <name> [principal]
+//     ./build-host/3dalpha --online <server> playtime [principal]
+//
+// `playtime` is protocol 4: it logs in and then says it is in a world for
+// `AC_PLAY_SECONDS` (default 30), printing what the server credits each ping
+// and the running total. It is the only way to see the server's own arithmetic
+// -- the cap on a gap, and the whole seconds it carries forward -- against this
+// encoder rather than against the vectors.
 //
 // `AC_TYPING_MS=<ms>` makes `join` wait the way a console does before it sends
 // the code: the menu pumping, then the keyboard applet with nothing pumped.
@@ -163,6 +170,7 @@ int runOnline(int argc, char** argv)
     const bool hosting = mode == "host";
     const bool joining = mode == "join";
     const bool unlinking = mode == "unlink";
+    const bool playtiming = mode == "playtime";
     const bool exporting = mode == "export";
     const bool importing = mode == "import";
     const bool sharing = exporting || importing;
@@ -287,9 +295,34 @@ int runOnline(int argc, char** argv)
     u64 lastPrintedBytes = 0;
     bool codeShown = false;
 
-    const u32 deadline = (hosting || joining) ? 45000 + typingMs : (sharing ? 0xFFFFFFFFu : 8000);
+    const char* playSecondsText = std::getenv("AC_PLAY_SECONDS");
+    const u32 playMs =
+        (playSecondsText != nullptr ? u32(std::strtoul(playSecondsText, nullptr, 10)) : 30u)
+        * 1000u;
+
+    const u32 deadline = (hosting || joining) ? 45000 + typingMs
+                         : playtiming         ? playMs
+                         : (sharing ? 0xFFFFFFFFu : 8000);
+    // What the last ack said, so only a change is printed: the pings are every
+    // five seconds and most of them say the same thing twice running.
+    u32 lastTotal = 0;
+    bool sawAck = false;
     while (nowMs() < deadline) {
+        // **Said before the pump, as the console says it**: this stands in for
+        // the world's own frame, which is the only thing that calls it there.
+        if (playtiming && connection.client().ready()) {
+            connection.client().notePlaying(nowMs());
+        }
         connection.pump(nowMs());
+
+        if (playtiming && connection.client().playtimeKnown()
+            && (!sawAck || connection.client().playtimeSeconds() != lastTotal)) {
+            sawAck = true;
+            lastTotal = connection.client().playtimeSeconds();
+            std::printf("playtime +%u s, total %u s\n",
+                        unsigned(connection.client().lastCreditedSeconds()),
+                        unsigned(lastTotal));
+        }
 
         const mc::net::ac::State state = connection.client().state();
         if (state != last) {
@@ -415,7 +448,8 @@ int runOnline(int argc, char** argv)
             } else if (unlinking && !asked) {
                 asked = true;
                 connection.client().unlink();
-            } else if (!hosting && !joining && !unlinking && !sharing && !asked) {
+            } else if (!hosting && !joining && !unlinking && !sharing && !playtiming
+                       && !asked) {
                 asked = true;
                 connection.client().requestLinkCode();
             }

@@ -11,7 +11,8 @@ look like two different ones on a shelf.
 
 Outputs, at the sizes the 3DS formats require:
 
-    icon.png        48x48   the SMDH icon, which is what HOME Menu draws
+    icon.png        48x48   the SMDH icon HOME Menu draws for the title
+    smallicon.png   24x24   the one the grid on the bottom screen draws
     banner.png      256x128 the CIA banner, the top screen of HOME Menu
     banner.wav      the banner's jingle; bannertool will not build one without
 
@@ -51,6 +52,60 @@ SS = 8
 # below is one of its numbers, scaled from this base, so the two stay the same
 # picture at whatever size a console happens to want.
 ALPHAU_ICON_BASE = 128
+
+# Under this many pixels the version badge stops being text and starts being
+# noise, so it is left off. Measured by decoding the 24x24 back out of a built
+# SMDH and looking at it, not guessed.
+BADGE_LEGIBLE_AT = 32
+
+
+# **Both of the 3DS's formats for this art are 5 bits a channel** -- the SMDH
+# icon is RGB565 and the banner texture is RGBA5551 -- and AlphaU's background is
+# a slow dark ramp from (18,32,44) to (8,14,20). Quantised flat, that ramp is
+# eight steps, and because red, green and blue cross their thresholds at
+# different rows the steps differ in *hue*: it draws as a handful of coloured
+# bars, which is exactly what it looked like on a console.
+#
+# Ordered dithering is the fix, and it keeps the art rather than changing it:
+# offsetting each pixel by less than one quantisation step before the tools
+# round makes the rounding alternate across the threshold, and the eye puts the
+# ramp back. The matrix has to be applied at *final* size -- dithering before a
+# resize is just blurred noise -- so it is the last thing done to every image.
+BAYER8 = [
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
+]
+
+# Five, not six: the green channel gets six bits in RGB565 and five in RGBA5551,
+# and dithering for the coarser of the two is right for both. Over-dithering a
+# channel by one bit is invisible; under-dithering it is the bar it was drawn to
+# remove.
+QUANTISED_BITS = 5
+
+
+def dithered(img: Image.Image) -> Image.Image:
+    """AlphaU's colours, nudged so a 5-bit quantiser cannot band them."""
+    step = 1 << (8 - QUANTISED_BITS)
+    out = img.convert("RGB")
+    px = out.load()
+    w, h = out.size
+    for y in range(h):
+        row = BAYER8[y % 8]
+        for x in range(w):
+            offset = (row[x % 8] / 64.0 - 0.5) * step
+            r, g, b = px[x, y]
+            px[x, y] = (
+                min(255, max(0, int(round(r + offset)))),
+                min(255, max(0, int(round(g + offset)))),
+                min(255, max(0, int(round(b + offset)))),
+            )
+    return out
 
 
 def font(size: int) -> ImageFont.ImageFont:
@@ -116,13 +171,23 @@ def icon(badge: str, size: int) -> Image.Image:
 
     The four numbers are its own -- cube centred at (64, 62) with edge 34, badge
     at y = 98 in 18pt -- scaled from its 128x128 base and rasterised large.
+
+    **The badge is dropped below `BADGE_LEGIBLE_AT`.** At 24x24 -- the size the
+    HOME Menu grid draws -- "a1.1.2" is four pixels tall and resolves to a grey
+    smear under the cube, which reads as a broken icon rather than as a small
+    one. A cube alone at that size is a cube; the version is on the 48x48 and in
+    the title beside it either way.
     """
     k = size * SS / ALPHAU_ICON_BASE
     img = background(size * SS, size * SS)
     d = ImageDraw.Draw(img)
-    cube(d, 64 * k, 62 * k, 34 * k)
-    centred_text(d, 98 * k, badge, font(round(18 * k)), TEXT, size * SS)
-    return img.resize((size, size), Image.LANCZOS)
+    if size >= BADGE_LEGIBLE_AT:
+        cube(d, 64 * k, 62 * k, 34 * k)
+        centred_text(d, 98 * k, badge, font(round(18 * k)), TEXT, size * SS)
+    else:
+        # Centred, and a little larger, because it is now the whole picture.
+        cube(d, 64 * k, 72 * k, 40 * k)
+    return dithered(img.resize((size, size), Image.LANCZOS))
 
 
 def banner(title: str, badge: str) -> Image.Image:
@@ -140,8 +205,13 @@ def banner(title: str, badge: str) -> Image.Image:
 
     cube(d, 62 * SS, 74 * SS, 32 * SS)
 
-    panel = 108 * SS          # where the text column starts, clear of the cube
-    room = w - panel - 12 * SS  # and where it has to stop
+    # **The right margin is insurance, not decoration.** The banner is drawn as
+    # a 3D model and the outermost pixels of the texture are the first thing a
+    # console's framing eats; text that ends six pixels from the edge is text
+    # that can go missing. The working reference this was checked against leaves
+    # about a sixth of the width clear, so this does too.
+    panel = 104 * SS
+    room = w - panel - 26 * SS
 
     name = fitted(d, title, 34 * SS, room)
     box = d.textbbox((0, 0), title, font=name)
@@ -154,7 +224,7 @@ def banner(title: str, badge: str) -> Image.Image:
     box = d.textbbox((0, 0), badge, font=small)
     d.text((panel + 2 * SS - box[0], 84 * SS - box[1]), badge, font=small, fill=MUTED)
 
-    return img.resize((256, 128), Image.LANCZOS)
+    return dithered(img.resize((256, 128), Image.LANCZOS))
 
 
 def banner_audio(path: Path) -> None:
@@ -211,13 +281,15 @@ def main() -> None:
 
     out.mkdir(parents=True, exist_ok=True)
 
-    # Only the 48x48: smdhtool derives the 24x24 itself, and the result is
-    # indistinguishable from drawing one -- checked by decoding both out of a
-    # built SMDH rather than assumed.
+    # **Both sizes now, where before only the 48x48 was drawn.** smdhtool's own
+    # downscale of it is a faithful downscale -- that much was measured -- but a
+    # faithful downscale of text too small to read is still unreadable, and the
+    # 24x24 is the one the HOME Menu grid puts on the bottom screen.
     icon(badge, 48).save(out / "icon.png")
+    icon(badge, 24).save(out / "smallicon.png")
     banner(title, badge).save(out / "banner.png")
     banner_audio(out / "banner.wav")
-    print(f"wrote {out}/icon.png, banner.png, banner.wav")
+    print(f"wrote {out}/icon.png, smallicon.png, banner.png, banner.wav")
 
 
 if __name__ == "__main__":

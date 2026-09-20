@@ -305,10 +305,12 @@ if(NINTENDO_3DS)
 		RESULT_VARIABLE pillow_result
 		OUTPUT_QUIET ERROR_QUIET
 	)
+	set(SMDH_FILE "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh")
 	if(pillow_result EQUAL 0)
 		message(STATUS "Pillow found - drawing the icon and banner (badge ${MCVER_ICON_BADGE})")
 		add_custom_command(
-			OUTPUT "${ART_DIR}/icon.png" "${ART_DIR}/banner.png" "${ART_DIR}/banner.wav"
+			OUTPUT "${ART_DIR}/icon.png" "${ART_DIR}/smallicon.png"
+			       "${ART_DIR}/banner.png" "${ART_DIR}/banner.wav"
 			COMMAND "${Python3_EXECUTABLE}"
 				"${CMAKE_SOURCE_DIR}/tools/make_packaging_art.py"
 				"${ART_DIR}" "${MCVER_APP_TITLE}" "${MCVER_ICON_BADGE}"
@@ -316,22 +318,34 @@ if(NINTENDO_3DS)
 			COMMENT "Drawing HOME Menu art for ${MCVER_DISPLAY}"
 			VERBATIM
 		)
-		set(SMDH_ICON_ARG ICON "${ART_DIR}/icon.png")
+
+		# **smdhtool directly rather than `ctr_generate_smdh`**, which takes one
+		# icon and lets smdhtool derive the 24x24 from it. That derivation is a
+		# faithful downscale, and a faithful downscale of a version badge four
+		# pixels tall is still a smear -- so the 24x24 is drawn as its own
+		# picture, without the badge, and handed over as smdhtool's sixth
+		# argument. It is the icon the HOME Menu grid puts on the bottom screen.
+		add_custom_command(
+			OUTPUT "${SMDH_FILE}"
+			COMMAND "${CTR_SMDHTOOL_EXE}" --create
+				"${MCVER_APP_TITLE}" "${MCVER_APP_DESCRIPTION}" "3DAlpha"
+				"${ART_DIR}/icon.png" "${SMDH_FILE}" "${ART_DIR}/smallicon.png"
+			DEPENDS "${ART_DIR}/icon.png" "${ART_DIR}/smallicon.png"
+			COMMENT "Building SMDH for ${MCVER_DISPLAY}"
+			VERBATIM
+		)
 	else()
 		message(STATUS "Pillow not found - default devkitPro icon, no banner. See docs/toolchain-setup.md")
-		set(SMDH_ICON_ARG)
+		ctr_generate_smdh(
+			OUTPUT      "${SMDH_FILE}"
+			NAME        "${MCVER_APP_TITLE}"
+			DESCRIPTION "${MCVER_APP_DESCRIPTION}"
+			AUTHOR      "3DAlpha"
+		)
 	endif()
 
-	ctr_generate_smdh(
-		OUTPUT      "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
-		NAME        "${MCVER_APP_TITLE}"
-		DESCRIPTION "${MCVER_APP_DESCRIPTION}"
-		AUTHOR      "3DAlpha"
-		${SMDH_ICON_ARG}
-	)
-
 	ctr_create_3dsx(3dalpha
-		SMDH   "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
+		SMDH   "${SMDH_FILE}"
 		OUTPUT "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.3dsx"
 	)
 
@@ -378,12 +392,12 @@ if(NINTENDO_3DS)
 				-rsf "${GEN_DIR}/${MCVER}.rsf"
 				-target t -exefslogo
 				-elf "$<TARGET_FILE:3dalpha>"
-				-icon "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
+				-icon "${SMDH_FILE}"
 				${BANNER_ARG}
 			# The icon and the banner too, not just the ELF: only the 3DSX
 			# target otherwise asks for the SMDH, so `make cia` in a fresh tree
 			# had nothing to embed.
-			DEPENDS 3dalpha "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh" ${BANNER_DEP}
+			DEPENDS 3dalpha "${SMDH_FILE}" ${BANNER_DEP}
 			COMMENT "Building CIA for ${MCVER_DISPLAY}"
 			VERBATIM
 		)

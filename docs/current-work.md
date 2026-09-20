@@ -3,6 +3,49 @@
 Last verified: 2026-09-20. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## The banner drew as coloured bars, and the grid icon as a smear (2026-09-20)
+
+Both were the art, not the packaging: the `.bnr` is byte-compatible with a
+banner known to work on hardware -- same CBMD header, one common CGFX, same
+LZ11-compressed container, differing only inside the texture -- and the icon was
+in the SMDH all along.
+
+**The 3DS gives this art five bits a channel.** The SMDH icon is RGB565 and the
+banner texture is RGBA5551. AlphaU's background is a slow dark ramp from
+(18,32,44) to (8,14,20), which spans about eight quantisation steps, and red,
+green and blue cross their thresholds at *different rows* -- so it lands as
+eight bands that differ in hue rather than in brightness. Quantising the source
+PNG to five bits reproduces the bars exactly.
+
+The fix keeps the art and changes how it is written down: ordered (Bayer 8x8)
+dithering, applied at final size as the last step of every image, offsets each
+pixel by under one step so the tools' rounding alternates across the threshold
+and the eye puts the ramp back. Applied before the resize it would only be
+blurred noise, which is why it is last and not part of `background`.
+
+**The 24x24 is now drawn rather than derived.** smdhtool's downscale of the
+48x48 is faithful -- measured earlier by decoding both out of a built SMDH --
+but a faithful downscale of a badge four pixels tall is still a smear, and the
+24x24 is what the HOME Menu grid puts on the bottom screen. Below
+`BADGE_LEGIBLE_AT` the badge is left off and the cube is drawn a little larger,
+so the small icon is a cube and not a cube with rubbish under it. That needs
+smdhtool's sixth argument, which `ctr_generate_smdh` has no way to pass, so the
+SMDH is built by a command of our own; the Pillow-less fallback still goes
+through `ctr_generate_smdh` and devkitPro's default icon.
+
+The banner's text also had six pixels of right margin, which is inside what a
+console's framing of the banner model can eat. It now leaves about a sixth of
+the width clear, like the reference that renders correctly. **That one is
+insurance and not a diagnosed cause** -- the bars are measured, the crop is not.
+
+Verified by simulating the quantiser on the source art, which is exact for any
+five-bit channel: the bars are there before and gone after. The shipped `.bnr`
+was decompressed and its texture read back to confirm the picture is in the file
+(cube, title and badge all present); the exact channel mapping of that texture
+was not pinned down, so its colours are not evidence of anything.
+
+Not seen on hardware.
+
 ## ACMP protocol 4: playtime (2026-09-20)
 
 The regenerated wire vectors were protocol 4 while `net::kProtocol` was still 3,

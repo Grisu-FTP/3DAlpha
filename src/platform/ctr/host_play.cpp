@@ -226,6 +226,10 @@ void HostPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     if (link_ == nullptr) {
         return;
     }
+    // The host is in the world whenever this runs -- it is the world's own
+    // frame -- so the playtime ping starts here, before the link's frame below
+    // so that the same frame can carry it.
+    link_->notePlaying(u32(osGetTime()));
     // The link's own frame first: an internet session has a socket to read, a
     // keep-alive to send and possibly a punch still in flight, and none of that
     // happens by itself. Local wireless does nothing here.

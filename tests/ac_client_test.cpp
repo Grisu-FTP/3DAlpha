@@ -464,6 +464,143 @@ TEST(a_logged_in_console_says_it_is_still_there_every_ten_seconds)
     CHECK(client.reflexive().v6);
 }
 
+// **Sitting on the online menu is not playing.** The keep-alive goes out
+// regardless -- it is what holds the NAT mapping open -- and the playtime ping
+// does not, which is the whole distinction protocol 4 added.
+TEST(a_console_that_is_only_logged_in_never_says_it_is_playing)
+{
+    FakeTransport transport;
+    Client client;
+    logIn(&client, &transport, test::kAcAuthOkUnlinked, sizeof(test::kAcAuthOkUnlinked), 0);
+
+    for (u32 t = 100; t <= 60000; t += 100) {
+        client.pump(t);
+    }
+    for (const FakeTransport::Sent& sent : transport.sent) {
+        CHECK(!same(sent.bytes, test::kAcStillPlaying, sizeof(test::kAcStillPlaying)));
+    }
+    CHECK(!client.playtimeKnown());
+}
+
+TEST(a_console_in_a_world_says_so_and_the_server_says_what_it_was_worth)
+{
+    FakeTransport transport;
+    Client client;
+    logIn(&client, &transport, test::kAcAuthOkUnlinked, sizeof(test::kAcAuthOkUnlinked), 0);
+    const usize afterLogin = transport.count();
+
+    // The first frame in a world pings immediately rather than a cadence later:
+    // that ping is worth nothing by design and sets the mark the next one is
+    // measured against, so deferring it would lose the first seconds of every
+    // world.
+    client.notePlaying(100);
+    client.pump(100);
+    CHECK_EQ(int(transport.count()), int(afterLogin) + 1);
+    CHECK_SENT(transport, test::kAcStillPlaying);
+
+    // And then on its own cadence, which is not the keep-alive's.
+    for (u32 t = 200; t < 100 + kStillPlayingMs; t += 100) {
+        client.notePlaying(t);
+        client.pump(t);
+    }
+    CHECK_EQ(int(transport.count()), int(afterLogin) + 1);
+
+    client.notePlaying(100 + kStillPlayingMs);
+    client.pump(100 + kStillPlayingMs);
+    CHECK_EQ(int(transport.count()), int(afterLogin) + 2);
+    CHECK_SENT(transport, test::kAcStillPlaying);
+
+    // The total is the server's number and this end keeps no tally of its own.
+    CHECK(!client.playtimeKnown());
+    client.onDatagram(test::kAcPlaytimeAck, sizeof(test::kAcPlaytimeAck), 100 + kStillPlayingMs);
+    CHECK(client.playtimeKnown());
+    CHECK_EQ(int(client.playtimeSeconds()), 123456);
+}
+
+// **Leaving a world is the absence of a call, not a call.** Nothing has to
+// remember to say "stopped" down any of the paths out of a world, which is why
+// the signal is a heartbeat -- see `kPlayingGraceMs`.
+TEST(the_playtime_ping_stops_when_the_world_stops_saying_it_is_running)
+{
+    FakeTransport transport;
+    Client client;
+    logIn(&client, &transport, test::kAcAuthOkUnlinked, sizeof(test::kAcAuthOkUnlinked), 0);
+
+    u32 t = 100;
+    for (; t <= 20000; t += 100) {
+        client.notePlaying(t);
+        client.pump(t);
+    }
+    const usize whilePlaying = transport.count();
+
+    // The world is gone; only the menu is pumping now. Inside the grace one
+    // more cadence may still fire -- that is what the grace is for, so a frame
+    // that took a moment does not break a stretch -- and past it nothing does.
+    // Kept short of `kServerTimeoutMs`: this test is about the ping stopping,
+    // and a client that gave up on the server would stop sending for the wrong
+    // reason and prove nothing.
+    const u32 left = t;
+    usize inGrace = 0;
+    usize afterGrace = 0;
+    for (; t <= left + 20000; t += 100) {
+        const usize before = transport.sent.size();
+        client.pump(t);
+        for (usize i = before; i < transport.sent.size(); ++i) {
+            if (!same(transport.sent[i].bytes, test::kAcStillPlaying,
+                      sizeof(test::kAcStillPlaying))) {
+                continue;
+            }
+            if (t - left <= kPlayingGraceMs) {
+                ++inGrace;
+            } else {
+                ++afterGrace;
+            }
+        }
+    }
+    CHECK(inGrace <= 1);
+    CHECK_EQ(int(afterGrace), 0);
+    CHECK(whilePlaying > 0);
+
+    // And picking a world back up starts a fresh stretch, immediately.
+    const usize before = transport.count();
+    client.notePlaying(t);
+    client.pump(t);
+    CHECK_EQ(int(transport.count()), int(before) + 1);
+    CHECK_SENT(transport, test::kAcStillPlaying);
+}
+
+// A HOME menu visit stops the frame loop. The resuming frame must not fire a
+// ping of its own: the server measures from the mark it holds and caps what a
+// gap can buy, so this end has nothing to correct and nothing to guess.
+TEST(a_suspension_does_not_make_the_resuming_frame_claim_the_time)
+{
+    FakeTransport transport;
+    Client client;
+    logIn(&client, &transport, test::kAcAuthOkUnlinked, sizeof(test::kAcAuthOkUnlinked), 0);
+
+    u32 t = 100;
+    for (; t <= 10000; t += 100) {
+        client.notePlaying(t);
+        client.pump(t);
+    }
+
+    // Away for a minute, then back in the world on the very next frame.
+    const u32 back = t + 60000;
+    client.notePlaying(back);
+    client.pump(back);
+    CHECK(!same(transport.last(), test::kAcStillPlaying, sizeof(test::kAcStillPlaying)));
+
+    // The cadence resumes from the moment it came back, not from before.
+    for (u32 u = back + 100; u < back + kStillPlayingMs; u += 100) {
+        client.notePlaying(u);
+        client.pump(u);
+        CHECK(!same(transport.last(), test::kAcStillPlaying, sizeof(test::kAcStillPlaying)));
+    }
+    client.notePlaying(back + kStillPlayingMs);
+    client.pump(back + kStillPlayingMs);
+    CHECK_SENT(transport, test::kAcStillPlaying);
+}
+
 TEST(silence_from_the_server_eventually_ends_the_session)
 {
     FakeTransport transport;

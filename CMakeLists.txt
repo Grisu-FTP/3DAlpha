@@ -289,17 +289,83 @@ if(NINTENDO_3DS)
 		SUFFIX ".elf"
 	)
 
+	# HOME Menu art: the 48x48 SMDH icon and the 256x128 CIA banner, drawn from
+	# nothing by tools/make_packaging_art.py. Generated rather than checked in
+	# because the badge on it is per-version (MCVER_ICON_BADGE) -- a hand-edited
+	# PNG per version drifts the moment the base art changes. See
+	# docs/build-versions.md.
+	#
+	# Pillow is the only requirement and its absence is **not** an error: the
+	# build falls back to devkitPro's default icon, exactly as a missing makerom
+	# falls back to 3DSX only. A fresh clone must still produce something
+	# runnable.
+	set(ART_DIR "${CMAKE_BINARY_DIR}/art")
+	execute_process(
+		COMMAND "${Python3_EXECUTABLE}" -c "import PIL"
+		RESULT_VARIABLE pillow_result
+		OUTPUT_QUIET ERROR_QUIET
+	)
+	if(pillow_result EQUAL 0)
+		message(STATUS "Pillow found - drawing the icon and banner (badge ${MCVER_ICON_BADGE})")
+		add_custom_command(
+			OUTPUT "${ART_DIR}/icon.png" "${ART_DIR}/banner.png" "${ART_DIR}/banner.wav"
+			COMMAND "${Python3_EXECUTABLE}"
+				"${CMAKE_SOURCE_DIR}/tools/make_packaging_art.py"
+				"${ART_DIR}" "${MCVER_APP_TITLE}" "${MCVER_ICON_BADGE}"
+			DEPENDS "${CMAKE_SOURCE_DIR}/tools/make_packaging_art.py"
+			COMMENT "Drawing HOME Menu art for ${MCVER_DISPLAY}"
+			VERBATIM
+		)
+		set(SMDH_ICON_ARG ICON "${ART_DIR}/icon.png")
+	else()
+		message(STATUS "Pillow not found - default devkitPro icon, no banner. See docs/toolchain-setup.md")
+		set(SMDH_ICON_ARG)
+	endif()
+
 	ctr_generate_smdh(
 		OUTPUT      "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
 		NAME        "${MCVER_APP_TITLE}"
 		DESCRIPTION "${MCVER_APP_DESCRIPTION}"
 		AUTHOR      "3DAlpha"
+		${SMDH_ICON_ARG}
 	)
 
 	ctr_create_3dsx(3dalpha
 		SMDH   "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
 		OUTPUT "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.3dsx"
 	)
+
+	# The banner is the HOME Menu's **top screen**, and it is a separate file
+	# from the icon: makerom builds a CIA without one and the top screen then
+	# draws nothing at all, which is what a CIA with no `-banner` looked like
+	# before this. bannertool wraps a 256x128 PNG and an audio clip into the
+	# CBMD makerom wants; like makerom it does not ship with devkitPro, and the
+	# devkitPro installer's own prefix is a second place worth looking.
+	find_program(BANNERTOOL_EXE NAMES bannertool
+		HINTS "$ENV{DEVKITPRO}/tools/bin" "$ENV{HOME}/devkitpro/tools/bin")
+	if(BANNERTOOL_EXE AND pillow_result EQUAL 0)
+		message(STATUS "bannertool found - the CIA gets a HOME Menu banner")
+		set(BANNER_BIN "${CMAKE_BINARY_DIR}/banner.bnr")
+		add_custom_command(
+			OUTPUT "${BANNER_BIN}"
+			COMMAND "${BANNERTOOL_EXE}" makebanner
+				-i "${ART_DIR}/banner.png"
+				-a "${ART_DIR}/banner.wav"
+				-o "${BANNER_BIN}"
+			DEPENDS "${ART_DIR}/banner.png" "${ART_DIR}/banner.wav"
+			COMMENT "Building banner for ${MCVER_DISPLAY}"
+			VERBATIM
+		)
+		set(BANNER_ARG -banner "${BANNER_BIN}")
+		set(BANNER_DEP "${BANNER_BIN}")
+	else()
+		# Said out loud rather than left to be discovered on a console: a CIA
+		# without this installs and runs, it just sits there with a blank top
+		# screen in the HOME Menu.
+		message(STATUS "bannertool or Pillow missing - CIA will have no HOME Menu banner")
+		set(BANNER_ARG)
+		set(BANNER_DEP)
+	endif()
 
 	# CIA needs makerom, which devkitPro does not ship. Absence is not an error:
 	# a fresh clone must still produce something runnable.
@@ -313,9 +379,11 @@ if(NINTENDO_3DS)
 				-target t -exefslogo
 				-elf "$<TARGET_FILE:3dalpha>"
 				-icon "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
-			# The icon too, not just the ELF: only the 3DSX target otherwise
-			# asks for it, so `make cia` in a fresh tree had nothing to embed.
-			DEPENDS 3dalpha "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh"
+				${BANNER_ARG}
+			# The icon and the banner too, not just the ELF: only the 3DSX
+			# target otherwise asks for the SMDH, so `make cia` in a fresh tree
+			# had nothing to embed.
+			DEPENDS 3dalpha "${CMAKE_BINARY_DIR}/3DAlpha-${MCVER}.smdh" ${BANNER_DEP}
 			COMMENT "Building CIA for ${MCVER_DISPLAY}"
 			VERBATIM
 		)

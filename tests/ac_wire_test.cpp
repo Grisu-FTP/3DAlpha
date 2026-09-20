@@ -93,6 +93,10 @@ TEST(every_client_message_encodes_to_the_servers_own_bytes)
     CHECK_ENCODES(auth, test::kAcAuthAnonymous);
 
     CHECK_ENCODES(withToken(ClientKind::Keepalive), test::kAcKeepalive);
+    // Protocol 4. The same bytes as a Keepalive but for the id, which is the
+    // point of checking it against the server's own vector rather than against
+    // the Keepalive one: the two must not be swapped.
+    CHECK_ENCODES(withToken(ClientKind::StillPlaying), test::kAcStillPlaying);
     CHECK_ENCODES(withToken(ClientKind::CloseSession), test::kAcCloseSession);
     CHECK_ENCODES(withToken(ClientKind::RequestLinkCode), test::kAcRequestLinkCode);
     CHECK_ENCODES(withToken(ClientKind::Unlink), test::kAcUnlink);
@@ -172,6 +176,13 @@ TEST(every_server_message_decodes_to_what_the_server_put_in_it)
     CHECK_EQ(int(msg.reflexive.port), 9000);
     CHECK_EQ(endpointText(msg.reflexive), std::string("[2001:db8:0:0:0:0:0:5]:9000"));
 
+    // Protocol 4. `credited` is what this one ping bought and `total` is the
+    // running count; the server sends both and this end invents neither.
+    CHECK(decodes(test::kAcPlaytimeAck, sizeof(test::kAcPlaytimeAck), &msg));
+    CHECK(msg.kind == ServerKind::PlaytimeAck);
+    CHECK_EQ(int(msg.creditedS), 8);
+    CHECK_EQ(int(msg.totalS), 123456);
+
     CHECK(decodes(test::kAcSessionOpened, sizeof(test::kAcSessionOpened), &msg));
     CHECK(msg.kind == ServerKind::SessionOpened);
     CHECK_EQ(int(msg.sessionId), 9);
@@ -236,13 +247,18 @@ TEST(a_datagram_without_the_magic_is_refused_before_anything_is_read)
 
 TEST(every_truncation_and_every_flipped_bit_is_refused_rather_than_read_past)
 {
-    const u8* vectors[] = {test::kAcChallenge, test::kAcAuthOkLinked, test::kAcSessionList,
-                           test::kAcPunchNow,  test::kAcRelayAllocated};
-    const usize sizes[] = {sizeof(test::kAcChallenge), sizeof(test::kAcAuthOkLinked),
-                           sizeof(test::kAcSessionList), sizeof(test::kAcPunchNow),
-                           sizeof(test::kAcRelayAllocated)};
+    // PlaytimeAck is in here rather than only in the decode test because it is
+    // the one message whose body is two fixed-width numbers and nothing else:
+    // a reader that takes four bytes without checking there are four has no
+    // string length or list count to give it away.
+    const u8* vectors[] = {test::kAcChallenge,      test::kAcAuthOkLinked,
+                           test::kAcSessionList,    test::kAcPunchNow,
+                           test::kAcRelayAllocated, test::kAcPlaytimeAck};
+    const usize sizes[] = {sizeof(test::kAcChallenge),      sizeof(test::kAcAuthOkLinked),
+                           sizeof(test::kAcSessionList),    sizeof(test::kAcPunchNow),
+                           sizeof(test::kAcRelayAllocated), sizeof(test::kAcPlaytimeAck)};
 
-    for (int v = 0; v < 5; ++v) {
+    for (int v = 0; v < int(sizeof(vectors) / sizeof(vectors[0])); ++v) {
         ServerMsg msg;
         // Every prefix short of the whole thing must be refused: a message is a
         // whole datagram or it is nothing.

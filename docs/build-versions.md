@@ -167,7 +167,7 @@ the tree changes.
 | `block_ids.hpp` | M1 | generated `enum class BlockId` |
 | `tables.cpp` | M1 | block/item/recipe tables as `constexpr` arrays |
 | `packets.cpp` | M5 | packet descriptor tables, both directions |
-| `icon.png` | M6 | base icon with the version badge composited in |
+| `icon.png`, `banner.png` | **done** | HOME Menu art, drawn with the version badge on it by `tools/make_packaging_art.py` |
 
 The build is **CMake**, using devkitPro's `3ds-cmake` toolchain (`arm-none-eabi-cmake`, which
 provides `ctr_generate_smdh`, `ctr_create_3dsx`, `ctr_add_shader_library`). One `CMakeLists.txt`
@@ -193,8 +193,17 @@ feature bit re-runs generation automatically instead of leaving a stale build.
 A thin `Makefile` wraps this so the short commands still work (`make`, `make VERSION=…`,
 `make all-versions`, `make cia`, `make host`, `make run`).
 
-Generating the icon badge at build time (M6) matters: a hand-edited per-version PNG drifts the
-moment someone changes the base art.
+Generating the icon badge at build time matters, and is now how it works: a hand-edited per-version
+PNG drifts the moment someone changes the base art. `tools/make_packaging_art.py` draws the 48x48
+SMDH icon and the 256x128 CIA banner into the build directory from `MCVER_APP_TITLE` and
+`MCVER_ICON_BADGE`, so nothing per-version is checked in. The art itself — a teal isometric cube on
+a dark gradient — is [AlphaU](https://github.com/Grisu-FTP/AlphaU)'s `make_packaging_art.py`
+palette and geometry unchanged, because the two projects are the same game on two consoles and
+should not look like two different ones on a shelf.
+
+Pillow and `bannertool` are both optional to the build and asserted in CI: without them a CIA still
+installs, it just reverts to the default homebrew icon with a blank HOME Menu top screen, and that
+is invisible until someone installs it. See [toolchain-setup.md](toolchain-setup.md).
 
 ### Slot binding convention
 

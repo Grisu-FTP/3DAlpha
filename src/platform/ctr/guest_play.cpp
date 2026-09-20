@@ -253,6 +253,11 @@ void GuestPlay::pump()
     if (link_ == nullptr) {
         return;
     }
+    // **This is the in-world pump, and `pumpLobby` is not.** Playtime starts
+    // here rather than there on purpose: a guest waiting on the host's terrain
+    // is sitting at a progress screen, not playing. Said before `service`, so
+    // the same frame's login work sees it.
+    link_->notePlaying(u32(osGetTime()));
     link_->service(u32(osGetTime()));
     if (!link_->active()) {
         return;

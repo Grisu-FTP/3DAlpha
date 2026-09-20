@@ -131,6 +131,20 @@ public:
         return true;
     }
 
+    bool u32v(u32* out)
+    {
+        const u8* p = nullptr;
+        if (!take(4, &p)) {
+            return false;
+        }
+        u32 value = 0;
+        for (int i = 0; i < 4; ++i) {
+            value = (value << 8) | u32(p[i]);
+        }
+        *out = value;
+        return true;
+    }
+
     bool u64v(u64* out)
     {
         const u8* p = nullptr;
@@ -319,6 +333,7 @@ bool encodeClient(const ClientMsg& msg, std::vector<u8>* out)
         w.optString(msg.hasPlatformName, msg.platformName, kMaxName);
         break;
     case ClientKind::Keepalive:
+    case ClientKind::StillPlaying:
     case ClientKind::CloseSession:
     case ClientKind::RequestLinkCode:
     case ClientKind::Unlink:
@@ -395,6 +410,12 @@ bool decodeServer(const u8* data, usize size, ServerMsg* out)
     case ServerKind::KeepaliveAck:
         out->kind = ServerKind::KeepaliveAck;
         if (!r.endpoint(&out->reflexive)) {
+            return false;
+        }
+        break;
+    case ServerKind::PlaytimeAck:
+        out->kind = ServerKind::PlaytimeAck;
+        if (!r.u16v(&out->creditedS) || !r.u32v(&out->totalS)) {
             return false;
         }
         break;

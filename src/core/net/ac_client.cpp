@@ -207,6 +207,12 @@ void Client::pump(u32 nowMs)
             std::memcpy(msg.token, token_, kTokenSize);
             transmit(msg);
         }
+        // The playtime ping is *not* sent here. The stretch is left open and
+        // its next ping simply arrives late: the server measures from the mark
+        // it holds and caps what a gap can buy, so a HOME menu visit credits
+        // the time it was worth without this end having to guess. Only the
+        // cadence moves, so the ping does not go out on the resuming frame.
+        stillPlayingAtMs_ = nowMs;
     }
 
     // A console that has heard nothing for this long has lost the server --
@@ -253,6 +259,36 @@ void Client::pump(u32 nowMs)
         std::memcpy(msg.token, token_, kTokenSize);
         transmit(msg);
     }
+
+    // **And the playtime ping, which is not the keep-alive.** The keep-alive
+    // says this console is reachable; this says a player is in a world. They
+    // are sent from the same place because they are the same kind of Ready
+    // housekeeping, and both are skipped while an errand is in flight -- a
+    // missed ping costs nothing, because the next one is measured from the
+    // last one the server saw and not from itself.
+    const bool playing = notedPlaying_ && nowMs - playingAtMs_ <= kPlayingGraceMs;
+    if (!playing) {
+        playing_ = false;
+        return;
+    }
+    // The first ping of a stretch is worth nothing by design -- it is what sets
+    // the mark the next one is measured against -- so it goes immediately
+    // rather than a cadence later, or the first five seconds in every world
+    // would be uncounted.
+    if (!playing_ || nowMs - stillPlayingAtMs_ >= kStillPlayingMs) {
+        playing_ = true;
+        stillPlayingAtMs_ = nowMs;
+        ClientMsg msg;
+        msg.kind = ClientKind::StillPlaying;
+        std::memcpy(msg.token, token_, kTokenSize);
+        transmit(msg);
+    }
+}
+
+void Client::notePlaying(u32 nowMs)
+{
+    playingAtMs_ = nowMs;
+    notedPlaying_ = true;
 }
 
 bool Client::onDatagram(const u8* data, usize size, u32 nowMs)
@@ -365,6 +401,16 @@ bool Client::onDatagram(const u8* data, usize size, u32 nowMs)
 
     case ServerKind::KeepaliveAck:
         reflexive_ = msg.reflexive;
+        return true;
+
+    case ServerKind::PlaytimeAck:
+        // **The total is taken, the credit is not added to anything.** The
+        // server is the only thing that knows what this console has played --
+        // it runs the clock and it caps the gaps -- so keeping a second tally
+        // here would only be a number that could disagree with it.
+        playtimeSeconds_ = msg.totalS;
+        lastCreditedS_ = msg.creditedS;
+        playtimeKnown_ = true;
         return true;
 
     case ServerKind::LinkCode:

@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 268 modules, 144,743 lines.**
+**23 directories, 268 modules, 144,934 lines.**
 
 ## `src/core/audio/`
 
@@ -141,10 +141,10 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `ac_client.{hpp,cpp}` | 823 | The console's side of AlphaComputer: logging in, staying logged in, opening a session, finding one, and the two account errands the Profile screen runs. |
+| `ac_client.{hpp,cpp}` | 916 | The console's side of AlphaComputer: logging in, staying logged in, opening a session, finding one, and the two account errands the Profile screen runs. |
 | `ac_identity.{hpp,cpp}` | 277 | Who this console is to AlphaComputer, and the one secret it keeps. |
 | `ac_link.{hpp,cpp}` | 700 | One socket, three kinds of traffic, and the thing that sorts them out. |
-| `ac_wire.{hpp,cpp}` | 742 | The control protocol a console speaks to AlphaComputer, the rendezvous server that introduces two consoles so that neither has to forward a port. |
+| `ac_wire.{hpp,cpp}` | 781 | The control protocol a console speaks to AlphaComputer, the rendezvous server that introduces two consoles so that neither has to forward a port. |
 | `chunk_payload.{hpp,cpp}` | 363 | Map Chunk (0x33) payloads: inflating them, writing them into columns, and making them, the last for tests and the host harness. |
 | `client_session.{hpp,cpp}` | 476 | One connection to a protocol-2 server, run on a thread of its own and talked to through two queues. |
 | `dns.{hpp,cpp}` | 363 | **A DNS resolver of our own**, because the console's is not reliably one. |
@@ -362,10 +362,10 @@ weight is, not what is important.
 | `audio.{hpp,cpp}` | 860 | ndsp behind `audio::Backend`: one streamed voice, a ring of wave buffers in linear memory, and a missing DSP firmware that costs the player silence rather than a boot failure. |
 | `bottom_screen.{hpp,cpp}` | 173 | **The bottom screen is drawn off-screen and copied on whole.** `consoleInit` turns double buffering off, so the bottom framebuffer is the buffer the LCD is scanning out *while* the CPU writes it. |
 | `gpu_memory.{hpp,cpp}` | 115 | The two kinds of memory the PICA can fetch vertices from, behind the pool's allocator seam. |
-| `guest_play.{hpp,cpp}` | 420 | The other console's end of a local session: everything a guest owns, from the radio up to the stream `NetPlay` plays out of. |
+| `guest_play.{hpp,cpp}` | 425 | The other console's end of a local session: everything a guest owns, from the radio up to the stream `NetPlay` plays out of. |
 | `gui_art.{hpp,cpp}` | 383 | What the menu draws with once a pack supplies it: the dirt backdrop and the bitmap font. |
 | `heap.{hpp,cpp}` | 377 | What is left of the heap this file's .cpp carved out at startup. |
-| `host_play.{hpp,cpp}` | 1060 | Hosting, as the game loop sees it: the world is the player's own, open the way it always is, with a session running beside it and a server inside it. |
+| `host_play.{hpp,cpp}` | 1064 | Hosting, as the game loop sees it: the world is the player's own, open the way it always is, with a session running beside it and a server inside it. |
 | `hud.{hpp,cpp}` | 1644 | The bottom screen's furniture: the hotbar along the top, the tab strip along the bottom, the panels and slots the pages are built out of, and the two pages that are nothing but furniture -- the inventory and the look pad. |
 | `local_link.{hpp,cpp}` | 587 | The console's half of a local session: the 3DS's own local wireless (UDS), the beacon a host puts on the air, and the frames the link layer talks through. |
 | `main.cpp` | 4744 | The 3DS entry point. |
@@ -374,13 +374,13 @@ weight is, not what is important.
 | `menu_preview.{hpp,cpp}` | 1800 | **The bottom screen of the main menu's Skins, Texture Pack and World screens**: a row of players wearing the listed skins, a little scene in the pack under the cursor, and a turning diorama of the world under it. |
 | `net_play.{hpp,cpp}` | 514 | A multiplayer session as the game loop sees it: what the server's packets do to the world and the player, and what the player's ticks and clicks become. |
 | `network.{hpp,cpp}` | 312 | The console's half of multiplayer: its socket service, and the name it logs in with. |
-| `online.{hpp,cpp}` | 471 | Everything this console needs to be *on* AlphaComputer, in one object the menu can hold: its identity, its socket, the login, and the link a session runs over once two consoles have been introduced. |
+| `online.{hpp,cpp}` | 480 | Everything this console needs to be *on* AlphaComputer, in one object the menu can hold: its identity, its socket, the login, and the link a session runs over once two consoles have been introduced. |
 | `online_share.{hpp,cpp}` | 343 | A world shared over the internet, from the console's side: the worker that runs a core/net/world_share.hpp job, and the little the menu needs to watch it. |
 | `overlay.{hpp,cpp}` | 3750 | The bottom screen. |
 | `probe.{hpp,cpp}` | 955 | The M0 hardware probe, reachable by holding SELECT at boot. |
 | `progress_screen.{hpp,cpp}` | 557 | The screen the player watches while the game is busy: a green bar on the top screen, and -- while a world is being made -- a square on the bottom one that shows the chunks arriving. |
 | `renderer.{hpp,cpp}` | 5118 | The GPU half of the world renderer: citro3d state, the two eyes, and the draw loop that walks ChunkRenderer's list. |
-| `session_link.hpp` | 56 | What a session runs over, whichever radio that turns out to be. |
+| `session_link.hpp` | 63 | What a session runs over, whichever radio that turns out to be. |
 | `textures.{hpp,cpp}` | 1118 | The three things the world shader samples: the block atlas, the lightmap, and the fog LUT. |
 | `world_transfer.{hpp,cpp}` | 330 | One console handing a world to another, over the same local wireless a session runs on. |
 
@@ -391,5 +391,5 @@ weight is, not what is important.
 | `audio_wav.{hpp,cpp}` | 258 | A host `audio::Backend` that writes what it was handed to a .wav instead of to a speaker. |
 | `join.{hpp,cpp}` | 479 | `--join`: the host plays a short scripted session on a real protocol-2 server. |
 | `main.cpp` | 3492 | Host entry point. |
-| `online.{hpp,cpp}` | 552 | `--online`: the host build logs in to a real AlphaComputer and runs the errands the Profile screen runs. |
+| `online.{hpp,cpp}` | 586 | `--online`: the host build logs in to a real AlphaComputer and runs the errands the Profile screen runs. |
 

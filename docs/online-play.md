@@ -24,6 +24,7 @@ underneath it is only what the frames travel on.
 | A friend code proves nothing | `libctru/include/3ds/services/frd.h`, `ps.h` | **verified 2026-09-18**, see below |
 | `SOCU:Bind` refuses `INADDR_ANY` | a console's own `errno 22`, plus `objdump` of `soc_bind.o` ruling out libctru's own checks, plus libctru's sockets example binding `gethostid()` | **inferred from a hardware failure**; which of the address and the port it objected to is not distinguished, so both are handled |
 | The whole path, end to end | `./build-host/3dalpha --online` against a real server | **verified 2026-09-18**: login, link code, website link, unlink, host, join, punch, session handshake, chat both ways |
+| Playtime is counted for playing and not for being logged in | `--online <server> playtime` against a protocol 4 server | **verified 2026-09-20**: first ping credits 0 and sets the mark, then +5 s a ping; ~10 s logged in on the menu in between credited **nothing**, and the next stretch resumed from the same total |
 
 **One thing has run on a 3DS**, and it failed: the bind, below. Nothing past it
 has — no login from a console, no punch between two of them, no session.
@@ -125,6 +126,8 @@ S -> C  0x04 AuthOk           [16] token, string display_name, opt<string> handl
         0x05 AuthFail         string reason
 C -> S  0x10 Keepalive        [16] token          (every 10 s)
 S -> C  0x11 KeepaliveAck     addr reflexive
+C -> S  0x12 StillPlaying     [16] token          (every 5 s, only in a world)
+S -> C  0x13 PlaytimeAck      u16 credited_s, u32 total_s
 C -> S  0x20 HostSession      [16] token, string world, string game, u8 max,
                               bool locked, opt<addr> local
 S -> C  0x21 SessionOpened    u64 id, string join_code
@@ -146,7 +149,30 @@ S -> C  0xFF Error            string reason
 `0x2C`/`0x2D` are protocol 2 and were added for this feature: before them the
 only way off an account was the website, which a player holding a 3DS does not
 necessarily have to hand. `transfer_port` is protocol 3, and is where world
-sharing listens -- see below.
+sharing listens -- see below. `0x12`/`0x13` are protocol 4, and are playtime.
+
+**`StillPlaying` is not a second keep-alive.** `Keepalive` says this console is
+reachable, which a console parked on the online menu is for hours at a time;
+`StillPlaying` says a player is in a world, and it is the only thing playtime is
+counted from. On this end it is a *heartbeat*, not a flag: `SessionLink::notePlaying`
+is called every frame by `GuestPlay::pump` and `HostPlay::pump` — the in-world
+pumps, and deliberately not `GuestPlay::pumpLobby`, where a guest is watching a
+progress bar — and `ac::Client` sends a ping while it is still being told to,
+stopping on its own when the calls stop. Leaving a world happens down a dozen
+paths and none of them has to remember to say so.
+
+**The console does not decide what a ping is worth, and keeps no tally.** The
+server measures from the mark it holds, credits whole seconds, carries the
+fraction forward, and caps one ping at 30 s (`PLAYTIME_MAX_STEP`) so a lid shut
+for an hour buys half a minute. `PlaytimeAck` answers with what that ping bought
+and the running total; `Client::playtimeSeconds()` is that total and nothing
+computed here. A burst of pings is worth nothing, because each is measured from
+the one before it.
+
+Single-player worlds count nothing, and that is not an oversight: there is no
+`Online` object in a single-player session at all — no socket, no login, no
+lookup — and building one to count time would break the rule that single player
+never waits for a server.
 
 **Strings are plain UTF-8**, not Java's modified form — this is our protocol and
 not Minecraft's — and they truncate on a character boundary, never splitting a
@@ -431,6 +457,7 @@ cd ../AlphaComputer && cargo run --example wire_vectors > ../3DAlpha/tests/ac_wi
 ./build-host/3dalpha --online 127.0.0.1:7717 join <code>
 ./build-host/3dalpha --online 127.0.0.1:7717 profile       # asks for a link code
 ./build-host/3dalpha --online 127.0.0.1:7717 unlink
+AC_PLAY_SECONDS=40 ./build-host/3dalpha --online 127.0.0.1:7717 playtime
 
 # World sharing. Export prints SHARECODE before its upload is done; import it in
 # the other terminal, even mid-upload, then diff the two trees.

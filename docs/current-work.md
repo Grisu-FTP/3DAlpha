@@ -3,6 +3,101 @@
 Last verified: 2026-09-20. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## ACMP protocol 4: playtime (2026-09-20)
+
+The regenerated wire vectors were protocol 4 while `net::kProtocol` was still 3,
+which failed seven host tests and, because the CI build job gates on the suite,
+produced no artifacts at all. The client side is now built and the suite is
+green again.
+
+**`kProtocol` is 4.** `StillPlaying` (`0x12`, client, the token and nothing
+else, exactly a Keepalive's shape but never the same message) and `PlaytimeAck`
+(`0x13`, server, `u16 credited_s` + `u32 total_s`). `Reader` gained a `u32v`;
+it had `u16v` and `u64v` and nothing in between until now.
+
+**What the two messages mean is the whole point.** `Keepalive` says this console
+is reachable -- true of a console parked on the online menu for an afternoon --
+and `StillPlaying` says a player is in a world. Only the second counts.
+
+**The in-world signal is a heartbeat, not a flag.** `SessionLink::notePlaying`
+is called every frame by `GuestPlay::pump` and `HostPlay::pump`, and *not* by
+`GuestPlay::pumpLobby`, where a guest is watching the host's terrain arrive.
+`ac::Client` pings every `kStillPlayingMs` (5 s, half the server's 30 s cap, so
+a dropped datagram still credits the whole stretch) while it has been told
+within `kPlayingGraceMs` (2 s), and stops on its own when the calls stop.
+Leaving a world happens down a dozen paths -- pause menu, lost host, HOME
+button, a crash back to the menu -- and a flag that has to be cleared on all of
+them is a flag that eventually is not.
+
+**The console decides nothing and keeps no tally.** The server measures from its
+own mark, credits whole seconds, carries the fraction forward and caps one ping
+at 30 s. `Client::playtimeSeconds()` is the server's number, taken from the last
+ack. The first ping of a stretch is worth zero by design -- it sets the mark --
+so it goes immediately rather than a cadence later, or the first five seconds of
+every world would be uncounted. A suspension sends nothing on the resuming
+frame: the server already caps what a gap can buy, so this end has nothing to
+correct.
+
+Single player counts nothing and that is deliberate: there is no `Online` object
+in a single-player session, and making one to count time would break the rule
+that single player never waits for a server.
+
+Tests: `kAcStillPlaying`/`kAcPlaytimeAck` added to the encode and decode vector
+sweeps, and PlaytimeAck to the truncation/bit-flip sweep -- it is the one
+message whose body is two fixed-width numbers with no length or count to give a
+short read away. Behaviour: `a_console_that_is_only_logged_in_never_says_it_is_playing`,
+`a_console_in_a_world_says_so_and_the_server_says_what_it_was_worth`,
+`the_playtime_ping_stops_when_the_world_stops_saying_it_is_running`,
+`a_suspension_does_not_make_the_resuming_frame_claim_the_time`.
+
+`./build-host/3dalpha --online <server> playtime` is the harness for the live
+path (`AC_PLAY_SECONDS`, default 30): it logs in, says it is in a world, and
+prints what the server credits each ping. It is the only way to watch the
+server's own arithmetic -- the cap, and the carried fraction -- rather than the
+vectors.
+
+## A drawn icon, and the CIA's top screen is no longer blank (2026-09-20)
+
+The SMDH carried devkitPro's default homebrew icon -- `ctr_generate_smdh` was
+called with no `ICON` -- and the CIA had no banner at all, so HOME Menu's **top
+screen** drew nothing. Those are two different files and both are fixed.
+
+`tools/make_packaging_art.py` draws them from nothing: AlphaU's
+`make_packaging_art.py` palette, isometric cube and text placement unchanged, so
+the two consoles' builds look like one project. It writes a 48x48 `icon.png`, a
+256x128 `banner.png` and a `banner.wav` (bannertool will not build a banner
+without audio) into the **build** directory -- nothing per-version is checked in,
+which is what `docs/build-versions.md` asked for under M6. The badge on the art
+is `MCVER_ICON_BADGE`; the banner's name is `MCVER_APP_TITLE` with the badge
+taken off the end, or it would read the version twice.
+
+Composition notes: the icon is AlphaU's own numbers scaled from its 128x128 base
+and rasterised at 8x before a LANCZOS resize, because a cube drawn straight into
+48x48 is a staircase. The banner is the one shape AlphaU has no art for -- its
+splash is 16:9 and stacks cube over name over badge, which squeezed into 2:1
+leaves both ends empty -- so the same three pieces run along the banner instead,
+with the title shrinking to fit its panel. **Only the 48x48 is generated**:
+smdhtool derives the 24x24 itself, and decoding both out of a built SMDH showed
+no difference worth a second file.
+
+CMake wires it up, and every piece is optional in the way makerom already was:
+no Pillow means the default icon, no `bannertool` means a bannerless CIA, and
+both say so at configure time rather than on a console. `find_program` for
+`bannertool` also looks in `$DEVKITPRO/tools/bin` and `~/devkitpro/tools/bin`,
+since the devkitPro installer's prefix is not always the one on `PATH`.
+
+**Verified on the artifacts, not by eye**: the 48x48 decoded back out of
+`3DAlpha-a1.1.2.smdh` is the cube, and the CIA went from 1,476,544 to 1,908,160
+bytes with `CBMD` and `CWAV` now present in it. `check3dsx.py` still accepts the
+3DSX. CI installs Pillow and bannertool and asserts both -- the icon is not
+byte-identical to `default_icon.png` and the CIA contains a `CBMD` -- because a
+build that loses either still installs and runs, and the only symptom is on a
+console. **The bannertool clone-and-build step in CI is the one piece not run
+here**; it is written to find the binary rather than assume its path, and the
+assertion is what will report it.
+
+Not seen on hardware.
+
 ## The per-world file is `alpha.ini`, with a read-only fallback (2026-09-20)
 
 `settings::kWorldSettingsName` is `alpha.ini`. `loadWorldSettings` reads that

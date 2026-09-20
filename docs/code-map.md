@@ -8,7 +8,7 @@ together. The summary is the first sentence of the file's header comment, so if 
 row here is unhelpful, the fix is in that comment. Line counts say where the
 weight is, not what is important.
 
-**23 directories, 268 modules, 144,694 lines.**
+**23 directories, 268 modules, 144,743 lines.**
 
 ## `src/core/audio/`
 
@@ -19,7 +19,7 @@ weight is, not what is important.
 | `effect_preload.{hpp,cpp}` | 136 | **The whole set of effect keys this port can make a noise about, in one place.** It exists because two callers have to agree on it and used to not. |
 | `music_ticker.{hpp,cpp}` | 138 | The countdown that decides when background music starts. |
 | `pcm_source.hpp` | 63 | "Give me the next N frames." The one thing the platform's mixer needs from anything that makes sound, and the reason ndsp never learns what Vorbis is. |
-| `resource_index.{hpp,cpp}` | 237 | What the player dropped in `sdmc:/3dalpha/resources/`, sorted into the three pools a1.1.2 keeps. a1.1.2 never shipped its sounds. |
+| `resource_index.{hpp,cpp}` | 237 | What the player dropped in `sdmc:/alpha/resources/`, sorted into the three pools a1.1.2 keeps. a1.1.2 never shipped its sounds. |
 | `sample.{hpp,cpp}` | 139 | A sound effect, decoded once and held whole in memory -- the other half of `PcmSource`, and deliberately not the same thing. |
 | `sound_engine.{hpp,cpp}` | 608 | a1.1.2's SoundManager, above the output seam: it owns the pools, the music counter and the volumes, and it is the one thing the game's frame loop talks to about sound. |
 | `sound_pool.{hpp,cpp}` | 217 | a1.1.2's SoundPool: the name a resource file collapses to, and the uniform draw the music ticker makes from it. |
@@ -215,8 +215,8 @@ weight is, not what is important.
 | `ini.{hpp,cpp}` | 102 | The `key=value` reader both settings files share. |
 | `online_privacy.{hpp,cpp}` | 129 | **Who may reach a world this console opens on the internet.** Three answers, asked once, before the world is even chosen -- because the answer decides what the rendezvous server is told when the session is registered, and that happens before anybody can join. |
 | `sensitivity.{hpp,cpp}` | 102 | How fast the view turns, as a1.1.2's own slider. |
-| `settings_file.{hpp,cpp}` | 327 | sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
-| `world_settings.{hpp,cpp}` | 560 | `<world>/3dalpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
+| `settings_file.{hpp,cpp}` | 327 | sdmc:/alpha/3ds.ini -- the handful of choices that have to survive a power cycle. docs/assets.md has named this file since before anything wrote it. |
+| `world_settings.{hpp,cpp}` | 599 | `<world>/alpha.ini` -- the settings that belong to one world and that the Alpha level format has nowhere to put. |
 
 ## `src/core/texture/` -- Texture packs, atlases, PNG and zip
 
@@ -312,7 +312,7 @@ weight is, not what is important.
 
 | Module | Lines | What it is |
 |---|--:|---|
-| `converter.{hpp,cpp}` | 902 | Turning a world from one on-disk shape into the other, without losing a byte. |
+| `converter.{hpp,cpp}` | 912 | Turning a world from one on-disk shape into the other, without losing a byte. |
 | `manifest.{hpp,cpp}` | 398 | `world.3dm` -- what a packed world keeps that is not a chunk. |
 | `packed_storage.{hpp,cpp}` | 643 | The storage contract, served out of region containers instead of one file per chunk. |
 | `region_file.{hpp,cpp}` | 967 | One `r.<rx>.<rz>.3dr` container: 32 x 32 chunk payloads in one file, allocated in sectors, reached by seeking rather than by opening. |

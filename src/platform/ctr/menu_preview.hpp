@@ -106,7 +106,7 @@ public:
 
     // The same, and then throws away everything remembered about the world:
     // its grid, its tile meshes and its place in the grid cache. The next pass
-    // reads it again from scratch -- **including its `3dalpha.ini`**, which is
+    // reads it again from scratch -- **including its `alpha.ini`**, which is
     // the point: this is how World Settings' Move Panorama makes a new table
     // position take effect without leaving the screen.
     void forgetWorld(const std::string& worldPath);

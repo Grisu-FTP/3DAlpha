@@ -136,7 +136,7 @@ MemoryType     : Application
 StackSize      : 0x40000
 
 FileSystemAccess:
-  - DirectSdmcWrite       # required to read/write sdmc:/3dalpha from a CIA
+  - DirectSdmcWrite       # required to read/write sdmc:/alpha from a CIA
 ```
 
 Recent Luma3DS no longer forces the New 3DS clock from RSF alone, so also call
@@ -159,7 +159,7 @@ envelopes differ enough that testing one will mislead you about the other.
 
 ## Debugging
 
-- `Crash`-style handler that dumps registers and a stack trace to `sdmc:/3dalpha/crash.txt`
+- `Crash`-style handler that dumps registers and a stack trace to `sdmc:/alpha/crash.txt`
   (craftus's `misc/Crash.c` is a good model).
 - Logging to SD behind a compile-time switch; SD writes are slow enough to change what you are
   measuring.

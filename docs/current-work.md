@@ -1,7 +1,54 @@
 # Current work
 
-Last verified: 2026-09-19. A compact handoff, not a substitute for inspecting the current diff.
+Last verified: 2026-09-20. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
+
+## The per-world file is `alpha.ini`, with a read-only fallback (2026-09-20)
+
+`settings::kWorldSettingsName` is `alpha.ini`. `loadWorldSettings` reads that
+first and falls back to `kLegacyWorldSettingsName` (`3dalpha.ini`) when it is
+missing, so a world last played on an older build keeps its gamemode instead of
+dropping back to Spectator on terrain it was flying through. **Loading never
+writes**: the move across is the next `saveWorldSettings`, which only ever
+writes `alpha.ini`, so listing worlds still touches nothing on the card.
+
+`alpha.ini` wins outright when both exist -- the old file is not merged in,
+because a key absent from the newer one was switched *off*, not left unset. The
+superseded file is left in place rather than deleted: inert once the new one
+exists, and a player may have hand-edited it on a PC.
+
+`convertWorld` (`world/format/converter.cpp`) reads either name for the file it
+carries *as well as* stashes, and writes it back under the new one. Without that
+a pre-rename world would pack with no plainly readable gamemode, and the world
+list would have to open the container to show one. The old file still round-trips
+through the manifest like any other unrecognised file.
+
+Tests: `a_world_with_only_the_old_file_name_is_still_read`,
+`the_next_save_writes_the_new_name_and_reading_writes_nothing`,
+`the_new_file_wins_outright_when_both_are_there`,
+`packing_carries_a_pre_rename_settings_file_under_the_new_name`. `make` clean.
+Not seen on hardware.
+
+## The SD folder is `alpha/`, not `3dalpha/` (2026-09-20)
+
+Everything the game reads or writes on the card moved up one name:
+`sdmc:/3dalpha` is now `sdmc:/alpha`. The constants are `ctr::kRootDir` and
+`ctr::kSavesDir` (`platform/ctr/menu.hpp`), `texture::kPacksDir`,
+`texture::kSkinsDir`, `audio::kResourcesDir`, `settings::kSettingsPath`
+(`alpha/3ds.ini`), `net::kServerListPath` and `net::kIdentityKeyPath` -- every
+path on the card is spelled out in one of those, so nothing composes the folder
+name a second time. The jar picker's empty-state label says `alpha/packs` now.
+
+**Unchanged on purpose:** the `.3dalpha-unpacking` marker, the `3dalpha-local-2` link passphrase,
+the binaries and `packaging/3dalpha.rsf.in`, and the out-of-heap dump at
+`sdmc:/3dalpha-oom.txt`, which sits beside the folder rather than in it and is
+the name every report in `crashlogs/` was filed under.
+
+**There is no migration.** A card that already has `sdmc:/3dalpha` will show no
+worlds, no packs and no settings until the folder is renamed by hand; nothing is
+deleted. Worth building before this ships to anyone who has played a build.
+
+1950/1950 host tests, `make` clean. Not seen on hardware.
 
 ## A guest's drop came straight back; arrows could not be picked up (2026-09-19)
 

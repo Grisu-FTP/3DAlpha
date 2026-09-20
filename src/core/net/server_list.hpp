@@ -24,7 +24,7 @@
 
 namespace mc::net {
 
-inline constexpr char kServerListPath[] = "sdmc:/3dalpha/servers.txt";
+inline constexpr char kServerListPath[] = "sdmc:/alpha/servers.txt";
 inline constexpr u16 kDefaultPort = 25565;
 
 // A friend-list screen name is ten UTF-16 units; this is the ceiling a name

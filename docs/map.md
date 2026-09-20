@@ -267,7 +267,7 @@ things stand between it and a map on the SD card, and both are real:
 * **A packed world would swallow them.** The converter stashes every file it does not recognise into
   the container at its own path, so a map directory would vanish from plain view the first time a
   world was packed unless it were given the same "carried as well as stashed" treatment
-  `3dalpha.ini` has (see [packed-worlds.md](packed-worlds.md)). Getting that wrong is data loss on a
+  `alpha.ini` has (see [packed-worlds.md](packed-worlds.md)). Getting that wrong is data loss on a
   conversion, which is the one class of bug this project does not trade for a feature.
 
 So the map lives for as long as the world is open: **768 chunks on an old 3DS and 1,536 on a New

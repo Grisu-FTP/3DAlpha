@@ -83,7 +83,7 @@ There is no Zip64 record, and `ZipArchive` refuses one rather than parsing it.
 ## Choosing and importing a pack, from the console
 
 **Options → Texture Pack.** The list is Dev Art pinned first, then every `.zip` and every directory
-under `sdmc:/3dalpha/packs` that holds a `terrain.png`, sorted by name. Each row shows how many of
+under `sdmc:/alpha/packs` that holds a `terrain.png`, sorted by name. Each row shows how many of
 the 58 names above the pack carries; a partial pack is fine, because only `terrain.png` is drawn.
 The live pack is marked, and the choice is written to `3ds.ini` the moment it is made.
 
@@ -103,7 +103,7 @@ hand** — a1.1.2 renders no other biped — so that is what this screen changes
 - **Every texture pack that carries a `char.png`**, whether or not it is the pack in use. `hasSkin`
   comes off the same central-directory read the file count does, so a pack without one costs
   nothing.
-- **Every `.png` in `sdmc:/3dalpha/skins`**, which the screen creates the first time it is opened.
+- **Every `.png` in `sdmc:/alpha/skins`**, which the screen creates the first time it is opened.
 
 `char.png` sits at the **root** of the pack, not under `item/` — the one thing unusual about it.
 Both **64 × 32** and **64 × 64** are read; a 64 × 64 keeps its top half, because that half *is* the
@@ -115,11 +115,11 @@ before that version's `ModelBiped` box has been derived.
 
 The choice is written to `3ds.ini` as a **name**, not a path — `pack:<name>` or `file:<name.png>` —
 so applying it at boot costs the one file it names rather than a walk of the packs folder, and
-moving the card's `3dalpha` folder does not orphan it. A skin that is no longer on the card falls
+moving the card's `alpha` folder does not orphan it. A skin that is no longer on the card falls
 back to Default rather than leaving the screen pointing at nothing.
 
-**Options → Texture Pack → Extract from a jar** lists every `*.jar` in `sdmc:/3dalpha/packs` and in
-`sdmc:/3dalpha` above it, with sizes, and turns the one the player picks into
+**Options → Texture Pack → Extract from a jar** lists every `*.jar` in `sdmc:/alpha/packs` and in
+`sdmc:/alpha` above it, with sizes, and turns the one the player picks into
 `packs/<jar name>.zip`. Entries are copied **verbatim** — compressed bytes, method, CRC and sizes
 straight out of the source's central directory — so a 900 KB jar becomes a pack without one inflate
 or deflate call. Local headers are rewritten with flag bit 3 cleared and the real sizes filled in,
@@ -224,11 +224,11 @@ folder in the original layout, unchanged, so a folder copied from any alpha- or 
 works as it is:
 
 ```
-sdmc:/3dalpha/resources/sound/<category>/<name>.ogg
-sdmc:/3dalpha/resources/newsound/...
-sdmc:/3dalpha/resources/streaming/...
-sdmc:/3dalpha/resources/music/...
-sdmc:/3dalpha/resources/newmusic/...
+sdmc:/alpha/resources/sound/<category>/<name>.ogg
+sdmc:/alpha/resources/newsound/...
+sdmc:/alpha/resources/streaming/...
+sdmc:/alpha/resources/music/...
+sdmc:/alpha/resources/newmusic/...
 ```
 
 Those five names are the whole of it — `Minecraft.installResource` splits the key at the first `/`
@@ -254,7 +254,7 @@ menus. See
 ## SD card layout
 
 ```
-sdmc:/3dalpha/
+sdmc:/alpha/
   3ds.ini                  3DS-specific options -- built, and the only file here the game writes
   packs/<name>.zip         texture packs, pre-1.5 jar layout
   packs/<name>/            the same tree lying loose, also accepted

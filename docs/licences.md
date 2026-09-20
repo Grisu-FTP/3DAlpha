@@ -88,7 +88,7 @@ one entry here that a source release owes as much as a binary release does.
 ## libvorbisidec (Tremor) and libogg
 
 Xiph.Org's fixed-point Ogg Vorbis decoder and its container library, linked on the 3DS
-target to decode the `.ogg` files a player supplies in `sdmc:/3dalpha/resources/`. The host
+target to decode the `.ogg` files a player supplies in `sdmc:/alpha/resources/`. The host
 build links the reference `libvorbisfile` instead, under the same licence. Source:
 `$DEVKITPRO/portlibs/3ds/licenses/3ds-libvorbisidec/COPYING` and `.../3ds-libogg/COPYING`,
 which are byte-identical to each other.

@@ -1,6 +1,6 @@
 #pragma once
 
-// sdmc:/3dalpha/3ds.ini -- the handful of choices that have to survive a power
+// sdmc:/alpha/3ds.ini -- the handful of choices that have to survive a power
 // cycle.
 //
 // docs/assets.md has named this file since before anything wrote it. It is ours
@@ -23,7 +23,7 @@
 
 namespace mc::settings {
 
-inline constexpr char kSettingsPath[] = "sdmc:/3dalpha/3ds.ini";
+inline constexpr char kSettingsPath[] = "sdmc:/alpha/3ds.ini";
 
 struct GameSettings {
     // 0 means "not chosen yet"; the menu fills in the per-model default it has
@@ -32,7 +32,7 @@ struct GameSettings {
     int renderDistance = 0;
 
     // The pack's file name inside the packs folder, or empty for the built-in
-    // Dev Art. A name rather than a path, so moving the card's 3dalpha folder
+    // Dev Art. A name rather than a path, so moving the card's alpha folder
     // does not orphan the setting.
     std::string texturePack;
 

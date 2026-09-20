@@ -247,7 +247,7 @@ TEST(what_is_not_a_jar_is_refused_without_writing_anything)
 // still lands on the card.
 TEST(the_pack_name_comes_from_the_jar_name)
 {
-    CHECK_EQ(texture::packNameForJar("sdmc:/3dalpha/packs/minecraft.jar"),
+    CHECK_EQ(texture::packNameForJar("sdmc:/alpha/packs/minecraft.jar"),
              std::string("minecraft.zip"));
     CHECK_EQ(texture::packNameForJar("/a/b/minecraft-a1.1.2_01-client.jar"),
              std::string("minecraft-a1.1.2_01-client.zip"));

@@ -270,7 +270,7 @@ public:
     void begin(const char* worldName, const char* model);
 
     // **Which tabs the player's half offers.** Set at world open from the
-    // world's own 3dalpha.ini, and again whenever the pause menu's World
+    // world's own alpha.ini, and again whenever the pause menu's World
     // Settings screen changes it, so a mode switched in a world takes effect
     // without leaving it. Leaving Survival or Creative for Spectator on the
     // Items page moves off it, because the page is gone.

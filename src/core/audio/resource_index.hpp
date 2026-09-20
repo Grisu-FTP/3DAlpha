@@ -1,6 +1,6 @@
 #pragma once
 
-// What the player dropped in `sdmc:/3dalpha/resources/`, sorted into the three
+// What the player dropped in `sdmc:/alpha/resources/`, sorted into the three
 // pools a1.1.2 keeps.
 //
 // a1.1.2 never shipped its sounds. It downloaded them at runtime from
@@ -49,7 +49,7 @@ namespace mc::audio {
 
 // Beside texture::kPacksDir, and for the same reason: a name the game knows
 // rather than a path the player is asked for.
-inline constexpr char kResourcesDir[] = "sdmc:/3dalpha/resources";
+inline constexpr char kResourcesDir[] = "sdmc:/alpha/resources";
 
 // A card can hold anything, and a runaway directory tree would otherwise be a
 // hang at boot. Deep enough for `newsound/mob/…`, which is the deepest the

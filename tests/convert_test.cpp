@@ -287,6 +287,36 @@ TEST(a_settings_key_this_build_does_not_know_survives_a_conversion)
              std::string(written));
 }
 
+// A world last played before the file was renamed is carried under the new
+// name, so the packed side still has a gamemode the world list can read without
+// opening the container. The bytes are the old file's, untouched.
+TEST(packing_carries_a_pre_rename_settings_file_under_the_new_name)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+    const std::string world = temp.at("World1");
+
+    buildFolderWorld(fs, world);
+    const char* written = "gamemode=creative\nfrom-a-later-build=42\n";
+    writeText(fs, settings::legacyWorldSettingsPath(world), written);
+
+    ConvertOptions options;
+    CHECK(convertWorld(fs, world, WorldFormat::Packed, options) == ConvertResult::Ok);
+
+    std::vector<u8> back;
+    CHECK(fs.readFile(settings::worldSettingsPath(world).c_str(), &back, 64u << 10));
+    CHECK_EQ(std::string(reinterpret_cast<const char*>(back.data()), back.size()),
+             std::string(written));
+
+    // And the old file itself came back through the manifest like any other
+    // file the packer did not recognise, so nothing was dropped on the way.
+    CHECK(convertWorld(fs, world, WorldFormat::Folder, options) == ConvertResult::Ok);
+    back.clear();
+    CHECK(fs.readFile(settings::legacyWorldSettingsPath(world).c_str(), &back, 64u << 10));
+    CHECK_EQ(std::string(reinterpret_cast<const char*>(back.data()), back.size()),
+             std::string(written));
+}
+
 TEST(converting_a_world_that_is_already_in_that_format_changes_nothing)
 {
     TempDir temp;

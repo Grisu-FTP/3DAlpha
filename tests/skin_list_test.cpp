@@ -190,15 +190,15 @@ TEST(a_saved_key_names_its_file_without_listing_anything)
     std::string path;
     bool fromPack = false;
 
-    CHECK(texture::skinPathForKey("pack:Faithful.zip", "sdmc:/3dalpha/packs",
-                                  "sdmc:/3dalpha/skins", &path, &fromPack));
+    CHECK(texture::skinPathForKey("pack:Faithful.zip", "sdmc:/alpha/packs",
+                                  "sdmc:/alpha/skins", &path, &fromPack));
     CHECK(fromPack);
-    CHECK_EQ(path, std::string("sdmc:/3dalpha/packs/Faithful.zip"));
+    CHECK_EQ(path, std::string("sdmc:/alpha/packs/Faithful.zip"));
 
-    CHECK(texture::skinPathForKey("file:Steve.png", "sdmc:/3dalpha/packs",
-                                  "sdmc:/3dalpha/skins", &path, &fromPack));
+    CHECK(texture::skinPathForKey("file:Steve.png", "sdmc:/alpha/packs",
+                                  "sdmc:/alpha/skins", &path, &fromPack));
     CHECK(!fromPack);
-    CHECK_EQ(path, std::string("sdmc:/3dalpha/skins/Steve.png"));
+    CHECK_EQ(path, std::string("sdmc:/alpha/skins/Steve.png"));
 
     // Default names no file, and neither does a key from a build that knows a
     // source this one does not.

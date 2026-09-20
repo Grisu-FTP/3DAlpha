@@ -13,7 +13,7 @@
 //   * **Every texture pack that carries a `char.png`**, whether or not it is
 //     the pack in use. A player who wants one pack's blocks and another's skin
 //     can have both.
-//   * **Every `.png` in `sdmc:/3dalpha/skins`**, which is the normal skin
+//   * **Every `.png` in `sdmc:/alpha/skins`**, which is the normal skin
 //     format and the normal thing to have a folder of.
 //
 // **It is core rather than platform code** for the reason `pack_list.hpp`
@@ -40,7 +40,7 @@
 namespace mc::texture {
 
 // Where a player drops skins. Beside `packs/`, and named for what is in it.
-inline constexpr char kSkinsDir[] = "sdmc:/3dalpha/skins";
+inline constexpr char kSkinsDir[] = "sdmc:/alpha/skins";
 
 // Where a row's image comes from.
 enum class SkinSource : u8 {
@@ -70,7 +70,7 @@ struct SkinEntry {
     std::string name;
 
     // **What goes in `3ds.ini`**, and a name rather than a path so that moving
-    // the card's `3dalpha` folder does not orphan the setting -- the same rule
+    // the card's `alpha` folder does not orphan the setting -- the same rule
     // `texturePack` follows:
     //
     //     Default          ""

@@ -22,9 +22,9 @@ So `SaveDataSize` stays minimal and unused. Worlds go on the SD card as plain fi
 Alpha level format:
 
 ```
-sdmc:/3dalpha/saves/<world>/level.dat
-sdmc:/3dalpha/saves/<world>/session.lock
-sdmc:/3dalpha/saves/<world>/<b36>/<b36>/c.<b36>.<b36>.dat
+sdmc:/alpha/saves/<world>/level.dat
+sdmc:/alpha/saves/<world>/session.lock
+sdmc:/alpha/saves/<world>/<b36>/<b36>/c.<b36>.<b36>.dat
 ```
 
 Copy that folder into a PC `.minecraft/saves/` and it just works — which is the whole point. CIA
@@ -115,7 +115,7 @@ lookup is gated on the title having an accessible save archive. It does not let 
 arbitrary SD directory as save data.
 
 **System Transfer moves the console's `Nintendo 3DS` folder, not our files.** Everything on the SD
-card outside `Nintendo 3DS/` and `DCIM/` — including `sdmc:/3dalpha/` — is not part of the transfer;
+card outside `Nintendo 3DS/` and `DCIM/` — including `sdmc:/alpha/` — is not part of the transfer;
 the standard procedure is to copy those folders to a PC and back onto the target card by hand.
 System Transfer also wipes the source console.
 
@@ -124,9 +124,9 @@ None of this is a problem, and it is the direct benefit of not using save data:
 | Task | How |
 |---|---|
 | Back up a world | Copy the folder. SD reader, or `ftpd` over Wi-Fi. |
-| Move to another console | Move the SD card, or copy `3dalpha/` across. Nothing is console-bound. |
+| Move to another console | Move the SD card, or copy `alpha/` across. Nothing is console-bound. |
 | Move to/from a PC | Drop the folder into `.minecraft/saves/`. It is a real alpha world. |
-| Survive a System Transfer | Copy `3dalpha/` manually, like all other homebrew data. |
+| Survive a System Transfer | Copy `alpha/` manually, like all other homebrew data. |
 
 Had we used title save data, every one of those rows would have required Checkpoint and
 console-bound decryption.

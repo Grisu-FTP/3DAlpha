@@ -177,7 +177,13 @@ jobs:
       - name: Install the art tools
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends python3-pil curl unzip ca-certificates
+          # fonts-dejavu-core is not optional. The image ships no fonts at
+          # all, Pillow then falls back to a face it cannot scale, and the
+          # banner's title came out of the resize as a single dash -- which
+          # is what shipped. AlphaU draws with DejaVu Sans Bold, so installing
+          # it is also what keeps the two consoles' art identical.
+          apt-get install -y --no-install-recommends \
+            python3-pil fonts-dejavu-core curl unzip ca-certificates
           curl -fsSL --retry 3 -o /tmp/bannertool.zip \
             https://github.com/Epicpkmn11/bannertool/releases/download/v1.2.2/bannertool.zip
           unzip -qo /tmp/bannertool.zip -d /tmp/bannertool
@@ -231,16 +237,23 @@ jobs:
       # installs and runs either way, and the only symptom is the default
       # homebrew icon on the grid and a blank top screen. Neither is worth
       # finding out about on a console, so both are asserted on the artifacts.
+      # **The icon is checked in the SMDH, not in the PNG beside it.** An
+      # earlier version of this step confirmed only that `art/icon.png` had
+      # been drawn, which proves Pillow ran and nothing else: the icon still
+      # has to survive smdhtool, and when it did not what shipped was
+      # devkitPro's default -- a picture of a red 3DS -- which installs, runs
+      # and looks deliberate. tools/check_smdh.py reads the icons back out of
+      # the SMDH the way the console does.
       - name: Check the icon and banner made it in
         run: |
-          cia="build-ci/${{ matrix.version }}/3DAlpha-${{ matrix.version }}.cia"
-          smdh="build-ci/${{ matrix.version }}/3DAlpha-${{ matrix.version }}.smdh"
-          cmp -s "build-ci/${{ matrix.version }}/art/icon.png" \
-                 "$DEVKITPRO/libctru/default_icon.png" \
-            && { echo "icon is devkitPro's default"; exit 1; }
+          base="build-ci/${{ matrix.version }}"
+          cia="$base/3DAlpha-${{ matrix.version }}.cia"
+          smdh="$base/3DAlpha-${{ matrix.version }}.smdh"
           test -s "$smdh"
+          python3 tools/check_smdh.py "$smdh" \
+            --default "$DEVKITPRO/libctru/default_icon.png"
           grep -qa CBMD "$cia" || { echo "CIA has no banner"; exit 1; }
-          echo "icon drawn, banner embedded"
+          echo "icon drawn into the SMDH, banner embedded in the CIA"
 
       # A 3DSX Luma's loader would reject is indistinguishable on hardware from
       # a crash, so the file is checked here rather than on the console.

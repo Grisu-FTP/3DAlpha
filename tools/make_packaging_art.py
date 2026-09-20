@@ -108,14 +108,59 @@ def dithered(img: Image.Image) -> Image.Image:
     return out
 
 
+# Where DejaVu Sans Bold sits on the machines this is built on. AlphaU draws
+# with it, so finding it is what keeps the two consoles' art identical.
+FONT_PATHS = (
+    "DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+    "/usr/local/share/fonts/DejaVuSans-Bold.ttf",
+    "/Library/Fonts/DejaVuSans-Bold.ttf",
+)
+
+_warned = False
+
+
 def font(size: int) -> ImageFont.ImageFont:
-    for name in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+    """DejaVu Sans Bold at `size`, or the best scalable substitute.
+
+    **The fallback takes the size**, which is the whole point of this function
+    existing. `ImageFont.load_default()` with no argument returns a fixed ~11px
+    face whatever is asked of it; asked for 272px on the supersampled canvas it
+    drew a title forty pixels wide, which came out of the resize as a dash and
+    shipped to a console that way. A container with no fonts installed -- which
+    is every slim build image, including the one CI uses -- is the ordinary case
+    here, not an exotic one.
+    """
+    global _warned
+    for name in FONT_PATHS:
         try:
             return ImageFont.truetype(name, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+    # Anything scalable the system does have, before giving up on the face.
+    for name in ("DejaVuSans-Bold", "LiberationSans-Bold", "NimbusSans-Bold",
+                 "FreeSansBold", "Arial Bold"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    if not _warned:
+        _warned = True
+        print("make_packaging_art: no DejaVu Sans Bold found; falling back to "
+              "Pillow's built-in face. The art will not match AlphaU's exactly. "
+              "Install fonts-dejavu-core (Debian) or ttf-dejavu (Arch).",
+              file=sys.stderr)
+    try:
+        return ImageFont.load_default(size)
+    except TypeError:
+        # Pillow older than 10.1 has no scalable default at all. Say so rather
+        # than quietly drawing a dash.
+        raise SystemExit("make_packaging_art: Pillow >= 10.1 or an installed "
+                         "font is required; this Pillow cannot scale its "
+                         "default face and the text would ship as a smudge.")
 
 
 def background(w: int, h: int) -> Image.Image:

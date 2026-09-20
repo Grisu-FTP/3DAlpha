@@ -3,6 +3,36 @@
 Last verified: 2026-09-20. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## The banner's title shipped as a dash, and the grid icon as a red 3DS (2026-09-20)
+
+Two more, and neither was visible from this machine, which is the point worth
+keeping.
+
+**No fonts in the build image.** `font()` tried three DejaVu paths and then fell
+back to `ImageFont.load_default()` *with no size*, which returns a fixed ~11px
+face whatever is asked of it. Asked for 272px on the 8x supersampled canvas it
+drew a title forty pixels wide, and the resize turned that into a single dash --
+exactly what came back from the console. A slim container with no fonts is the
+ordinary case for CI, not an exotic one, and every local build hid it because
+DejaVu is installed here. Reproduced by making the three paths fail and looking
+at the output: cube, two dashes.
+
+The fallback now passes the size (`load_default(size)` is scalable in Pillow
+>= 10.1), searches more paths and a few non-DejaVu faces first, and **says so on
+stderr** when it substitutes. CI installs `fonts-dejavu-core`, so the shipped
+art is AlphaU's face and not a substitute. An ancient Pillow with no scalable
+default now stops the script rather than drawing a smudge.
+
+**devkitPro's `default_icon.png` is a picture of a red 3DS**, which is what
+"the bottom screen is the red 3ds default icon" was: something between the PNG
+and the SMDH was falling back, and nothing looked. The check that was supposed
+to catch it compared `art/icon.png` against the default -- which proves Pillow
+ran and nothing else. `tools/check_smdh.py` now reads the 24x24 and the 48x48
+back out of the SMDH the way the console does and fails on either being the
+default or being flat; it is asserted in CI on the built artifact. Verified both
+ways: it passes our SMDH and fails one built from the default icon with
+"48x48 is devkitPro's default icon (100% identical)".
+
 ## The banner drew as coloured bars, and the grid icon as a smear (2026-09-20)
 
 Both were the art, not the packaging: the `.bnr` is byte-compatible with a

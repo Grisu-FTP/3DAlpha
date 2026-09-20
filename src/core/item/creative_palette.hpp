@@ -6,7 +6,7 @@
 // `EntityPlayer` no capabilities object, and the word does not appear in the
 // client. Creative is Beta 1.8's, two years later and a different codebase. So
 // nothing about *having* a palette was recovered from a jar, and that is why
-// gamemode lives in `<world>/3dalpha.ini` and never in `level.dat` -- see
+// gamemode lives in `<world>/alpha.ini` and never in `level.dat` -- see
 // core/settings/world_settings.hpp for the other half of the same argument.
 //
 // **What is in it, though, is no longer this file's opinion.** The palette used

@@ -196,9 +196,71 @@ TEST(the_settings_path_sits_inside_the_world_folder)
     // It has to be a sibling of level.dat, because that is the folder a real
     // client ignores everything else in.
     CHECK_EQ(settings::worldSettingsPath("saves/World1"),
-             std::string("saves/World1/3dalpha.ini"));
+             std::string("saves/World1/alpha.ini"));
     CHECK_EQ(settings::worldSettingsPath("saves/World1/"),
+             std::string("saves/World1/alpha.ini"));
+    CHECK_EQ(settings::legacyWorldSettingsPath("saves/World1"),
              std::string("saves/World1/3dalpha.ini"));
+}
+
+// A world last played before the file was renamed still has its gamemode read,
+// because a player who set one and then updated should not be dropped back into
+// Spectator on terrain they were flying through.
+TEST(a_world_with_only_the_old_file_name_is_still_read)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+
+    writeText(fs, settings::legacyWorldSettingsPath(temp.path),
+              "gamemode=creative\ndifficulty=hard\n");
+
+    settings::WorldSettings read;
+    CHECK(settings::loadWorldSettings(fs, temp.path, &read));
+    CHECK(read.gamemode == settings::Gamemode::Creative);
+    CHECK(read.difficulty == settings::Difficulty::Hard);
+}
+
+// The move across is the next save and nothing else: loading leaves the card
+// alone, so merely listing a world does not rewrite it.
+TEST(the_next_save_writes_the_new_name_and_reading_writes_nothing)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+
+    writeText(fs, settings::legacyWorldSettingsPath(temp.path), "gamemode=creative\n");
+
+    settings::WorldSettings read;
+    CHECK(settings::loadWorldSettings(fs, temp.path, &read));
+    CHECK(!fs.exists(settings::worldSettingsPath(temp.path).c_str()));
+
+    CHECK(settings::saveWorldSettings(fs, temp.path, read));
+    CHECK(fs.exists(settings::worldSettingsPath(temp.path).c_str()));
+
+    // The old file is left alone rather than deleted -- it is inert now that
+    // the new one exists, and a player may have hand-edited it on a PC.
+    CHECK(fs.exists(settings::legacyWorldSettingsPath(temp.path).c_str()));
+
+    settings::WorldSettings back;
+    CHECK(settings::loadWorldSettings(fs, temp.path, &back));
+    CHECK(back.gamemode == settings::Gamemode::Creative);
+}
+
+// Both present is the state a world lands in after that save. The new file wins
+// outright: a key missing from it was switched off, not left unset, so merging
+// the old one back in would turn a setting a player cleared back on.
+TEST(the_new_file_wins_outright_when_both_are_there)
+{
+    TempDir temp;
+    io::PosixFileSystem fs;
+
+    writeText(fs, settings::legacyWorldSettingsPath(temp.path),
+              "gamemode=creative\nfix_ore_generation=true\n");
+    writeText(fs, settings::worldSettingsPath(temp.path), "gamemode=survival\n");
+
+    settings::WorldSettings read;
+    CHECK(settings::loadWorldSettings(fs, temp.path, &read));
+    CHECK(read.gamemode == settings::Gamemode::Survival);
+    CHECK(!read.fixOreGeneration);
 }
 
 // The Extra Settings rows survive a round trip, and every one of them defaults

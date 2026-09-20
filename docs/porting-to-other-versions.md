@@ -85,7 +85,7 @@ one file per 32×32 chunks instead of one per chunk.
 
 ## Worlds across versions
 
-Builds share `sdmc:/3dalpha/saves/`, but a build only lists worlds in a format it owns — the a1.1.2
+Builds share `sdmc:/alpha/saves/`, but a build only lists worlds in a format it owns — the a1.1.2
 build shows base36 chunk-file worlds and hides `region/` ones. Opening a foreign world is an
 explicit **"convert a copy"** action that never touches the original. Silent in-place upgrades are
 how people lose worlds.

@@ -708,7 +708,7 @@ ConvertResult convertWorld(io::FileSystem& fs, std::string_view worldDir, WorldF
         return ConvertResult::NoSpace;
     }
 
-    // 3dalpha.ini is ours, and it is carried *as well as* stashed: the manifest
+    // alpha.ini is ours, and it is carried *as well as* stashed: the manifest
     // holds it like any other file the packer did not recognise, and it is also
     // put back as a plain readable file on the packed side. That is what lets
     // the world list read a gamemode without opening a container.
@@ -717,9 +717,19 @@ ConvertResult convertWorld(io::FileSystem& fs, std::string_view worldDir, WorldF
     // the keys this build knows, so round-tripping through WorldSettings would
     // quietly drop a key a later build wrote -- which is exactly the data loss
     // a conversion is not allowed to cause.
+    //
+    // A world last played before the rename has only `3dalpha.ini`. Carry that
+    // too, under the new name, or converting such a world would leave the
+    // packed side with no readable gamemode -- the manifest still holds the old
+    // file, so nothing is lost either way, but the world list would stop being
+    // able to read it without opening the container.
     std::vector<u8> ourSettings;
-    const bool hadSettings =
+    bool hadSettings =
         fs.readFile(settings::worldSettingsPath(world).c_str(), &ourSettings, 64u << 10);
+    if (!hadSettings) {
+        hadSettings = fs.readFile(settings::legacyWorldSettingsPath(world).c_str(),
+                                  &ourSettings, 64u << 10);
+    }
 
     const ConvertResult result = target == WorldFormat::Packed
                                      ? packWorld(fs, world, options)

@@ -32,7 +32,7 @@ namespace mc::net::ac {
 // whose whole contents are the secret is one a player can back up, move or
 // destroy without being told how, and a format with a header is a format with a
 // migration.
-inline constexpr char kIdentityKeyPath[] = "sdmc:/3dalpha/identity.key";
+inline constexpr char kIdentityKeyPath[] = "sdmc:/alpha/identity.key";
 
 // The check byte inside a 3DS friend code: `sha1(principalId as little-endian
 // u32)[0] >> 1`. See core/util/sha1.hpp for why this is here and what it is

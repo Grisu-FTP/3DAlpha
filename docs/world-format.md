@@ -271,7 +271,7 @@ The Alpha format is hostile to FAT on an SD card: thousands of small files and s
 enumeration. Compatibility is a hard requirement, so we adapt around it rather than changing it.
 
 - **Chunk index — built, and lazily rather than up front.** An earlier version of this document
-  asked for a walk of the whole 64×64 tree at world open, cached to `sdmc:/3dalpha/cache/<world>.idx`
+  asked for a walk of the whole 64×64 tree at world open, cached to `sdmc:/alpha/cache/<world>.idx`
   and invalidated against `level.dat`. That is not what was built, and the incremental form is
   strictly cheaper.
 

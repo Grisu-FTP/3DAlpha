@@ -192,24 +192,44 @@ bool boolFromToken(std::string_view token, bool* out)
     return false;
 }
 
-std::string worldSettingsPath(std::string_view worldDir)
+namespace {
+
+std::string inWorld(std::string_view worldDir, const char* name)
 {
     std::string path(worldDir);
     if (!path.empty() && path.back() != '/') {
         path += '/';
     }
-    path += kWorldSettingsName;
+    path += name;
     return path;
+}
+
+}  // namespace
+
+std::string worldSettingsPath(std::string_view worldDir)
+{
+    return inWorld(worldDir, kWorldSettingsName);
+}
+
+std::string legacyWorldSettingsPath(std::string_view worldDir)
+{
+    return inWorld(worldDir, kLegacyWorldSettingsName);
 }
 
 bool loadWorldSettings(io::FileSystem& fs, std::string_view worldDir, WorldSettings* out)
 {
     *out = WorldSettings();
 
-    const std::string path = worldSettingsPath(worldDir);
+    // `alpha.ini` first, then the pre-rename `3dalpha.ini`. Read, never
+    // rewritten here: the move happens on the next save, which writes the new
+    // name, so listing a world still touches nothing on the card.
     std::vector<u8> bytes;
+    const std::string path = worldSettingsPath(worldDir);
     if (!fs.readFile(path.c_str(), &bytes, kMaxBytes)) {
-        return false;
+        const std::string legacy = legacyWorldSettingsPath(worldDir);
+        if (!fs.readFile(legacy.c_str(), &bytes, kMaxBytes)) {
+            return false;
+        }
     }
 
     std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());

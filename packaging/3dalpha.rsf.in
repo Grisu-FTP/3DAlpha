@@ -8,7 +8,7 @@ BasicInfo:
 
 # No RomFs section: nothing ships inside the title. Game data is compiled in
 # and the only user-supplied files (texture packs, sounds) are read from
-# sdmc:/3dalpha -- see docs/assets.md. makerom fails outright on a RootPath
+# sdmc:/alpha -- see docs/assets.md. makerom fails outright on a RootPath
 # that does not exist, so this stays absent until there is something to put
 # in it (licences.txt is the first candidate).
 
@@ -24,7 +24,7 @@ Option:
   EnableCompress                : true
 
 AccessControlInfo:
-  # Worlds live in sdmc:/3dalpha, so a CIA build needs direct SD access.
+  # Worlds live in sdmc:/alpha, so a CIA build needs direct SD access.
   FileSystemAccess:
     - DirectSdmcWrite
 

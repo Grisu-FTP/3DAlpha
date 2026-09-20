@@ -33,7 +33,7 @@
 //     it does not recognise into the container, at its own path, so a map
 //     directory would vanish from plain view the first time a world was packed
 //     unless it were given the same "carried as well as stashed" treatment
-//     `3dalpha.ini` has. Getting that wrong is data loss on a conversion, which
+//     `alpha.ini` has. Getting that wrong is data loss on a conversion, which
 //     is the one class of bug this project does not trade for a feature.
 //
 // So the map lives for as long as the world is open. A chunk costs 1,536 bytes

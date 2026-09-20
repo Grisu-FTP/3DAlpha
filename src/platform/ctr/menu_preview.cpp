@@ -1132,7 +1132,7 @@ void MenuPreview::runWorldJob(preview::PreviewWorker& worker, const preview::Pre
         grid.reset(new preview::DioramaGrid());
         if (peek.open(job.path)) {
             // **Where this world's table stands**, out of its own
-            // `3dalpha.ini`. Read here rather than handed in with the job for
+            // `alpha.ini`. Read here rather than handed in with the job for
             // two reasons: it is a card read and this is the thread that is
             // allowed to make one, and it is read exactly when a grid is
             // built, which is the only moment the answer is used. World

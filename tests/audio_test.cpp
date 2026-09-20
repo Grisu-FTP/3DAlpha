@@ -433,7 +433,7 @@ TEST(theMusKeyIsTheFileNamesJavaHash)
     CHECK_EQ(musKey("13.mus"), i32(1451406847));
     CHECK_EQ(musKey("cat.mus"), i32(554186163));
     // The path in front of it is not part of the name.
-    CHECK_EQ(musKey("sdmc:/3dalpha/resources/streaming/13.mus"), i32(1451406847));
+    CHECK_EQ(musKey("sdmc:/alpha/resources/streaming/13.mus"), i32(1451406847));
     CHECK_EQ(musKey("streaming\\13.mus"), i32(1451406847));
 }
 

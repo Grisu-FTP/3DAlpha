@@ -272,7 +272,7 @@ platform layer, check the RSF, and test the CIA rather than the 3DSX.**
 Heavy shared assets are shared; anything version-specific is namespaced:
 
 ```
-sdmc:/3dalpha/
+sdmc:/alpha/
   packs/                  texture packs      — SHARED (they're large; don't duplicate per install)
   resources/              sounds             — SHARED
   saves/<world>/          worlds             — SHARED root

@@ -379,7 +379,7 @@ blobs and has never parsed one.
 ### The two generator bugs the Extra Settings screen can switch off
 
 Both are a1.1.2's, both are reproduced by default, and both are optional per world from
-World Settings → Extra Settings. The switches live in `<world>/3dalpha.ini`
+World Settings → Extra Settings. The switches live in `<world>/alpha.ini`
 (`core/settings/world_settings.hpp`) and reach the generator through
 `worldgen::GeneratorOptions`, which `WorldStreamer::open` fills by reading that file. **Neither
 switch changes a single random draw** — each only widens what the already-drawn shape is written

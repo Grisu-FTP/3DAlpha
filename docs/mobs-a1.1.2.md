@@ -777,7 +777,7 @@ and the model's own lift:
   tick it fired -- knockback, a shove, a push out of a block -- and spent the arrow on its own
   archer at a distance of zero. The handle is not saved, which is the jar's behaviour: a1.1.2 does
   not write `shootingEntity` either, so a reloaded arrow excludes nobody.
-- **The difficulty lives in `<world>/3dalpha.ini`.** a1.1.2 keeps it in `options.txt`, which is a
+- **The difficulty lives in `<world>/alpha.ini`.** a1.1.2 keeps it in `options.txt`, which is a
   file this port does not have, and it is a per-world setting here.
 - **The explosion's cell record is a bitset over a cube of radius 8** rather than a `HashSet` of
   `ChunkPosition`. The set is the same set; the order is not, and the order is observable.

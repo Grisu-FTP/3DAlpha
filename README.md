@@ -33,8 +33,8 @@ Despite this, i try to keep the polish high and amount of bugs low. I also tell 
 the box with nothing to dump, copy or configure.
 
 **Textures and sounds are the only things you may supply, both are optional.** Pu a
-`minecraft.jar` or a texture pack zip in `sd:/3dalpha/packs` for authentic visuals and pick it
-from Options → Texture Pack. Put an original `resources/` folder in `sd:/3dalpha/` for sound,
+`minecraft.jar` or a texture pack zip in `sd:/alpha/packs` for authentic visuals and pick it
+from Options → Texture Pack. Put an original `resources/` folder in `sd:/alpha/` for sound,
 which a1.1.2 downloaded at runtime and never shipped. Without either, the game is complete and
 playable — placeholder textures, no audio.
 

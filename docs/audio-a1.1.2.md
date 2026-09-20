@@ -397,7 +397,7 @@ The cell is the one underfoot, unaffected by the snow and liquid substitutions a
 `<.minecraft>/resources/<key>`.
 
 That server has been gone for years. The layout is what survives, so this port reads the
-same tree from `sdmc:/3dalpha/resources/` and a folder copied from any alpha- or beta-era
+same tree from `sdmc:/alpha/resources/` and a folder copied from any alpha- or beta-era
 install works unchanged. See [assets.md](assets.md#sounds).
 
 ## Where this port differs, and why

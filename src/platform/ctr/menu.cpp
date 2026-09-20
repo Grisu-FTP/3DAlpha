@@ -1870,7 +1870,7 @@ void Menu::printConsoleHelp()
         std::printf("what every world does until it is told\n");
         std::printf("otherwise.\n\n");
         std::printf("The choice is written into this world's\n");
-        std::printf("3dalpha.ini and applies to nothing else.\n");
+        std::printf("alpha.ini and applies to nothing else.\n");
         break;
     case Screen::MovePanorama:
         break;  // the diorama has the bottom screen
@@ -3040,7 +3040,7 @@ void Menu::handleWorldSettings(u32 down)
 // else here either reproduces a screen the original had or exists because a
 // console needs it; these six rows either undo a bug the original shipped or
 // offer a choice it never had, and each of them belongs to one world rather
-// than to the console. Two are level.dat values, three are `3dalpha.ini` ones
+// than to the console. Two are level.dat values, three are `alpha.ini` ones
 // and one opens a list; the split is invisible from the screen and is entirely
 // about which file a real Minecraft client would also read.
 // ---------------------------------------------------------------------------
@@ -5501,7 +5501,7 @@ void Menu::drawPickJar()
                           true);
         drawLabelCentered("Copy your own Minecraft jar into", kScreenWidth * 0.5f, 130.0f,
                           0.45f, kInkDim, true);
-        drawLabelCentered("3dalpha/packs and come back.", kScreenWidth * 0.5f, 150.0f, 0.45f,
+        drawLabelCentered("alpha/packs and come back.", kScreenWidth * 0.5f, 150.0f, 0.45f,
                           kInkDim, true);
         return;
     }

@@ -59,7 +59,7 @@ real, bounded, and written down in AlphaComputer's `docs/identity.md`.
 
 ### Where the key lives
 
-`sdmc:/3dalpha/identity.key`: 32 raw bytes and nothing else. No header, no
+`sdmc:/alpha/identity.key`: 32 raw bytes and nothing else. No header, no
 version, no checksum — a file whose whole contents are the secret is one a
 player can back up, move or destroy without being told how, and a format with a
 header is a format with a migration.

@@ -1,6 +1,6 @@
 #pragma once
 
-// `<world>/3dalpha.ini` -- the settings that belong to one world and that the
+// `<world>/alpha.ini` -- the settings that belong to one world and that the
 // Alpha level format has nowhere to put.
 //
 // **Why a file of our own, beside a world rather than inside it.** A setting
@@ -28,6 +28,13 @@
 // The format is the `key=value` shape `3ds.ini` uses, sharing its parser --
 // see core/settings/ini.hpp. Saving rewrites the file from the keys below, so
 // **a key this build does not know is dropped**.
+//
+// **The file was called `3dalpha.ini` until the card's folder became `alpha/`.**
+// Loading still falls back to the old name, so a world played on an older build
+// keeps its gamemode; saving only ever writes the new one, so the first change
+// a player makes to such a world moves it across. The old file is left where it
+// is rather than deleted -- it is inert once `alpha.ini` exists, and a rename
+// that eats a file a player may have hand-edited is not worth the tidiness.
 
 #include "core/io/file_system.hpp"
 #include "core/util/types.hpp"
@@ -41,7 +48,11 @@ namespace mc::settings {
 // is ours, so unlike a stray file from a third-party tool the packer does not
 // have to stash it -- it stays a plain readable file on both sides, which is
 // also what lets the world list read a gamemode without opening a container.
-inline constexpr char kWorldSettingsName[] = "3dalpha.ini";
+inline constexpr char kWorldSettingsName[] = "alpha.ini";
+
+// What the same file was called before, and the only thing this name is for:
+// `loadWorldSettings` reads it when `alpha.ini` is missing. Nothing writes it.
+inline constexpr char kLegacyWorldSettingsName[] = "3dalpha.ini";
 
 // **a1.1.2 has no gamemode at all** -- there is one way to play and the word is
 // not in the client. These are the names a player coming from a later version
@@ -218,17 +229,25 @@ bool difficultyFromToken(std::string_view token, Difficulty* out);
 const char* boolToken(bool value);
 bool boolFromToken(std::string_view token, bool* out);
 
-// `<worldDir>/3dalpha.ini`.
+// `<worldDir>/alpha.ini` -- where the file is read from first and the only
+// place it is ever written.
 std::string worldSettingsPath(std::string_view worldDir);
 
-// False when there is no file, which is the ordinary state of every world that
-// predates this feature; *out is left at its defaults either way. An
-// unrecognised value is ignored rather than failing the load.
+// `<worldDir>/3dalpha.ini`, the pre-rename name. Read-only fallback; a caller
+// that carries this file across a conversion needs it, and nobody else should.
+std::string legacyWorldSettingsPath(std::string_view worldDir);
+
+// False when there is no file under *either* name, which is the ordinary state
+// of every world that predates this feature; *out is left at its defaults
+// either way. An unrecognised value is ignored rather than failing the load.
+// `alpha.ini` wins outright when both exist -- the older file is not merged
+// into it, because a key absent from the newer one was turned off, not unset.
 bool loadWorldSettings(io::FileSystem& fs, std::string_view worldDir, WorldSettings* out);
 
 // Writes through writeFileAtomic, so a console switched off mid-save keeps the
 // settings it had. Creates nothing but the file: the world folder is already
-// there by the time anyone can change a setting in it.
+// there by the time anyone can change a setting in it. Always `alpha.ini`,
+// whichever name the values were loaded from.
 bool saveWorldSettings(io::FileSystem& fs, std::string_view worldDir,
                        const WorldSettings& settings);
 

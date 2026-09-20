@@ -20,7 +20,7 @@
 namespace mc::texture {
 
 // Where packs and import sources live on the card.
-inline constexpr char kPacksDir[] = "sdmc:/3dalpha/packs";
+inline constexpr char kPacksDir[] = "sdmc:/alpha/packs";
 
 // The 58 PNG names in a real a1.1.2 client jar, read out of it rather than
 // copied from a wiki. This is the single source of truth for the "n of 58"
@@ -72,7 +72,7 @@ struct JarEntry {
 
 // Every `*.jar` directly inside each of the given directories, sorted by name,
 // with duplicates by path removed. The menu passes the packs folder and the
-// 3dalpha folder above it, because a player who dropped a download onto the
+// alpha folder above it, because a player who dropped a download onto the
 // card has not necessarily put it in the right place or renamed it.
 void listJars(io::FileSystem& fs, const std::string* dirs, int dirCount,
               std::vector<JarEntry>* out);

@@ -8,7 +8,7 @@ fully playable; conversion either way is lossless.
 | **Folder** | A real Alpha world — `level.dat`, base36 chunk tree | Dropping in from a PC, copying back out, interchange |
 | **Packed** (default for new worlds) | Sector-allocated containers, one per 32×32 chunk region | Playing on the console: measured **9× smaller** on a 16 KB-cluster card, and far fewer file operations |
 
-Drop a folder into `sdmc:/3dalpha/saves/` and play it as-is. Pack it when you want the space back.
+Drop a folder into `sdmc:/alpha/saves/` and play it as-is. Pack it when you want the space back.
 Unpack it and the original folder returns byte-for-byte.
 
 **New worlds are created packed.** That reverses what this document originally said, and the reason
@@ -111,7 +111,7 @@ Untouched, canonical Alpha level format — see [world-format.md](world-format.m
 ### Packed mode
 
 ```
-sdmc:/3dalpha/saves/<world>/
+sdmc:/alpha/saves/<world>/
   world.3dm            manifest + verbatim store for level.dat and any non-chunk files
   r.0.0.3dr            region container, 32×32 chunks
   r.-1.0.3dr
@@ -206,7 +206,7 @@ coordinates *and* no other file has claimed that slot. A `c.-d.18.dat` in the wr
 is a stray file, not a chunk — tools do produce these, and relocating one silently would change the
 world.
 
-`3dalpha.ini` is stashed like anything else **and** put back as a plain readable file on the packed
+`alpha.ini` is stashed like anything else **and** put back as a plain readable file on the packed
 side, which is what lets the world options screen read a gamemode without opening a container. It is
 carried as **raw bytes**, not as a parsed `WorldSettings`: saving rewrites the file from the keys the
 running build knows, so a round trip through the struct would quietly drop a key a later build wrote

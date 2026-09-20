@@ -2,7 +2,7 @@
 
 // The `key=value` reader both settings files share.
 //
-// There are two of them now -- `3ds.ini` beside the game and `3dalpha.ini`
+// There are two of them now -- `3ds.ini` beside the game and `alpha.ini`
 // inside each world -- and they differ only in their key set. Two copies of a
 // parser is how the two quietly stop agreeing about what a comment is or
 // whether a trailing `\r` counts, so the parsing lives here and the files carry

@@ -89,12 +89,12 @@ i64 nowMillis();
 
 // Where worlds live on the card. The menu creates it on demand, so a fresh
 // install has nothing to do first.
-inline constexpr char kSavesDir[] = "sdmc:/3dalpha/saves";
+inline constexpr char kSavesDir[] = "sdmc:/alpha/saves";
 
 // The folder above it, which is where a player who dropped a jar onto the card
 // without reading anything is most likely to have put it. The jar picker looks
 // here as well as in packs/.
-inline constexpr char kRootDir[] = "sdmc:/3dalpha";
+inline constexpr char kRootDir[] = "sdmc:/alpha";
 
 struct MenuChoice {
     enum class Action {
@@ -133,7 +133,7 @@ struct MenuChoice {
     // chunks on the card and needs no such wait.
     bool created = false;
 
-    // The world's own gamemode, read out of its 3dalpha.ini when it was
+    // The world's own gamemode, read out of its alpha.ini when it was
     // chosen. Handed over with the world rather than looked up by the caller,
     // because the menu has already opened that file to draw the row.
     settings::Gamemode gamemode = settings::Gamemode::Spectator;
@@ -224,7 +224,7 @@ struct PauseChoice {
     bool atlasChanged = false;
 
     // What the World Settings screen settled on. Already written to the
-    // world's 3dalpha.ini by the time this comes back -- this field is for the
+    // world's alpha.ini by the time this comes back -- this field is for the
     // caller to *apply*, the way renderDistance above is, not to persist.
     settings::Gamemode gamemode = settings::Gamemode::Spectator;
     settings::Difficulty difficulty = settings::Difficulty::Normal;
@@ -329,7 +329,7 @@ public:
     // `renderDistance` is the live one rather than the saved one; see
     // PauseChoice. `worldName` is drawn under the heading and is only read
     // while this runs; `worldPath` is what the World Settings screen writes
-    // its 3dalpha.ini to, and is copied rather than borrowed.
+    // its alpha.ini to, and is copied rather than borrowed.
     //
     // **init() has to have been called and shutdown() has to follow**, exactly
     // as around `run`, and for the same reason: the 400x240 target and
@@ -834,7 +834,7 @@ private:
     // the bottom screen for repainting so the row stops saying "loading...".
     void pollWorldSize();
 
-    // Writes the selected world's 3dalpha.ini. Called when a row changes
+    // Writes the selected world's alpha.ini. Called when a row changes
     // rather than on the way out, for the same reason saveSettings is: the way
     // out of this screen is often the player launching a world.
     void saveWorldSettings();
@@ -842,7 +842,7 @@ private:
     // ---- Extra Settings -------------------------------------------------
 
     // Reads the selected world's level.dat without claiming it, for the two
-    // rows that are level.dat values rather than 3dalpha.ini ones: the seed
+    // rows that are level.dat values rather than alpha.ini ones: the seed
     // and SnowCovered. `extraLevelKnown_` is false when it would not decode,
     // and both rows then draw as unavailable rather than as a value that is
     // really a default.
@@ -961,7 +961,7 @@ private:
         i64 seed = 0;
 
         // Gamemode, difficulty and the two generation fixes, written straight
-        // into the new world's 3dalpha.ini. The fixes matter more here than
+        // into the new world's alpha.ini. The fixes matter more here than
         // anywhere else: they only affect chunks that have not been generated
         // yet, and at this moment none of them have.
         settings::WorldSettings settings;

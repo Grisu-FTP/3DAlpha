@@ -26,7 +26,7 @@ paragraph was the state before any of it and is gone.*
   item table, the Creative palette and the 40-slot inventory; `src/core/item/` also has the break
   loop, the tool rules, the cursor-stack container and the crafting matcher, and
   `src/core/entity/player_vitals.*` the health. Spectator, Survival and Creative all parse from
-  `<world>/3dalpha.ini` and **all three are selectable** — nothing is drawn disabled any more.
+  `<world>/alpha.ini` and **all three are selectable** — nothing is drawn disabled any more.
 - **Nothing from steps 1 to 4 has been run on hardware.** Every one of them builds for the 3DS and
   passes on the host. That is the single largest open item in this file.
 
@@ -175,7 +175,7 @@ proved; the console run has not happened.*
 Small once 1 and 2 are in — mostly UI against a hotbar that is already drawn.
 
 - [x] Note in the file header, and in `status.md`, that **a1.1.2 has no Creative mode** — it is
-      Beta 1.8's. Ours is invented, which is already why gamemode lives in `3dalpha.ini` and not in
+      Beta 1.8's. Ours is invented, which is already why gamemode lives in `alpha.ini` and not in
       `level.dat`. There is no oracle for its rules and there should not pretend to be one.
       `core/item/creative_palette.hpp` carries the argument, `tests/creative_test.cpp` repeats it
       so a suite that looks like the oracle suites beside it is not mistaken for one, and
@@ -471,7 +471,7 @@ cadence and a different budget on a 268 MHz ARM11. That is a design decision, no
       not move) and a pack without one gets a **black silhouette** rather than a placeholder grid.
       Spectator gets no hand at all, which is a state of its own.
       **Options -> Skin** picks between Default, any pack's `char.png` and any `.png` in
-      `sdmc:/3dalpha/skins` (`core/texture/skin_list.{hpp,cpp}`). A slim skin is detected, marked as
+      `sdmc:/alpha/skins` (`core/texture/skin_list.{hpp,cpp}`). A slim skin is detected, marked as
       such and still drawn on the wide arm -- `hasSlimSkins` is false for this version and
       `held_item.cpp` fails the build if it is turned on without deriving that version's box.
       Three of its numbers are the screen's rather than the game's -- a 0.14-block sideways shift
@@ -516,7 +516,7 @@ cadence and a different budget on a 268 MHz ARM11. That is a design decision, no
       - **`core/entity/explosion.{hpp,cpp}`** is `je`, all three phases, with the cell record as a
         bitset on the caller's stack. `dropBlockAsItem` took the `chance` the jar's method always
         had.
-      - **A difficulty** in `<world>/3dalpha.ini` with a World Settings row. Peaceful is a removal
+      - **A difficulty** in `<world>/alpha.ini` with a World Settings row. Peaceful is a removal
         and not a suppression, which is a1.1.2's and is why the spawner still costs what it costs.
       - **The player has no health yet**, so a monster's fist leaves through a seam and
         `main.cpp` takes the knockback and the sound and counts the damage. That is step 4's, and

@@ -44,7 +44,7 @@ struct GeneratorOptions {
     // **The two Extra Settings that change what a chunk generates.** Both are
     // off by default and off in every fixture, so the derivation suite still
     // pins the original's output; they are per-world switches a player turns
-    // on, carried here from `<world>/3dalpha.ini`. See
+    // on, carried here from `<world>/alpha.ini`. See
     // core/settings/world_settings.hpp and docs/worldgen-a1.1.2.md.
     //
     // `fixOreVeinBounds` floors WorldGenMinable's bounding box instead of

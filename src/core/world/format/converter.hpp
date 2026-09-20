@@ -11,7 +11,7 @@
 // tools and older servers, and a packer that silently discards what it does not
 // understand is a data-loss bug waiting to happen. Anything that is not a chunk
 // at its own canonical path goes into the manifest's blob verbatim and comes
-// back at the same path. `3dalpha.ini` is the one file carried rather than
+// back at the same path. `alpha.ini` is the one file carried rather than
 // stashed: it is ours, and it stays a plain readable file on both sides.
 //
 // **Verification lives here and not on the gameplay read path.** Playing a

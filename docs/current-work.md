@@ -3,6 +3,39 @@
 Last verified: 2026-09-20. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## The SMDH claimed to be invisible (2026-09-20)
+
+The banner is right on hardware now. The HOME Menu icon still is not, and this
+is what came out of taking the artifact apart rather than the source.
+
+**Everything structural is identical to a CIA known to work on this console**:
+the SMDH is 14016 bytes with the right magic and version, all sixteen language
+slots filled, region 0xFFFFFFFF, ratings matching; the icons decode back out of
+it as the cube at both sizes; the ExeFS declares `.code`, `banner`, `icon`
+(14016) and `logo` at sane offsets; and makerom's two copies of the SMDH inside
+the CIA are byte-identical to the one on disk. None of that was the problem.
+
+**What was wrong: `flags = 0x00000000`.** `smdhtool --create` writes zero there
+and offers no way to change it, and bit 0 is *Visible on HOME Menu*. For a 3DSX
+that field is never read, which is why it survived this long. `tools/smdh_flags.py`
+now sets `Visible | Allow3D | RecordUsage` (0x105) as a second command on the
+SMDH rule, and leaves AutoBoot, RequireEULA, AutoSaveOnExit, UsesSaveData and
+New3DS clear -- worlds are plain files on the card and this runs on an Old 3DS.
+
+**Whether that is the whole cause is not established.** It is a real defect and
+it is fixed, but a stale HOME Menu icon cache would produce the same symptom:
+the title id has not changed across installs, the first install of it carried
+devkitPro's default icon, and an icon cached against that id is not always
+re-read when a title is installed over. That the banner updated while the icon
+did not is the shape of a cache, because the two are cached separately. Worth
+deleting the title and installing fresh before looking further.
+
+`tools/check_smdh.py` grew the two assertions that would have caught this: it
+fails when Visible is clear, and `--in-cia` fails when the SMDH inside the
+built CIA is not the one we made. Both verified in the failing direction --
+flags forced to zero, and a foreign SMDH checked against our CIA -- not just
+the passing one.
+
 ## The banner's title shipped as a dash, and the grid icon as a red 3DS (2026-09-20)
 
 Two more, and neither was visible from this machine, which is the point worth

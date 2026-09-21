@@ -325,12 +325,20 @@ if(NINTENDO_3DS)
 		# pixels tall is still a smear -- so the 24x24 is drawn as its own
 		# picture, without the badge, and handed over as smdhtool's sixth
 		# argument. It is the icon the HOME Menu grid puts on the bottom screen.
+		#
+		# The second command is not optional for a CIA: smdhtool writes
+		# `flags = 0` and cannot be told otherwise, and those bits are what
+		# HOME Menu reads to decide whether a title may be shown at all. A
+		# 3DSX never cared, which is why it went unnoticed for so long.
 		add_custom_command(
 			OUTPUT "${SMDH_FILE}"
 			COMMAND "${CTR_SMDHTOOL_EXE}" --create
 				"${MCVER_APP_TITLE}" "${MCVER_APP_DESCRIPTION}" "3DAlpha"
 				"${ART_DIR}/icon.png" "${SMDH_FILE}" "${ART_DIR}/smallicon.png"
+			COMMAND "${Python3_EXECUTABLE}"
+				"${CMAKE_SOURCE_DIR}/tools/smdh_flags.py" "${SMDH_FILE}"
 			DEPENDS "${ART_DIR}/icon.png" "${ART_DIR}/smallicon.png"
+				"${CMAKE_SOURCE_DIR}/tools/smdh_flags.py"
 			COMMENT "Building SMDH for ${MCVER_DISPLAY}"
 			VERBATIM
 		)
@@ -341,6 +349,15 @@ if(NINTENDO_3DS)
 			NAME        "${MCVER_APP_TITLE}"
 			DESCRIPTION "${MCVER_APP_DESCRIPTION}"
 			AUTHOR      "3DAlpha"
+		)
+		# The flags are wrong on this path too -- the icon is devkitPro's but
+		# the title still has to be one HOME Menu may draw. APPEND hangs the
+		# fixup off the rule ctr_generate_smdh just made rather than
+		# reimplementing it.
+		add_custom_command(
+			OUTPUT "${SMDH_FILE}" APPEND
+			COMMAND "${Python3_EXECUTABLE}"
+				"${CMAKE_SOURCE_DIR}/tools/smdh_flags.py" "${SMDH_FILE}"
 		)
 	endif()
 

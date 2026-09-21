@@ -2,6 +2,7 @@
 """Assert that an SMDH carries the icon we drew, and not a fallback.
 
     tools/check_smdh.py <file.smdh> [--default <devkitpro default_icon.png>]
+                                    [--in-cia <file.cia>]
 
 **This exists because the obvious check is the wrong one.** A build step that
 confirms `art/icon.png` was drawn proves only that Pillow ran: the icon still
@@ -23,6 +24,9 @@ import sys
 from pathlib import Path
 
 from PIL import Image
+
+FLAGS_OFFSET = 0x202C
+VISIBLE = 0x001
 
 SMALL_OFFSET = 0x2040
 SMALL_SIZE = 24
@@ -77,6 +81,9 @@ def main() -> None:
     default = None
     if "--default" in args:
         default = Path(args[args.index("--default") + 1])
+    cia = None
+    if "--in-cia" in args:
+        cia = Path(args[args.index("--in-cia") + 1])
 
     data = path.read_bytes()
     if data[:4] != b"SMDH":
@@ -89,11 +96,22 @@ def main() -> None:
         "48x48": decode(data[LARGE_OFFSET:], LARGE_SIZE),
     }
 
+    # **A title that does not claim to be visible is one HOME Menu need not
+    # draw.** smdhtool leaves this at zero and tools/smdh_flags.py sets it; if
+    # that step is ever dropped, the icon is the thing that goes wrong, so it
+    # is checked here beside the icons rather than somewhere more logical.
+    flags = struct.unpack_from("<I", data, FLAGS_OFFSET)[0]
+    print(f"{path.name}: flags 0x{flags:08x}")
+
     want = None
     if default is not None and default.exists():
         base = Image.open(default).convert("RGB")
 
     problems = []
+    if not flags & VISIBLE:
+        problems.append(
+            f"flags 0x{flags:08x} does not set Visible -- see tools/smdh_flags.py")
+
     for name, img in icons.items():
         colours = len(img.getcolors(img.width * img.height) or ())
         if colours < 4:
@@ -112,6 +130,23 @@ def main() -> None:
                     f"{name} is devkitPro's default icon ({share:.0%} identical)")
         if not problems or not problems[-1].startswith(name):
             print(f"{path.name}: {name} ok, {colours} colours")
+
+    # **The SMDH beside the CIA is not the one the console reads.** makerom
+    # copies it into the ExeFS and again into the CIA's meta region, and a
+    # check that stops at the loose file proves nothing about the artifact
+    # anyone installs.
+    if cia is not None:
+        blob = cia.read_bytes()
+        hits = [i for i in range(len(blob) - 4) if blob[i:i + 4] == b"SMDH"]
+        if not hits:
+            problems.append(f"{cia.name} carries no SMDH at all")
+        else:
+            wrong = [hex(h) for h in hits if blob[h:h + len(data)] != data]
+            if wrong:
+                problems.append(
+                    f"{cia.name} has an SMDH that is not this one, at {wrong}")
+            else:
+                print(f"{cia.name}: carries this SMDH in {len(hits)} place(s)")
 
     if problems:
         for problem in problems:

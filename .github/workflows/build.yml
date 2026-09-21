@@ -251,7 +251,8 @@ jobs:
           smdh="$base/3DAlpha-${{ matrix.version }}.smdh"
           test -s "$smdh"
           python3 tools/check_smdh.py "$smdh" \
-            --default "$DEVKITPRO/libctru/default_icon.png"
+            --default "$DEVKITPRO/libctru/default_icon.png" \
+            --in-cia "$cia"
           grep -qa CBMD "$cia" || { echo "CIA has no banner"; exit 1; }
           echo "icon drawn into the SMDH, banner embedded in the CIA"
 

@@ -1003,6 +1003,7 @@ void Menu::loadPackArt(bool force)
         // On the same pass and for the same reason: one more root file, read
         // when the pack changes and never in a frame.
         texture::buildParticleSheet(fs_, path, &particleSheet_);
+        texture::buildWaterOverlay(fs_, path, &waterOverlay_);
         texture::buildBackground(fs_, path, atlas_, &backgroundTile_);
         artPackName_ = packName_;
         artLoaded_ = true;
@@ -2027,6 +2028,11 @@ MenuChoice Menu::run()
         // **Only ever a no-op when nobody is online.** `online_` is null on
         // every path a single-player session takes.
         pumpOnline();
+        // The effects decoding behind the first menu, committed as they land.
+        // A lock and a compare once they are all in. See runShell.
+        if (sound_ != nullptr) {
+            sound_->pumpPreload();
+        }
         // The session behind the join code, which is running before the world
         // is. Nothing when there is no lobby up.
         pumpOnlineLobby();

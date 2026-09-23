@@ -436,11 +436,11 @@ bool Section::mayTickRandomly() const
 {
     switch (encoding_) {
     case SectionEncoding::Uniform:
-        return block::def(uniform_).tickRandomly;
+        return block::ticksRandomly(uniform_);
     case SectionEncoding::Palette4:
     case SectionEncoding::Palette8:
         for (BlockId id : palette_) {
-            if (block::def(id).tickRandomly) {
+            if (block::ticksRandomly(id)) {
                 return true;
             }
         }

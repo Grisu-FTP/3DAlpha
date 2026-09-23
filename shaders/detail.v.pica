@@ -69,6 +69,13 @@
 	; Fog amount into the vertex colour's alpha; see world.v.pica.
 	mul r3.x, fogparam.x, r3.w
 	add r3.x, fogparam.y, r3.x
+	; GL_EXP beside it: 1 - 2^(-d * fogparam.z). z is zero above water, where
+	; this is 1 - 1 = 0 and the max leaves the line alone; under water and in
+	; lava the line is zeroed instead and this is all there is.
+	mul r3.y, fogparam.z, r3.w
+	ex2 r3.y, -r3.y
+	add r3.y, ones, -r3.y
+	max r3.x, r3.x, r3.y
 	max r3.x, zeros, r3.x
 	min out_col.w, ones, r3.x
 

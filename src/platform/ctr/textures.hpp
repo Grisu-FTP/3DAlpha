@@ -12,6 +12,7 @@
 #include "core/texture/entity_skins.hpp"
 #include "core/texture/font.hpp"
 #include "core/texture/particle_sheet.hpp"
+#include "core/texture/water_overlay_image.hpp"
 #include "core/util/types.hpp"
 
 #include <citro3d.h>
@@ -112,6 +113,17 @@ public:
     // of terrain.png and gui/items.png carry on.
     bool initParticles(const std::vector<u8>& sheet);
     bool hasParticles() const { return particlesReady_; }
+
+    // **`water.png`, repeated 4 x 4 onto a 64 x 64 sheet** -- see
+    // core/texture/water_overlay_image.hpp. 16 KB, linear memory, and the one
+    // sheet here that wraps: the overlay's UVs scroll past its edge. Like the
+    // particles, never short of a picture, only possibly of memory.
+    bool initWaterOverlay(const std::vector<u8>& sheet);
+    bool hasWaterOverlay() const { return waterOverlayReady_; }
+    void bindWaterOverlay(int unit) const
+    {
+        C3D_TexBind(unit, const_cast<C3D_Tex*>(&waterOverlay_));
+    }
     void bindParticles(int unit) const
     {
         C3D_TexBind(unit, const_cast<C3D_Tex*>(&particles_));
@@ -254,6 +266,7 @@ private:
     C3D_Tex art_{};
     C3D_Tex font_{};
     C3D_Tex particles_{};
+    C3D_Tex waterOverlay_{};
     C3D_Tex wire_{};
     C3D_Tex cube_{};
     C3D_Tex cubeWire_{};
@@ -285,6 +298,7 @@ private:
     bool artReady_ = false;
     bool fontReady_ = false;
     bool particlesReady_ = false;
+    bool waterOverlayReady_ = false;
     bool wireReady_ = false;
     bool inVram_ = false;
     bool cubeReady_ = false;

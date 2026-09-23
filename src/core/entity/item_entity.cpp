@@ -167,6 +167,9 @@ ItemEntity* ItemEntitySystem::spawnFromServer(const tick::TickWorld& world, i32 
         return nullptr;
     }
     spawned->entityId = entityId;
+    spawned->serverX = px;
+    spawned->serverY = py;
+    spawned->serverZ = pz;
     spawned->motionX = motionX;
     spawned->motionY = motionY;
     spawned->motionZ = motionZ;
@@ -208,15 +211,30 @@ bool ItemEntitySystem::placeById(i32 entityId, double px, double py, double pz)
     if (item == nullptr) {
         return false;
     }
-    // The server's word for where it is, and the motion it had is spent: what
-    // the next tick does from here is the fall, not the throw.
-    item->setPosition(px, py, pz);
-    item->prevX = px;
-    item->prevY = py;
-    item->prevZ = pz;
-    item->motionX = 0.0;
-    item->motionY = 0.0;
-    item->motionZ = 0.0;
+    item->serverX = px;
+    item->serverY = py;
+    item->serverZ = pz;
+
+    const double dx = px - item->x;
+    const double dy = py - item->y;
+    const double dz = pz - item->z;
+    if (dx * dx + dy * dy + dz * dz > kServerSnapDistance * kServerSnapDistance) {
+        // Too far to be the same fall seen late: the server's word, and the
+        // motion it had is spent -- what the next tick does from here is the
+        // fall, not the throw.
+        item->setPosition(px, py, pz);
+        item->motionX = 0.0;
+        item->motionY = 0.0;
+        item->motionZ = 0.0;
+        return true;
+    }
+    // Half the way, and `prev` is left where it was so the frame draws the
+    // pull rather than a jump. See `kServerSnapDistance`.
+    item->x += dx * 0.5;
+    item->y += dy * 0.5;
+    item->z += dz * 0.5;
+    item->box = AABB{item->x - kItemHalf, item->y - kItemHalf, item->z - kItemHalf,
+                     item->x + kItemHalf, item->y + kItemHalf, item->z + kItemHalf};
     return true;
 }
 

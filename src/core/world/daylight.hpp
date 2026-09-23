@@ -107,4 +107,9 @@ float starBrightness(i64 timeTicks, float partialTicks = 0.0f);
 // expression divides by `4 - option`.
 SkyColour viewFogColour(i64 timeTicks, float partialTicks, int renderDistanceChunks);
 
+// The original's `gameSettings.renderDistance` (0 Far .. 3 Tiny) recovered from
+// this port's chunk count, as viewFogColour describes: `4 - log2(chunks)`,
+// clamped to 0..3 and fractional between the four settings.
+float renderDistanceOption(int renderDistanceChunks);
+
 }  // namespace mc::world

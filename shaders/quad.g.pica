@@ -13,8 +13,8 @@
 ;   v1  the e1 edge, in clip space
 ;   v2  the e2 edge, in clip space
 ;   v3  (u0, v0, u1, v1)
-;   v4  face shade in rgb, fog amount in a
-;   v5  lightmap texel centre in xy
+;   v4  (face shade, fog at corners 0, 1 and 3)
+;   v5  (lightmap texel centre, face shade, fog at corner 2)
 ;
 ; The four corners are v0 + i*v1 + j*v2 over (i,j) = (0,0), (1,0), (1,1), (0,1),
 ; which is mesh::kFaceCorner's own order, counter-clockwise seen from outside.
@@ -43,7 +43,11 @@
 	add r1, v2, r3        ; corner 3 = p0 + e2
 	add r2, v2, r0        ; corner 2 = p0 + e1 + e2
 
-	; Colour and the lightmap coordinate are per quad, but they are written per
+	; Each corner's colour is the face shade in rgb and that corner's own fog in
+	; a, one swizzle apiece -- quad.v.pica packed them so that this costs
+	; nothing over the single colour it replaced.
+	;
+	; The lightmap coordinate is per quad, but it and the colour are written per
 	; vertex all the same: whether an output register survives an `emit`
 	; untouched is not something this project has measured, and four wrong
 	; vertex colours would confound the measurement this shader exists to take.
@@ -53,28 +57,28 @@
 	setemit 0
 	mov out_pos, v0
 	mov out_uv,  v3.xy
-	mov out_col, v4
+	mov out_col, v4.xxxy
 	mov out_lm,  v5.xy
 	emit
 
 	setemit 1
 	mov out_pos, r0
 	mov out_uv,  v3.zy
-	mov out_col, v4
+	mov out_col, v4.xxxz
 	mov out_lm,  v5.xy
 	emit
 
 	setemit 2, prim
 	mov out_pos, r1
 	mov out_uv,  v3.xw
-	mov out_col, v4
+	mov out_col, v4.xxxw
 	mov out_lm,  v5.xy
 	emit
 
 	setemit 0, inv prim
 	mov out_pos, r2
 	mov out_uv,  v3.zw
-	mov out_col, v4
+	mov out_col, v5.zzzw
 	mov out_lm,  v5.xy
 	emit
 

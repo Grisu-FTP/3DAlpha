@@ -2673,7 +2673,28 @@ int audioList(const char* resources)
                 double(bytes) / 1024.0);
     std::printf("  ctr::kMaxSamples must be at least %zu for this folder\n",
                 sink.samples().size());
-    return 0;
+
+    // **The console's boot path since the menu stopped waiting for it**: the
+    // click first, then the rest on a worker that is pumped rather than joined.
+    // It must end with the same set as the synchronous decode above.
+    host::WavBackend background("");
+    audio::SoundEngine staged(fs, background, 0);
+    staged.loadResources(resources);
+    staged.preloadSound("random.click");
+    const auto start = std::chrono::steady_clock::now();
+    if (staged.startPreload(&audio::preloadEffects)) {
+        while (staged.preloading()) {
+            staged.pumpPreload();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - start)
+                          .count();
+    std::printf("  background preload: %zu samples in %.1f ms on this machine%s\n",
+                background.samples().size(), ms,
+                background.samples().size() == sink.samples().size() ? "" : " -- MISMATCH");
+    return background.samples().size() == sink.samples().size() ? 0 : 1;
 }
 
 // The feature, without a console and without a decoder: run the ticker for a

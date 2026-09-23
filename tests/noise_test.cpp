@@ -203,3 +203,66 @@ TEST(the_y_slab_cache_never_fires_at_terrain_scale)
         CHECK_EQ(bits(one), bits(batched[usize(yi)]));
     }
 }
+
+// The lattice fill picks its gradients out of a table (cornerGradient) rather
+// than asking gradient's comparisons, for speed. That is only allowed because
+// the two are the same function; this holds them to it for every hash and
+// every corner, at offsets chosen to include zeros of both signs, the cell
+// edges and values whose low bits would show a rounding difference.
+TEST(the_corner_gradient_table_is_the_gradient)
+{
+    const double samples[] = {0.0, -0.0, 1.0, 0.5, 0.999999999999, 0.1234567890123, 1e-300};
+    int checked = 0;
+    for (double fx : samples) {
+        for (double fy : samples) {
+            for (double fz : samples) {
+                const double corners[6] = {fx, fx - 1.0, fy, fy - 1.0, fz, fz - 1.0};
+                for (i32 hash = 0; hash < 256; ++hash) {
+                    for (int corner = 0; corner < 8; ++corner) {
+                        const double x = corners[corner & 1];
+                        const double y = corners[2 + ((corner >> 1) & 1)];
+                        const double z = corners[4 + ((corner >> 2) & 1)];
+                        const double want = PerlinNoise::gradient(hash, x, y, z);
+                        const double got = PerlinNoise::cornerGradient(hash, corners, corner);
+                        if (bits(want) != bits(got)) {
+                            CHECK_EQ(bits(got), bits(want));
+                            CHECK_EQ(hash, -1);  // reports which
+                            CHECK_EQ(corner, -1);
+                            return;
+                        }
+                        ++checked;
+                    }
+                }
+            }
+        }
+    }
+    CHECK_EQ(checked, 7 * 7 * 7 * 256 * 8);
+}
+
+// The lattice fill works each Y step out once per call, for the first 32, and
+// computes any beyond that in the loop. a1.1.2 never asks for more than 17, so
+// this is the only thing that runs the second path: at terrain scale every
+// sample has its own cell, so a batch of 40 must agree with 40 single samples.
+TEST(a_lattice_fill_longer_than_the_hoisted_y_steps_agrees)
+{
+    constexpr int kYs = 40;
+    constexpr double kYScale = 684.412 / 160.0;
+
+    JavaRandom random(77);
+    const OctaveNoise noise(random, 3);
+
+    std::vector<double> batched(kYs * 2, 0.0);
+    noise.populate(batched.data(), kYs * 2, 3.0, -5.0, 11.0, 2, kYs, 1, 0.7, kYScale, 0.9);
+
+    for (int xi = 0; xi < 2; ++xi) {
+        for (int yi = 0; yi < kYs; ++yi) {
+            JavaRandom singleRandom(77);
+            const OctaveNoise singleNoise(singleRandom, 3);
+
+            double one = 0.0;
+            singleNoise.populate(&one, 1, 3.0 + double(xi), -5.0 + double(yi), 11.0, 1, 1, 1,
+                                 0.7, kYScale, 0.9);
+            CHECK_EQ(bits(one), bits(batched[usize(xi * kYs + yi)]));
+        }
+    }
+}

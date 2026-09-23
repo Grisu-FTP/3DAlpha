@@ -226,4 +226,8 @@ bool playerInsideOpaqueBlock(const tick::TickWorld& world, const PlayerBody& bod
 // is not drowning.
 bool playerEyeInWater(const tick::TickWorld& world, const PlayerBody& body);
 
+// The same question with lava, which only the view asks: `EntityRenderer` turns the fog red
+// and thick with the head in it. See core/world/view_fog.hpp.
+bool playerEyeInLava(const tick::TickWorld& world, const PlayerBody& body);
+
 }  // namespace mc::entity

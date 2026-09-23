@@ -66,6 +66,7 @@
 #include "core/texture/font.hpp"
 #include "core/texture/pack_list.hpp"
 #include "core/texture/particle_sheet.hpp"
+#include "core/texture/water_overlay_image.hpp"
 #include "core/texture/skin_list.hpp"
 #include "core/util/types.hpp"
 #include "core/world/format/converter.hpp"
@@ -393,6 +394,11 @@ public:
     // failure, so this is always `kParticleSheetBytes` long. See
     // core/texture/particle_sheet.hpp.
     const std::vector<u8>& particleSheet() const { return particleSheet_; }
+
+    // **The pack's `water.png`**, repeated onto its 64 x 64 sheet, built on
+    // the same pass and the same terms: always `kWaterOverlayBytes`, the
+    // stand-in when the pack has none. See core/texture/water_overlay_image.hpp.
+    const std::vector<u8>& waterOverlay() const { return waterOverlay_; }
 
     // **Multiplayer's pause menu**, which is a1.1.2's `ie` with a server behind
     // it: Resume, Chat, Options, Disconnect. World Settings is not offered,
@@ -1261,6 +1267,7 @@ private:
     // none", and the drawing falls back rather than refusing.
     texture::FontImage fontImage_;
     std::vector<u8> particleSheet_;
+    std::vector<u8> waterOverlay_;
     std::vector<u8> backgroundTile_;
     // Which pack the two above came from, so a second visit to the menu costs
     // an upload and not three card reads.

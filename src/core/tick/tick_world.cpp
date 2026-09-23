@@ -427,7 +427,7 @@ void TickWorld::randomTickChunk(world::ChunkColumn& column)
         if (!live[y / world::Section::kSize]) continue;
 
         const block::BlockId id = column.block(lx, y, lz);
-        if (!block::def(id).tickRandomly) continue;
+        if (!block::ticksRandomly(id)) continue;
 
         ++stats_.randomTicksRun;
         updateTick(*this, x0 + lx, y, z0 + lz, id, random_);

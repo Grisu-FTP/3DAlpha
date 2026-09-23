@@ -22,6 +22,7 @@
 #include "core/render/minecart_mesh.hpp"
 #include "core/render/entity_fire_mesh.hpp"
 #include "core/render/fire_overlay.hpp"
+#include "core/render/water_overlay.hpp"
 #include "core/render/mob_mesh.hpp"
 #include "core/render/spawner_mesh.hpp"
 #include "core/render/sign_mesh.hpp"
@@ -30,6 +31,7 @@
 #include "core/render/outline.hpp"
 #include "core/util/frustum.hpp"
 #include "core/util/types.hpp"
+#include "core/world/view_fog.hpp"
 #include "platform/ctr/gpu_memory.hpp"
 #include "platform/ctr/textures.hpp"
 
@@ -212,7 +214,14 @@ public:
     // members the eyes read: the clear colour, the fog constant the world's
     // third combiner stage fades to, the two sky plane colours, how bright the
     // stars are and where the sun is.
-    void setWorldTime(i64 dayTicks, float partialTicks);
+    //
+    // **And what the camera is inside.** With the head in water or lava the fog
+    // colour is replaced and the fog turns exponential; `fogBrightness` is the
+    // eased light at the player's head that every fog colour is scaled by. The
+    // defaults are open air at full brightness. See core/world/view_fog.hpp.
+    void setWorldTime(i64 dayTicks, float partialTicks,
+                      mc::world::FogMedium medium = mc::world::FogMedium::Air,
+                      float fogBrightness = 1.0f);
 
     // **Fire, moving.** One 16 x 16 tile replaced in the block atlas -- see
     // `Atlas::updateTile` for why that is two 512-byte copies and not a
@@ -498,6 +507,25 @@ public:
     // hand. See core/render/fire_overlay.hpp.
     void setBurning(bool burning) { burning_ = burning; }
 
+    // **Whether the water is over the screen**: the head is under water, which
+    // is `jh.b(F)V`'s test for it. `yawDegrees`/`pitchDegrees` scroll it and
+    // `light` is the packed light at the player's `getEntityBrightness` cell.
+    // Set every frame alongside the flames. See core/render/water_overlay.hpp.
+    void setUnderwater(bool underwater, float yawDegrees, float pitchDegrees, u8 light)
+    {
+        underwater_ = underwater;
+        waterYaw_ = yawDegrees;
+        waterPitch_ = pitchDegrees;
+        waterLight_ = light;
+    }
+
+    // **The pack's `water.png`**, on the particle sheet's terms: the builder
+    // falls back to a stand-in, so false means no memory for 16 KB.
+    bool setWaterOverlay(const std::vector<u8>& sheet)
+    {
+        return atlas_.initWaterOverlay(sheet);
+    }
+
     // **The hearts, the armour row and the bubbles** -- Survival's half of
     // GuiIngame, over the world on the top screen. Set every frame a Survival
     // body is being drawn; `clearHud` for every other mode, which `lu` hides the
@@ -774,6 +802,17 @@ private:
     // inside `renderHand` in the original. See core/render/fire_overlay.hpp.
     void drawFireOverlay(float iod);
 
+    // **The water over the screen, after the flames** -- `jh.c(F)V`, the last
+    // thing `renderOverlays` draws. See core/render/water_overlay.hpp.
+    void drawWaterOverlay(float iod);
+
+    // The fog's `fogparam` for a pipeline that is bound: the line from `start`
+    // to `end` blocks, or the exponential curve instead while `fogExp2_` is
+    // set. The sky and the world differ only in the line.
+    void setFogParam(int location, float start, float end) const;
+    // All zero: no fog at any distance. For the hand's pass and the GUI.
+    void clearFogParam(const Pipeline& pipeline) const;
+
     // **The chat, after the hand**, where `GuiIngame` runs: the hand is drawn
     // before the whole GUI. Built once a frame by `buildChat`, since both eyes
     // draw the same lines at the same place, and drawn in each.
@@ -885,6 +924,13 @@ private:
     void* fireOverlayVerts_ = nullptr;
     int fireOverlayCount_ = 0;
     bool burning_ = false;
+    // Four vertices, rebuilt in each eye as the hand is: the scroll follows the
+    // camera, and 64 bytes is not worth a once-a-frame build.
+    void* waterOverlayVerts_ = nullptr;
+    bool underwater_ = false;
+    float waterYaw_ = 0.0f;
+    float waterPitch_ = 0.0f;
+    u8 waterLight_ = 0xFF;
     // The glyphs, 64 KB (render::kChatMaxVertices), and the strips behind the
     // lines, six corners each. Built before the first eye and read by both.
     void* chatVerts_ = nullptr;
@@ -955,6 +1001,9 @@ private:
     u32 voidPlaneColour_ = 0xFFB33025;
     float starBrightness_ = 0.0f;
     float celestialAngle_ = 0.0f;
+    // `GL_EXP`'s density times log2(e), for the shader's ex2; zero for the
+    // ordinary linear fog. Set by `setWorldTime`.
+    float fogExp2_ = 0.0f;
 
     // One immutable index buffer for the whole process: 4 vertices per quad,
     // repeating 0,1,2, 0,2,3. Chunk meshes therefore carry no index data at all.

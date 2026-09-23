@@ -96,8 +96,9 @@ public:
 
     void chat(std::string_view text);
 
-    // Sends every item the player threw this frame to the server and lets go
-    // of it. See `net::pickupSpawnFor`.
+    // Sends every item the player threw this frame to the server, and keeps it
+    // on screen until the server's own spawn takes it over. See
+    // `net::pickupSpawnFor` and `net::RemoteEntities::predictDrop`.
     void forwardDrops(entity::ItemEntitySystem& drops);
 
     // **This client's own entity id**, as the Login packet gave it. Zero until

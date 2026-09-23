@@ -350,9 +350,15 @@ void NetPlay::forwardDrops(entity::ItemEntitySystem& drops)
     // everything it had just sent, every tick, for ever. One stack dropped in
     // front of a guest became an endless fountain of them; that is what
     // "dropping an item drops it infinitely" was.
+    //
+    // **What was thrown stays on screen** under a provisional id until the
+    // server's spawn takes it over, or is taken away if none comes -- see
+    // `RemoteEntities::predictDrop`. Past the few that can wait at once, a
+    // throw goes the original way: sent and let go.
     for (int i = 0; i < drops.count(); ++i) {
         if (drops[i].entityId == 0) {
             session_.send(net::pickupSpawnFor(drops[i]));
+            entities_.predictDrop(drops.at(i));
         }
     }
     drops.removeUnowned();

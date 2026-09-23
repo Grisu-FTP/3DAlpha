@@ -6,6 +6,7 @@
 #include "core/render/sky.hpp"
 #include "core/texture/dev_art.hpp"
 #include "core/world/daylight.hpp"
+#include "core/world/view_fog.hpp"
 #include "core/texture/entity_skins.hpp"
 
 #include <3ds.h>
@@ -529,6 +530,10 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
         GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex)
                                          * u32(render::kFireOverlayVertices));
     }
+    // 64 bytes for the water over a submerged player's view, rebuilt in each
+    // eye it is drawn in. See core/render/water_overlay.hpp.
+    waterOverlayVerts_ =
+        linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kWaterOverlayVertices));
     // 70 KB for the whole sky -- two 169-quad planes, the sun, the moon and 780
     // stars -- written once below and never again. See core/render/sky.hpp.
     skyVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(render::kSkyVertexCount));
@@ -1922,6 +1927,7 @@ void Renderer::drawHeldItem(float iod)
     applyWorldState();
 
     bindPipeline(detailPipeline_);
+    clearFogParam(detailPipeline_);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &projection);
 
     if (fromItems) {
@@ -1996,6 +2002,7 @@ void Renderer::drawFireOverlay(float iod)
     applyWorldState();
 
     bindPipeline(detailPipeline_);
+    clearFogParam(detailPipeline_);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &projection);
 
     // The texture's alpha times 0.9, on the stage that already carries the fog
@@ -2029,6 +2036,76 @@ void Renderer::drawFireOverlay(float iod)
     C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
     applyAtlasTexEnv();
+}
+
+// **The water over a submerged player's view** -- `jh.c(F)V`, run by
+// `renderOverlays` after the flames. The fire overlay's pass with three
+// differences, and core/render/water_overlay.cpp holds the geometry.
+//
+// **Its own sheet.** `water.png`, uploaded 4 x 4 and set to wrap, since the
+// UVs scroll with the camera past the sheet's edge.
+//
+// **Lit.** `glColor4f(b, b, b, 0.5F)` with b the player's brightness, which
+// here is the vertex's light byte through the world's lightmap -- so the water
+// over the view darkens at night and in a deep sea as the world behind it does.
+//
+// **Rebuilt per eye**, as the hand is, because it follows the camera. Both
+// eyes build the same four vertices.
+void Renderer::drawWaterOverlay(float iod)
+{
+    if (!underwater_ || waterOverlayVerts_ == nullptr || !atlas_.hasWaterOverlay()) {
+        return;
+    }
+
+    auto* verts = static_cast<mesh::DetailVertex*>(waterOverlayVerts_);
+    const int count = render::buildWaterOverlayQuad(waterYaw_, waterPitch_, waterLight_, verts,
+                                                    render::kWaterOverlayVertices);
+    if (count < 4) {
+        return;
+    }
+    GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(count));
+
+    C3D_Mtx projection;
+    Mtx_PerspStereoTilt(&projection, C3D_AngleFromDegrees(config_.fovDegrees), 400.0f / 240.0f,
+                        kHeldItemNearPlane, farPlane(), iod * kHeldItemStereoScale,
+                        kHeldItemFocalBlocks, false);
+
+    // Everything the hand's pass states, for the reason it gives.
+    applyWorldState();
+
+    bindPipeline(detailPipeline_);
+    clearFogParam(detailPipeline_);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &projection);
+    atlas_.bindWaterOverlay(0);
+
+    // The texture's alpha times 0.5, on the fog stage's constant, as the
+    // flames borrow it for their 0.9.
+    const u32 alpha = u32(render::kWaterOverlayAlpha * 255.0f + 0.5f);
+    C3D_TexEnv* env2 = C3D_GetTexEnv(2);
+    C3D_TexEnvSrc(env2, C3D_Alpha, GPU_PREVIOUS, GPU_CONSTANT, GPU_PREVIOUS);
+    C3D_TexEnvFunc(env2, C3D_Alpha, GPU_MODULATE);
+    C3D_TexEnvColor(env2, (fogColour_ & 0x00FFFFFFu) | (alpha << 24));
+
+    // **No depth test at all**: the original clears depth before the hand and
+    // this sheet is in front of everything, the hand and the flames included.
+    C3D_CullFace(GPU_CULL_NONE);
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+
+    C3D_BufInfo bufInfo;
+    BufInfo_Init(&bufInfo);
+    BufInfo_Add(&bufInfo, verts, sizeof(mesh::DetailVertex), 3, 0x210);
+    C3D_SetBufInfo(&bufInfo);
+
+    C3D_DrawElements(GPU_TRIANGLES, 6, C3D_UNSIGNED_SHORT, indices_);
+    ++frameStats_.drawCalls;
+    ++frameStats_.quads;
+
+    C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+    applyAtlasTexEnv();
+    atlas_.bind(0, wireframe_);
 }
 
 // **Once a frame, before the first eye.** Both eyes draw the same lines at the
@@ -2131,6 +2208,7 @@ void Renderer::drawChat()
     // The text: the detail program off the font, glyph colour times vertex
     // colour, glyph alpha times the line's.
     bindPipeline(detailPipeline_);
+    clearFogParam(detailPipeline_);
     C3D_Mtx glyphs = screen;
     // The detail shader divides positions by 1024 and the builder wrote
     // sixteen units a pixel, so a vertex arrives as pixels / 64.
@@ -2311,6 +2389,7 @@ void Renderer::drawHud()
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
 
     bindPipeline(detailPipeline_);
+    clearFogParam(detailPipeline_);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &screen);
     atlas_.bindIcons(0);
 
@@ -2446,10 +2525,34 @@ void Renderer::bindPipeline(const Pipeline& pipeline)
     // program reloads its constant table over the top. Six writes a frame
     // sidesteps the whole question.
     if (pipeline.uLocFog >= 0) {
-        const float start = fogStartBlocks();
-        const float slope = 1.0f / (fogEndBlocks() - start);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, pipeline.uLocFog, slope, -start * slope, 0.0f, 0.0f);
+        setFogParam(pipeline.uLocFog, fogStartBlocks(), fogEndBlocks());
     }
+}
+
+// **`iq.a(I)V`'s two modes, as one uniform.** `GL_LINEAR` is a line in the
+// view distance, amount = d * x + y; `GL_EXP` -- the head in water or lava --
+// replaces it with `1 - e^(-density * d)`, which the shaders compute as
+// `1 - 2^(-d * z)` with z = density * log2(e). Both terms are always
+// evaluated and the larger wins, so each mode zeroes the other's.
+// **No fog, for what is drawn in camera or screen space.** `iq.c(F)` turns
+// `GL_FOG` off before `renderHand`, so the hand, the flames and the water over
+// the view are never fogged; a line that starts a quarter of the far plane out
+// never reached them anyway, but the exponential curve does from the eye.
+void Renderer::clearFogParam(const Pipeline& pipeline) const
+{
+    if (pipeline.uLocFog >= 0) {
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, pipeline.uLocFog, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+}
+
+void Renderer::setFogParam(int location, float start, float end) const
+{
+    if (fogExp2_ > 0.0f) {
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, location, 0.0f, 0.0f, fogExp2_, 0.0f);
+        return;
+    }
+    const float slope = 1.0f / (end - start);
+    C3D_FVUnifSet(GPU_VERTEX_SHADER, location, slope, -start * slope, 0.0f, 0.0f);
 }
 
 void Renderer::setStereo(float disparityPixels, float focalBlocks)
@@ -2814,7 +2917,7 @@ void Renderer::shutdown()
                           &arrowVerts_, &boatVerts_,
                           &minecartVerts_, &minecartBlockVerts_, &mobVerts_,
                           &entityFireVerts_, &signVerts_,
-                          &heldVerts_, &fireOverlayVerts_,
+                          &heldVerts_, &fireOverlayVerts_, &waterOverlayVerts_,
                           &chatVerts_, &chatStrips_, &skyVerts_}) {
         if (*buffer != nullptr) {
             linearFree(*buffer);
@@ -2842,11 +2945,14 @@ void Renderer::shutdown()
 // the two things renderSky asks for directly: how bright the stars are and
 // where the sun is. None of it is per-eye and none of it is per-vertex, which
 // is why the sky's 4,480 vertices are written once at start-up and never again.
-void Renderer::setWorldTime(i64 dayTicks, float partialTicks)
+void Renderer::setWorldTime(i64 dayTicks, float partialTicks, world::FogMedium medium,
+                            float fogBrightness)
 {
     const world::SkyColour sky = world::skyColour(dayTicks, partialTicks);
-    const world::SkyColour fog =
-        world::viewFogColour(dayTicks, partialTicks, config_.meshDistance);
+    const world::ViewFog view =
+        world::viewFog(dayTicks, partialTicks, config_.meshDistance, medium, fogBrightness);
+    const world::SkyColour& fog = view.colour;
+    fogExp2_ = view.density * 1.4426950f;  // log2(e)
     const world::SkyColour below = render::voidPlaneColour(sky);
 
     // **The clear and the fog are the same colour, and that is the point.**
@@ -2943,10 +3049,10 @@ void Renderer::drawSky(const Camera& camera, float iod)
     // one.
     const float fogStart = fogEndBlocks() * render::kSkyFogStartScale;
     const float fogEnd = fogEndBlocks() * render::kSkyFogEndScale;
+    // Under water the sky gets the world's curve and not a line of its own:
+    // `iq.a(-1)` only moves the line, and `GL_EXP` has no start or end.
     if (detailPipeline_.uLocFog >= 0 && fogEnd > fogStart + 1.0f) {
-        const float slope = 1.0f / (fogEnd - fogStart);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, detailPipeline_.uLocFog, slope, -fogStart * slope,
-                      0.0f, 0.0f);
+        setFogParam(detailPipeline_.uLocFog, fogStart, fogEnd);
     }
 
     // The scale the sky's own units need: the vertices are written at 1/64 of a
@@ -3714,6 +3820,7 @@ void Renderer::drawEye(int eye, const Camera& camera, float iod)
     // intent rather than something a player can see.
     drawHeldItem(iod);
     drawFireOverlay(iod);
+    drawWaterOverlay(iod);
     drawChat();
     drawHud();
     // **After the hearts**, because it is over the world and over the HUD both:

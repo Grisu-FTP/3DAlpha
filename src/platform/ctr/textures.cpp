@@ -426,6 +426,24 @@ bool Atlas::initParticles(const std::vector<u8>& sheet)
     return particlesReady_;
 }
 
+bool Atlas::initWaterOverlay(const std::vector<u8>& sheet)
+{
+    if (waterOverlayReady_) {
+        C3D_TexDelete(&waterOverlay_);
+        waterOverlayReady_ = false;
+    }
+    if (sheet.size() != texture::kWaterOverlayBytes) {
+        return false;
+    }
+    waterOverlayReady_ = uploadSheet(&waterOverlay_, sheet.data(), texture::kWaterOverlayEdge,
+                                     texture::kWaterOverlayEdge);
+    if (waterOverlayReady_) {
+        // The one sheet that repeats: `jh.c(F)` scrolls its UVs by the yaw.
+        C3D_TexSetWrap(&waterOverlay_, GPU_REPEAT, GPU_REPEAT);
+    }
+    return waterOverlayReady_;
+}
+
 bool Atlas::ensureWireframe()
 {
     if (wireReady_) {
@@ -712,6 +730,10 @@ void Atlas::shutdown()
     if (particlesReady_) {
         C3D_TexDelete(&particles_);
         particlesReady_ = false;
+    }
+    if (waterOverlayReady_) {
+        C3D_TexDelete(&waterOverlay_);
+        waterOverlayReady_ = false;
     }
     if (wireReady_) {
         C3D_TexDelete(&wire_);

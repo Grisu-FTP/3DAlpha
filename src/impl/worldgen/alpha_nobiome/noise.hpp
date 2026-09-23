@@ -40,6 +40,32 @@
 
 namespace mc::worldgen {
 
+// Which two of a cell's six corner offsets -- fx, fx - 1, fy, fy - 1, fz,
+// fz - 1 -- gradient() takes as u (low nibble) and v (high nibble), for each
+// hash and each corner. Built from gradient's own conditions; see
+// PerlinNoise::cornerGradient.
+struct PerlinCornerPicks {
+    u8 pick[16][8];
+};
+
+constexpr PerlinCornerPicks buildPerlinCornerPicks()
+{
+    PerlinCornerPicks table{};
+    for (int h = 0; h < 16; ++h) {
+        for (int corner = 0; corner < 8; ++corner) {
+            const int x = corner & 1;
+            const int y = 2 + ((corner >> 1) & 1);
+            const int z = 4 + ((corner >> 2) & 1);
+            const int u = h < 8 ? x : y;
+            const int v = h < 4 ? y : ((h == 12 || h == 14) ? x : z);
+            table.pick[h][corner] = u8(u | (v << 4));
+        }
+    }
+    return table;
+}
+
+inline constexpr PerlinCornerPicks kPerlinCornerPick = buildPerlinCornerPicks();
+
 // Class `v`. One Perlin lattice with a 512-entry permutation and three random
 // offsets, all drawn from the shared Random in a fixed order that is part of
 // the seed.
@@ -75,10 +101,10 @@ public:
 
     const i32* permutation() const { return permutation_; }
 
-private:
     // `v.a(IDDD)D`. Perlin's own gradient selector: the low four bits of the
     // hash pick one of twelve edge vectors, expressed as sign choices over two
-    // of the three components.
+    // of the three components. Public so noise_test can hold cornerGradient to
+    // it.
     static double gradient(i32 hash, double x, double y, double z)
     {
         const i32 h = hash & 15;
@@ -86,6 +112,31 @@ private:
         const double v = h < 4 ? y : ((h == 12 || h == 14) ? x : z);
         return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
     }
+
+    // **`gradient`, for the lattice fill, with its choices looked up.** The
+    // eight corners of a cell only ever pass fx or fx - 1, fy or fy - 1, and fz
+    // or fz - 1, so populate keeps those six in `corners`, in that order, and
+    // this picks u and v out of them by table instead of by comparison.
+    // `corner` is dx | dy << 1 | dz << 2.
+    //
+    // **Bit-identical to gradient, not an approximation of it**: the same
+    // component of the same value comes out, and negation is a sign flip. The
+    // table is built from gradient's own conditions, and noise_test checks the
+    // two against each other for every hash and corner.
+    //
+    // Why: the hash is random, so gradient's comparisons are unpredictable
+    // branches, and eight a cell made them the largest single cost in terrain
+    // generation on the host. It also keeps the six values in one place for
+    // the ARM11, which otherwise stores the three it was passed on every call.
+    static double cornerGradient(i32 hash, const double* corners, int corner)
+    {
+        const u8 pick = kPerlinCornerPick.pick[hash & 15][corner];
+        const double u = corners[pick & 15];
+        const double v = corners[pick >> 4];
+        return ((hash & 1) == 0 ? u : -u) + ((hash & 2) == 0 ? v : -v);
+    }
+
+private:
 
     // `v.b(DDD)D`. Note the argument order: the interpolant comes first.
     static double lerp(double t, double a, double b) { return a + t * (b - a); }

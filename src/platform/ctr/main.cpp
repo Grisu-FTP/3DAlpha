@@ -91,6 +91,7 @@
 #include "core/util/worker.hpp"
 #include "core/world/chunk_cache.hpp"
 #include "core/world/daylight.hpp"
+#include "core/world/view_fog.hpp"
 
 #include "version_config.hpp"
 
@@ -1435,6 +1436,20 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // copy 256 KB of it.
     config.atlas = &choice.atlas;
 
+    // **The effects the boot left decoding in the background, finished before
+    // the renderer measures linear memory.** Its VBO pool is sized from what is
+    // free, so a sample committed after it would take memory the pool counted
+    // on. By the time a player has picked a world this is almost always over
+    // already; if not, it is the tail of what the first menu used to wait for
+    // in full. See preloadInterfaceSounds.
+    if (sound.preloading()) {
+        std::printf("Loading sounds...\n");
+        while (sound.preloading()) {
+            sound.pumpPreload();
+            svcSleepThread(1000000LL);
+        }
+    }
+
     ctr::Renderer renderer;
     if (!renderer.init(config, isNew3DS)) {
         std::printf("\x1b[31mrenderer init failed\x1b[0m\n");
@@ -2046,6 +2061,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // per process: entering a world should raise the first item rather than
     // inherit the last one's progress.
     mc::render::HeldItemState hand;
+    // `iq.n`/`iq.o`, the fog brightness: the light at the player's head, eased
+    // a tenth of the way each tick. Per world, and from zero, as the original's
+    // renderer is -- a world fades in. See core/world/view_fog.hpp.
+    mc::world::FogBrightness fogBrightness;
 
     // **The renderer outlives the world and this state does not.** Its held
     // item is whatever the last world left, and the generation loop below draws
@@ -2055,6 +2074,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // still alight.
     renderer.clearHeldItem();
     renderer.setBurning(false);
+    renderer.setUnderwater(false, 0.0f, 0.0f, 0xFF);
 
     // **Creative flight, and its double tap.** Off at world entry, every time:
     // it is a state the player asked for with a gesture and there is nowhere to
@@ -2194,6 +2214,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // ...and the same pack's font, which is what sign text is drawn with.
     renderer.setFont(menu.fontImage());
     renderer.setParticleSheet(menu.particleSheet());
+    renderer.setWaterOverlay(menu.waterOverlay());
     // ...and the same dirt the menu draws its own backdrop with, behind the
     // panels on the bottom screen. Copied out here too, in the format the
     // framebuffer wants.
@@ -2563,6 +2584,8 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // ...and `particles.png` beside it, on the same terms: a pack
             // without one gets the stand-in, not a blank particle.
             renderer.setParticleSheet(menu.particleSheet());
+            // ...and `water.png`, the sheet over a submerged view.
+            renderer.setWaterOverlay(menu.waterOverlay());
             // The map is drawn from the same pack as the world, so ground
             // sampled under the old one is recoloured rather than redrawn:
             // the store holds block ids, not pixels.
@@ -3007,7 +3030,22 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // takes it as the sky's three colours, the star brightness and the
         // angle the sun is at. Alpha dims the ground in eleven jumps and fades
         // the sky smoothly, so the two cannot share an answer.
-        renderer.setWorldTime(dayTicks, tickTimer.partialTicks());
+        //
+        // **And what the head is in.** Water turns the fog dark blue and
+        // exponential, lava red and nearly solid; either way the fog colour is
+        // scaled by how lit the player's cell has been. Spectator has no head
+        // to put under, as it has no body to set alight.
+        mc::world::FogMedium medium = mc::world::FogMedium::Air;
+        if (const mc::tick::TickWorld* wet = world.worldTick();
+            wet != nullptr && overlay.gamemode() != settings::Gamemode::Spectator) {
+            if (mc::entity::playerEyeInWater(*wet, body)) {
+                medium = mc::world::FogMedium::Water;
+            } else if (mc::entity::playerEyeInLava(*wet, body)) {
+                medium = mc::world::FogMedium::Lava;
+            }
+        }
+        renderer.setWorldTime(dayTicks, tickTimer.partialTicks(), medium,
+                              fogBrightness.at(tickTimer.partialTicks()));
 
         // **Where the player is and what time it is, for whatever saves next.**
         // Four stores a frame; the autosave timer below, the flush when the
@@ -3449,6 +3487,19 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // flying or in a boat, and the riding branch below returns
                     // early. See core/render/held_item.hpp.
                     hand.tick(overlay.inventory().selectedItem());
+                    // `iq.a()`, which `Minecraft.i()` runs beside it: the
+                    // light at the floor of the player's position. A world
+                    // not there to ask reads as full light.
+                    {
+                        float light = 1.0f;
+                        if (const mc::tick::TickWorld* lit = world.worldTick()) {
+                            light = mc::world::lightBrightness(lit->lightValue(
+                                mc::MathHelper::floorDouble(body.x),
+                                int(mc::MathHelper::floorDouble(body.posY)),
+                                mc::MathHelper::floorDouble(body.z)));
+                        }
+                        fogBrightness.tick(light, settings.renderDistance);
+                    }
 
                     // **The owed spawn lift, and it has to run before `y()`.**
                     //
@@ -3885,6 +3936,28 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // `jh.b(F)V` asks nothing else. Spectator has no body to be alight.
             renderer.setBurning(vitals.fire > 0
                                 && overlay.gamemode() != settings::Gamemode::Spectator);
+            // **The water over the view** while the head is under -- the same
+            // question the fog asked this frame. Lit at `getEntityBrightness`'s
+            // cell, two thirds of the way up the body, not the hand's.
+            {
+                constexpr float kDegreesPerRadian = 180.0f / 3.14159265f;
+                bool underwater = false;
+                u8 waterLight = 0xFF;
+                const mc::tick::TickWorld* wet = world.worldTick();
+                if (wet != nullptr && overlay.gamemode() != settings::Gamemode::Spectator
+                    && mc::entity::playerEyeInWater(*wet, body)) {
+                    underwater = true;
+                    const double probeY =
+                        body.box.minY + (body.box.maxY - body.box.minY) * 0.66;
+                    const i32 wx = mc::MathHelper::floorDouble(body.x);
+                    const int wy = int(mc::MathHelper::floorDouble(probeY));
+                    const i32 wz = mc::MathHelper::floorDouble(body.z);
+                    waterLight = u8((wet->skyLightAt(wx, wy, wz) << 4)
+                                    | wet->blockLightAt(wx, wy, wz));
+                }
+                renderer.setUnderwater(underwater, camera.yaw * kDegreesPerRadian,
+                                       camera.pitch * kDegreesPerRadian, waterLight);
+            }
 
             // **The hearts**, Survival's alone -- `lu` draws the rows only while
             // `PlayerController.shouldDrawHUD` is true, and a Creative or
@@ -4371,13 +4444,11 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
 // given back around each visit, so the 400x240 colour buffer and its depth
 // buffer are not sitting in VRAM while the atlas and the VBO pool are measured
 // against what is left.
-// The preload, on a thread that can hold Tremor. Joined immediately: this is
+// The click, on a thread that can hold Tremor. Joined immediately: this is
 // not concurrency, it is borrowing a stack. See the call site.
 void preloadOnWorker(void* arg)
 {
-    // Every effect key this build can name, in one list shared with the host
-    // harness that measures what it costs. See core/audio/effect_preload.hpp.
-    mc::audio::preloadEffects(*static_cast<mc::audio::SoundEngine*>(arg));
+    static_cast<mc::audio::SoundEngine*>(arg)->preloadSound("random.click");
 }
 
 void preloadInterfaceSounds(mc::audio::SoundEngine& sound)
@@ -4396,6 +4467,17 @@ void preloadInterfaceSounds(mc::audio::SoundEngine& sound)
     if (join != nullptr) {
         join(handle);
     }
+
+    // **Everything else while the menu is up.** Every effect key this build
+    // can name -- one list, shared with the host harness that measures it; see
+    // core/audio/effect_preload.hpp -- used to be decoded here, joined, before
+    // the first menu: 110 files and 7 MB of PCM through Tremor, with the top
+    // screen black. Now it is decoded on the audio worker in the background and
+    // committed a frame at a time by `pumpPreload`, which the menu and
+    // `sound.update()` both call. An effect asked for before its turn is
+    // silent, which on the title screen is nothing: only the click is heard
+    // there, and it is already in.
+    sound.startPreload(&mc::audio::preloadEffects);
 }
 
 // **A multiplayer game is the single-player loop with a session beside it.**
@@ -4608,9 +4690,10 @@ int runShell(bool isNew3DS, bool haveCstick)
     // and the comment on it says why: Tremor's inverse MDCT is not a shallow
     // call. Running it on top of `runShell`'s own frames would be a stack
     // overflow on exactly the consoles that have a resources folder to decode
-    // -- the ones where it works. So the preload is handed to a worker with a
-    // real stack and joined before the first menu is drawn. It is still boot
-    // work done once; it simply happens somewhere it fits.
+    // -- the ones where it works. So the click is handed to a worker with a
+    // real stack and joined before the first menu is drawn, and every other
+    // effect is left decoding behind the menu. It is still boot work done once;
+    // it simply happens somewhere it fits, and no longer in front of the menu.
     //
     // With no worker ops installed the seam falls back to `std::thread`, and on
     // a platform with a megabyte of stack per thread the distinction does not
@@ -4665,6 +4748,9 @@ int runShell(bool isNew3DS, bool haveCstick)
 
     ctr::stopNetwork();
     ctr::stopLocalWireless();
+
+    // Before the backend goes: a preload still running would commit into it.
+    sound.stopPreload();
 
     // Before C3D_Fini and before main() tears the rest down: the decode thread
     // has to be joined while the heap it reads from is still there.

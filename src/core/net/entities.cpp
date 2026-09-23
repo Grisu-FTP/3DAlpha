@@ -195,17 +195,18 @@ void RemoteEntities::moveTo(i32 id, double x, double y, double z, bool hasLook, 
                             float pitch, bool relative)
 {
     if (RemotePlayer* player = findPlayer(id)) {
-        // **The target moves; the body walks to it.** A relative move is against
-        // where the server last said, not against where the body has got to, or
-        // a body still catching up would fall further behind with every packet.
-        player->targetX = relative ? player->targetX + x : x;
-        player->targetY = relative ? player->targetY + y : y;
-        player->targetZ = relative ? player->targetZ + z : z;
+        // **The server's position moves; the body follows it.** A relative move
+        // is against where the server last said, not against where the body has
+        // got to, or a body still catching up would fall further behind with
+        // every packet.
+        entity::ServerTrack& track = player->track;
+        track.receive(relative ? track.x + x : x, relative ? track.y + y : y,
+                      relative ? track.z + z : z);
         if (hasLook) {
             player->targetYaw = yaw;
             player->targetPitch = pitch;
+            player->smoothTicks = kSmoothTicks;
         }
-        player->smoothTicks = kSmoothTicks;
         return;
     }
 
@@ -219,9 +220,9 @@ void RemoteEntities::moveTo(i32 id, double x, double y, double z, bool hasLook, 
         // The relative move is against the server's position and not against
         // where the body has got to, for the same reason it is for a player.
         // `body.y` is the feet -- a mob's `yOffset` is zero.
-        const double nx = relative ? mob->serverX + x : x;
-        const double ny = relative ? mob->serverY + y : y;
-        const double nz = relative ? mob->serverZ + z : z;
+        const double nx = relative ? mob->track.x + x : x;
+        const double ny = relative ? mob->track.y + y : y;
+        const double nz = relative ? mob->track.z + z : z;
         mobs_->placeById(id, nx, ny, nz, hasLook, yaw, pitch);
         return;
     }
@@ -238,11 +239,12 @@ void RemoteEntities::moveTo(i32 id, double x, double y, double z, bool hasLook, 
         return;
     }
     if (entity::ItemEntity* item = items_->findById(id)) {
-        // An item is not smoothed: it is small, it is usually already still,
-        // and `EntityItem` on a client has no interpolation of its own either.
-        const double nx = relative ? item->x + x : x;
-        const double ny = relative ? item->y + y : y;
-        const double nz = relative ? item->z + z : z;
+        // An item runs its own fall here, as `EntityItem` on a client does, so
+        // it is corrected rather than walked -- see `placeById`. A relative
+        // move is against the server's position, not the local one.
+        const double nx = relative ? item->serverX + x : x;
+        const double ny = relative ? item->serverY + y : y;
+        const double nz = relative ? item->serverZ + z : z;
         items_->placeById(id, nx, ny, nz);
     }
 }
@@ -274,9 +276,7 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         player->prevX = player->x;
         player->prevY = player->y;
         player->prevZ = player->z;
-        player->targetX = player->x;
-        player->targetY = player->y;
-        player->targetZ = player->z;
+        player->track.place(player->x, player->y, player->z);
         player->yaw = fromByteAngle(packet.integer(4));
         player->pitch = fromByteAngle(packet.integer(5));
         player->prevYaw = player->yaw;
@@ -291,6 +291,11 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
     case packet::PickupSpawn: {
         // `ha`: id, item, count, x, y, z, and three bytes of velocity.
         if (items_ == nullptr || world == nullptr) {
+            return true;
+        }
+        if (adoptDrop(i32(packet.integer(0)), item::ItemId(packet.integer(1)),
+                      int(packet.integer(2)), fromFixed(packet.integer(3)),
+                      fromFixed(packet.integer(4)), fromFixed(packet.integer(5)))) {
             return true;
         }
         items_->spawnFromServer(*world, i32(packet.integer(0)),
@@ -453,8 +458,88 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
     }
 }
 
+bool RemoteEntities::predictDrop(entity::ItemEntity* item)
+{
+    if (item == nullptr || item->entityId != 0 || dropCount_ >= kMaxPredictedDrops) {
+        return false;
+    }
+    PredictedDrop& drop = drops_[dropCount_++];
+    drop.provisionalId = nextProvisionalId_;
+    drop.item = item->item;
+    drop.count = item->count;
+    drop.x = item->x;
+    drop.y = item->y;
+    drop.z = item->z;
+    drop.ticks = 0;
+    // Wraps long before it could reach a real id, and sixteen outstanding
+    // throws cannot collide across a wrap that long.
+    nextProvisionalId_ = nextProvisionalId_ <= -0x40000000 ? -1 : nextProvisionalId_ - 1;
+
+    item->entityId = drop.provisionalId;
+    // The server decides who picks it up, this one included.
+    item->pickupDelay = 0x7FFF;
+    return true;
+}
+
+bool RemoteEntities::adoptDrop(i32 serverId, item::ItemId id, int count, double x, double y,
+                               double z)
+{
+    if (items_ == nullptr || dropCount_ == 0 || items_->findById(serverId) != nullptr) {
+        return false;
+    }
+    constexpr double kMatchSquared = kDropMatchDistance * kDropMatchDistance;
+    for (int i = 0; i < dropCount_; ++i) {
+        const PredictedDrop& drop = drops_[i];
+        const double dx = x - drop.x;
+        const double dy = y - drop.y;
+        const double dz = z - drop.z;
+        if (drop.item != id || drop.count != count
+            || dx * dx + dy * dy + dz * dz > kMatchSquared) {
+            continue;
+        }
+        entity::ItemEntity* item = items_->findById(drop.provisionalId);
+        for (int j = i + 1; j < dropCount_; ++j) {
+            drops_[j - 1] = drops_[j];
+        }
+        --dropCount_;
+        if (item == nullptr) {
+            // Gone here already -- burnt, or blown up. The server's copy is
+            // the truth, so it is spawned the ordinary way.
+            return false;
+        }
+        item->entityId = serverId;
+        item->serverX = x;
+        item->serverY = y;
+        item->serverZ = z;
+        // The packet has nowhere to put a damage, so the server's stack has none.
+        item->damage = 0;
+        return true;
+    }
+    return false;
+}
+
+void RemoteEntities::tickDrops()
+{
+    int kept = 0;
+    for (int i = 0; i < dropCount_; ++i) {
+        PredictedDrop& drop = drops_[i];
+        if (++drop.ticks < kDropConfirmTicks) {
+            drops_[kept++] = drop;
+            continue;
+        }
+        // **The prediction was wrong**: the server never made this stack.
+        if (items_ != nullptr) {
+            items_->removeById(drop.provisionalId);
+        }
+        ++revertedDrops_;
+    }
+    dropCount_ = kept;
+}
+
 void RemoteEntities::tick(const tick::TickWorld* world)
 {
+    tickDrops();
+
     for (int i = 0; i < playerCount_; ++i) {
         RemotePlayer& player = players_[i];
         if (!player.used) {
@@ -469,14 +554,19 @@ void RemoteEntities::tick(const tick::TickWorld* world)
         player.prevLimbAmount = player.limbAmount;
         ++player.ticksExisted;
 
+        // Where the body goes: the server's word, carried on through a late
+        // packet and taken back when the silence says it stopped. A teleport
+        // is not walked, so nothing drawn between two frames crosses it.
+        if (player.track.step(&player.x, &player.y, &player.z)) {
+            player.prevX = player.x;
+            player.prevY = player.y;
+            player.prevZ = player.z;
+        }
+
         if (player.smoothTicks > 0) {
-            // `onUpdate`: a third of what is left, then a quarter of that, and
-            // so on -- the gap is closed over the three ticks a position update
-            // is given, and a body that hears nothing more simply stops.
+            // `onUpdate`'s turn: a third of what is left, then half of that,
+            // then the rest -- over the three ticks a look is given.
             const double steps = double(player.smoothTicks);
-            player.x += (player.targetX - player.x) / steps;
-            player.y += (player.targetY - player.y) / steps;
-            player.z += (player.targetZ - player.z) / steps;
 
             // The short way round, so a body turning past north does not spin
             // the long way -- `MathHelper.wrapAngleTo180`.
@@ -566,6 +656,8 @@ void RemoteEntities::clear()
     }
     playerCount_ = 0;
     unhandledSpawns_ = 0;
+    dropCount_ = 0;
+    revertedDrops_ = 0;
 }
 
 }  // namespace mc::net

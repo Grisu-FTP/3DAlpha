@@ -54,6 +54,12 @@
 ; write M[3][2] = -1 (checked in the disassembly of Mtx_PerspStereoTilt), so w
 ; is -z_view, which is what GL_LINEAR fog is defined against. Interpolating the
 ; result per-vertex is exact for a quad one block across.
+;
+; fogparam.z is the other mode a1.1.2 uses, GL_EXP -- `1 - e^(-density * d)`,
+; with the head in water or lava -- as `density * log2(e)`, because the PICA's
+; exponential is ex2. Per vertex, like the line: across a long merged quad the
+; curve is interpolated as a straight line, so the middle of a sea floor is a
+; little clearer than the original's. See core/world/view_fog.hpp.
 .fvec fogparam
 
 ; **The seam: a merged quad is drawn a fraction of a pixel larger than it is.**
@@ -124,6 +130,13 @@
 	; that stage 0 must stop modulating alpha, which renderer.cpp does.
 	mul r3.x, fogparam.x, r3.w
 	add r3.x, fogparam.y, r3.x
+	; GL_EXP beside it: 1 - 2^(-d * fogparam.z). z is zero above water, where
+	; this is 1 - 1 = 0 and the max leaves the line alone; under water and in
+	; lava the line is zeroed instead and this is all there is.
+	mul r3.y, fogparam.z, r3.w
+	ex2 r3.y, -r3.y
+	add r3.y, ones, -r3.y
+	max r3.x, r3.x, r3.y
 	max r3.x, zeros, r3.x
 	min out_col.w, ones, r3.x
 

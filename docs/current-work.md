@@ -3,6 +3,125 @@
 Last verified: 2026-09-20. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## Under water looks like under water (2026-09-23)
+
+Head in water (or lava) now does what `iq`/`jh` do in the jar; before, it looked
+the same as air. `world/view_fog` holds the arithmetic, and `tests/view_fog_test.cpp`
+tests it:
+
+- **Fog**: the colour is replaced (water 0.02/0.02/0.2, lava 0.6/0.1/0) and the fog
+  becomes `GL_EXP` at density 0.1 (lava 2.0). The shaders compute
+  `1 - 2^(-d * fogparam.z)` next to the linear line and keep the larger.
+  `Renderer::setFogParam`; the sky uses the same curve under water.
+- **Fog brightness** (`FogBrightness`, `iq.n/o`), ticked beside `hand.tick`: light at the
+  player's cell, lifted by `(3 - renderDistance)/3`, eased 0.1 a tick, scaling
+  **every** fog and clear colour. This is new in air too: fog darkens in caves at
+  short render distances (never at 16 chunks), and a world fades in from black.
+- **Overlay**: `render/water_overlay` (`jh.c(F)`) lays `water.png` over the view at
+  0.5 alpha, repeated four times, scrolling 1/64 per degree, lit at `getEntityBrightness`'s
+  cell. `texture/water_overlay_image` loads it (the pack's root `water.png`, or a
+  generated stand-in), repeated 4 x 4 onto 64 x 64 so the s16 UVs fit.
+- The hand, the flames, the water sheet, the chat and the HUD are now drawn with fog
+  cleared (`clearFogParam`), as `iq.c(F)` turns `GL_FOG` off before `renderHand`.
+
+**Fixed the same day: terrain had no fog under water at all.** Blocks in the
+`Quads` cube format draw through `quad.v.pica` + `quad.g.pica`, which never got
+the `GL_EXP` term -- and under water the line is zeroed, so only the clear colour
+and entities changed. `quad.v.pica` now computes fog **per corner** (it was
+corner 0's for the whole quad, which a 16-block quad under density 0.1 turns
+into squares), packed as `o_col = (shade, f0, f1, f3)`, `o_lm = (lm.xy, shade,
+f2)` so the geometry shader still spends one swizzled `mov` a corner. Air fog in
+that path is per corner now too. Assembled, not run on hardware; the cost is
+~20 vertex-shader instructions a quad, unmeasured.
+
+Known gap: exponential fog is per vertex, so across a long merged quad it is
+interpolated as a line, and a sea floor's middle is a little clearer than the
+original's.
+
+## The first menu no longer waits for every sound effect (2026-09-23)
+
+Boot decoded all of `audio::preloadEffects` -- **110 samples, 7 MB of PCM**
+against a real resources folder, 0.23 s of CPU on the dev PC and so seconds on
+an ARM11, plus an SD open per file -- on the audio worker and **joined it before
+the first menu**, with the top screen black. Now `preloadInterfaceSounds` joins
+only `random.click`, then `SoundEngine::startPreload(&preloadEffects)` decodes
+the rest on the audio worker while the menu runs:
+
+- `core/audio/sample_stage` is the hand-off: the worker parks decoded samples
+  (at most 4), the main thread commits them in `pumpPreload` -- the menu loop
+  and `sound.update()` call it -- because `addSample` is a `linearAlloc` and
+  `samples_` is what the click reads.
+- `runGame` finishes the preload (pump + 1 ms sleeps, "Loading sounds..." on the
+  bottom console) **before `renderer.init`**, which sizes the VBO pool from
+  free linear memory. Only a player faster than the decode waits at all.
+- `runShell` calls `stopPreload` before `audio.shutdown()`.
+- `--audio-list` now also runs the background path and fails on a count
+  mismatch: 110/110 on the real folder, clean under TSan. New cases
+  `theSampleStageHandsEverySampleOverInOrder`,
+  `abandoningTheSampleStageReleasesABlockedWorker`,
+  `aBackgroundPreloadFinishesThroughThePump` (also TSan-clean). Suite
+  1974/1974 before these three. **No console timing yet** -- the menu should
+  appear seconds sooner; what remains before it (ndsp, resource walk, atlas,
+  menu init) was not measured on hardware.
+
+## Profiled speed-ups that change nothing observable (2026-09-23)
+
+Profiled on the host with gperftools (`LD_PRELOAD=libprofiler.so`, a
+RelWithDebInfo `-O3 -fno-omit-frame-pointer` build; gprof's mcount skews these
+small functions). Every change is exact: a scratch oracle hashing all blocks,
+metadata and light of 1,040 columns over four seeds (snow, fixed ore bounds,
+x = 100000 included) is unchanged, and so is a `--fly` log over a copied world.
+
+- **Perlin lattice fill** (`noise.cpp`): the Y step is worked out once per call
+  instead of once per (x, z), and the eight corner gradients pick u and v from
+  `kPerlinCornerPick` instead of gradient's unpredictable comparisons
+  (`cornerGradient`; `gradient` stays the reference and `sample` uses it).
+- **Ore veins** (`ore.cpp`): the squared offsets per axis are worked out once a
+  step (`AxisSquares`), with no division per block, and rows whose partial sum is
+  already >= 1 are skipped, which is exact because a sum of squares cannot shrink.
+- **Random ticks**: `block::ticksRandomly` is a 256-byte table derived at compile
+  time from `kBlocks`, instead of a 64-byte `BlockDef` row per sample.
+
+Host: pure worldgen 3.82 s -> 2.85 s (-25%), `--fly` render loop -7%. **The
+3DS gain is not measured.** On ARM the gradient trades one data-dependent branch
+for about three more instructions. The hoisted Y step and the removed
+divisions are less VFP work outright. Tests: `the_corner_gradient_table_is_the_gradient`,
+`a_lattice_fill_longer_than_the_hoisted_y_steps_agrees`. Looked at and left:
+the random tick's palette-index read (a cache miss per sample), caching
+`mayTickRandomly` (about 15 palette-mutation sites to keep in step), zlib
+(changes the bytes written), and the mesher and visible set (already tuned).
+
+## Multiplayer predicts between packets and takes wrong guesses back (2026-09-23)
+
+**Other players and server mobs** no longer use a1.1.2's three-tick walk,
+which trailed the server by two ticks and stopped dead on every late packet.
+`entity/server_track` (`ServerTrack`) measures velocity once a tick from the
+server's position, aims the body one tick ahead, and closes half the gap each
+tick. A gap no longer than this entity's usual packet interval (`horizon()`,
+learned per entity) is walked through; a longer silence means the entity has
+stopped, because servers send nothing for a still entity, so the aim goes back
+to the last confirmed place (`reverts` counts these). A jump over 4 blocks is a
+teleport and snaps. The look still turns over the jar's three ticks. With a packet
+every tick the body sits on the newest packet. When it stops, it overshoots by
+one tick of motion and eases back.
+
+**Thrown items show at once.** `NetPlay::forwardDrops` sends the throw and keeps
+the stack under a negative provisional id (`RemoteEntities::predictDrop`); the
+server's Pickup Spawn with the same item and count within 3 blocks takes it
+over, so the stack keeps flying under the server's id instead of reappearing
+at the hand. With no spawn inside 60 ticks, the stack is removed
+(`revertedDrops`).
+
+**Server items** now keep `serverX/Y/Z`, so relative moves count from the
+server's position and not the local one (that was a drift bug). A correction
+within 2 blocks pulls halfway and keeps the motion; a farther one snaps as
+before.
+
+Host tests: `net_entities_test.cpp` (the follow, the late packet, the revert,
+every-other-tick links, the two throw cases). Host suite 1962/1962 and the 3DS
+build pass. **Not measured on hardware or over a real radio link**: `kBlend`,
+the horizon and the 60-tick throw timeout are first choices to tune there.
+
 ## The SMDH claimed to be invisible (2026-09-20)
 
 The banner is right on hardware now. The HOME Menu icon still is not, and this

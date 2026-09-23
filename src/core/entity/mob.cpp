@@ -262,9 +262,7 @@ Mob* MobSystem::spawnFromServer(const tick::TickWorld& world, i32 entityId, MobT
     // body there, so the first relative move that arrives is measured against
     // the spawn point and not against zero. Nothing is owed yet, so the clock
     // is at rest.
-    mob.serverX = x;
-    mob.serverY = y;
-    mob.serverZ = z;
+    mob.track.place(x, y, z);
     mob.serverYaw = double(yaw);
     mob.serverPitch = double(pitch);
     mob.smoothTicks = 0;
@@ -312,14 +310,12 @@ bool MobSystem::placeById(i32 entityId, double x, double y, double z, bool hasLo
     // do -- is what made a remote animal step twenty times a second: `prev`
     // and the live position were equal on every frame of the gap between two
     // packets, so there was nothing for the frame interpolation to interpolate.
-    mob->serverX = x;
-    mob->serverY = y;
-    mob->serverZ = z;
+    mob->track.receive(x, y, z);
     if (hasLook) {
         mob->serverYaw = double(yaw);
         mob->serverPitch = double(pitch);
+        mob->smoothTicks = i16(kServerSmoothTicks);
     }
-    mob->smoothTicks = i16(kServerSmoothTicks);
     return true;
 }
 
@@ -1685,22 +1681,31 @@ void MobSystem::shove(Mob& mob, double otherX, double otherZ, double* otherMotio
 // **`setPosition`, not `moveEntity`.** Nothing is swept and nothing collides:
 // the server has already decided where this animal is, and a client that
 // clipped the walk would argue with it.
+//
+// **Only the turn is still the jar's.** The walk trailed the server by three
+// ticks and stalled whenever a packet was late, so the position is now aimed
+// ahead of the last packet and taken back when that guess is proven wrong.
 void MobSystem::interpolateToServer(Mob& mob) const
 {
-    if (mob.smoothTicks <= 0) {
-        return;
+    if (mob.smoothTicks > 0) {
+        const double steps = double(mob.smoothTicks);
+        const double turn = double(wrapDegrees(float(mob.serverYaw - double(mob.yaw))));
+        mob.yaw = float(double(mob.yaw) + turn / steps);
+        mob.pitch = float(double(mob.pitch) + (mob.serverPitch - double(mob.pitch)) / steps);
+        --mob.smoothTicks;
     }
-    const double steps = double(mob.smoothTicks);
-    const double x = mob.body.x + (mob.serverX - mob.body.x) / steps;
-    const double y = mob.body.y + (mob.serverY - mob.body.y) / steps;
-    const double z = mob.body.z + (mob.serverZ - mob.body.z) / steps;
 
-    const double turn = double(wrapDegrees(float(mob.serverYaw - double(mob.yaw))));
-    mob.yaw = float(double(mob.yaw) + turn / steps);
-    mob.pitch = float(double(mob.pitch) + (mob.serverPitch - double(mob.pitch)) / steps);
-    --mob.smoothTicks;
-
+    // **The position is this port's, not `ge.j()`'s**: predicted past a late
+    // packet and taken back on a wrong guess. See core/entity/server_track.hpp.
+    double x = mob.body.x;
+    double y = mob.body.y;
+    double z = mob.body.z;
+    const bool snapped = mob.track.step(&x, &y, &z);
     mob.body.setFeet(x, y, z);
+    if (snapped) {
+        // A teleport is not drawn as a streak across the frame.
+        mob.body.snapRenderPosition();
+    }
     // A server's animal is placed, never pushed, so whatever motion it had is
     // not carried into the next tick -- there is no next tick for it here.
     mob.body.motionX = 0.0;

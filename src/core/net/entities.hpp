@@ -10,6 +10,9 @@
 // between two packets: `EntityOtherPlayerMP.setPositionAndRotation2` is handed a
 // place and moves a third of the way to it on each of three ticks, which is what
 // makes another player walk instead of stuttering from packet to packet.
+// **This port predicts instead** -- see core/entity/server_track.hpp: the body
+// is carried on through a late packet and taken back when the guess was wrong,
+// because the three-tick walk trails the server and stalls on every gap.
 //
 // **Items are the pool the single-player game already has.** An item on the
 // ground is the same `ItemEntity` either way -- it falls, it bobs, it is drawn
@@ -31,6 +34,7 @@
 #include "core/entity/arrow.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/entity/mob.hpp"
+#include "core/entity/server_track.hpp"
 #include "core/net/packets.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/java_random.hpp"
@@ -83,8 +87,10 @@ struct RemotePlayer {
     double x = 0.0, y = 0.0, z = 0.0;
     double prevX = 0.0, prevY = 0.0, prevZ = 0.0;
 
-    // Where the server last said, and how many ticks are left to get there.
-    double targetX = 0.0, targetY = 0.0, targetZ = 0.0;
+    // Where the server last said, and where the body is headed between packets.
+    entity::ServerTrack track;
+    // The look still turns over a1.1.2's three ticks: a head has no momentum
+    // worth predicting, and a guessed turn that is wrong reads as a twitch.
     float targetYaw = 0.0f, targetPitch = 0.0f;
     int smoothTicks = 0;
 
@@ -214,6 +220,31 @@ public:
 
     void clear();
 
+    // ---- this console's own throws -------------------------------------
+    //
+    // **A thrown stack is shown at once and confirmed later.** a1.1.2's
+    // client sends the throw and lets go (`la.a(dx)`), so the stack appeared
+    // only when the server's Pickup Spawn came back -- a round trip after the
+    // button, and over the internet that is a visible pause. Here the stack
+    // stays in the pool under a provisional id (negative, which no server
+    // uses) and flies from the hand. The server's spawn for a stack of the same
+    // item and count near where it left **takes it over**: the id becomes the
+    // server's and the flight goes on uninterrupted, the server's corrections
+    // pulling it onto the server's copy (`ItemEntitySystem::placeById`). No
+    // spawn within `kDropConfirmTicks` is the throw refused, and the stack is
+    // taken away -- which is what a1.1.2 would have shown all along.
+    static constexpr int kMaxPredictedDrops = 16;
+    static constexpr int kDropConfirmTicks = 60;
+    static constexpr double kDropMatchDistance = 3.0;
+
+    // Marks `item` -- in the bound pool, just thrown, id zero -- as waiting for
+    // the server. False, leaving it untouched, when there is no room to wait.
+    bool predictDrop(entity::ItemEntity* item);
+
+    int predictedDrops() const { return dropCount_; }
+    // Throws the server never answered. On the debug page with the rest.
+    u32 revertedDrops() const { return revertedDrops_; }
+
     int playerCount() const { return playerCount_; }
     const RemotePlayer& player(int index) const { return players_[index]; }
 
@@ -231,6 +262,11 @@ private:
     void moveTo(i32 id, double x, double y, double z, bool hasLook, float yaw, float pitch,
                 bool relative);
 
+    // A server spawn that is one of this console's throws coming back: the
+    // provisional stack takes the server's id. False when it is not one.
+    bool adoptDrop(i32 serverId, item::ItemId id, int count, double x, double y, double z);
+    void tickDrops();
+
     // `ge.z()` -- the puff a dead body goes in, around its feet.
     void puff(const RemotePlayer& player, const tick::TickWorld& world);
 
@@ -243,6 +279,19 @@ private:
     entity::MobSystem* mobs_ = nullptr;
     entity::ArrowSystem* arrows_ = nullptr;
     u32 unhandledSpawns_ = 0;
+
+    // Oldest first, so two identical throws are confirmed in the order made.
+    struct PredictedDrop {
+        i32 provisionalId;
+        item::ItemId item;
+        int count;
+        double x, y, z;
+        int ticks;
+    };
+    PredictedDrop drops_[kMaxPredictedDrops] = {};
+    int dropCount_ = 0;
+    i32 nextProvisionalId_ = -1;
+    u32 revertedDrops_ = 0;
 };
 
 }  // namespace mc::net

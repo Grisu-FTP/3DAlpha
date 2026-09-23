@@ -191,6 +191,25 @@ TEST(a_piece_worn_past_its_durability_is_gone)
     CHECK_EQ(int(boots.damage), 0);
 }
 
+TEST(the_eye_tests_answer_for_their_own_fluid_only)
+{
+    // The same column, lava in it and then water: `kh.a(Lgb;)Z` is asked with
+    // one material, and the fog asks it with both.
+    for (const auto fluid : {mcver::Block::Lava, mcver::Block::Water}) {
+        Fixture f;
+        for (int y = 76; y <= 86; ++y) {
+            for (int x = 6; x <= 10; ++x) {
+                for (int z = 6; z <= 10; ++z) {
+                    f.scene.place(x, y, z, block::BlockId(fluid), 0);
+                }
+            }
+        }
+        const bool lava = fluid == mcver::Block::Lava;
+        CHECK_EQ(entity::playerEyeInLava(f.scene.w(), f.body), lava);
+        CHECK_EQ(entity::playerEyeInWater(f.scene.w(), f.body), !lava);
+    }
+}
+
 TEST(drowning_takes_two_when_air_reaches_minus_twenty_and_starts_again_at_zero)
 {
     Fixture f;

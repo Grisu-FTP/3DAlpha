@@ -24,6 +24,7 @@ namespace mc::entity {
 namespace {
 
 constexpr u8 kWaterMaterial = mcver::kBlocks[int(mcver::Block::Water)].material;
+constexpr u8 kLavaMaterial = mcver::kBlocks[int(mcver::Block::Lava)].material;
 
 constexpr float kPi = 3.1415927f;
 
@@ -165,23 +166,37 @@ bool playerInsideOpaqueBlock(const tick::TickWorld& world, const PlayerBody& bod
     return world.opaqueAt(bx, by, bz);
 }
 
-bool playerEyeInWater(const tick::TickWorld& world, const PlayerBody& body)
+namespace {
+
+// `kh.a(Lgb;)Z`. The cell is the eye point's, and the answer is whether the
+// point is below the fluid's surface in that cell --
+// `(y + 1) - (getPercentAir(meta) - 1/9)` -- not merely inside it.
+bool eyeInFluid(const tick::TickWorld& world, const PlayerBody& body, u8 material)
 {
-    // `kh.a(Lgb;)Z`. The cell is the eye point's, and the answer is whether
-    // the point is below the fluid's surface in that cell --
-    // `(y + 1) - (getPercentAir(meta) - 1/9)` -- not merely inside it.
     const double eye = body.posY + double(kPlayerEyeHeightOffset);
     const i32 bx = MathHelper::floorDouble(body.x);
     const int by = int(MathHelper::floorDouble(eye));
     const i32 bz = MathHelper::floorDouble(body.z);
     const block::BlockId id = world.blockAt(bx, by, bz);
-    if (id == block::kAir || block::def(id).material != kWaterMaterial) {
+    if (id == block::kAir || block::def(id).material != material) {
         return false;
     }
     const float surface =
         block::fluidPercentAir(int(world.dataAt(bx, by, bz))) - 0.11111111f;
     const float top = float(by + 1) - surface;
     return eye < double(top);
+}
+
+}  // namespace
+
+bool playerEyeInWater(const tick::TickWorld& world, const PlayerBody& body)
+{
+    return eyeInFluid(world, body, kWaterMaterial);
+}
+
+bool playerEyeInLava(const tick::TickWorld& world, const PlayerBody& body)
+{
+    return eyeInFluid(world, body, kLavaMaterial);
 }
 
 Harm PlayerVitals::attack(PlayerContext& ctx, int amount, const Attacker& from)

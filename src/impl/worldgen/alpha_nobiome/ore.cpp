@@ -36,6 +36,46 @@ i32 veinBound(double value, OreBounds bounds)
     return i32(value);
 }
 
+// The squared, normalised offset of each block along one axis of a vein step:
+// `n = (b + 0.5 - centre) / half`, squared. The original writes this inside
+// the triple loop; it is the same expression on the same operands here, so the
+// same bits, computed once per block along the axis instead of once per block
+// in the box. The spread is at most 2 * veinSize / 16 + 1, so a1.1.2's largest
+// vein (32) spans 6 blocks; a wider axis computes the rest when asked.
+class AxisSquares {
+public:
+    AxisSquares(i32 min, i32 max, double centre, double half)
+        : min_(min), centre_(centre), half_(half)
+    {
+        const i32 span = max - min + 1;
+        count_ = span < kHoisted ? (span > 0 ? span : 0) : kHoisted;
+        for (i32 k = 0; k < count_; ++k) {
+            squared_[k] = compute(min + k);
+        }
+    }
+
+    double at(i32 b) const
+    {
+        const i32 k = b - min_;
+        return k < count_ ? squared_[k] : compute(b);
+    }
+
+private:
+    static constexpr i32 kHoisted = 16;
+
+    double compute(i32 b) const
+    {
+        const double n = (double(b) + 0.5 - centre_) / half_;
+        return n * n;
+    }
+
+    double squared_[kHoisted];
+    i32 min_;
+    i32 count_;
+    double centre_;
+    double half_;
+};
+
 // The body shared by WorldGenMinable and WorldGenClay. In the original these
 // are two classes with the same code; here the only differences are which
 // block is replaced and which is placed.
@@ -89,14 +129,33 @@ bool growVein(PopulationView& view, JavaRandom& random, u8 replaceId, u8 placeId
         const i32 minZ = veinBound(pz - radiusXZ / 2.0, bounds);
         const i32 maxZ = veinBound(pz + radiusXZ / 2.0, bounds);
 
+        // **The same test on the same values, with less arithmetic.** Each of
+        // nx, ny and nz depends on its own axis alone, so their squares are
+        // worked out once per step instead of once per block -- a division
+        // each, and a division is the dearest thing an ARM11 does in double.
+        // See AxisSquares.
+        //
+        // And a row or column whose partial sum already reaches 1 is skipped:
+        // adding a square cannot make a sum smaller (rounding is monotonic and
+        // a square is never negative), so no block in it could pass. The
+        // skipped blocks are exactly the ones whose `&&` never asked
+        // blockAt, so nothing observable goes missing.
+        const AxisSquares xs(minX, maxX, px, radiusXZ / 2.0);
+        const AxisSquares ys(minY, maxY, py, radiusY / 2.0);
+        const AxisSquares zs(minZ, maxZ, pz, radiusXZ / 2.0);
+
         for (i32 bx = minX; bx <= maxX; ++bx) {
-            const double nx = (double(bx) + 0.5 - px) / (radiusXZ / 2.0);
+            const double nx2 = xs.at(bx);
+            if (nx2 >= 1.0) {
+                continue;
+            }
             for (i32 by = minY; by <= maxY; ++by) {
-                const double ny = (double(by) + 0.5 - py) / (radiusY / 2.0);
+                const double nxy = nx2 + ys.at(by);
+                if (nxy >= 1.0) {
+                    continue;
+                }
                 for (i32 bz = minZ; bz <= maxZ; ++bz) {
-                    const double nz = (double(bz) + 0.5 - pz) / (radiusXZ / 2.0);
-                    if (nx * nx + ny * ny + nz * nz < 1.0 &&
-                        view.blockAt(bx, by, bz) == replaceId) {
+                    if (nxy + zs.at(bz) < 1.0 && view.blockAt(bx, by, bz) == replaceId) {
                         view.setBlock(bx, by, bz, placeId);
                     }
                 }

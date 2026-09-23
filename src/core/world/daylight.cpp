@@ -182,7 +182,7 @@ float starBrightness(i64 timeTicks, float partialTicks)
 // two libm implementations differ by far less than one 8-bit step. The log
 // still goes through strictmath, for the cheaper reason: host and console then
 // agree exactly, so a test vector taken on one holds on the other.
-SkyColour viewFogColour(i64 timeTicks, float partialTicks, int renderDistanceChunks)
+float renderDistanceOption(int renderDistanceChunks)
 {
     // 256 >> renderDistance is the original's far plane in blocks, so a chunk
     // count of 16, 8, 4 or 2 is settings 0, 1, 2 and 3. log2 of a non-power of
@@ -195,7 +195,12 @@ SkyColour viewFogColour(i64 timeTicks, float partialTicks, int renderDistanceChu
     if (option > 3.0f) {
         option = 3.0f;
     }
+    return option;
+}
 
+SkyColour viewFogColour(i64 timeTicks, float partialTicks, int renderDistanceChunks)
+{
+    const float option = renderDistanceOption(renderDistanceChunks);
     const float scale = 1.0f - float(std::pow(1.0 / double(4.0f - option), 0.25));
     const SkyColour sky = skyColour(timeTicks, partialTicks);
     const SkyColour fog = fogColour(timeTicks, partialTicks);

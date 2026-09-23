@@ -22,6 +22,30 @@ inline const BlockDef& def(BlockId id)
 
 inline bool isAir(BlockId id) { return id == kAir; }
 
+// `def(id).tickRandomly`, one byte per id. The random tick asks it of a block at
+// a random offset eighty times a column a tick, and a whole BlockDef row is a
+// cache line of its own for one bool; this is the same column, derived from
+// the same table at compile time, packed so the whole of it is 256 bytes.
+struct RandomTickTable {
+    bool ticks[mcver::kBlockTableSize];
+};
+
+constexpr RandomTickTable buildRandomTickTable()
+{
+    RandomTickTable table{};
+    for (int id = 0; id < mcver::kBlockTableSize; ++id) {
+        table.ticks[id] = mcver::kBlocks[id].tickRandomly;
+    }
+    return table;
+}
+
+inline constexpr RandomTickTable kRandomTicks = buildRandomTickTable();
+
+inline bool ticksRandomly(BlockId id)
+{
+    return id < mcver::kBlockTableSize ? kRandomTicks.ticks[id] : mcver::kUnknownBlock.tickRandomly;
+}
+
 // `Block.stepSound`. Air and any id this build does not know come back as the
 // silent row, so a caller never has to ask whether the block exists first.
 inline const StepSound& stepSoundOf(BlockId id)

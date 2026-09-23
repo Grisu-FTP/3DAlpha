@@ -1,9 +1,14 @@
 #include "core/audio/sound_engine.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <thread>
+#include <utility>
 
 #include "core/audio/sample.hpp"
+#include "core/audio/sample_stage.hpp"
 #include "core/audio/vorbis_stream.hpp"
+#include "core/util/worker.hpp"
 
 namespace mc::audio {
 
@@ -32,9 +37,115 @@ float positionalGain(float volume, float distance, float soundVolume)
     return clamp01(volume) * clamp01(soundVolume) * fade;
 }
 
+// Everything a background preload owns. The worker reads `list`, `engine` and
+// `taken` and writes the stage; the main thread writes the stage's other end
+// and `committed`, and nothing else, until it has joined the worker.
+struct SoundEngine::Preload {
+    // Four effects' PCM at most waiting on the heap -- a few hundred KB against
+    // the 7 MB the whole set decodes to.
+    static constexpr usize kStaged = 4;
+
+    SampleStage stage{kStaged};
+    usize (*list)(SoundEngine&) = nullptr;
+    SoundEngine* engine = nullptr;
+    // The worker's own record of what it has decoded, so `preloadSound` never
+    // reads `samples_` while the main thread is appending to it. Seeded with
+    // what was loaded before the worker started.
+    std::vector<std::string> taken;
+    // Reused by every pump, so one that commits nothing allocates nothing.
+    std::vector<StagedSample> committed;
+    void* handle = nullptr;
+    std::thread thread;
+};
+
 SoundEngine::SoundEngine(io::FileSystem& fs, Backend& backend, i64 seed)
     : fs_(fs), backend_(backend), ticker_(seed)
 {
+}
+
+SoundEngine::~SoundEngine()
+{
+    stopPreload();
+}
+
+bool SoundEngine::startPreload(usize (*list)(SoundEngine&))
+{
+    if (preload_ != nullptr || list == nullptr) {
+        return false;
+    }
+    preload_ = std::make_unique<Preload>();
+    preload_->list = list;
+    preload_->engine = this;
+    preload_->taken.reserve(samples_.size());
+    for (const LoadedSample& loaded : samples_) {
+        preload_->taken.push_back(loaded.path);
+    }
+    preload_->committed.reserve(Preload::kStaged);
+
+    const WorkerSpawn spawn = workerSpawn();
+    if (spawn != nullptr) {
+        preload_->handle = spawn(&SoundEngine::preloadEntry, preload_.get(), WorkerRole::Audio);
+        if (preload_->handle == nullptr) {
+            preload_.reset();
+            return false;
+        }
+        return true;
+    }
+    Preload* preload = preload_.get();
+    preload_->thread = std::thread([preload] { preloadEntry(preload); });
+    return true;
+}
+
+void SoundEngine::preloadEntry(void* arg)
+{
+    Preload& preload = *static_cast<Preload*>(arg);
+    preload.list(*preload.engine);
+    preload.stage.finish();
+}
+
+void SoundEngine::pumpPreload()
+{
+    if (preload_ == nullptr) {
+        return;
+    }
+    const bool over = preload_->stage.drain(&preload_->committed);
+    for (const StagedSample& staged : preload_->committed) {
+        commitSample(staged.path, staged.sample);
+    }
+    preload_->committed.clear();
+    if (over) {
+        joinPreload();
+    }
+}
+
+void SoundEngine::stopPreload()
+{
+    if (preload_ == nullptr) {
+        return;
+    }
+    preload_->stage.abandon();
+    joinPreload();
+}
+
+void SoundEngine::joinPreload()
+{
+    if (preload_->handle != nullptr) {
+        if (const WorkerJoin join = workerJoin()) {
+            join(preload_->handle);
+        }
+    } else if (preload_->thread.joinable()) {
+        preload_->thread.join();
+    }
+    preload_.reset();
+}
+
+void SoundEngine::commitSample(const std::string& path, const Sample& sample)
+{
+    const SampleId id = backend_.addSample(sample);
+    if (id == kNoSample) {
+        return;  // a silent backend, or one that is full
+    }
+    samples_.push_back(LoadedSample{path, id});
 }
 
 usize SoundEngine::loadResources()
@@ -104,7 +215,17 @@ usize SoundEngine::preloadSound(std::string_view key)
         if (poolKey(entry.name, true) != key) {
             continue;
         }
-        if (sampleFor(entry.path) != kNoSample) {
+        // On the preload worker `samples_` belongs to the main thread, so
+        // what is already resident is asked of the worker's own list.
+        if (preload_ != nullptr) {
+            if (preload_->stage.abandoned()) {
+                break;
+            }
+            std::vector<std::string>& taken = preload_->taken;
+            if (std::find(taken.begin(), taken.end(), entry.path) != taken.end()) {
+                continue;
+            }
+        } else if (sampleFor(entry.path) != kNoSample) {
             continue;  // already resident from an earlier call
         }
 
@@ -116,12 +237,18 @@ usize SoundEngine::preloadSound(std::string_view key)
             continue;
         }
 
-        const SampleId id = backend_.addSample(sample);
-        if (id == kNoSample) {
-            continue;  // a silent backend, or one that is full
+        if (preload_ != nullptr) {
+            preload_->taken.push_back(entry.path);
+            if (!preload_->stage.push(StagedSample{entry.path, std::move(sample)})) {
+                break;  // abandoned while this one was decoding
+            }
+            ++loaded;
+            continue;
         }
-        samples_.push_back(LoadedSample{entry.path, id});
-        ++loaded;
+
+        const usize before = samples_.size();
+        commitSample(entry.path, sample);
+        loaded += samples_.size() - before;
     }
     return loaded;
 }

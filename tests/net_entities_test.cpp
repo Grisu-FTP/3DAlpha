@@ -85,41 +85,132 @@ TEST(another_player_appears_where_the_server_put_them_and_faces_where_it_said)
     CHECK(std::string(entities.player(1).name).size() == usize(RemotePlayer::kMaxNameBytes - 1));
 }
 
-TEST(another_player_walks_to_the_new_place_over_three_ticks_rather_than_jumping)
+TEST(another_player_follows_the_server_and_stops_where_it_last_said)
 {
     RemoteEntities entities;
     CHECK(entities.apply(namedSpawn(7, "Grisu", 0.0, 64.0, 0.0, 0, 0, 0), nullptr));
 
-    // One block east: 32 of the wire's units.
-    CHECK(entities.apply(relMove(7, 32, 0, 0), nullptr));
-    CHECK(near(entities.player(0).x, 0.0));  // not moved yet: that is the tick's job
+    // A quarter of a block east a tick -- 8 of the wire's units, a walk.
+    for (int i = 1; i <= 8; ++i) {
+        CHECK(entities.apply(relMove(7, 8, 0, 0), nullptr));
+        CHECK(near(entities.player(0).x, 0.25 * (i - 1)));  // not moved yet: the tick's job
+        entities.tick(nullptr);
+        // **On the newest packet, not trailing it.** a1.1.2's three-tick walk
+        // kept a body two ticks behind the server for as long as it walked.
+        CHECK(near(entities.player(0).x, 0.25 * i));
+    }
 
-    entities.tick(nullptr);
-    CHECK(near(entities.player(0).x, 1.0 / 3.0));
-    entities.tick(nullptr);
-    CHECK(near(entities.player(0).x, 1.0 / 3.0 + (1.0 - 1.0 / 3.0) / 2.0));
-    entities.tick(nullptr);
-    CHECK(near(entities.player(0).x, 1.0));
+    // Nothing more arrives, so the body stops where it was last put -- after
+    // one tick of guessing it walked on, taken back once the silence says not.
+    for (int i = 0; i < 30; ++i) {
+        entities.tick(nullptr);
+        CHECK(entities.player(0).x <= 2.25 + 1e-9);
+    }
+    CHECK(near(entities.player(0).x, 2.0));
 
-    // Nothing more arrives, so the body stops rather than drifting on.
-    entities.tick(nullptr);
-    CHECK(near(entities.player(0).x, 1.0));
-
-    // **Relative moves are against the target, not against where the body has
-    // got to**, or a body still catching up would fall further behind.
+    // **Relative moves are against the server's position, not against where
+    // the body has got to**, or a body still catching up would fall behind.
     CHECK(entities.apply(relMove(7, 32, 0, 0), nullptr));
     CHECK(entities.apply(relMove(7, 32, 0, 0), nullptr));
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 40; ++i) {
         entities.tick(nullptr);
     }
-    CHECK(near(entities.player(0).x, 3.0));
+    CHECK(near(entities.player(0).x, 4.0));
 
     // Walking sets the limbs going; standing still lets them settle.
+    CHECK(entities.apply(relMove(7, 8, 0, 0), nullptr));
+    entities.tick(nullptr);
     CHECK(entities.player(0).limbAmount > 0.1f);
     for (int i = 0; i < 40; ++i) {
         entities.tick(nullptr);
     }
     CHECK(entities.player(0).limbAmount < 0.01f);
+}
+
+TEST(a_late_packet_is_walked_through_and_a_wrong_guess_is_taken_back)
+{
+    RemoteEntities entities;
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 0.0, 64.0, 0.0, 0, 0, 0), nullptr));
+    for (int i = 0; i < 8; ++i) {
+        CHECK(entities.apply(relMove(7, 8, 0, 0), nullptr));
+        entities.tick(nullptr);
+    }
+    CHECK(near(entities.player(0).x, 2.0));
+
+    // **A packet is late**: the body carries on at the pace it was going, and
+    // is right when the late one arrives with the next.
+    entities.tick(nullptr);
+    CHECK(near(entities.player(0).x, 2.25));
+    CHECK(entities.player(0).track.predicting());
+    CHECK(entities.apply(relMove(7, 8, 0, 0), nullptr));
+    CHECK(entities.apply(relMove(7, 8, 0, 0), nullptr));
+    entities.tick(nullptr);
+    CHECK(near(entities.player(0).x, 2.5));
+    CHECK_EQ(entities.player(0).track.reverts, u16(0));
+
+    // **The player stopped**: the guess runs on for as long as a late packet
+    // would, then goes back to the last place confirmed.
+    entities.tick(nullptr);
+    const double guessed = entities.player(0).x;
+    CHECK(guessed > 2.5);
+    entities.tick(nullptr);
+    CHECK_EQ(entities.player(0).track.reverts, u16(1));
+    CHECK(!entities.player(0).track.predicting());
+    CHECK(entities.player(0).x < guessed);
+    for (int i = 0; i < 30; ++i) {
+        entities.tick(nullptr);
+    }
+    CHECK(near(entities.player(0).x, 2.5));
+
+    // **A teleport is not walked**: past the snap distance the body is put
+    // there, and nothing drawn between the two frames crosses the gap.
+    Packet teleport;
+    teleport.reset(packet::EntityTeleport);
+    teleport.pushInt(7);
+    teleport.pushInt(i64(100 * 32));
+    teleport.pushInt(i64(64 * 32));
+    teleport.pushInt(0);
+    teleport.pushInt(0);
+    teleport.pushInt(0);
+    CHECK(entities.apply(teleport, nullptr));
+    entities.tick(nullptr);
+    CHECK(near(entities.player(0).x, 100.0));
+    CHECK(near(entities.player(0).renderX(0.5f), 100.0));
+    entities.tick(nullptr);
+    CHECK(near(entities.player(0).x, 100.0));
+}
+
+TEST(a_link_that_sends_every_other_tick_is_predicted_across_the_quiet_ones)
+{
+    // The tracker learns how far apart this entity's packets are, so a server
+    // that reports every second tick is not taken back on every quiet one.
+    entity::ServerTrack track;
+    track.place(0.0, 64.0, 0.0);
+    double x = 0.0, y = 64.0, z = 0.0;
+    double server = 0.0;
+    for (int i = 0; i < 40; ++i) {
+        if (i % 2 == 0) {
+            server += 0.5;
+            track.receive(server, 64.0, 0.0);
+        }
+        track.step(&x, &y, &z);
+    }
+    CHECK_EQ(track.horizon(), 3);
+    // Settled into the rhythm: the body is within a step of the server and the
+    // quiet ticks are walked through rather than taken back.
+    const u16 settled = track.reverts;
+    double last = x;
+    for (int i = 0; i < 10; ++i) {
+        if (i % 2 == 0) {
+            server += 0.5;
+            track.receive(server, 64.0, 0.0);
+        }
+        track.step(&x, &y, &z);
+        CHECK(x > last);
+        CHECK(std::fabs(x - server) <= 0.5 + 1e-9);
+        last = x;
+    }
+    CHECK_EQ(track.reverts, settled);
 }
 
 TEST(a_turn_past_north_goes_the_short_way_round)
@@ -153,7 +244,7 @@ TEST(a_player_goes_when_the_server_destroys_them_and_the_pool_closes_up)
     CHECK_EQ(entities.playerCount(), 2);
     // The survivors are still whole and still reachable by id.
     CHECK(entities.apply(relMove(3, 32, 0, 0), nullptr));
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 30; ++i) {
         entities.tick(nullptr);
     }
     bool foundThree = false;
@@ -211,7 +302,22 @@ TEST(an_item_on_the_ground_is_the_ordinary_pool_driven_by_its_server_id)
     teleport.pushInt(0);
     teleport.pushInt(0);
     CHECK(entities.apply(teleport, &scene.w()));
-    CHECK(near(items[0].x, 3.5));
+    // Near where it has got to, it is pulled half the way and keeps falling:
+    // the server's copy runs the same fall, seen a little late.
+    CHECK(near(items[0].x, 3.0));
+    CHECK(near(items[0].z, -7.0));
+    CHECK(near(items[0].motionX, 13.0 / 128.0));
+    CHECK(near(items[0].serverX, 3.5));
+
+    // A relative move is against the server's word, not the local one.
+    CHECK(entities.apply(relMove(42, 32, 0, 0), &scene.w()));
+    CHECK(near(items[0].serverX, 4.5));
+    CHECK(near(items[0].x, 3.75));
+
+    // Far from it, it is put there, and the throw it had is spent.
+    teleport.ints[1] = i64(std::floor(20.5 * 32.0));
+    CHECK(entities.apply(teleport, &scene.w()));
+    CHECK(near(items[0].x, 20.5));
     CHECK(near(items[0].z, -7.5));
     CHECK(near(items[0].motionX, 0.0));
 
@@ -269,6 +375,101 @@ TEST(a_drawn_player_stands_on_their_own_feet_the_right_way_up)
     CHECK(highest < kGround + 2.1);
 }
 
+namespace {
+
+Packet pickupSpawn(i32 id, int item, int count, double x, double y, double z)
+{
+    Packet spawn;
+    spawn.reset(packet::PickupSpawn);
+    spawn.pushInt(id);
+    spawn.pushInt(item);
+    spawn.pushInt(count);
+    spawn.pushInt(i64(std::floor(x * 32.0)));
+    spawn.pushInt(i64(std::floor(y * 32.0)));
+    spawn.pushInt(i64(std::floor(z * 32.0)));
+    spawn.pushInt(0);
+    spawn.pushInt(0);
+    spawn.pushInt(0);
+    return spawn;
+}
+
+}  // namespace
+
+// **A throw is shown at once and confirmed later.** a1.1.2's client sent the
+// stack and let go of it, so nothing left the hand until the server's spawn had
+// made the round trip.
+TEST(a_thrown_stack_flies_at_once_and_the_servers_spawn_takes_it_over)
+{
+    test::SceneWorld scene(0, 0);
+    entity::ItemEntitySystem items(1234);
+    RemoteEntities entities;
+    entities.bind(&items);
+
+    CHECK(items.dropFromPlayer(scene.w(), 0.5, 70.0, 0.5, 0.0f, 0.0f, item::ItemId(4), 3, 0));
+    CHECK_EQ(items.count(), 1);
+    CHECK(entities.predictDrop(items.at(0)));
+    CHECK(items[0].entityId < 0);
+    // Nothing here picks it up, this console included: the server says who.
+    CHECK(items[0].pickupDelay > 1000);
+    CHECK_EQ(items.removeUnowned(), 0);
+    CHECK_EQ(entities.predictedDrops(), 1);
+    // Already one of them: it is not waited for twice.
+    CHECK(!entities.predictDrop(items.at(0)));
+
+    // The round trip: it has flown on here meanwhile.
+    for (int i = 0; i < 4; ++i) {
+        items.tick(scene.w());
+        entities.tick(&scene.w());
+    }
+    const double flownX = items[0].x;
+    const double flownZ = items[0].z;
+
+    // The server's spawn, from where it left the hand, **becomes this stack**:
+    // the server's id, and no second copy back at the hand.
+    CHECK(entities.apply(pickupSpawn(50, 4, 3, 0.5, 68.7, 0.5), &scene.w()));
+    CHECK_EQ(items.count(), 1);
+    CHECK_EQ(items[0].entityId, i32(50));
+    CHECK(near(items[0].x, flownX));
+    CHECK(near(items[0].z, flownZ));
+    CHECK_EQ(entities.predictedDrops(), 0);
+    CHECK(items.findById(50) != nullptr);
+
+    // A stack the server makes that is not one of these throws -- another
+    // item, somebody else's -- is spawned the ordinary way.
+    CHECK(items.dropFromPlayer(scene.w(), 0.5, 70.0, 0.5, 0.0f, 0.0f, item::ItemId(4), 3, 0));
+    CHECK(entities.predictDrop(items.at(1)));
+    CHECK(entities.apply(pickupSpawn(51, 4, 2, 0.5, 68.7, 0.5), &scene.w()));
+    CHECK(entities.apply(pickupSpawn(52, 4, 3, 40.5, 68.7, 0.5), &scene.w()));
+    CHECK_EQ(items.count(), 4);
+    CHECK_EQ(entities.predictedDrops(), 1);
+}
+
+TEST(a_throw_the_server_never_answers_is_taken_back)
+{
+    test::SceneWorld scene(0, 0);
+    entity::ItemEntitySystem items(1234);
+    RemoteEntities entities;
+    entities.bind(&items);
+
+    CHECK(items.dropFromPlayer(scene.w(), 0.5, 70.0, 0.5, 0.0f, 0.0f, item::ItemId(4), 1, 0));
+    CHECK(entities.predictDrop(items.at(0)));
+    for (int i = 0; i < RemoteEntities::kDropConfirmTicks - 1; ++i) {
+        entities.tick(&scene.w());
+    }
+    CHECK_EQ(items.count(), 1);
+    entities.tick(&scene.w());
+    // **The prediction was wrong**, and what a1.1.2 would have shown -- no
+    // stack at all -- is what is left.
+    CHECK_EQ(items.count(), 0);
+    CHECK_EQ(entities.predictedDrops(), 0);
+    CHECK_EQ(entities.revertedDrops(), u32(1));
+
+    // An answer after it was given up on is the server's stack, spawned anew.
+    CHECK(entities.apply(pickupSpawn(60, 4, 1, 0.5, 68.7, 0.5), &scene.w()));
+    CHECK_EQ(items.count(), 1);
+    CHECK_EQ(items[0].entityId, i32(60));
+}
+
 TEST(a_mob_the_server_owns_is_drawn_here_and_decided_there)
 {
     test::SceneWorld scene(0, 0);
@@ -313,19 +514,30 @@ TEST(a_mob_the_server_owns_is_drawn_here_and_decided_there)
     // increments and `ge.j()` divides what is left by what is left on the
     // clock, so one block arrives as a third, then a half of the rest, then
     // the rest. A packet does not teleport an animal; it sets it going.
-    CHECK(entities.apply(relMove(77, 32, 0, 0), &scene.w()));
+    // It follows the server as a player does (see core/entity/server_track.hpp):
+    // on the newest packet while they flow, rather than jumping to each one.
+    CHECK(entities.apply(relMove(77, 8, 0, 0), &scene.w()));
     CHECK(near(herd[0].body.x, 4.5));  // nothing until the next tick
     herd.tick(scene.w(), around);
-    CHECK(near(herd[0].body.x, 4.5 + 1.0 / 3.0));
+    CHECK(near(herd[0].body.x, 4.75));
+    CHECK(entities.apply(relMove(77, 8, 0, 0), &scene.w()));
     herd.tick(scene.w(), around);
+    CHECK(near(herd[0].body.x, 5.0));
+    // A late packet is walked through...
+    herd.tick(scene.w(), around);
+    CHECK(near(herd[0].body.x, 5.25));
+    CHECK(entities.apply(relMove(77, 8, 0, 0), &scene.w()));
+    CHECK(entities.apply(relMove(77, 8, 0, 0), &scene.w()));
     herd.tick(scene.w(), around);
     CHECK(near(herd[0].body.x, 5.5));
 
-    // And having arrived it stops, however long nothing more is said.
-    for (int i = 0; i < 20; ++i) {
+    // ...and having arrived it stops, however long nothing more is said, the
+    // step it guessed past the end taken back.
+    for (int i = 0; i < 40; ++i) {
         herd.tick(scene.w(), around);
     }
     CHECK(near(herd[0].body.x, 5.5));
+    CHECK(herd[0].track.reverts > 0);
 
     Packet destroyed;
     destroyed.reset(packet::DestroyEntity);

@@ -19,6 +19,7 @@ extract or convert game data, and no feature is gated behind having a jar.
 | Menu backdrop | Not bundled. A pack's `dirt.png`, tiled and darkened as `GuiScreen` does it | The dirt tile of whatever `terrain.png` is live, Dev Art's included |
 | GUI widgets | Not bundled and not read yet | Buttons are drawn rectangles |
 | Particle sprites | Not bundled. A pack's root `particles.png`, scaled to 128×128 | **Generated** — white discs on the tiles a1.1.2 names, tinted by the quad as the real sheet is (`core/texture/particle_sheet.cpp`) |
+| Underwater overlay | Not bundled. A pack's root `water.png`, scaled to 16×16 and repeated 4×4 | **Generated** — mottled half-transparent blue (`core/texture/water_overlay_image.cpp`) |
 | Sounds | No — a1.1.2 never shipped them | Game runs silently |
 | DSP firmware (`dspfirm.cdc`) | Cannot be — Nintendo copyright | Audio disabled, one line in the options screen |
 | Block/item/recipe data, worldgen | **Compiled into the binary** | Not applicable — always present |

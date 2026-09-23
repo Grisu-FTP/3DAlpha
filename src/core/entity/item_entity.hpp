@@ -167,6 +167,12 @@ struct ItemEntity {
     // the world. See core/net/entities.hpp.
     i32 entityId = 0;
 
+    // **Where the server last said this item was** -- `kh.bd/be/bf`, which
+    // every entity carries in the jar. A relative move is added to this and not
+    // to `x`, which has gone on falling and sliding here since. Meaningless
+    // while `entityId` is zero.
+    double serverX = 0.0, serverY = 0.0, serverZ = 0.0;
+
     // `age`, `delayBeforeCanPickup`, and `hoverStart` -- the last being a
     // random phase in radians so a heap of items does not bob in lockstep.
     int age = 0;
@@ -311,6 +317,13 @@ public:
     ItemEntity* at(int i) { return &items_[i]; }
 
     bool removeById(i32 entityId);
+
+    // **The server's word for where an item is.** Far from where it has got to
+    // here, it is put there; near, it is pulled half the way and keeps its
+    // motion -- the server's copy runs the same fall and the same slide, and
+    // one thrown here is ahead of it by the trip there and back, so a snap
+    // would be a step backwards on every packet.
+    static constexpr double kServerSnapDistance = 2.0;
     bool placeById(i32 entityId, double px, double py, double pz);
 
     // **Every stack in the pool that no server owns**, removed, and how many

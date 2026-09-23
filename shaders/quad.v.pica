@@ -64,9 +64,10 @@
 
 .fvec mvp[4]
 
-; Linear fog as a line in view-space distance, exactly as world.v.pica carries
-; it and for the same reason: the PICA's own fog unit indexes its LUT by window
-; depth, which is 1/d, and the whole ramp lands in the first two entries.
+; Fog in view-space distance, exactly as world.v.pica carries it -- the line in
+; x and y, the GL_EXP curve's density * log2(e) in z -- and for the same
+; reason: the PICA's own fog unit indexes its LUT by window depth, which is
+; 1/d, and the whole ramp lands in the first two entries.
 .fvec fogparam
 
 ; The seam, as world.v.pica has it: a merged quad grows by
@@ -90,8 +91,8 @@
 .out o_d1  dummy   ; the e1 edge, in clip space
 .out o_d2  dummy   ; the e2 edge, in clip space
 .out o_uv  dummy   ; (u0, v0, u1, v1): the run's two u and two v, ready to pick
-.out o_col dummy   ; face shade in rgb, fog amount in a
-.out o_lm  dummy   ; lightmap texel centre
+.out o_col dummy   ; (face shade, fog at corners 0, 1 and 3)
+.out o_lm  dummy   ; (lightmap texel centre, face shade, fog at corner 2)
 
 .alias in_pos v0   ; x, y, z, face
 .alias in_tex v1   ; slotX, slotY, light, extent
@@ -124,7 +125,7 @@
 	add r9.x, in_tex.z, -r9.z     ; block = light - sky * 16
 	mul r10.xy, div16, r9.xy      ; (block, sky) / 16
 	add o_lm.xy, halftex, r10.xy  ; texel centres, so nearest filtering cannot
-	mov o_lm.zw, zeros            ; pick up a neighbouring level
+	                              ; pick up a neighbouring level
 
 	; The extent, w + 16*h, by the same divide, floor and subtract.
 	mul r11.x, div16, in_tex.w
@@ -217,19 +218,54 @@
 	add r4.w, r4.w, -r14.z
 	mov o_uv, r4
 
+	; **Fog, per corner.** It goes in the colour's alpha, because primary colour
+	; is the only per-vertex value a texenv stage can read, and each corner's w
+	; is -z_view, which is what fog is defined against. It used to be corner
+	; 0's alone for the whole quad -- fine for a line a hundred blocks long, and
+	; not for the GL_EXP curve under water, which goes from clear to 0.8 across
+	; one sixteen-block quad: a sea floor came out in squares.
+	;
+	; The corners' w, as the geometry shader will build them: c0 is o_p0's,
+	; and the edges add o_d1.w and o_d2.w. r10 = (c0, c1, c2, c3).
+	add r10.x, r5.w, -r12.w       ; c0 = corner 0 after the seam
+	mul r11.z, r13.x, r6.w        ; o_d1.w
+	mul r11.w, r13.y, r7.w        ; o_d2.w
+	add r10.y, r10.x, r11.z       ; c1 = c0 + d1
+	add r10.w, r10.x, r11.w       ; c3 = c0 + d2
+	add r10.z, r10.y, r11.w       ; c2 = c0 + d1 + d2
+
+	; world.v.pica's two terms, four lanes at once: the line d * x + y, and
+	; GL_EXP's 1 - 2^(-d * z) beside it. z is zero above water, where the curve
+	; is 1 - 1 = 0 and the max leaves the line alone; under water and in lava
+	; the line is zeroed instead. ex2 is scalar, hence four of it.
+	mul r9, fogparam.xxxx, r10
+	add r9, fogparam.yyyy, r9
+	mul r14, fogparam.zzzz, r10
+	ex2 r15.x, -r14.x
+	ex2 r15.y, -r14.y
+	ex2 r15.z, -r14.z
+	ex2 r15.w, -r14.w
+	add r15, ones, -r15
+	max r9, r9, r15
+	max r9, zeros, r9
+	min r9, ones, r9
+
 	; Face shade, from the table rather than from the vertex: this format has no
 	; room for per-quad colour, which is exact for a1.1.2 -- its
 	; Block.colorMultiplier is white for every block in the game -- and is the
 	; reason a version with biome tint cannot use this path.
-	mov o_col.xyz, faceBasis[a0.x].wwww
-
-	; Fog in the colour's alpha, because primary colour is the only per-vertex
-	; value a texenv stage can read. Corner 0's w is -z_view, which is what
-	; GL_LINEAR fog is defined against.
-	mul r9.x, fogparam.x, r5.w
-	add r9.x, fogparam.y, r9.x
-	max r9.x, zeros, r9.x
-	min o_col.w, ones, r9.x
+	;
+	; **Packed so the geometry shader still spends one mov a corner on colour.**
+	; o_col = (shade, f0, f1, f3) and o_lm = (lm.x, lm.y, shade, f2), so each
+	; corner's colour is one swizzle of one input: v4.xxxy, v4.xxxz, v4.xxxw,
+	; and v5.zzzw for corner 2. See quad.g.pica.
+	mov r8.x, faceBasis[a0.x].w
+	mov o_col.x, r8.x
+	mov o_col.y, r9.x
+	mov o_col.z, r9.y
+	mov o_col.w, r9.w
+	mov o_lm.z, r8.x
+	mov o_lm.w, r9.z
 
 	end
 .end

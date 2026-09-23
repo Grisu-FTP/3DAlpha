@@ -44,12 +44,43 @@ void PerlinNoise::populate(double* out, double x, double y, double z, int xSize,
     double n3 = 0.0;
     double n4 = 0.0;
 
+    // **The Y coordinate depends on yi alone**, so it is worked out once per
+    // call instead of once per (x, z) column -- the same expression on the same
+    // operands, so the same bits. a1.1.2 asks for at most 17 Y samples; a
+    // longer call computes the rest in the loop as it always did.
+    struct YStep {
+        double f;
+        double fade;
+        i32 cell;
+    };
+    constexpr int kHoisted = 32;
+    auto yStep = [&](int yi) {
+        YStep s;
+        s.f = (y + double(yi)) * yScale + yOffset_;
+        const i32 yFloor = floorToInt(s.f);
+        s.cell = yFloor & 255;
+        s.f -= double(yFloor);
+        s.fade = fade(s.f);
+        return s;
+    };
+    YStep ySteps[kHoisted];
+    const int hoisted = ySize < kHoisted ? ySize : kHoisted;
+    for (int yi = 0; yi < hoisted; ++yi) {
+        ySteps[yi] = yStep(yi);
+    }
+
+    // fx, fx - 1, fy, fy - 1, fz, fz - 1: everything the eight corner
+    // gradients are ever passed. See cornerGradient.
+    double corners[6];
+
     for (int xi = 0; xi < xSize; ++xi) {
         double fx = (x + double(xi)) * xScale + xOffset_;
         const i32 xFloor = floorToInt(fx);
         const i32 xCell = xFloor & 255;
         fx -= double(xFloor);
         const double fadeX = fade(fx);
+        corners[0] = fx;
+        corners[1] = fx - 1.0;
 
         for (int zi = 0; zi < zSize; ++zi) {
             double fz = (z + double(zi)) * zScale + zOffset_;
@@ -57,16 +88,18 @@ void PerlinNoise::populate(double* out, double x, double y, double z, int xSize,
             const i32 zCell = zFloor & 255;
             fz -= double(zFloor);
             const double fadeZ = fade(fz);
+            corners[4] = fz;
+            corners[5] = fz - 1.0;
 
             for (int yi = 0; yi < ySize; ++yi) {
-                double fy = (y + double(yi)) * yScale + yOffset_;
-                const i32 yFloor = floorToInt(fy);
-                const i32 yCell = yFloor & 255;
-                fy -= double(yFloor);
-                const double fadeY = fade(fy);
+                const YStep step = yi < kHoisted ? ySteps[yi] : yStep(yi);
+                const i32 yCell = step.cell;
+                const double fadeY = step.fade;
 
                 if (yi == 0 || yCell != lastYCell) {
                     lastYCell = yCell;
+                    corners[2] = step.f;
+                    corners[3] = step.f - 1.0;
 
                     // The eight cube corners, addressed the way Perlin's
                     // reference does: fold x into the table, add y, fold again,
@@ -79,15 +112,17 @@ void PerlinNoise::populate(double* out, double x, double y, double z, int xSize,
                     const i32 bb = permutation_[b + 1] + zCell;
 
                     // Four X-interpolations: the pairs differ in Y and then in
-                    // Z, which is what leaves the Y and Z blends to below.
-                    n1 = lerp(fadeX, gradient(permutation_[aa], fx, fy, fz),
-                              gradient(permutation_[ba], fx - 1.0, fy, fz));
-                    n2 = lerp(fadeX, gradient(permutation_[ab], fx, fy - 1.0, fz),
-                              gradient(permutation_[bb], fx - 1.0, fy - 1.0, fz));
-                    n3 = lerp(fadeX, gradient(permutation_[aa + 1], fx, fy, fz - 1.0),
-                              gradient(permutation_[ba + 1], fx - 1.0, fy, fz - 1.0));
-                    n4 = lerp(fadeX, gradient(permutation_[ab + 1], fx, fy - 1.0, fz - 1.0),
-                              gradient(permutation_[bb + 1], fx - 1.0, fy - 1.0, fz - 1.0));
+                    // Z, which is what leaves the Y and Z blends to below. The
+                    // corner numbers are dx | dy << 1 | dz << 2 -- (0, 1) is
+                    // gradient(.., fx, fy, fz) and gradient(.., fx - 1, fy, fz).
+                    n1 = lerp(fadeX, cornerGradient(permutation_[aa], corners, 0),
+                              cornerGradient(permutation_[ba], corners, 1));
+                    n2 = lerp(fadeX, cornerGradient(permutation_[ab], corners, 2),
+                              cornerGradient(permutation_[bb], corners, 3));
+                    n3 = lerp(fadeX, cornerGradient(permutation_[aa + 1], corners, 4),
+                              cornerGradient(permutation_[ba + 1], corners, 5));
+                    n4 = lerp(fadeX, cornerGradient(permutation_[ab + 1], corners, 6),
+                              cornerGradient(permutation_[bb + 1], corners, 7));
                 }
 
                 const double t1 = lerp(fadeY, n1, n2);

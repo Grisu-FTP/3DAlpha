@@ -4,16 +4,20 @@
 #include "core/audio/music_ticker.hpp"
 #include "core/audio/resource_index.hpp"
 #include "core/audio/sample.hpp"
+#include "core/audio/sample_stage.hpp"
 #include "core/audio/sound_engine.hpp"
 #include "core/audio/sound_pool.hpp"
 #include "core/audio/vorbis_stream.hpp"
 #include "core/io/posix_file_system.hpp"
 #include "core/util/java_random.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace mc;
@@ -773,6 +777,105 @@ TEST(decodingASampleFailsWithoutTouchingTheOutput)
     CHECK_EQ(sample.channels, 2);
 
     CHECK(!decodeSample(fs, dir.at("no/such/file.ogg"), &sample));
+}
+
+// **The boot's background preload hands every sample over, in order, and only
+// ever holds `capacity` of them.** The worker blocks when the stage is full and
+// the main thread's drain is what wakes it; the flag that says "nothing more"
+// is only seen once the last sample has been taken. Run under TSan.
+TEST(theSampleStageHandsEverySampleOverInOrder)
+{
+    constexpr int kSamples = 40;
+    SampleStage stage(3);
+    std::thread worker([&stage] {
+        for (int i = 0; i < kSamples; ++i) {
+            StagedSample staged;
+            staged.path = std::to_string(i);
+            staged.sample.pcm.assign(usize(i + 1), i16(i));
+            CHECK(stage.push(std::move(staged)));
+        }
+        stage.finish();
+    });
+
+    std::vector<StagedSample> got;
+    usize most = 0;
+    for (;;) {
+        const usize before = got.size();
+        const bool over = stage.drain(&got);
+        most = std::max(most, got.size() - before);
+        if (over) {
+            break;
+        }
+        std::this_thread::yield();
+    }
+    worker.join();
+
+    CHECK_EQ(got.size(), usize(kSamples));
+    CHECK(most <= usize(3));
+    for (int i = 0; i < int(got.size()); ++i) {
+        CHECK_EQ(got[usize(i)].path, std::to_string(i));
+        CHECK_EQ(got[usize(i)].sample.pcm.size(), usize(i + 1));
+    }
+}
+
+// Leaving the game while the preload is still going must not wait for it to
+// finish: a worker blocked on a full stage is released and its pushes fail.
+TEST(abandoningTheSampleStageReleasesABlockedWorker)
+{
+    SampleStage stage(1);
+    std::thread worker([&stage] {
+        // The first push fills the stage and the second blocks until the
+        // abandon below; every push after that fails at once.
+        while (stage.push(StagedSample{})) {
+        }
+        CHECK(!stage.push(StagedSample{}));
+        stage.finish();
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    stage.abandon();
+    worker.join();
+
+    CHECK(stage.abandoned());
+    std::vector<StagedSample> left;
+    CHECK(stage.drain(&left));
+    CHECK(left.empty());
+}
+
+usize preloadTwoKeys(SoundEngine& engine)
+{
+    return engine.preloadSound("random.click") + engine.preloadSound("random.bow");
+}
+
+// The engine's side of it: the preload runs on a thread of its own, `pump`
+// finishes it, and a folder of files that will not decode leaves it silent
+// rather than stuck. (No real Ogg is in this repository to decode.)
+TEST(aBackgroundPreloadFinishesThroughThePump)
+{
+    TempDir dir;
+    CHECK(dir.path[0] != '\0');
+
+    io::PosixFileSystem fs;
+    touch(fs, dir.at("sound/random/click.ogg"));
+    touch(fs, dir.at("sound/random/bow.ogg"));
+
+    RecordingBackend backend;
+    SoundEngine engine(fs, backend, 1);
+    CHECK_EQ(engine.loadResources(dir.path), usize(2));
+
+    CHECK(engine.startPreload(&preloadTwoKeys));
+    CHECK(engine.preloading());
+    CHECK(!engine.startPreload(&preloadTwoKeys));  // one at a time
+    while (engine.preloading()) {
+        engine.pumpPreload();
+        std::this_thread::yield();
+    }
+    CHECK_EQ(engine.loadedSamples(), usize(0));
+    CHECK_EQ(backend.samples.size(), usize(0));
+
+    // And it can be stopped mid-way, which is what the destructor does.
+    CHECK(engine.startPreload(&preloadTwoKeys));
+    engine.stopPreload();
+    CHECK(!engine.preloading());
 }
 
 }  // namespace

@@ -43,6 +43,7 @@
 #include "core/io/file_system.hpp"
 #include "core/util/types.hpp"
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -119,7 +120,39 @@ public:
     // **This opens files and runs the decoder**, so it belongs at boot beside
     // `loadResources` and nowhere near a frame. Calling it twice for the same
     // key loads nothing the second time.
+    //
+    // While a background preload is running, only its worker may call this:
+    // what it decodes is then staged for `pumpPreload` rather than committed,
+    // and the count is of what was staged.
     usize preloadSound(std::string_view key);
+
+    // **The rest of the effects, decoded while the menu is up.** Runs `list`
+    // -- `preloadEffects` -- on an audio worker and returns at once; what it
+    // decodes waits in a `SampleStage` until `pumpPreload` commits it on this
+    // thread. Keys already loaded are skipped, so the click the first menu
+    // needs can be preloaded first and joined. False, and nothing loads, if a
+    // preload is already running or no worker could be started: decoding
+    // inline would put Tremor on a 32 KB main stack.
+    //
+    // An effect played before its turn is silence, as it would be with no
+    // file for it. See core/audio/sample_stage.hpp.
+    bool startPreload(usize (*list)(SoundEngine&));
+
+    // Main thread, once a frame -- `update` does it in game; the menu calls it
+    // itself. Commits what is waiting and joins the worker once it is done.
+    // With nothing waiting it is a lock and a compare.
+    void pumpPreload();
+
+    bool preloading() const { return preload_ != nullptr; }
+
+    // Abandons the preload and joins its worker; what was not committed yet is
+    // dropped. Before the backend is shut down, and safe to call when nothing
+    // is running. The destructor does it too.
+    void stopPreload();
+
+    ~SoundEngine();
+    SoundEngine(const SoundEngine&) = delete;
+    SoundEngine& operator=(const SoundEngine&) = delete;
 
     // `of.a(String, float, float)` -- playSoundFX, the interface path. The
     // entry is drawn uniformly among the ones sharing `key`, from the sound
@@ -160,7 +193,11 @@ public:
 
     // Once a frame, from the main thread, whether or not any tick elapsed --
     // the backend has buffers to recycle even on a frame that owes no tick.
-    void update() { backend_.update(); }
+    void update()
+    {
+        backend_.update();
+        pumpPreload();
+    }
 
     void stopMusic();
 
@@ -243,11 +280,21 @@ private:
 
     SampleId sampleFor(std::string_view path) const;
 
+    // Hands a decoded sample to the backend and makes it playable.
+    void commitSample(const std::string& path, const Sample& sample);
+
+    // Defined in the .cpp: the stage, the worker's handle and what it has
+    // already decoded. Present only while a background preload runs.
+    struct Preload;
+    static void preloadEntry(void* arg);
+    void joinPreload();
+
     io::FileSystem& fs_;
     Backend& backend_;
     ResourceIndex resources_;
     MusicTicker ticker_;
     std::vector<LoadedSample> samples_;
+    std::unique_ptr<Preload> preload_;
     float musicVolume_ = 1.0f;
     float soundVolume_ = 1.0f;
 

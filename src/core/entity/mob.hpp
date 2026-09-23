@@ -63,6 +63,7 @@
 #include "core/entity/path_finder.hpp"
 #include "core/entity/player_body.hpp"
 #include "core/entity/rider.hpp"
+#include "core/entity/server_track.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/segmented_pool.hpp"
@@ -522,7 +523,12 @@ struct Mob {
     // `kh.bd/be/bf`, the fixed-point server position, and divides that -- so a
     // body still catching up does not fall further behind with every packet.
     // Seeded by the spawn, as `gy.a(ez)` seeds it.
-    double serverX = 0.0, serverY = 0.0, serverZ = 0.0;
+    //
+    // **The position no longer walks those three ticks**: it is carried on
+    // through a late packet and taken back when the silence says the animal
+    // stopped -- see core/entity/server_track.hpp. The look still turns over
+    // `smoothTicks` as the jar's does.
+    ServerTrack track;
     double serverYaw = 0.0, serverPitch = 0.0;
     i16 smoothTicks = 0;
 
@@ -789,8 +795,9 @@ public:
     Mob* findById(i32 entityId);
     bool removeById(i32 entityId);
 
-    // `gy` -> `kh.a(DDDFFI)V` -- where the server says it is, to be walked to
-    // over the next `kServerSmoothTicks` ticks rather than jumped to. The legs
+    // `gy` -> `kh.a(DDDFFI)V` -- where the server says it is, to be followed
+    // (and predicted past) rather than jumped to; the look turns over the next
+    // `kServerSmoothTicks` ticks. The legs
     // follow from how far the body actually moves, as they do for another
     // player, so they are driven in `tick` and not here.
     bool placeById(i32 entityId, double x, double y, double z, bool hasLook, float yaw,

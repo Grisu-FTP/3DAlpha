@@ -78,4 +78,12 @@ void drawItemIcon(const Surface& surface, int x, int y, int size, const IconShee
 // row of mixed icons reads better when the flat ones are inset by a pixel.
 bool itemDrawsAsCube(item::ItemId id);
 
+// Draws terrain tile `tile` scaled to `width` x `height` at (x, y), but plots
+// only its bottom `visible` rows -- the furnace's fuel gauge, which reveals
+// more of a fixed flame image as more fuel remains rather than rescaling one.
+// `visible` is clamped to `height`; nothing is drawn for a null sheet, a
+// negative tile, or a non-positive size, the last of which is `visible <= 0`.
+void drawTerrainTileBottom(const Surface& surface, int x, int y, int width, int height,
+                           const u8* sheet, int tile, int visible);
+
 }  // namespace mc::gui

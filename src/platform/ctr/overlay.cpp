@@ -2147,7 +2147,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
                                    containerCursor_, cursorShown());
             drewContainer = true;
         } else if (progressDirty_) {
-            hud::drawContainerProgress(screen, layout_, session_);
+            hud::drawContainerProgress(screen, layout_, session_, sheets_);
             drewContainer = true;
         }
         if (hotbarDirty_ || bodyDirty_) {

@@ -6,6 +6,7 @@
 #include "core/item/creative_palette.hpp"
 #include "core/item/registry.hpp"
 #include "core/texture/atlas_image.hpp"
+#include "core/texture/texture_fx.hpp"
 
 #include <3ds.h>
 
@@ -864,7 +865,6 @@ static_assert(gui::kLayoutScreenWidth == kScreenWidth && gui::kLayoutHotbarSlotY
                   && gui::kLayoutPageTop == kBandedPageTop && gui::kLayoutPageBottom == kTabTop,
               "the container layout must agree with the bands it is laid out in");
 
-constexpr u32 kFlame = 0xFF9A1F;
 constexpr u32 kProgressFill = 0xFFFFFF;
 
 // An arrow pointing right across `r`: a shaft a third of its height, then a
@@ -888,13 +888,25 @@ void drawLayoutArrow(const gui::Surface& surface, const gui::SlotRect& r, int fi
     }
 }
 
-void drawFlame(const gui::Surface& surface, const gui::SlotRect& r, int height)
+// The flame is the same tile the fire block and a burning entity draw --
+// `texture::flameTile(0)`, settled into the decoded atlas at pack load the
+// way every other icon on this screen is. Fuel drains it from the top, so the
+// gauge reveals more of a fixed flame image rather than rescaling one, the
+// same sense `height` already had when this filled a flat square.
+void drawFlame(const gui::Surface& surface, const gui::SlotRect& r, int height,
+               const gui::IconSheets& sheets)
 {
     gui::fillRect(surface, r.x, r.y, r.w, r.h, px(kPanelFace));
     gui::frameRect(surface, r.x, r.y, r.w, r.h, px(kSlotFace));
-    if (height > 0) {
-        gui::fillRect(surface, r.x + 2, r.y + r.h - 1 - height, r.w - 4, height, px(kFlame));
+    if (height <= 0) {
+        return;
     }
+    const int tile = texture::flameTile(0);
+    if (tile < 0) {
+        return;
+    }
+    gui::drawTerrainTileBottom(surface, r.x + 2, r.y + 1, r.w - 4, r.h - 2, sheets.terrain, tile,
+                               height);
 }
 
 // **The chest's scroll furniture**, which nothing but a chest joined to more
@@ -944,7 +956,7 @@ void drawScrollBar(const gui::Surface& surface, const gui::ContainerLayout& layo
 }
 
 void drawProgress(const gui::Surface& surface, const gui::ContainerLayout& layout,
-                  const item::ContainerSession& session)
+                  const item::ContainerSession& session, const gui::IconSheets& sheets)
 {
     if (layout.arrow.w > 0) {
         if (layout.arrowIsProgress) {
@@ -958,7 +970,7 @@ void drawProgress(const gui::Surface& surface, const gui::ContainerLayout& layou
     }
     if (layout.flame.w > 0) {
         // Two pixels of frame off the top and bottom.
-        drawFlame(surface, layout.flame, session.furnaceBurnScaled(layout.flame.h - 2));
+        drawFlame(surface, layout.flame, session.furnaceBurnScaled(layout.flame.h - 2), sheets);
     }
 }
 
@@ -988,7 +1000,7 @@ void drawContainerPage(const gui::Surface& surface, const gui::ContainerLayout& 
                  here && !carried.empty() ? 0 : int(stack.count), int(stack.damage), false,
                  here && showCursor);
     }
-    drawProgress(surface, layout, session);
+    drawProgress(surface, layout, session, sheets);
     drawScrollBar(surface, layout);
 
     if (cursor >= 0 && cursor < pageSlots && !carried.empty()) {
@@ -1017,9 +1029,9 @@ void drawContainerBand(const gui::Surface& surface, const gui::ContainerLayout& 
 }
 
 void drawContainerProgress(const gui::Surface& surface, const gui::ContainerLayout& layout,
-                           const item::ContainerSession& session)
+                           const item::ContainerSession& session, const gui::IconSheets& sheets)
 {
-    drawProgress(surface, layout, session);
+    drawProgress(surface, layout, session, sheets);
 }
 
 int hotbarSlotAt(int touchX, int touchY)

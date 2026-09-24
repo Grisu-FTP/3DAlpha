@@ -371,7 +371,7 @@ void drawContainerBand(const gui::Surface& surface, const gui::ContainerLayout& 
 // to grow an arrow by a pixel would be the bottom screen's most expensive
 // frame.
 void drawContainerProgress(const gui::Surface& surface, const gui::ContainerLayout& layout,
-                           const item::ContainerSession& session);
+                           const item::ContainerSession& session, const gui::IconSheets& sheets);
 
 // **The Creative block palette, which is its own page and not the inventory.**
 // They are different things: the palette is a catalogue of every block this

@@ -378,6 +378,31 @@ bool itemDrawsAsCube(item::ItemId id)
     }
 }
 
+void drawTerrainTileBottom(const Surface& surface, int x, int y, int width, int height,
+                           const u8* sheet, int tile, int visible)
+{
+    if (sheet == nullptr || tile < 0 || width <= 0 || height <= 0 || visible <= 0) {
+        return;
+    }
+    if (visible > height) {
+        visible = height;
+    }
+    for (int py = height - visible; py < height; ++py) {
+        const int tv = (py * kTilePixels) / height;
+        for (int pxi = 0; pxi < width; ++pxi) {
+            const int tu = (pxi * kTilePixels) / width;
+            u8 r, g, b;
+            if (!sampleTile(sheet, tile, tu, tv, &r, &g, &b)) {
+                continue;
+            }
+            Pixel* out = surface.at(x + pxi, y + py);
+            if (out != nullptr) {
+                *out = rgb565(int(r), int(g), int(b));
+            }
+        }
+    }
+}
+
 void drawItemIcon(const Surface& surface, int x, int y, int size, const IconSheets& sheets,
                   item::ItemId id)
 {

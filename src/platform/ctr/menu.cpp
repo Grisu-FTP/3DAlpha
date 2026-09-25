@@ -4997,21 +4997,32 @@ void Menu::drawPause()
     // allowed to run off both edges.
     drawLabelClipped(pauseWorldName_, 40.0f, 62.0f, 0.5f, kInkDim, kScreenWidth - 80.0f);
 
+    // **The code that got everyone here, still on screen.** Once the lobby
+    // closes it is nowhere else, and a host who forgets it mid-session has no
+    // way to invite a second friend without leaving the world to look it up.
+    const bool showJoinCode = multiplayer_ && !onlineJoinCode_.empty();
+    if (showJoinCode) {
+        char line[32];
+        std::snprintf(line, sizeof(line), "Join code: %s", onlineJoinCode_.c_str());
+        drawLabelCentered(line, kScreenWidth * 0.5f, 76.0f, 0.42f, kInkDim, true);
+    }
+
     // Four rows rather than three, so they start higher and are spaced tighter
     // than they were: 240 pixels does not stretch, and the line about saving
     // still has to sit under the last of them.
     const float x = (kScreenWidth - kButtonWidth) * 0.5f;
+    const float buttonsTop = showJoinCode ? 94.0f : 80.0f;
     const char* const singleLabels[] = {"Resume", "World Settings", "Options", "Exit World"};
     const char* const multiLabels[] = {"Resume", "Chat", "Options", "Disconnect"};
     const char* const* labels = multiplayer_ ? multiLabels : singleLabels;
     for (int i = 0; i < 4; ++i) {
-        const Rect rect{x, 80.0f + float(i) * (kButtonHeight + 4.0f), kButtonWidth,
+        const Rect rect{x, buttonsTop + float(i) * (kButtonHeight + 4.0f), kButtonWidth,
                         kButtonHeight};
         drawButton(rect, labels[i], pauseCursor_ == i, true);
     }
 
     drawLabelCentered(multiplayer_ ? "The server keeps the world." : "Exiting saves the world.",
-                      kScreenWidth * 0.5f, 206.0f, 0.45f, kInkDim, true);
+                      kScreenWidth * 0.5f, buttonsTop + 126.0f, 0.45f, kInkDim, true);
 }
 
 void Menu::drawWorldSettings()

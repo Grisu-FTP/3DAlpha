@@ -289,6 +289,16 @@ void skinOrigin(EntitySkin skin, int* x, int* y)
     *y = slot.y;
 }
 
+bool remoteSkinOrigin(int slot, int* x, int* y)
+{
+    if (slot < 0 || slot >= kRemoteSkinSlots) {
+        return false;
+    }
+    *x = (slot % kRemoteSkinPerRow) * kSkinPageWidth;
+    *y = kRemoteSkinFirstY + (slot / kRemoteSkinPerRow) * kSkinPageHeight;
+    return true;
+}
+
 const char* skinFileName(EntitySkin skin)
 {
     return slotOf(skin).file;

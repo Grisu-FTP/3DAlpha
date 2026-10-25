@@ -212,8 +212,10 @@ TEST(the_table_holds_the_jars_thirty_three_packets_and_the_four_additions)
     // was hit or died, and `0x13` and `0x09` so a player's crouch, death and
     // respawn are seen by the others -- protocol 2 has no way to say any of it,
     // and none of it is ever sent to a Java server. See protocol-a1.1.2.md,
-    // "What a 3DAlpha host adds to protocol 2".
-    CHECK_EQ(registered, 37);
+    // "What a 3DAlpha host adds to protocol 2". And two more of ours: `0x19`, a
+    // painting the host hung, and `0xE3`, a player's skin -- see
+    // core/net/player_skin.hpp.
+    CHECK_EQ(registered, 39);
 
     const PacketShape* status = shapeOf(packet::EntityStatus);
     CHECK(status != nullptr);

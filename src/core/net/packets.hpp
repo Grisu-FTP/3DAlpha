@@ -104,6 +104,12 @@ inline constexpr u8 PickupSpawn = 0x15;
 inline constexpr u8 Collect = 0x16;
 inline constexpr u8 VehicleSpawn = 0x17;
 inline constexpr u8 MobSpawn = 0x18;
+// **Ours, from a1.2.0's `Packet25EntityPainting`**: a1.1.2's registry has no
+// painting at all, so a painting only ever existed on the console that hung it
+// and a guest's walls were bare. The fields are a1.2.0's -- the entity, the
+// art's name, the block it hangs on and its direction -- so a later server's
+// paintings read the same. Only a 3DAlpha/AlphaU host sends it.
+inline constexpr u8 Painting = 0x19;
 inline constexpr u8 DestroyEntity = 0x1D;
 inline constexpr u8 Entity = 0x1E;
 inline constexpr u8 RelEntityMove = 0x1F;
@@ -126,6 +132,11 @@ inline constexpr u8 MapChunk = 0x33;
 inline constexpr u8 MultiBlockChange = 0x34;
 inline constexpr u8 BlockChange = 0x35;
 inline constexpr u8 ComplexEntity = 0x3B;
+// **Ours: the skin a player is wearing**, one 64 x 32 RGBA page -- see
+// core/net/player_skin.hpp. A guest sends its own to the host, which attributes
+// it to that guest and passes it to everybody else; the host sends its own and
+// everyone's to a guest as it joins.
+inline constexpr u8 PlayerSkin = 0xE3;
 inline constexpr u8 KickDisconnect = 0xFF;
 }  // namespace packet
 
@@ -235,6 +246,8 @@ Packet makeRespawn();
 // host fires the arrow. **Never sent to a Java server**; see
 // `NetPlay::allowExtensions`.
 inline constexpr int kUseItemFace = 255;
+Packet makePainting(i32 entityId, std::string_view title, i32 tileX, i32 tileY, i32 tileZ,
+                    int direction);
 Packet makeUseItem(int itemId);
 bool isUseItem(const Packet& place);
 

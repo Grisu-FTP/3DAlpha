@@ -34,8 +34,10 @@
 #include "core/entity/arrow.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/entity/mob.hpp"
+#include "core/entity/painting.hpp"
 #include "core/entity/server_track.hpp"
 #include "core/net/packets.hpp"
+#include "core/net/player_skin.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/types.hpp"
@@ -179,6 +181,9 @@ public:
     // is what a caller with no world wants.
     void bind(entity::ItemEntitySystem* items) { items_ = items; }
     void bindMobs(entity::MobSystem* mobs) { mobs_ = mobs; }
+    // **The paintings the host announces** (`packet::Painting`), hung where it
+    // says and judged by nobody here. Null leaves them uncounted.
+    void bindPaintings(entity::PaintingSystem* paintings) { paintings_ = paintings; }
     // **Arrows a 3DAlpha host announces** (`kObjectArrow`), drawn where it
     // says and never simulated here. Null leaves them uncounted.
     void bindArrows(entity::ArrowSystem* arrows) { arrows_ = arrows; }
@@ -246,6 +251,11 @@ public:
     u32 revertedDrops() const { return revertedDrops_; }
 
     int playerCount() const { return playerCount_; }
+
+    // **The skins the other people are wearing**, from `packet::PlayerSkin`. A
+    // player's entry survives their respawn (which is a new spawn) and goes
+    // with their Destroy Entity. See core/net/player_skin.hpp.
+    const PlayerSkins& skins() const { return skins_; }
     const RemotePlayer& player(int index) const { return players_[index]; }
 
     // Spawns this client has been sent and cannot draw yet: mob spawns and
@@ -271,12 +281,14 @@ private:
     void puff(const RemotePlayer& player, const tick::TickWorld& world);
 
     RemotePlayer players_[kMaxPlayers];
+    PlayerSkins skins_;
     int playerCount_ = 0;
     // The death noise's pitch and the puff's scatter. Nothing else draws on
     // it, and two consoles never agree on either.
     JavaRandom rand_;
     entity::ItemEntitySystem* items_ = nullptr;
     entity::MobSystem* mobs_ = nullptr;
+    entity::PaintingSystem* paintings_ = nullptr;
     entity::ArrowSystem* arrows_ = nullptr;
     u32 unhandledSpawns_ = 0;
 

@@ -169,6 +169,10 @@ public:
     // are told, not just the ones who join later.
     void setWorldRules(settings::Gamemode gamemode, settings::Difficulty difficulty);
 
+    // **The skin this console is wearing**, for the guests -- see
+    // core/net/player_skin.hpp. After `open`.
+    void setSkin(const std::vector<u8>& page) { server_.setHostSkin(page.data(), page.size()); }
+
     // **The other players, as this console sees them.** A host is not a client
     // of its own server, so the bodies and names of the guests are put here by
     // `WorldServer`'s local sink rather than by a stream -- see
@@ -249,6 +253,10 @@ private:
     void attackHost(const AttackRequest& request) override;
     void showChat(const std::string& line) override;
     entity::ItemEntitySystem* items() override { return drops_; }
+    entity::PaintingSystem* paintings() override
+    {
+        return effects_ != nullptr ? effects_->entities.paintings : nullptr;
+    }
     entity::MobSystem* mobs() override
     {
         // The same pool a click reaches through, so the session never has to

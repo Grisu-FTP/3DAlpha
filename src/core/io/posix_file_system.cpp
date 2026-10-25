@@ -1,5 +1,6 @@
 #include "core/io/posix_file_system.hpp"
 
+#include <atomic>
 #include <cerrno>
 #include <cstdio>  // rename
 #include <cstring>
@@ -71,6 +72,16 @@ bool writeExactly(int fd, const u8* src, usize count)
 #define MC_POSITIONAL_IO_VIA_SEEK 0
 #endif
 
+namespace {
+// **The seek path is compiled everywhere** and chosen at run time on a host, so a
+// test can drive the code the console runs. On the console it is the only one.
+std::atomic<bool> gForceSeekIo{false};
+// ...and, with it, a host that behaves like the Wii U: `lseek` past the end of the
+// file is refused with EINVAL instead of extending it. A 3DS extends, but the
+// two ports share the region container and the code should not lean on it.
+std::atomic<bool> gStrictSeek{false};
+}  // namespace
+
 class PosixRandomAccessFile final : public RandomAccessFile {
 public:
     explicit PosixRandomAccessFile(int fd) : fd_(fd) {}
@@ -84,59 +95,69 @@ public:
 
     bool readAt(u64 offset, ByteSpan out) override
     {
-#if MC_POSITIONAL_IO_VIA_SEEK
+#if !MC_POSITIONAL_IO_VIA_SEEK
+        if (!gForceSeekIo.load()) {
+            usize done = 0;
+            while (done < out.size()) {
+                const ssize_t n =
+                    ::pread(fd_, out.data() + done, out.size() - done, off_t(offset + done));
+                if (n < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    return false;
+                }
+                if (n == 0) {
+                    return false;  // the file ends before the caller's range does
+                }
+                done += usize(n);
+            }
+            return true;
+        }
+#endif
         if (!seekTo(offset)) {
             return false;
         }
         return readExactly(fd_, out.data(), out.size());
-#else
-        usize done = 0;
-        while (done < out.size()) {
-            const ssize_t n =
-                ::pread(fd_, out.data() + done, out.size() - done, off_t(offset + done));
-            if (n < 0) {
-                if (errno == EINTR) {
-                    continue;
-                }
-                return false;
-            }
-            if (n == 0) {
-                return false;  // the file ends before the caller's range does
-            }
-            done += usize(n);
-        }
-        return true;
-#endif
     }
 
     bool writeAt(u64 offset, ConstByteSpan data) override
     {
-#if MC_POSITIONAL_IO_VIA_SEEK
-        // Seeking past the end and writing is what extends a file with a hole
-        // in it, and FAT fills the gap with zeroes -- which is the behaviour
-        // the region container's "holes read zero" rule depends on.
+#if !MC_POSITIONAL_IO_VIA_SEEK
+        if (!gForceSeekIo.load()) {
+            usize done = 0;
+            while (done < data.size()) {
+                const ssize_t n =
+                    ::pwrite(fd_, data.data() + done, data.size() - done, off_t(offset + done));
+                if (n < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    return false;
+                }
+                if (n == 0) {
+                    return false;
+                }
+                done += usize(n);
+            }
+            return true;
+        }
+#endif
+        // **A file system that will not seek past the end gets the gap written.**
+        // The region container writes past the end of its file all the time -- a
+        // new region's directory sits two sectors in, a payload lands beyond a
+        // header that has not been written yet -- and this used to lean on `lseek`
+        // past EOF extending the file with a hole, which FAT fills with zeroes.
+        // libctru does; the Wii U's `lseek` refuses an offset beyond the size with
+        // EINVAL, and AlphaU could not create or fill a single new region on
+        // hardware. Writing the zeroes ourselves is what the hole was going to be.
+        if (!extendTo(offset)) {
+            return false;
+        }
         if (!seekTo(offset)) {
             return false;
         }
         return writeExactly(fd_, data.data(), data.size());
-#else
-        usize done = 0;
-        while (done < data.size()) {
-            const ssize_t n =
-                ::pwrite(fd_, data.data() + done, data.size() - done, off_t(offset + done));
-            if (n < 0) {
-                if (errno == EINTR) {
-                    continue;
-                }
-                return false;
-            }
-            if (n == 0) {
-                return false;
-            }
-            done += usize(n);
-        }
-        return true;
-#endif
     }
 
     bool size(u64* out) override
@@ -152,7 +173,32 @@ public:
     bool flush() override { return ::fsync(fd_) == 0; }
 
 private:
-#if MC_POSITIONAL_IO_VIA_SEEK
+    // Zero-fills from the current end of the file up to `offset`, when it is
+    // beyond it. See `writeAt`.
+    bool extendTo(u64 offset)
+    {
+        u64 end = 0;
+        if (!size(&end)) {
+            return false;
+        }
+        if (offset <= end) {
+            return true;
+        }
+        if (!seekTo(end)) {
+            return false;
+        }
+        static const u8 kZeros[4096] = {};
+        u64 left = offset - end;
+        while (left > 0) {
+            const usize step = left < sizeof(kZeros) ? usize(left) : sizeof(kZeros);
+            if (!writeExactly(fd_, kZeros, step)) {
+                return false;
+            }
+            left -= step;
+        }
+        return true;
+    }
+
     bool seekTo(u64 offset)
     {
         // off_t is 64-bit here, but the cast is checked rather than assumed:
@@ -162,9 +208,15 @@ private:
         if (target < 0 || u64(target) != offset) {
             return false;
         }
+        if (gStrictSeek.load()) {
+            struct stat info;
+            if (::fstat(fd_, &info) != 0 || target > info.st_size) {
+                errno = EINVAL;
+                return false;
+            }
+        }
         return ::lseek(fd_, target, SEEK_SET) == target;
     }
-#endif
 
     int fd_ = -1;
 };
@@ -181,6 +233,12 @@ bool buildTempPath(const char* path, char* out, usize outSize)
 }
 
 }  // namespace
+
+void PosixFileSystem::forceSeekIoForTests(bool force, bool strict)
+{
+    gForceSeekIo.store(force);
+    gStrictSeek.store(force && strict);
+}
 
 bool PosixFileSystem::readFile(const char* path, std::vector<u8>* out, usize maxSize)
 {

@@ -25,6 +25,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mc::ctr {
 
@@ -87,6 +88,11 @@ public:
     // other end is usually a Java server that would end the connection over an
     // id its table does not have.
     void allowExtensions(bool allow) { extensions_ = allow; }
+
+    // **The skin this console is wearing**, a 64 x 32 RGBA page, sent to the host
+    // once the Login arrives -- see core/net/player_skin.hpp. Copied; a page of
+    // the wrong size is ignored. Only ever sent when extensions are allowed.
+    void setOwnSkin(const std::vector<u8>& page);
     bool extensionsAllowed() const { return extensions_; }
 
     // **Somebody hit this player.** True once per blow, and then the blow is
@@ -147,6 +153,7 @@ private:
     bool placed_ = false;
     bool closed_ = false;
     bool extensions_ = false;
+    std::vector<u8> ownSkin_;
     std::string title_;
     std::string detail_;
 };

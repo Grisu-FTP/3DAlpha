@@ -171,6 +171,18 @@ inline constexpr int kCelestialPagePixels = 32;
 // Where this page starts in the sheet, in texels from the top left.
 void skinOrigin(EntitySkin skin, int* x, int* y);
 
+// **The pages other players' own skins are written into**, below the monsters
+// and the sky in rows nothing else uses: four pages across and two down, from
+// y = 160. A slot is addressed by the index `net::PlayerSkins` hands out, and a
+// player without a slot wears `EntitySkin::OtherPlayer` -- so a skin that has
+// not arrived, or never will, costs the pack's own character and nothing else.
+inline constexpr int kRemoteSkinSlots = 8;
+inline constexpr int kRemoteSkinFirstY = 160;
+inline constexpr int kRemoteSkinPerRow = 4;
+
+// Where slot `slot`'s page begins; false for an index outside the table.
+bool remoteSkinOrigin(int slot, int* x, int* y);
+
 // The pack file each page comes from, for the reader that wants to say which
 // file was missing.
 const char* skinFileName(EntitySkin skin);

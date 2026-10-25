@@ -9,6 +9,8 @@
 
 #include "items.hpp"  // generated; see tools/configure.py
 
+#include <cstring>
+
 namespace mc::entity {
 namespace {
 
@@ -255,7 +257,83 @@ bool PaintingSystem::place(const tick::TickWorld& world, i32 tileX, i32 tileY, i
         return false;
     }
     *slot = candidate;
+    // A console that is not the authority says so, and the host's answer
+    // replaces this one. See `Painting::predicted`.
+    slot->predicted = predictPlacements_;
     return true;
+}
+
+int PaintingSystem::artByName(const char* title)
+{
+    if (title == nullptr) {
+        return -1;
+    }
+    for (int i = 0; i < kPaintingArtCount; ++i) {
+        if (std::strcmp(mcver::kPaintings[i].name, title) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool PaintingSystem::spawnRemote(const tick::TickWorld* world, i32 entityId, const char* title,
+                                 i32 tileX, i32 tileY, i32 tileZ, int direction)
+{
+    const int art = artByName(title);
+    if (art < 0 || direction < 0 || direction >= kPaintingDirections) {
+        return false;
+    }
+    // A second announcement of the same painting replaces it, which is how a
+    // late joiner is told everything again without twins; a guest's own
+    // prediction on the same wall goes the same way.
+    for (int i = 0; i < paintings_.size();) {
+        const Painting& other = paintings_[i];
+        const bool sameId = entityId != 0 && other.entityId == entityId;
+        const bool predictedHere = other.predicted && other.tileX == tileX
+                                   && other.tileY == tileY && other.tileZ == tileZ
+                                   && other.direction == direction;
+        if (sameId || predictedHere) {
+            paintings_.swapRemove(i);
+        } else {
+            ++i;
+        }
+    }
+
+    Painting painting{};
+    painting.tileX = tileX;
+    painting.tileY = tileY;
+    painting.tileZ = tileZ;
+    painting.art = art;
+    painting.alive = true;
+    painting.entityId = entityId;
+    painting.remote = true;
+    setPaintingDirection(&painting, direction);
+    if (world != nullptr) {
+        painting.light = packedLightAt(*world, painting.x, painting.y, painting.z);
+        sampleCellLight(*world, &painting);
+    }
+    painting.checkIn = kPaintingCheckInterval;
+    Painting* slot = paintings_.push();
+    if (slot == nullptr) {
+        ++refused_;
+        return false;
+    }
+    *slot = painting;
+    return true;
+}
+
+bool PaintingSystem::removeById(i32 entityId)
+{
+    if (entityId == 0) {
+        return false;
+    }
+    for (int i = 0; i < paintings_.size(); ++i) {
+        if (paintings_[i].entityId == entityId) {
+            paintings_.swapRemove(i);
+            return true;
+        }
+    }
+    return false;
 }
 
 void PaintingSystem::tick(const tick::TickWorld& world)
@@ -282,6 +360,19 @@ void PaintingSystem::tick(const tick::TickWorld& world)
         // renderer.
         p.light = packedLightAt(world, p.x, p.y, p.z);
         sampleCellLight(world, &p);
+
+        // **A guest's own hanging waits for the host and is taken down quietly
+        // if none comes.** No item: the stack was spent on a painting the host
+        // would not have hung.
+        if (p.predicted && ++p.predictedTicks > kPaintingConfirmTicks) {
+            paintings_.swapRemove(i);
+            continue;
+        }
+        // The host's judgement stands in for ours on its paintings.
+        if (p.remote) {
+            ++i;
+            continue;
+        }
 
         if (--p.checkIn > 0) {
             ++i;

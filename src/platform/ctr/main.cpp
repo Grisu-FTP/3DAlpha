@@ -818,6 +818,19 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                     return;
                 }
             }
+            // **A painting the host hung is the host's to take down**, so the
+            // blow goes to it with the painting's id and the item drops there.
+            // A guest's own, still unconfirmed, is this console's and goes the
+            // way it always did. See `Painting::remote`.
+            if (net != nullptr && net->extensionsAllowed()
+                && target.kind == mc::item::EntityTarget::Kind::Painting
+                && effects.entities.paintings != nullptr) {
+                const mc::i32 paintingId = effects.entities.paintings->at(target.index).entityId;
+                if (paintingId != 0) {
+                    net->attackEntity(paintingId, int(heldItem));
+                    return;
+                }
+            }
             // **Another player, which no console resolves for itself.** The
             // blow is sent to whoever is running them and their own vitals
             // decide what it costs -- there is no health on this wire. A host
@@ -1607,6 +1620,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // joining console must not simply keep its own. See
         // `net::link::WorldRules`.
         host->setWorldRules(choice.gamemode, choice.difficulty);
+        host->setSkin(renderer.ownSkinPage());
     }
 
     // **The bound under the render distance**, sized from the heap that the
@@ -1905,6 +1919,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         net->entities().bind(droppedItems.get());
         net->entities().bindMobs(mobs.get());
         net->entities().bindArrows(arrows.get());
+        // The skin this console wears, said to the host once it has logged in.
+        net->setOwnSkin(renderer.ownSkinPage());
+        // **The paintings the host hangs**, and this console's own placements
+        // being guesses until it says -- see `Painting::predicted`.
+        net->entities().bindPaintings(paintings.get());
+        paintings->setPredictPlacements(true);
     }
 
     world.bindEntities(mc::entity::EntityPools{paintings.get(), arrows.get(), boats.get(),

@@ -13,6 +13,14 @@ constexpr float kDegreesPerRadian = 180.0f / 3.14159265f;
 
 }  // namespace
 
+void NetPlay::setOwnSkin(const std::vector<u8>& page)
+{
+    ownSkin_.resize(net::kSkinPageBytes);
+    if (!net::sanitizeSkinPage(page.data(), page.size(), ownSkin_.data())) {
+        ownSkin_.clear();
+    }
+}
+
 void NetPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks, Overlay& overlay,
                    gui::ChatLog& chat, const u8* fontWidths, entity::PlayerBody& body,
                    Camera& camera)
@@ -21,6 +29,11 @@ void NetPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks, 
         switch (event_.kind) {
         case net::PacketChannel::Event::Kind::LoggedIn:
             entityId_ = event_.entityId;
+            // **Who this console is, said once**: the host attributes the page
+            // to this connection whatever id is on it.
+            if (extensions_ && ownSkin_.size() == net::kSkinPageBytes) {
+                session_.send(net::makePlayerSkin(entityId_, ownSkin_.data()));
+            }
             break;
         case net::PacketChannel::Event::Kind::Column:
             world.supplyColumn(std::move(event_.column));

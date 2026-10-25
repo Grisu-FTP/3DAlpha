@@ -91,12 +91,33 @@ int buildRemotePlayers(const net::RemoteEntities& entities, double originX, doub
 
         const Placement place = placeRemotePlayer(player, originX, originY, originZ, partial);
         const int before = written;
+
+        // **Their own skin if it has arrived**, which is the same page layout
+        // somewhere else in the sheet: the UVs are `OtherPlayer`'s moved by a
+        // whole number of texels, as `buildPlayerPreview` moves them.
+        int shiftU = 0;
+        int shiftV = 0;
+        int slotX = 0;
+        int slotY = 0;
+        if (texture::remoteSkinOrigin(entities.skins().slotOf(player.id), &slotX, &slotY)) {
+            int baseX = 0;
+            int baseY = 0;
+            texture::skinOrigin(texture::EntitySkin::OtherPlayer, &baseX, &baseY);
+            constexpr int kUnitsPerTexel = mesh::kUvUnitsPerAtlas / texture::kEntitySheetWidth;
+            shiftU = (slotX - baseX) * kUnitsPerTexel;
+            shiftV = (slotY - baseY) * kUnitsPerTexel;
+        }
         for (int part = 0; part < kBipedParts; ++part) {
             // **Not `EntitySkin::Player`**: that page is whatever skin this
             // console's owner picked for themselves, and other people are not
             // them. See the note on `EntitySkin::OtherPlayer`.
+            const int first = written;
             written += buildBox(parts[part], place, texture::EntitySkin::OtherPlayer,
                                 player.light, out + written, max - written, kEntityUnitsPerBlock);
+            for (int v = first; v < written; ++v) {
+                out[v].u = i16(out[v].u + shiftU);
+                out[v].v = i16(out[v].v + shiftV);
+            }
         }
 
         // A dying body is red while it falls, as `dn` draws any living thing.

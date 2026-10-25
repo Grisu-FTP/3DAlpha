@@ -327,3 +327,48 @@ TEST(an_unset_volume_query_is_an_answer_rather_than_a_crash)
     // An unknown cluster size reports the content rather than guessing.
     CHECK_EQ(io::onDiskSize(2917, 0), u64(2917));
 }
+
+// **The Wii U's `lseek` refuses an offset past the end of the file** (EINVAL),
+// where libctru's extends it. The region container writes past the end of its
+// file constantly -- a new region's directory, a payload beyond a header not
+// yet written -- so on the Wii U every column of every region the player had not
+// been in was refused.
+// `writeAt` now writes the gap itself; this runs that road on a host that
+// refuses the seek the way the console does.
+TEST(a_write_past_the_end_works_on_a_file_system_that_will_not_seek_there)
+{
+    io::PosixFileSystem::forceSeekIoForTests(true, true);
+    {
+        TempDir temp;
+        io::PosixFileSystem fs;
+        const std::string path = temp.at("region.bin");
+        auto file = fs.openRandomAccess(path.c_str(), true);
+        CHECK(file != nullptr);
+
+        const u8 payload[] = {5, 6, 7};
+        // Into an empty file, two sectors in, as a new region's directory is.
+        CHECK(file->writeAt(2048, ConstByteSpan(payload, sizeof(payload))));
+        // And again past the new end, by more than the zero buffer.
+        CHECK(file->writeAt(2048 + 3 + 10000, ConstByteSpan(payload, sizeof(payload))));
+
+        u64 size = 0;
+        CHECK(file->size(&size));
+        CHECK_EQ(size, u64(2048 + 3 + 10000 + 3));
+
+        u8 gap[16] = {};
+        CHECK(file->readAt(0, ByteSpan(gap, sizeof(gap))));
+        CHECK_EQ(int(gap[0]), 0);
+        CHECK_EQ(int(gap[15]), 0);
+        u8 back[3] = {};
+        CHECK(file->readAt(2048, ByteSpan(back, sizeof(back))));
+        CHECK_EQ(int(back[0]), 5);
+        CHECK_EQ(int(back[2]), 7);
+        u8 mid[4] = {1, 1, 1, 1};
+        CHECK(file->readAt(5000, ByteSpan(mid, sizeof(mid))));
+        CHECK_EQ(int(mid[0]), 0);
+        CHECK_EQ(int(mid[3]), 0);
+        CHECK(file->readAt(2048 + 3 + 10000, ByteSpan(back, sizeof(back))));
+        CHECK_EQ(int(back[1]), 6);
+    }
+    io::PosixFileSystem::forceSeekIoForTests(false);
+}

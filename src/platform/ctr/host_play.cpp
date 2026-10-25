@@ -653,9 +653,19 @@ void HostPlay::attackEntity(const AttackRequest& request)
     if (world == nullptr || pool == nullptr) {
         return;
     }
-    // **Only what the guest can see, which is only the animals.** Boats, carts
-    // and paintings do not cross the link yet, so nothing over there has an id
-    // for one and nothing here has to look for one.
+    // **A painting is one hit** -- `jc.a(Lkh;I)Z` reads no damage -- so a guest
+    // that struck one only needs it found. Its item drops here, where the pool is
+    // this world's, and the Destroy Entity that follows takes it off their wall.
+    if (entity::PaintingSystem* paintings = effects_->entities.paintings) {
+        for (int i = 0; i < paintings->count(); ++i) {
+            if ((*paintings)[i].entityId == request.entityId && request.entityId != 0) {
+                paintings->attack(*world, i);
+                return;
+            }
+        }
+    }
+    // **Only what the guest can see and has an id for**: the animals, and the
+    // paintings above. Boats and carts do not cross the link yet.
     int index = -1;
     for (int i = 0; i < pool->count(); ++i) {
         if ((*pool)[i].entityId == request.entityId) {

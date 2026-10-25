@@ -454,6 +454,11 @@ public:
         remotePlayers_ = entities;
     }
 
+    // **The skin this console is wearing**, for a session to send -- the page of
+    // the entity sheet `buildEntitySkins` filled. Empty until there is a sheet.
+    // See core/net/player_skin.hpp.
+    const std::vector<u8>& ownSkinPage() const { return atlas_.ownSkinPage(); }
+
     // **What is on the rails.** Unlike every other entity pass this one needs
     // the world, because a cart is tilted along the *track* rather than along
     // its own motion -- see core/render/minecart_mesh.hpp.
@@ -909,6 +914,11 @@ private:
     const mc::entity::MobSystem* mobs_ = nullptr;
     const mc::entity::MobSpawnerStore* spawners_ = nullptr;
     const mc::net::RemoteEntities* remotePlayers_ = nullptr;
+    // The revision of each remote-skin slot as last written into the entity
+    // sheet; all-ones after the sheet is replaced, so every slot is owed again.
+    u32 skinRevision_[mc::net::PlayerSkins::kSlots] = {};
+    // Writes whichever slots changed since the last frame. See `Atlas::updateEntityPage`.
+    void syncPlayerSkins(const mc::net::PlayerSkins& skins);
     const mc::tick::TickWorld* minecartWorld_ = nullptr;
     // `gq`'s render pass 0 and nothing else: one box per slime on screen.
     void* mobShellVerts_ = nullptr;

@@ -1256,6 +1256,7 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
     }
     // ...and the other players on the same terms again, for the same reason.
     if (livePlayers > 0) {
+        syncPlayerSkins(remotePlayers_->skins());
         written += render::buildRemotePlayers(*remotePlayers_, eyeBlockX, eyeBlockY, eyeBlockZ,
                                               itemPartial_, verts + written,
                                               kMaxMobVertices - written);
@@ -2664,6 +2665,9 @@ bool Renderer::init(const Config& config, bool isNew3DS)
     // 256 KB of ordinary linear memory; a console that cannot spare them draws
     // no paintings, which `hasArt()` gates, rather than refusing to start.
     atlas_.initEntitySheets(atlasImage);
+    for (u32& revision : skinRevision_) {
+        revision = ~u32(0);
+    }
 
     // The pool is sized against what is left once the render targets and the
     // atlas have taken theirs, with a megabyte held back for the GUI and entity
@@ -2832,6 +2836,9 @@ bool Renderer::setAtlas(const texture::AtlasImage& image)
         // always present: `buildEntitySkins` lays down stand-ins for whatever
         // the pack does not carry.
         atlas_.initEntitySheets(image);
+        for (u32& revision : skinRevision_) {
+            revision = ~u32(0);
+        }
         return true;
     }
 
@@ -4174,6 +4181,19 @@ usize Renderer::freeVramBytes() const
 usize Renderer::freeLinearBytes() const
 {
     return linearSpaceFree();
+}
+
+void Renderer::syncPlayerSkins(const mc::net::PlayerSkins& skins)
+{
+    for (int slot = 0; slot < mc::net::PlayerSkins::kSlots; ++slot) {
+        if (skinRevision_[slot] == skins.revision(slot)) {
+            continue;
+        }
+        const u8* page = skins.page(slot);
+        if (page != nullptr && atlas_.updateEntityPage(slot, page)) {
+            skinRevision_[slot] = skins.revision(slot);
+        }
+    }
 }
 
 }  // namespace mc::ctr

@@ -87,6 +87,20 @@ TEST(relative_hardness_is_the_jars_three_lines)
     CHECK(std::isinf(item::relativeHardness(0, b(Block::Torch), false, true)));
 }
 
+TEST(stairs_take_their_models_hardness_not_a_torchs)
+{
+    // BlockStairs forwards setHardness/setResistance from the model block in
+    // its own constructor rather than the static initialiser's setter chain,
+    // so a naive read of the chain leaves it at the same default a torch
+    // gets -- zero, which relativeHardness treats as an instant break.
+    CHECK_EQ(double(block::def(b(Block::CobblestoneStairs)).hardness),
+             double(block::def(b(Block::Cobblestone)).hardness));
+    CHECK_EQ(double(block::def(b(Block::WoodenStairs)).hardness),
+             double(block::def(b(Block::Planks)).hardness));
+    CHECK(!std::isinf(item::relativeHardness(0, b(Block::CobblestoneStairs), false, true)));
+    CHECK(!std::isinf(item::relativeHardness(0, b(Block::WoodenStairs), false, true)));
+}
+
 TEST(digging_under_water_or_off_the_ground_is_five_times_slower_each)
 {
     const float dry = item::relativeHardness(0, b(Block::Dirt), false, true);

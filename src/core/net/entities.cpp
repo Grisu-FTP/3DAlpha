@@ -321,8 +321,38 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         removePlayer(i32(packet.integer(0)));
         return true;
 
+    case packet::PlayerSkin: {
+        // Only for somebody this pool is tracking: a skin about an entity that
+        // is not a player here has nothing to be worn by. **On the heap**: a
+        // page is 8 KB and a frame here may not be.
+        i32 id = 0;
+        std::vector<u8> page(kSkinPageBytes);
+        if (readPlayerSkin(packet, &id, page.data()) && findPlayer(id) != nullptr) {
+            skins_.store(id, page.data());
+        }
+        return true;
+    }
+
+    case packet::Painting:
+        // Ours; see `packet::Painting`. A title this build has no art for is
+        // counted and dropped rather than drawn wrong.
+        if (paintings_ != nullptr) {
+            if (!paintings_->spawnRemote(world, i32(packet.integer(0)), packet.text(0).c_str(),
+                                         i32(packet.integer(1)), int(packet.integer(2)),
+                                         i32(packet.integer(3)), int(packet.integer(4)))) {
+                ++unhandledSpawns_;
+            }
+        } else {
+            ++unhandledSpawns_;
+        }
+        return true;
+
     case packet::DestroyEntity:
+        skins_.release(i32(packet.integer(0)));
         removePlayer(i32(packet.integer(0)));
+        if (paintings_ != nullptr) {
+            paintings_->removeById(i32(packet.integer(0)));
+        }
         if (items_ != nullptr) {
             items_->removeById(i32(packet.integer(0)));
         }
@@ -654,6 +684,7 @@ void RemoteEntities::clear()
     for (RemotePlayer& player : players_) {
         player = RemotePlayer{};
     }
+    skins_.clear();
     playerCount_ = 0;
     unhandledSpawns_ = 0;
     dropCount_ = 0;

@@ -91,6 +91,9 @@ inline constexpr double kPaintingBoxInset = -0.00625;
 // hang in the air after its wall is mined".
 inline constexpr int kPaintingCheckInterval = 100;
 
+// How long a guest's own painting may wait for the host to confirm it.
+inline constexpr int kPaintingConfirmTicks = 60;
+
 struct Painting {
     // The block the painting was hung on, which is **not** where it is: the
     // position is derived from these three and the direction every time the
@@ -121,6 +124,22 @@ struct Painting {
     u8 cellLight[kMaxCells] = {};
 
     bool alive = false;
+
+    // **The session's name for it**, from the host's Painting packet; zero for
+    // one that has never crossed a link. A host assigns one when it first
+    // tells a guest about the painting, a guest is handed it.
+    i32 entityId = 0;
+    // **Hung here on a guest's own click, before the host has answered.** The
+    // click is run locally so the stack is spent and the wall answers at once,
+    // but the art was drawn from *this* console's random stream -- the host's
+    // is the one everybody sees, so the host's announcement takes this over and
+    // one still unanswered after `kPaintingConfirmTicks` is taken down.
+    bool predicted = false;
+    int predictedTicks = 0;
+    // The host's, or a server's: its wall is not this console's to judge, so
+    // the hundred-tick check leaves it alone and only a Destroy Entity removes
+    // it.
+    bool remote = false;
 
     const PaintingArt& artwork() const { return paintingArt(art); }
 };
@@ -174,6 +193,27 @@ public:
     // index that is not a live painting.
     bool attack(const tick::TickWorld& world, int index);
 
+    // **A painting the host announced** (`0x19`), placed exactly where and as it
+    // says. `title` is the art's name and `tile*` the block it hangs on, as
+    // a1.1.2's Painting packet carries them. Replaces whatever this console
+    // already had under that id, and takes over a guest's own prediction on the
+    // same wall. False for a title this build has no art for.
+    bool spawnRemote(const tick::TickWorld* world, i32 entityId, const char* title, i32 tileX,
+                     i32 tileY, i32 tileZ, int direction);
+
+    // A Destroy Entity for it. No item: the host spawned that.
+    bool removeById(i32 entityId);
+
+    // The id the host will announce it by, assigned when it first does.
+    Painting& at(int i) { return paintings_[i]; }
+
+    // The art's index for a name, or -1.
+    static int artByName(const char* title);
+
+    // **On a guest.** Its own placements are guesses until the host's Painting
+    // packet confirms them; see `Painting::predicted`.
+    void setPredictPlacements(bool predict) { predictPlacements_ = predict; }
+
     void clear() { paintings_.clear(); }
 
     int count() const { return paintings_.size(); }
@@ -193,6 +233,7 @@ private:
 
     SegmentedPool<Painting, kInitialCapacity> paintings_;
     u32 refused_ = 0;
+    bool predictPlacements_ = false;
     JavaRandom rand_;
 };
 

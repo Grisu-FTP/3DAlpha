@@ -1,7 +1,58 @@
 # Current work
 
-Last verified: 2026-09-20. A compact handoff, not a substitute for inspecting the current diff.
+Last verified: 2026-09-26. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
+
+## Skins and paintings across the link, taken back from AlphaU (2026-10-25)
+
+Two of AlphaU's packets now exist here too: `0xE3` PlayerSkin (`core/net/player_skin.*`: one raw
+64 x 32 RGBA page, sanitised on arrival -- exact size, unused texels cleared, head/body/legs forced
+opaque) and `0x19` Painting (`PaintingSystem::spawnRemote`/`removeById`/predicted placements). The
+host sends either **only to a guest that has sent a skin** (`Player::extended`, `broadcastExtended`),
+because a client whose table lacks an id ends the connection -- which is what kept a 3DS out of an
+AlphaU host. `RemoteEntities` keeps up to 8 skins in sheet pages `remoteSkinOrigin` (y >= 160);
+`Atlas::updateEntityPage` writes a page into the (linear, non-VRAM) entity sheet, and
+`Renderer::syncPlayerSkins` does it when a slot's revision moves. A guest sends the page its sheet
+was built with (`Atlas::ownSkinPage`; this build has no skin picker, so the pack's `char.png`),
+a host passes its own to `HostPlay::setSkin`. A guest's strike on a host's painting goes up as a
+`UseEntity` with the painting's id; the host's `attackEntity` finds it. **Builds for the 3DS and the
+host suite passes; not run on a console.** Chests and furnaces (`0xE0`..`0xE2`, `tile_sync`) are still
+AlphaU-only.
+
+## Region writes past the end of the file, taken back from AlphaU (2026-10-25)
+
+Found on the Wii U, where `lseek` past the end of a file is `EINVAL` and a new region (a directory two
+sectors into an empty file, a payload beyond the header) could not be created or filled. libctru's
+extends the file, so the 3DS never saw it, but `PosixRandomAccessFile::writeAt` leaned on that, and the
+region container writes past the end constantly. `writeAt` now zero-fills from the end up to the offset
+first (`extendTo`) -- what the hole was going to be. The seek road is compiled on the host as well and
+`PosixFileSystem::forceSeekIoForTests(true, true)` makes it refuse the seek like the Wii U;
+`a_write_past_the_end_works_on_a_file_system_that_will_not_seek_there` and
+`a_new_region_is_made_and_filled_where_the_file_system_refuses_to_seek_past_the_end` fail without it.
+Host build and tests only; **the 3DS build was not compiled** (no devkitARM run), and the extra `fstat`
+per positional write is not measured on a 3DS.
+
+
+## Stone stairs (and wooden stairs) broke in one hit (2026-09-26)
+
+`data/a1.1.2/blocks.json` had `hardness`/`resistance` 0.0 for ids 53 and 67, which
+`relativeHardness` (`tool_rules.cpp`) treats as infinity -- the same shortcut a
+torch takes to break in one click. `km` (`BlockStairs`)'s constructor calls
+`setHardness(model.blockHardness)` and `setResistance(model.blockResistance / 3.0F)`
+itself, on the model block it is handed (`new km(53, Block.planks)`), rather than
+chaining a literal setter call the static initialiser shows -- the same shape
+`tools/extract_blocks.py` already forwarded for `stepSound` but not for these two,
+so the extractor's own `--verify` mode agreed with the wrong 0.0 rather than
+catching it.
+
+`extract_blocks.py`'s `verify()` now forwards hardness (copied) and resistance
+(model's / 3.0) from a record's `model` field the same way `stepSound` is
+forwarded, confirmed by re-running it against the real jar (it reported the
+mismatch before the data fix, and agrees after). Fixed in `blocks.json`:
+cobblestone stairs 2.0/3.3333 (matching cobblestone), wooden stairs 2.0/1.6667
+(matching planks). New case
+`stairs_take_their_models_hardness_not_a_torchs` in `tests/tool_rules_test.cpp`.
+Not seen on hardware.
 
 ## Under water looks like under water (2026-09-23)
 

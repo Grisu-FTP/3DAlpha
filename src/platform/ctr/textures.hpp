@@ -8,6 +8,7 @@
 // day/night free -- see docs/3ds-performance.md section 1b. The fog LUT is 128
 // entries built once per render distance.
 
+#include "core/net/player_skin.hpp"
 #include "core/texture/atlas_image.hpp"
 #include "core/texture/entity_skins.hpp"
 #include "core/texture/font.hpp"
@@ -16,6 +17,8 @@
 #include "core/util/types.hpp"
 
 #include <citro3d.h>
+
+#include <vector>
 
 namespace mc::ctr {
 
@@ -231,6 +234,18 @@ public:
     // copy. See core/texture/compass_fx.hpp.
     bool updateItemsTile(int tile, const u8* texels);
 
+    // **One other player's skin, written into its page of the entity sheet** --
+    // `slot` is `texture::remoteSkinOrigin`'s, `page` a sanitised 64 x 32 RGBA
+    // page (core/net/player_skin.hpp). Eight 16 x 16 blocks, tiled and flipped
+    // like every other push, straight into the sheet: it is ordinary linear
+    // memory, never VRAM, so there is no GPU copy and no staging to share with
+    // the animated tiles'.
+    bool updateEntityPage(int slot, const u8* page);
+
+    // **The page of the entity sheet the player's own skin is on**, kept when the
+    // sheet is uploaded so a session can send it. Empty until there is a sheet.
+    const std::vector<u8>& ownSkinPage() const { return ownSkin_; }
+
     usize bytes() const { return usize(kAtlasEdge) * kAtlasEdge * 4; }
     bool inVram() const { return inVram_; }
 
@@ -295,6 +310,7 @@ private:
     bool ready_ = false;
     bool itemsReady_ = false;
     bool entityReady_ = false;
+    std::vector<u8> ownSkin_;
     bool artReady_ = false;
     bool fontReady_ = false;
     bool particlesReady_ = false;

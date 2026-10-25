@@ -15,6 +15,7 @@
 #include "core/entity/mob.hpp"
 #include "core/net/chunk_payload.hpp"
 #include "core/net/entities.hpp"
+#include "core/net/player_skin.hpp"
 #include "core/net/player_sync.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/net/packets.hpp"
@@ -247,6 +248,19 @@ void settle(WorldServer& server, int pumps = 220)
 }
 
 constexpr u8 kGuest = 2;
+
+std::vector<u8> skinPage(u8 shade)
+{
+    std::vector<u8> page(kSkinPageBytes);
+    for (usize i = 0; i < kSkinPageBytes; i += 4) {
+        page[i] = shade;
+        page[i + 1] = shade;
+        page[i + 2] = shade;
+        page[i + 3] = 255;
+    }
+    return page;
+}
+
 
 }  // namespace
 
@@ -1727,4 +1741,73 @@ TEST(an_arrow_that_strikes_a_guest_is_named_to_them)
     CHECK_EQ(i32(blow.integer(0)), arrow.entityId);  // "that arrow hit you"
     CHECK_EQ(i32(blow.integer(1)), i32(kGuest));
     server.close();
+}
+
+// **A guest's skin is the host's to attribute.** Whatever entity id the packet
+// carries, it is worn by the guest who sent it, it is passed to the others, a
+// second one is dropped, and a guest who joins later is sent everybody's.
+TEST(a_guests_skin_is_attributed_to_that_guest_passed_on_once_and_sent_to_late_joiners)
+{
+    FakeWorld world;
+    world.add(0, 0);
+    Sink sink;
+    WorldServer server;
+    server.open(&world, &Sink::send, &sink, "host");
+    const std::vector<u8> hostSkin = skinPage(10);
+    server.setHostSkin(hostSkin.data(), hostSkin.size());
+
+    constexpr u8 kOther = 3;
+    server.addPlayer(kGuest, "Ada");
+    server.addPlayer(kOther, "Bea");
+    settle(server, 60);
+    // **Nobody is sent anything of ours until they send a skin**: a 3DS guest
+    // has no `0xE3` in its table and drops the connection over one.
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 0);
+    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 0);
+
+    // Bea says hers, and is sent the host's.
+    const std::vector<u8> bea = skinPage(33);
+    feedPacket(server, kOther, makePlayerSkin(kOther, bea.data()));
+    settle(server, 20);
+    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 1);
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 0);
+
+    // Ada says her skin is entity 1 -- the host's. It is taken as hers, passed
+    // to Bea, and Ada is sent the host's and Bea's.
+    const std::vector<u8> ada = skinPage(77);
+    feedPacket(server, kGuest, makePlayerSkin(1, ada.data()));
+    settle(server, 20);
+    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 2);
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
+    i32 id = 0;
+    u8 page[kSkinPageBytes];
+    CHECK(readPlayerSkin(sink.last(kOther, packet::PlayerSkin), &id, page));
+    CHECK_EQ(id, i32(kGuest));
+    CHECK_EQ(int(page[(20 * 64 + 20) * 4]), 77);
+    // She is not sent her own back.
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
+
+    // A second one from her is ignored.
+    const std::vector<u8> again = skinPage(5);
+    feedPacket(server, kGuest, makePlayerSkin(kGuest, again.data()));
+    settle(server, 20);
+    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 2);
+
+    // A payload that is not a page is ignored for the one who sent it.
+    Packet wrong = makePlayerSkin(kOther, again.data());
+    wrong.bytes.resize(64);
+    feedPacket(server, kOther, wrong);
+    settle(server, 20);
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
+
+    // Somebody who joins afterwards hears nothing until they say theirs, and
+    // then is sent the host's, Ada's and Bea's.
+    constexpr u8 kLate = 4;
+    server.addPlayer(kLate, "Cy");
+    settle(server, 60);
+    CHECK_EQ(sink.count(kLate, packet::PlayerSkin), 0);
+    const std::vector<u8> cy = skinPage(99);
+    feedPacket(server, kLate, makePlayerSkin(kLate, cy.data()));
+    settle(server, 20);
+    CHECK_EQ(sink.count(kLate, packet::PlayerSkin), 3);
 }

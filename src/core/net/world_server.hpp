@@ -44,6 +44,7 @@
 #include "core/entity/arrow.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/entity/mob.hpp"
+#include "core/entity/painting.hpp"
 #include "core/net/packet_channel.hpp"
 #include "core/net/packets.hpp"
 #include "core/util/types.hpp"
@@ -157,6 +158,10 @@ public:
     // are, exactly as a client is told by a server. Null for a world with no
     // pool.
     virtual entity::MobSystem* mobs() { return nullptr; }
+
+    // **The world's paintings**, which are announced to the guests as `0x19`
+    // and taken down with a Destroy Entity. Null for a world with no pool.
+    virtual entity::PaintingSystem* paintings() { return nullptr; }
 
     // **What is in flight or stuck in the ground**, the host's own pool. An
     // arrow a guest fires is fired here, on their behalf, and the guests are
@@ -325,6 +330,11 @@ public:
     // Called every tick; nothing goes out unless something changed.
     void setHostStance(bool sneaking, bool alive);
 
+    // **The skin the host is wearing**, a 64 x 32 RGBA page -- see
+    // core/net/player_skin.hpp. Sent to every guest that has said it understands
+    // our packets, and to each as it does. A page of the wrong size is ignored.
+    void setHostSkin(const u8* page, usize size);
+
     // **The host swinging at a guest.** The host has no stream of its own, so
     // a blow it lands has to be put on the wire here rather than falling out
     // of `feed`. False when `targetEntityId` is not a guest in this session.
@@ -454,6 +464,18 @@ private:
         bool sneaking = false;
         bool dead = false;
 
+        // **Their skin**, a sanitised page or empty for none, kept so a console
+        // that joins later is sent it. A guest's is taken once per connection:
+        // `skinSeen` stays set so a second one is dropped.
+        std::vector<u8> skin;
+        bool skinSeen = false;
+        // **This guest has shown it speaks our extra packets** -- it sent a
+        // skin, which only a console running this code does. A client built
+        // without `0xE3` or `0x19` in its table ends the connection over an id
+        // it does not know, so nothing of ours is sent to a guest until it has
+        // said so.
+        bool extended = false;
+
         // Positions were withheld while this guest's outbox was backed up, and
         // the current ones are owed. See `broadcastMove`.
         bool movesOwed = false;
@@ -546,6 +568,14 @@ private:
     // this side of the link the host is the only one allowed to decide that.
     void syncItems(i64 nowMillis);
     void syncMobs(i64 nowMillis);
+    // **The paintings, announced once and destroyed when they go.** The host
+    // is the only one that decides what art a wall gets, so a guest's own
+    // placement is a guess the first announcement replaces.
+    void syncPaintings();
+    // A guest's own page, attributed to them; see `packet::PlayerSkin`.
+    void acceptSkin(Player& player, const Packet& packet);
+    // `broadcast`, to the guests that have said they understand our packets.
+    void broadcastExtended(const Packet& packet, u8 exceptPlayerId);
     void collectFor(Player& player, entity::ItemEntitySystem& items);
 
     // **The arrows, as the guests see them.** Not in a1.1.2 at all -- see
@@ -607,6 +637,12 @@ private:
         bool deathSent = false;
     };
     std::vector<KnownMob> knownMobs_;
+
+    struct KnownPainting {
+        i32 entityId = 0;
+        bool seen = false;
+    };
+    std::vector<KnownPainting> knownPaintings_;
 
     // And for the arrows, which also carry a heading worth sending.
     struct KnownArrow {

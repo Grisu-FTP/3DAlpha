@@ -933,12 +933,38 @@ def verify(records, table_path, version):
     for extra in sorted(set(ours) - set(theirs)):
         problems.append(f"id {extra} is in blocks.json but not in the jar")
 
-    for bid in sorted(set(ours) & set(theirs)):
-        mine, jar = ours[bid], theirs[bid]
+    # Every block's own setter chain, read off the static initialiser.
+    values_by_id = {}
+    for bid, jar in theirs.items():
         values = {}
         for name, value in jar["setters"]:
             if name in mapping["setters"] and value is not None:
                 values[mapping["setters"][name]] = value
+        values_by_id[bid] = values
+
+    # BlockStairs sets neither: its constructor takes the model block and
+    # calls `this.setHardness(model.blockHardness)` and
+    # `this.setResistance(model.blockResistance / 3.0F)` itself (see the
+    # `km` constructor -- getfield bd/be, the second followed by `fdiv 3.0`,
+    # each straight into the matching setter). That is a call the static
+    # initialiser's chain never shows, the same reason `stepSound` is
+    # forwarded onto stairs records elsewhere in this file, and why a
+    # stairs block otherwise verifies as hardness 0 -- instant break --
+    # if this forwarding is skipped.
+    for bid, jar in theirs.items():
+        model_id = jar.get("model")
+        if model_id is None:
+            continue
+        model_values = values_by_id.get(model_id, {})
+        values = values_by_id[bid]
+        if "hardness" not in values and "hardness" in model_values:
+            values["hardness"] = model_values["hardness"]
+        if "resistance" not in values and "resistance" in model_values:
+            values["resistance"] = model_values["resistance"] / 3.0
+
+    for bid in sorted(set(ours) & set(theirs)):
+        mine, jar = ours[bid], theirs[bid]
+        values = values_by_id[bid]
 
         opaque = bool(jar["booleans"][mapping["opaque"]])
         expected = {

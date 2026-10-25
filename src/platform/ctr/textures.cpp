@@ -387,6 +387,10 @@ bool Atlas::initEntitySheets(const texture::AtlasImage& image)
     if (image.entityRgba.size() == texture::kEntitySheetBytes) {
         entityReady_ = uploadSheet(&entity_, image.entityRgba.data(),
                                    texture::kEntitySheetWidth, texture::kEntitySheetHeight);
+        ownSkin_.resize(net::kSkinPageBytes);
+        if (!net::copyPlayerPage(image.entityRgba, ownSkin_.data())) {
+            ownSkin_.clear();
+        }
     }
     // The art sheet is square and 256, which `kAtlasEdge` also happens to be --
     // stated as its own number rather than borrowed, because the two are the
@@ -694,6 +698,44 @@ bool Atlas::writeTile(C3D_Tex* target, bool vram, u32 column, u32 row, u32 edge,
         std::memcpy(dst + runs.second, secondHalves, runBytes);
         C3D_TexFlush(target);
     }
+    return true;
+}
+
+bool Atlas::updateEntityPage(int slot, const u8* page)
+{
+    int x0 = 0;
+    int y0 = 0;
+    if (!entityReady_ || page == nullptr || !texture::remoteSkinOrigin(slot, &x0, &y0)) {
+        return false;
+    }
+    constexpr u32 kEdge = u32(texture::kEntitySheetWidth);
+    static_assert(texture::kEntitySheetWidth == texture::kEntitySheetHeight,
+                  "the tile runs fold the flip over a square sheet");
+    constexpr u32 kHalf = texture::kTileRunWords;
+    constexpr int kPx = texture::kAtlasTilePixels;
+    u32* dst = static_cast<u32*>(entity_.data);
+    for (int ty = 0; ty < texture::kSkinPageHeight / kPx; ++ty) {
+        for (int tx = 0; tx < texture::kSkinPageWidth / kPx; ++tx) {
+            const u32 column = u32(x0 / kPx + tx);
+            const u32 row = u32(y0 / kPx + ty);
+            const texture::TileRuns runs = texture::tileRunsFlipped(column, row, kEdge);
+            for (u32 y = 0; y < u32(kPx); ++y) {
+                for (u32 x = 0; x < u32(kPx); ++x) {
+                    const u8* src =
+                        page + ((usize(ty) * kPx + y) * texture::kSkinPageWidth
+                                + usize(tx) * kPx + x) * 4;
+                    const u32 at = texture::tileRunIndex(runs, column, row, x, y, kEdge);
+                    const u32 word = rgba(src[0], src[1], src[2], src[3]);
+                    if (at < kHalf) {
+                        dst[runs.first + at] = word;
+                    } else {
+                        dst[runs.second + at - kHalf] = word;
+                    }
+                }
+            }
+        }
+    }
+    C3D_TexFlush(&entity_);
     return true;
 }
 

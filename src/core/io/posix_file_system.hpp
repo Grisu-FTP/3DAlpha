@@ -22,6 +22,12 @@ class PosixFileSystem : public FileSystem {
 public:
     bool readFile(const char* path, std::vector<u8>* out, usize maxSize) override;
     bool writeFileAtomic(const char* path, ConstByteSpan data) override;
+
+    // **For tests only**: makes the random-access files on a host take the same
+    // seek-and-write road the consoles must, so the code that runs on hardware is
+    // the code the suite runs. `strict` also refuses a seek past the end of the
+    // file, as the Wii U does.
+    static void forceSeekIoForTests(bool force, bool strict = false);
     bool exists(const char* path) override;
     bool isDirectory(const char* path) override;
     bool fileSize(const char* path, usize* out) override;

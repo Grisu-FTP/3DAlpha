@@ -4,6 +4,7 @@
 
 #include "core/net/chunk_payload.hpp"
 #include "core/net/entities.hpp"
+#include "core/net/player_skin.hpp"
 #include "core/net/player_sync.hpp"
 #include "core/util/compress.hpp"
 #include "core/util/span.hpp"
@@ -301,6 +302,7 @@ void WorldServer::open(ServerWorld* world, SendFn send, void* ctx, const std::st
     dirty_.clear();
     knownItems_.clear();
     knownMobs_.clear();
+    knownPaintings_.clear();
     knownArrows_.clear();
     lastItemMs_ = 0;
     lastMobMs_ = 0;
@@ -337,6 +339,7 @@ void WorldServer::close()
     dirty_.clear();
     knownItems_.clear();
     knownMobs_.clear();
+    knownPaintings_.clear();
     knownArrows_.clear();
 }
 
@@ -653,6 +656,7 @@ void WorldServer::login(Player& player)
     // The arrows the same way; `ArrowSystem::spawnRemote` replaces too.
     knownItems_.clear();
     knownMobs_.clear();
+    knownPaintings_.clear();
     knownArrows_.clear();
 
     rebuildView(player);
@@ -1059,6 +1063,55 @@ void WorldServer::setHostPose(double x, double feetY, double z, float yaw, float
     self.z = z;
     self.yaw = yaw;
     self.pitch = pitch;
+}
+
+void WorldServer::setHostSkin(const u8* page, usize size)
+{
+    // On the heap: a page is 8 KB and these frames may not be.
+    std::vector<u8> clean(kSkinPageBytes);
+    if (world_ == nullptr || !sanitizeSkinPage(page, size, clean.data())) {
+        return;
+    }
+    Player& self = players_[0];
+    self.skin = clean;
+    broadcastExtended(makePlayerSkin(self.entityId, clean.data()), self.id);
+}
+
+void WorldServer::acceptSkin(Player& player, const Packet& p)
+{
+    std::vector<u8> page(kSkinPageBytes);
+    if (!sanitizeSkinPage(p.bytes.data(), p.bytes.size(), page.data())) {
+        return;
+    }
+    player.skinSeen = true;
+    player.skin = page;
+    // **Now it has said it understands us**: it is sent everybody's skin, and
+    // every painting again (a guest replaces a painting it already has).
+    player.extended = true;
+    for (const Player& other : players_) {
+        if (other.used && other.id != player.id && other.skin.size() == kSkinPageBytes) {
+            write(player, makePlayerSkin(other.entityId, other.skin.data()));
+        }
+    }
+    knownPaintings_.clear();
+    if (player.spawned) {
+        const Packet mine = makePlayerSkin(player.entityId, page.data());
+        broadcastExtended(mine, player.id);
+        if (localSink_ != nullptr) {
+            localSink_(localCtx_, mine);
+        }
+    }
+}
+
+void WorldServer::broadcastExtended(const Packet& packet, u8 exceptPlayerId)
+{
+    for (int i = 1; i < kMaxPlayers; ++i) {
+        Player& player = players_[i];
+        if (!player.used || !player.loggedIn || !player.extended || player.id == exceptPlayerId) {
+            continue;
+        }
+        write(player, packet);
+    }
 }
 
 void WorldServer::fillNamedSpawn(const Player& player)
@@ -1608,6 +1661,56 @@ void WorldServer::syncMobs(i64 nowMillis)
     }
 }
 
+// ---- the paintings ---------------------------------------------------------
+
+void WorldServer::syncPaintings()
+{
+    entity::PaintingSystem* pool = world_->paintings();
+    if (pool == nullptr) {
+        return;
+    }
+    for (KnownPainting& known : knownPaintings_) {
+        known.seen = false;
+    }
+    for (int i = 0; i < pool->count(); ++i) {
+        entity::Painting& painting = pool->at(i);
+        // A guest-side prediction or a server's painting is not this world's to
+        // announce; on a host neither exists, but the pool is shared code.
+        if (!painting.alive || painting.remote || painting.predicted) {
+            continue;
+        }
+        if (painting.entityId == 0) {
+            painting.entityId = nextEntityId_++;
+        }
+        KnownPainting* known = nullptr;
+        for (KnownPainting& candidate : knownPaintings_) {
+            if (candidate.entityId == painting.entityId) {
+                known = &candidate;
+                break;
+            }
+        }
+        if (known != nullptr) {
+            known->seen = true;
+            continue;
+        }
+        knownPaintings_.push_back(KnownPainting{painting.entityId, true});
+        broadcastExtended(makePainting(painting.entityId, painting.artwork().name, painting.tileX,
+                               painting.tileY, painting.tileZ, painting.direction),
+                  0);
+    }
+    for (usize i = 0; i < knownPaintings_.size();) {
+        if (knownPaintings_[i].seen) {
+            ++i;
+            continue;
+        }
+        packet_.reset(packet::DestroyEntity);
+        packet_.pushInt(knownPaintings_[i].entityId);
+        broadcastExtended(packet_, 0);
+        knownPaintings_[i] = knownPaintings_.back();
+        knownPaintings_.pop_back();
+    }
+}
+
 // ---- the guests' packets ---------------------------------------------------
 
 void WorldServer::feed(u8 playerId, const u8* data, usize size)
@@ -1685,6 +1788,15 @@ void WorldServer::onPacket(Player& player, const Packet& p)
         packet_.pushInt(player.entityId);
         packet_.pushInt(player.heldItem);
         announce(packet_, player.id);
+        break;
+
+    case packet::PlayerSkin:
+        // **Theirs, whatever id it says**: the entity is the one this guest is,
+        // so a guest cannot dress somebody else. Once per connection, and
+        // sanitised before anything is kept or passed on.
+        if (!player.skinSeen) {
+            acceptSkin(player, p);
+        }
         break;
 
     case packet::PlayerInventory: {
@@ -1918,6 +2030,7 @@ void WorldServer::pump(i64 nowMillis)
     syncItems(nowMillis);
     syncArrows(nowMillis);
     syncMobs(nowMillis);
+    syncPaintings();
 
     if (nowMillis - lastTimeMs_ >= kTimeIntervalMs) {
         lastTimeMs_ = nowMillis;

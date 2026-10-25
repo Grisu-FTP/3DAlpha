@@ -791,3 +791,38 @@ TEST(a_batch_read_grows_its_scratch_for_one_payload_over_the_cap)
     CHECK_EQ(batch.payloads.size(), usize(2));
     CHECK(got(batch, 0, 0) == huge);
 }
+
+// **A new region has to be creatable on a file system that will not seek past
+// the end** -- the Wii U's. A new region writes its directory two sectors into an
+// empty file, and every chunk payload lands beyond whatever is there; with the
+// console's `lseek` refusing that, no region the player had not already been in
+// could be made and the packed world refused every column of it.
+TEST(a_new_region_is_made_and_filled_where_the_file_system_refuses_to_seek_past_the_end)
+{
+    io::PosixFileSystem::forceSeekIoForTests(true, true);
+    {
+        TempDir temp;
+        io::PosixFileSystem fs;
+        const std::string path = temp.at("r.-1.-1.3dr");
+        const std::vector<u8> a = payload(2917, 1);
+        const std::vector<u8> b = payload(5872, 2);
+
+        {
+            RegionFile region;
+            CHECK(region.open(fs, path.c_str(), -1, -1, true));
+            CHECK(region.write(-1, -1, span(a)));
+            CHECK(region.write(-32, -32, span(b)));
+            CHECK(region.commit());
+        }
+        RegionFile again;
+        CHECK(again.open(fs, path.c_str(), -1, -1, false));
+        CHECK_EQ(again.chunkCount(), u32(2));
+        std::vector<u8> out;
+        CHECK(again.read(-1, -1, &out));
+        CHECK(out == a);
+        out.clear();
+        CHECK(again.read(-32, -32, &out));
+        CHECK(out == b);
+    }
+    io::PosixFileSystem::forceSeekIoForTests(false);
+}

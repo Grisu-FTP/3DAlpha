@@ -20,6 +20,7 @@
 // walking player passes straight through all three.
 
 #include "core/block/registry.hpp"
+#include "core/entity/arrow.hpp"
 #include "core/entity/boat.hpp"
 #include "core/entity/minecart.hpp"
 #include "core/entity/player_body.hpp"
@@ -350,4 +351,25 @@ TEST(a_pig_stops_a_moving_boat)
 
     CHECK(yard.boats[0].box.maxZ <= pig.minZ + 1e-9);
     CHECK(yard.boats[0].box.maxZ > pig.minZ - 1e-6);
+}
+
+TEST(a_guest_on_the_track_stops_a_rolling_cart_as_the_host_would)
+{
+    // A host's guests are players in its world -- `EntityBoxes::guests` -- so
+    // a cart rolling at one waiting on the rail stops at them.
+    Yard yard;
+    CHECK(yard.carts.place(yard.w(), 0, 64, 0, MinecartType::Rideable));
+    yard.runCarts(4);
+    mc::entity::RemoteTarget guest;
+    guest.entityId = 9;
+    guest.box = AABB{0.2, 64.0, 3.2, 0.8, 65.8, 3.8};
+    yard.solid.guests = &guest;
+    yard.solid.guestCount = 1;
+
+    const_cast<Minecart&>(yard.carts[0]).motionZ = 0.3;
+    yard.runCarts(60);
+
+    CHECK(yard.carts[0].z > 1.0);
+    CHECK(yard.carts[0].box.maxZ <= guest.box.minZ + 1e-9);
+    CHECK(yard.carts[0].box.maxZ > guest.box.minZ - 0.25);
 }

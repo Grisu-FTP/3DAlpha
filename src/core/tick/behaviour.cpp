@@ -1185,6 +1185,23 @@ bool chestActivated(TickWorld& world, i32 x, int y, i32 z)
 
 }  // namespace
 
+void jukeboxChangedByServer(TickWorld& world, i32 x, int y, i32 z, block::BlockId oldBlock,
+                            u8 oldData)
+{
+    if (block::def(world.blockAt(x, y, z)).tick != TickBehaviour::Jukebox) {
+        return;
+    }
+    const u8 disc = world.dataAt(x, y, z);
+    const bool wasJukebox = block::def(oldBlock).tick == TickBehaviour::Jukebox;
+    if (disc == 0 || (wasJukebox && oldData == disc)) {
+        return;
+    }
+    const char* track = item::recordTrack(item::recordItemFor(disc));
+    if (track != nullptr) {
+        world.playRecord(track, x, y, z);
+    }
+}
+
 void ejectRecord(TickWorld& world, i32 x, int y, i32 z, u8 metadata)
 {
     if (metadata == 0) {

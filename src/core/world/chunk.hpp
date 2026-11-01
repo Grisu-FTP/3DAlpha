@@ -22,6 +22,15 @@
 
 namespace mc::world {
 
+// A block that population wrote and whose `onBlockAdded` has not run yet. See
+// ChunkColumn::pendingAdds.
+struct PendingAdd {
+    i32 x;  // absolute block coordinates
+    i32 z;
+    u8 y;
+    u8 id;
+};
+
 class ChunkColumn {
 public:
     static constexpr int kWidth = Section::kSize;
@@ -62,6 +71,19 @@ public:
     // all four had to land together. Usually empty: a real column has one of
     // these every few hundred chunks.
     std::vector<TileEntity> tileEntities;
+
+    // **Blocks population placed that still owe the world their
+    // `onBlockAdded`.** `Chunk.setBlock` (`ga.a(IIII)Z`) calls it whenever the
+    // world is not multiplayer, so in a1.1.2 every sand, gravel and spring cell
+    // a populate pass writes schedules its own tick, and gravel left over air
+    // falls and a spring starts to flow. Population here writes raw bytes and
+    // cannot reach a TickWorld, so it leaves the cells here and
+    // `TickWorld::tick` runs them once the surroundings are resident.
+    //
+    // Transient: never saved, and empty for every column that came off the card.
+    // Only the kinds that schedule a tick are recorded (`Falling` and
+    // `FluidFlowing`), so it is a handful of entries per column.
+    std::vector<PendingAdd> pendingAdds;
 
     Section& section(int sy)
     {

@@ -66,6 +66,7 @@
 // path -- redstone, `q.a(Lcn;IIIII)V` -- is the only one still missing here,
 // and it is missing because power propagation is, not because this is.
 
+#include "core/entity/server_track.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/java_random.hpp"
 #include "core/util/segmented_pool.hpp"
@@ -135,13 +136,34 @@ struct PrimedTnt {
     bool onGround = false;
     bool active = false;
 
+    // **A host's lit TNT on a guest.** Ours, as a falling block is: no a1.1.2
+    // client is told about one. The host says 50, the number later protocols
+    // gave it. A Vehicle Spawn has nowhere to put a fuse, and lit TNT has no
+    // heading, so **the host's fuse rides in the yaw byte** of the teleport
+    // that follows the spawn and of every move after it: a block a blast lit
+    // on a short fuse swells on a guest's screen when it does on the host's.
+    // A remote one walks to where the host says and smokes; it never explodes
+    // here -- its Destroy Entity is the blast. See `takeRemote`.
+    i32 entityId = 0;
+    bool remote = false;
+    ServerTrack track{};
+
     bool alive() const { return active; }
 
     void setPosition(double px, double py, double pz)
     {
-        x = prevX = px;
-        y = prevY = py;
-        z = prevZ = pz;
+        prevX = px;
+        prevY = py;
+        prevZ = pz;
+        moveTo(px, py, pz);
+    }
+
+    // The position and the box, leaving the previous position alone.
+    void moveTo(double px, double py, double pz)
+    {
+        x = px;
+        y = py;
+        z = pz;
         box = AABB{px - kPrimedTntHalf, py - kPrimedTntHalf, pz - kPrimedTntHalf,
                    px + kPrimedTntHalf, py + kPrimedTntHalf, pz + kPrimedTntHalf};
     }
@@ -184,6 +206,24 @@ public:
 
     int count() const { return items_.size(); }
     const PrimedTnt& operator[](int i) const { return items_[i]; }
+    // For the host, which names each one the first time it announces it.
+    PrimedTnt& at(int i) { return items_[i]; }
+
+    // ---- across a link: see `PrimedTnt::remote` ---------------------------
+    int indexOfEntity(i32 entityId) const;
+    // `x, y, z` are the centre, which is the host's `posX/posY/posZ`.
+    bool spawnRemote(const tick::TickWorld& world, i32 entityId, double x, double y, double z,
+                     int fuse = kPrimedTntFuse);
+    bool placeRemote(i32 entityId, double x, double y, double z);
+    // **The fuse the host says it has left**, from the yaw byte of its moves.
+    bool setRemoteFuse(i32 entityId, int fuse);
+    // **The host's Destroy Entity, which for lit TNT is the blast.** Nothing
+    // else takes one out of the host's pool. Removes it and answers where the
+    // host last said it was -- the centre of the blast, which the caller plays
+    // (`RemoteEntities`). False for an id this pool does not hold.
+    bool takeRemote(i32 entityId, double* x, double* y, double* z);
+    // Gone without a blast: what a Destroy Entity means for anything else.
+    bool removeById(i32 entityId);
 
     // Spawns the pool has refused, for the debug page.
     u32 refused() const { return refused_; }

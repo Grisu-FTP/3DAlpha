@@ -13,6 +13,7 @@
 
 #include "core/block/registry.hpp"
 #include "core/entity/boat.hpp"
+#include "core/entity/wire_settle.hpp"
 #include "core/entity/player_body.hpp"
 #include "core/item/registry.hpp"
 #include "core/item/use.hpp"
@@ -475,4 +476,94 @@ TEST(a_boat_is_drawn_to_seventy_seven_blocks)
     }
     CHECK(lo > 59.0 && lo < 61.0);
     CHECK_EQ(from(-78.0), 0);
+}
+
+TEST(boats_placed_into_each_other_sit_still_until_one_is_nudged_and_then_part)
+{
+    Pond pond;
+    CHECK(pond.boats.place(pond.w(), 0, 63, 0));
+    CHECK(pond.boats.place(pond.w(), 0, 63, 0));
+    pond.run(20);
+    CHECK(std::fabs(pond.boats[0].x - pond.boats[1].x) < 0.01);
+
+    // A touch: one is moved a few hundredths and they burst apart.
+    Boat& touched = const_cast<Boat&>(pond.boats[1]);
+    touched.setPosition(touched.x + 0.05, touched.y, touched.z);
+    pond.run(100);
+    const double dx = pond.boats[0].x - pond.boats[1].x;
+    const double dz = pond.boats[0].z - pond.boats[1].z;
+    CHECK(std::sqrt(dx * dx + dz * dz) > 1.0);
+}
+
+TEST(boats_beside_each_other_are_shoved_along_the_line_between_them)
+{
+    Pond pond;
+    CHECK(pond.boats.place(pond.w(), 0, 63, 0));
+    CHECK(pond.boats.place(pond.w(), 1, 63, 0));
+    pond.run(1);
+    CHECK(pond.boats[0].motionX < 0.0);
+    CHECK(pond.boats[1].motionX > 0.0);
+}
+
+// **A boat handed over from the wire stays on the ground it was resting on.**
+// Positions cross floored to a thirty-second, and a boat resting on dry land
+// sits 0.3 above its bottom -- not a whole number of thirty-seconds -- so the
+// copy a guest takes the wheel of starts with its bottom just inside the floor,
+// and a sweep never clips against what it already overlaps. It fell a block.
+// See core/entity/wire_settle.hpp.
+TEST(a_boat_taken_over_from_the_wire_stays_on_the_ground_rather_than_sinking_a_block)
+{
+    SceneWorld scene{0, 0};
+    for (i32 x = -6; x <= 6; ++x) {
+        for (i32 z = -6; z <= 6; ++z) {
+            scene.place(x, 62, z, bid(mcver::Block::Stone), 0);
+        }
+    }
+    BoatSystem host{3};
+    CHECK(host.place(scene.w(), 0, 70, 0));
+    for (int i = 0; i < 200; ++i) {
+        host.tick(scene.w(), VehicleRider{});
+    }
+    CHECK(host[0].onGround);
+    const double rest = host[0].y;
+    const double wire = std::floor(rest * 32.0) / 32.0;
+    CHECK(wire < rest);  // the rounding this is about
+
+    // A guest takes the wheel of its copy, which is where the wire put it.
+    BoatSystem guest{4};
+    CHECK(guest.spawnRemote(scene.w(), 70, host[0].x, wire, host[0].z));
+    CHECK(guest.driveHere(70));
+    for (int i = 0; i < 40; ++i) {
+        guest.tick(scene.w(), VehicleRider{});
+    }
+    CHECK(guest[0].box.minY > 63.0 - 1e-6);
+    CHECK(std::abs(guest[0].y - rest) < 1e-6);
+
+    // **And the host taking it back** where the guest's floored reports left
+    // it: the same rounding, the other way.
+    host.at(0).entityId = 70;
+    CHECK(host.driveElsewhere(70, 9));
+    CHECK(host.placeRemote(70, host[0].x, wire, host[0].z, host[0].yaw));
+    for (int i = 0; i < 40; ++i) {
+        host.tick(scene.w(), VehicleRider{});
+    }
+    CHECK(std::abs(host[0].y - wire) < 1e-9);
+    CHECK(host.takeBack(70));
+    for (int i = 0; i < 40; ++i) {
+        host.tick(scene.w(), VehicleRider{});
+    }
+    CHECK(host[0].box.minY > 63.0 - 1e-6);
+}
+
+TEST(the_wire_settle_lifts_only_what_the_rounding_could_have_sunk)
+{
+    SceneWorld scene{0, 0};
+    scene.place(0, 62, 0, bid(mcver::Block::Stone), 0);
+    const AABB clear{0.2, 63.0, 0.2, 0.8, 63.6, 0.8};
+    CHECK_EQ(mc::entity::wireSettleLift(scene.w(), clear), 0.0);
+    const AABB sunk = clear.offset(0.0, -0.02, 0.0);
+    CHECK(std::abs(mc::entity::wireSettleLift(scene.w(), sunk) - 0.02) < 1e-9);
+    // Half a block down is not rounding; it is left for whoever put it there.
+    const AABB buried = clear.offset(0.0, -0.5, 0.0);
+    CHECK_EQ(mc::entity::wireSettleLift(scene.w(), buried), 0.0);
 }

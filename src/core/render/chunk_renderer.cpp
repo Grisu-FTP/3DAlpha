@@ -10,6 +10,7 @@ void ChunkRenderer::reset(VboAllocator* allocator, const ChunkRendererConfig& co
 
     field_.reset(config_.meshDistance);
     residents_.assign(usize(field_.cellCount()) * SectionField::kSectionsY, Resident{});
+    revisions_.assign(residents_.size(), 0);
 
     // The largest single mesh the shared index buffer can draw. A class table
     // that stopped short of it would leave a legal section with nowhere to go.
@@ -55,6 +56,9 @@ void ChunkRenderer::releaseSection(int cell, int sectionY)
 void ChunkRenderer::releaseCell(int cell)
 {
     for (int sy = 0; sy < SectionField::kSectionsY; ++sy) {
+        ++revisions_[tokenFor(cell, sy)];
+    }
+    for (int sy = 0; sy < SectionField::kSectionsY; ++sy) {
         releaseSection(cell, sy);
     }
 }
@@ -77,8 +81,19 @@ bool ChunkRenderer::publishColumn(i32 chunkX, i32 chunkZ, const mesh::SectionVis
         releaseCell(cell);
     }
 
+    // Also when nothing was displaced: a column that left and came back under
+    // the same coordinates is a different column to a mesh still in flight.
+    for (int sy = 0; sy < SectionField::kSectionsY; ++sy) {
+        ++revisions_[tokenFor(cell, sy)];
+    }
     field_.setColumn(chunkX, chunkZ, perSection);
     return true;
+}
+
+void ChunkRenderer::setSectionVisibility(i32 chunkX, int sectionY, i32 chunkZ,
+                                         const mesh::SectionVisibility& mask)
+{
+    field_.setSectionVisibility(chunkX, sectionY, chunkZ, mask);
 }
 
 void ChunkRenderer::dropColumn(i32 chunkX, i32 chunkZ)
@@ -111,7 +126,17 @@ void ChunkRenderer::invalidateSection(i32 chunkX, int sectionY, i32 chunkZ)
     // This also covers kEmptyMesh, which holds no slot and no resident record
     // but is still marked as done; the dirty bit is what puts it back in the
     // queue.
+    ++revisions_[tokenFor(cell, sectionY)];
     field_.setSectionDirty(chunkX, sectionY, chunkZ, true);
+}
+
+u32 ChunkRenderer::sectionRevision(i32 chunkX, int sectionY, i32 chunkZ) const
+{
+    const int cell = field_.cellOf(chunkX, chunkZ);
+    if (cell < 0 || sectionY < 0 || sectionY >= SectionField::kSectionsY) {
+        return 0;
+    }
+    return revisions_[tokenFor(cell, sectionY)];
 }
 
 void ChunkRenderer::invalidateColumn(i32 chunkX, i32 chunkZ)

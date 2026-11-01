@@ -75,7 +75,7 @@ void solidBoxes(void* ctx, const AABB& swept, const void* self,
     emitPool(entities->mobs, swept, self, sink, sinkCtx,
              [](const Mob& m) { return m.alive ? &m.body.box : nullptr; });
     emitPool(entities->items, swept, self, sink, sinkCtx,
-             [](const ItemEntity& i) { return i.alive() ? &i.box : nullptr; });
+             [](const ItemEntity& i) { return i.alive() && !i.collecting() ? &i.box : nullptr; });
     emitPool(entities->arrows, swept, self, sink, sinkCtx,
              [](const Arrow& a) { return a.alive ? &a.box : nullptr; });
     emitPool(entities->paintings, swept, self, sink, sinkCtx,
@@ -91,6 +91,11 @@ void solidBoxes(void* ctx, const AABB& swept, const void* self,
     if (player != nullptr && static_cast<const void*>(player) != self
         && player->box.intersects(swept)) {
         sink(sinkCtx, player->box);
+    }
+    for (int g = 0; g < entities->guestCount; ++g) {
+        if (entities->guests[g].box.intersects(swept)) {
+            sink(sinkCtx, entities->guests[g].box);
+        }
     }
 }
 

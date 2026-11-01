@@ -396,7 +396,7 @@ bool decodeServer(const u8* data, usize size, ServerMsg* out)
         out->kind = ServerKind::AuthOk;
         if (!r.array(kTokenSize, out->token) || !r.string(kMaxName, &out->displayName)
             || !r.optString(kMaxName, &out->hasAccount, &out->accountHandle)
-            || !r.boolean(&out->firstClaim) || !r.string(32, &out->keyFingerprint)
+            || !r.boolean(&out->firstClaim) || !r.optString(32, &out->hasKeyFingerprint, &out->keyFingerprint)
             || !r.u16v(&out->transferPort)) {
             return false;
         }

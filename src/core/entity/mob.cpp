@@ -1271,6 +1271,10 @@ void MobSystem::detonate(tick::TickWorld& world, int index, const MobSurrounding
 
     blast.destroy(world);
 
+    if (mob.entityId != 0 && explodedCount_ < kMaxExploded) {
+        exploded_[explodedCount_++] = mob.entityId;
+    }
+
     // `F()` -- setEntityDead, straight away. **A creeper that explodes drops
     // nothing and makes no death sound**: it never reaches `onDeath` and never
     // spends the twenty ticks. The gunpowder is only ever from one you killed.
@@ -1589,6 +1593,16 @@ bool MobSystem::remoteCounters(tick::TickWorld& world, int index)
     return true;
 }
 
+int MobSystem::takeExploded(i32* out, int max)
+{
+    int n = 0;
+    for (; n < explodedCount_ && n < max; ++n) {
+        out[n] = exploded_[n];
+    }
+    explodedCount_ = 0;
+    return n;
+}
+
 bool MobSystem::statusFromServer(tick::TickWorld& world, i32 entityId, int status)
 {
     Mob* mob = findById(entityId);
@@ -1608,6 +1622,10 @@ bool MobSystem::statusFromServer(tick::TickWorld& world, i32 entityId, int statu
         mob->maxHurtTime = i16(kHurtTime);
         world.playSoundAt(def.hurtSound, mob->body.x, midY, mob->body.z, def.soundVolume,
                           pitch);
+        return true;
+    }
+    if (status == kStatusFlagSet || status == kStatusFlagClear) {
+        mob->flag = status == kStatusFlagSet;
         return true;
     }
     if (status == kStatusDead) {
@@ -1701,7 +1719,10 @@ void MobSystem::interpolateToServer(Mob& mob) const
     double y = mob.body.y;
     double z = mob.body.z;
     const bool snapped = mob.track.step(&x, &y, &z);
-    mob.body.setFeet(x, y, z);
+    // `setPosition`, not a placement: the tick began with the render position
+    // snapped (`MobSystem::tick`'s remote branch), and this step is what the
+    // frames until the next one are drawn sliding across.
+    mob.body.moveFeet(x, y, z);
     if (snapped) {
         // A teleport is not drawn as a streak across the frame.
         mob.body.snapRenderPosition();
@@ -1768,6 +1789,64 @@ void MobSystem::headingAndLight(const tick::TickWorld& world, Mob& mob, double b
                               mob.body.y + double(mob.body.height) * 0.5, mob.body.z);
 }
 
+void MobSystem::strikeGuest(void* ctx, int, DamageSource, double, double)
+{
+    const GuestBlow* blow = static_cast<const GuestBlow*>(ctx);
+    if (blow->struck != nullptr && blow->attacker != 0) {
+        blow->struck(blow->ctx, blow->victim, blow->attacker);
+    }
+}
+
+// `cn.a(Lkh;D)Ldm;` -- getClosestPlayerToEntity, distance squared from the mob's
+// position to each player's, the first of equals kept. **Every player-shaped
+// question a mob asks in a1.1.2 goes through it**: who to hunt (`dq.l()`), who
+// to watch (`ge.b_()`'s look), who to despawn by (`ge.Q()`), whose blast to
+// fear (`ad`'s fuse) -- so answering it once per mob, up front, is what puts
+// a host's guests into every one of them without touching any.
+//
+// **A dead or untargetable player is still a player here**, as in the jar:
+// presence is the question, and whether a monster may then go for them is
+// `targetable`'s, asked downstream exactly as for the host.
+const MobSurroundings& MobSystem::nearestFor(const Mob& mob, const MobSurroundings& around,
+                                             MobSurroundings* scratch, GuestBlow* blow)
+{
+    if (around.guestCount <= 0 || around.guests == nullptr) {
+        return around;
+    }
+    const MobPlayer* best = nullptr;
+    double bestSq = 0.0;
+    auto consider = [&](const MobPlayer& p) {
+        if (!p.present) {
+            return;
+        }
+        const double dx = p.x - mob.body.x;
+        const double dy = p.y - mob.body.y;
+        const double dz = p.z - mob.body.z;
+        const double sq = dx * dx + dy * dy + dz * dz;
+        if (best == nullptr || sq < bestSq) {
+            best = &p;
+            bestSq = sq;
+        }
+    };
+    consider(around.player);
+    for (int g = 0; g < around.guestCount; ++g) {
+        consider(around.guests[g]);
+    }
+    if (best == nullptr || best == &around.player) {
+        return around;
+    }
+    *scratch = around;
+    scratch->player = *best;
+    scratch->home = &around;
+    blow->struck = around.guestStruck;
+    blow->ctx = around.guestStruckCtx;
+    blow->victim = best->entityId;
+    blow->attacker = mob.entityId;
+    scratch->hurtPlayer.sink = &MobSystem::strikeGuest;
+    scratch->hurtPlayer.ctx = blow;
+    return *scratch;
+}
+
 void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
 {
     // **What the tick actually cost, kept rather than enforced.** This used to
@@ -1804,6 +1883,18 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
             }
             interpolateToServer(mob);
             headingAndLight(world, mob, beforeX, beforeZ);
+            // **The player here is still pushed by it**, which is the
+            // client's half of `applyEntityCollision`: a1.1.2's own player
+            // runs it against every entity beside it, the server's animals
+            // included, and moves itself apart. The animal's half is the
+            // server's -- it is placed, never pushed, here.
+            if (around.player.present && around.player.motionX != nullptr
+                && mob.body.box.expand(0.2, 0.0, 0.2).intersects(around.player.box)) {
+                shove(mob, around.player.x, around.player.z, around.player.motionX,
+                      around.player.motionZ);
+                mob.body.motionX = 0.0;
+                mob.body.motionZ = 0.0;
+            }
             ++i;
             continue;
         }
@@ -1817,7 +1908,12 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
             continue;
         }
 
-        if (!updateCounters(world, i, around)) {
+        // Who this mob hunts, watches and despawns by -- see `nearestFor`.
+        MobSurroundings mine;
+        GuestBlow blow;
+        const MobSurroundings& near = nearestFor(mob, around, &mine, &blow);
+
+        if (!updateCounters(world, i, near)) {
             removeAt(i);
             continue;
         }
@@ -1869,7 +1965,7 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
             mob.moveStrafing = 0.0f;
             mob.moveForward = 0.0f;
             mob.randomYaw = 0.0f;
-        } else if (!updateActionState(world, i, around)) {
+        } else if (!updateActionState(world, i, near)) {
             // Despawned. Nothing is dropped and nothing is heard.
             removeAt(i);
             continue;
@@ -1982,6 +2078,16 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
                 shove(mob, around.player.x, around.player.z, around.player.motionX,
                       around.player.motionZ);
             }
+            // **And a host's guests push it as the host does.** Only the
+            // animal moves here: the guest's own console moves the guest, and
+            // the push back on them is worked out there, against its copy of
+            // this animal (the remote branch above).
+            for (int g = 0; g < around.guestCount; ++g) {
+                const MobPlayer& guest = around.guests[g];
+                if (guest.present && reach.intersects(guest.box)) {
+                    shove(mob, guest.x, guest.z, nullptr, nullptr);
+                }
+            }
             for (int other = 0; other < mobs_.size(); ++other) {
                 if (other == i) {
                     continue;
@@ -2067,19 +2173,19 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
             // standing on you rather than by swinging.** The player's own
             // `onUpdate` runs it over everything inside its box grown a block
             // sideways; a slime of size 1 does nothing at all.
-            if (mob.health > 0 && mob.slimeSize > 1 && around.player.present
-                && around.player.targetable
-                && mob.body.box.expand(1.0, 0.0, 1.0).intersects(around.player.box)) {
-                const double dx = mob.body.x - around.player.x;
-                const double dy = mob.body.y - around.player.y;
-                const double dz = mob.body.z - around.player.z;
+            if (mob.health > 0 && mob.slimeSize > 1 && near.player.present
+                && near.player.targetable
+                && mob.body.box.expand(1.0, 0.0, 1.0).intersects(near.player.box)) {
+                const double dx = mob.body.x - near.player.x;
+                const double dy = mob.body.y - near.player.y;
+                const double dz = mob.body.z - near.player.z;
                 const double reach = kSlimeTouchScale * double(mob.slimeSize);
                 if (double(MathHelper::sqrtDouble(dx * dx + dy * dy + dz * dz)) < reach
-                    && canSee(world, mob, around.player.x, around.player.y,
-                              around.player.z)) {
+                    && canSee(world, mob, near.player.x, near.player.y,
+                              near.player.z)) {
                     // `ma` is not a `dq`, so difficulty leaves a slime's
                     // touch alone.
-                    around.hurtPlayer(int(mob.slimeSize), DamageSource::Other, mob.body.x,
+                    near.hurtPlayer(int(mob.slimeSize), DamageSource::Other, mob.body.x,
                                       mob.body.z);
                     world.playSoundAt("mob.slimeattack", mob.body.x, mob.body.y, mob.body.z,
                                       1.0f,
@@ -2124,7 +2230,9 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
             rider.mountIndex = -1;
             continue;
         }
-        rider.body.setFeet(where.x, where.y, where.z);
+        // `updateRiderPosition` is `setPosition`: the rider glides with its
+        // mount between ticks rather than stepping.
+        rider.body.moveFeet(where.x, where.y, where.z);
         rider.body.motionX = 0.0;
         rider.body.motionY = 0.0;
         rider.body.motionZ = 0.0;
@@ -2140,6 +2248,11 @@ void MobSystem::tick(tick::TickWorld& world, const MobSurroundings& around)
 void applyBlast(tick::TickWorld& world, const Explosion& blast, MobSystem* mobs,
                 const MobSurroundings* around, int exclude)
 {
+    // A creeper whose nearest player was a guest still blows up beside the
+    // body this console runs; that guest's console works out its own share.
+    if (around != nullptr && around->home != nullptr) {
+        around = around->home;
+    }
     int damage = 0;
     double vx = 0.0;
     double vy = 0.0;

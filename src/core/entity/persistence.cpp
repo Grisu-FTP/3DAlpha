@@ -35,7 +35,16 @@ bool PersistentEntities::capture(const EntityPools& pools)
     if (pools.arrows) ok = ok && copyOut(pools.arrows->arrows_, &arrows);
     if (pools.boats) ok = ok && copyOut(pools.boats->boats_, &boats);
     if (pools.minecarts) ok = ok && copyOut(pools.minecarts->carts_, &minecarts);
-    if (pools.items) ok = ok && copyOut(pools.items->items_, &items);
+    if (pools.items) {
+        // A stack already flying to a collector is in an inventory by now.
+        const auto& live = pools.items->items_;
+        int flying = 0;
+        for (int i = 0; i < live.size(); ++i) flying += live[i].collecting() ? 1 : 0;
+        ok = ok && items.reserve(live.size() - flying);
+        for (int i = 0; i < live.size(); ++i) {
+            if (!live[i].collecting()) ok = ok && items.push(live[i]);
+        }
+    }
     if (pools.fallingBlocks) ok = ok && copyOut(pools.fallingBlocks->items_, &fallingBlocks);
     if (pools.primedTnt) ok = ok && copyOut(pools.primedTnt->items_, &primedTnt);
     if (pools.mobs) ok = ok && copyOut(pools.mobs->mobs_, &mobs);

@@ -35,6 +35,7 @@ using mc::block::BlockId;
 using mc::entity::Mob;
 using mc::entity::MobAi;
 using mc::entity::MobDef;
+using mc::entity::MobPlayer;
 using mc::entity::mobDef;
 using mc::entity::MobSurroundings;
 using mc::entity::MobSystem;
@@ -410,6 +411,8 @@ TEST(a_creeper_that_goes_off_takes_the_floor_with_it_and_leaves_no_gunpowder)
     const int creeper = cave.add(MobType::Creeper, 0.5, 0.5);
     CHECK(creeper >= 0);
     cave.mobs.at(creeper).targetingPlayer = true;
+    // A host gave it an id, so its guests can be told it went off.
+    cave.mobs.at(creeper).entityId = 77;
 
     // **Nothing between them.** A creeper that walks behind cover loses
     // `canEntityBeSeen`, `attackEntity` stops running, and `dd.b_()` winds the
@@ -434,6 +437,12 @@ TEST(a_creeper_that_goes_off_takes_the_floor_with_it_and_leaves_no_gunpowder)
     // A hole in the floor it was standing on, and the player felt it.
     CHECK_EQ(int(cave.w().blockAt(lastX, Cave::kFloor, lastZ)), int(block::kAir));
     CHECK(harm.taken > 0);
+
+    // And it is on the list a host reads to tell its guests -- once.
+    i32 exploded[4] = {};
+    CHECK_EQ(cave.mobs.takeExploded(exploded, 4), 1);
+    CHECK_EQ(exploded[0], i32(77));
+    CHECK_EQ(cave.mobs.takeExploded(exploded, 4), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1393,4 +1402,187 @@ TEST(a_square_that_straddles_the_origin_keeps_the_jars_bucket_runs)
         CHECK_EQ(int(ours.dx[i]), int(origin.dx[i]));
         CHECK_EQ(int(ours.dz[i]), int(origin.dz[i]));
     }
+}
+
+// ---------------------------------------------------------------------------
+// A host's guests
+// ---------------------------------------------------------------------------
+//
+// **Every mob asks for the nearest player**, and a host's guests are players in
+// its world. These are the three ways that shows: who a mob goes for, whose
+// body a blast lands on, and who a mob is despawned by.
+
+namespace {
+
+// Where a mob's blow on a guest is named -- `MobSurroundings::guestStruck`.
+struct GuestBlows {
+    int count = 0;
+    i32 victim = 0;
+    i32 attacker = 0;
+
+    static void sink(void* ctx, i32 victim, i32 attacker)
+    {
+        GuestBlows& self = *static_cast<GuestBlows*>(ctx);
+        ++self.count;
+        self.victim = victim;
+        self.attacker = attacker;
+    }
+};
+
+MobPlayer guestAt(i32 entityId, double x, double z, double feet = Cave::kGround)
+{
+    MobPlayer guest;
+    guest.present = true;
+    guest.entityId = entityId;
+    guest.x = x;
+    guest.y = feet + 1.62;
+    guest.z = z;
+    guest.box = AABB{x - 0.3, feet, z - 0.3, x + 0.3, feet + 1.8, z + 0.3};
+    return guest;
+}
+
+}  // namespace
+
+TEST(a_zombie_nearer_a_guest_than_the_host_goes_for_the_guest_and_names_the_blow_to_them)
+{
+    Cave cave;
+    Harm harm;
+    GuestBlows blows;
+    const int zombie = cave.add(MobType::Zombie, 0.5, 0.5);
+    CHECK(zombie >= 0);
+    cave.mobs.at(zombie).entityId = 55;
+
+    // The host fifteen blocks off, the guest one block from the zombie.
+    MobSurroundings around = hunted(&harm, 15.5, 0.5);
+    const MobPlayer guest = guestAt(9, 1.5, 0.5);
+    around.guests = &guest;
+    around.guestCount = 1;
+    around.guestStruck = &GuestBlows::sink;
+    around.guestStruckCtx = &blows;
+    cave.run(40, around);
+
+    // **The guest is the one it hit**, named by both ids so the guest's console
+    // can price the blow from the zombie it has. The host was never touched.
+    CHECK(blows.count > 0);
+    CHECK_EQ(blows.victim, i32(9));
+    CHECK_EQ(blows.attacker, i32(55));
+    CHECK_EQ(harm.hits, 0);
+
+    // And with the guest gone the host is who it goes for.
+    around.guests = nullptr;
+    around.guestCount = 0;
+    const double startX = cave.mobs[zombie].body.x;
+    cave.run(120, around);
+    CHECK(cave.mobs[zombie].body.x > startX + 1.0);
+}
+
+TEST(a_mob_with_no_id_the_guests_know_names_no_blow)
+{
+    // Not yet announced: there is nothing the guest could look the blow up by.
+    Cave cave;
+    Harm harm;
+    GuestBlows blows;
+    CHECK(cave.add(MobType::Zombie, 0.5, 0.5) >= 0);
+    MobSurroundings around = hunted(&harm, 15.5, 0.5);
+    const MobPlayer guest = guestAt(9, 1.5, 0.5);
+    around.guests = &guest;
+    around.guestCount = 1;
+    around.guestStruck = &GuestBlows::sink;
+    around.guestStruckCtx = &blows;
+    cave.run(40, around);
+    CHECK_EQ(blows.count, 0);
+    CHECK_EQ(harm.hits, 0);
+}
+
+TEST(a_creeper_lit_by_a_guest_blasts_the_hosts_body_and_names_nothing_to_the_guest)
+{
+    Cave cave;
+    Harm harm;
+    GuestBlows blows;
+    const int creeper = cave.add(MobType::Creeper, 0.5, 0.5);
+    CHECK(creeper >= 0);
+    cave.mobs.at(creeper).targetingPlayer = true;
+    cave.mobs.at(creeper).entityId = 78;
+
+    // The guest inside the three blocks that light it, the host further off
+    // but still inside the blast.
+    MobSurroundings around = hunted(&harm, 0.5, 4.5);
+    const MobPlayer guest = guestAt(9, 2.0, 0.5);
+    around.guests = &guest;
+    around.guestCount = 1;
+    around.guestStruck = &GuestBlows::sink;
+    around.guestStruckCtx = &blows;
+    for (int i = 0; i < 60 && cave.mobs.count() > 0; ++i) {
+        cave.mobs.tick(cave.w(), around);
+    }
+
+    CHECK_EQ(cave.mobs.count(), 0);
+    // **The host's body felt it** -- a blast is worked out against the body
+    // this console runs, whoever lit the fuse.
+    CHECK(harm.taken > 0);
+    // **And the guest was not named a blow**: their console works out its own
+    // share from the Entity Status the host sends (`kStatusExploded`).
+    CHECK_EQ(blows.count, 0);
+    i32 exploded[4] = {};
+    CHECK_EQ(cave.mobs.takeExploded(exploded, 4), 1);
+    CHECK_EQ(exploded[0], i32(78));
+}
+
+TEST(a_mob_beside_a_guest_is_not_despawned_by_the_hosts_distance)
+{
+    // `ge.Q()` removes a mob 128 blocks from the *closest* player. A host two
+    // hundred blocks off is not the closest when a guest stands beside it.
+    Cave cave;
+    const int zombie = cave.add(MobType::Zombie, 0.5, 0.5);
+    CHECK(zombie >= 0);
+    MobSurroundings around = hunted(nullptr, 300.5, 0.5);
+    const MobPlayer guest = guestAt(9, 3.5, 0.5);
+    around.guests = &guest;
+    around.guestCount = 1;
+    cave.run(5, around);
+    CHECK_EQ(cave.mobs.count(), 1);
+
+    // Without the guest the host is the only player, and it is too far.
+    around.guests = nullptr;
+    around.guestCount = 0;
+    cave.run(5, around);
+    CHECK_EQ(cave.mobs.count(), 0);
+}
+
+TEST(a_guest_walking_into_an_animal_pushes_it_on_the_host)
+{
+    // `ge.j()`'s tail pushes apart everything inside the animal's box grown a
+    // fifth of a block, and a host's guests are in it. Two identical caves, one
+    // with a guest standing just east of the pig: only the push differs.
+    Cave alone;
+    Cave crowded;
+    CHECK(alone.add(MobType::Pig, 0.5, 0.5) >= 0);
+    CHECK(crowded.add(MobType::Pig, 0.5, 0.5) >= 0);
+    const MobSurroundings far = hunted(nullptr, 15.5, 0.5);
+    MobSurroundings near = far;
+    const MobPlayer guest = guestAt(9, 0.9, 0.5);
+    near.guests = &guest;
+    near.guestCount = 1;
+    alone.mobs.tick(alone.w(), far);
+    crowded.mobs.tick(crowded.w(), near);
+    // Pushed west, away from the guest; nothing about the guest moved here.
+    CHECK(crowded.mobs[0].body.motionX < alone.mobs[0].body.motionX - 0.01);
+}
+
+TEST(a_guest_is_pushed_back_by_the_hosts_animal_on_its_own_console)
+{
+    // The client's half of `applyEntityCollision`: this console's own player is
+    // moved apart from the server's animal it walks into. The animal is placed
+    // by the server and does not move here.
+    Cave cave;
+    CHECK(cave.mobs.spawnFromServer(cave.w(), 40, MobType::Pig, 0.5, Cave::kGround, 0.5, 0.0f,
+                                    0.0f) != nullptr);
+    double mx = 0.0;
+    double mz = 0.0;
+    MobSurroundings around = hunted(nullptr, 0.9, 0.5);
+    around.player.motionX = &mx;
+    around.player.motionZ = &mz;
+    cave.mobs.tick(cave.w(), around);
+    CHECK(mx > 0.01);  // east, away from the pig
+    CHECK(std::abs(cave.mobs[0].body.x - 0.5) < 1e-9);
 }

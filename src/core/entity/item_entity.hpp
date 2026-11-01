@@ -137,6 +137,9 @@ inline constexpr int kBlockDropPickupDelay = 10;
 // which is how a guest's drop used to land straight back in their hand.
 inline constexpr int kThrownByClientPickupDelay = 10;
 
+// `EntityPickupFX.maxAge`: ticks a collected stack takes to reach the collector.
+inline constexpr int kCollectTicks = 3;
+
 // `je`, from core/entity/explosion.hpp. Only `takeBlast` names it.
 class Explosion;
 
@@ -188,6 +191,15 @@ struct ItemEntity {
 
     bool onGround = false;
 
+    // **`EntityPickupFX`: the three ticks a collected stack spends flying to
+    // whoever took it.** Zero while it is lying about; set to 1 on the tick it
+    // is collected, after which it is no longer anyone's to pick up, ageing,
+    // falling or saving -- only drawn, sliding from where it lay towards
+    // `collectX/Y/Z` along the square of the fraction. Not saved: the stack is
+    // already in the collector's inventory.
+    int collectTicks = 0;
+    double collectX = 0.0, collectY = 0.0, collectZ = 0.0;
+
     // `kh`'s `aV` and `c`, which is all a splash needs. Not saved: the jar
     // does not save it either, and a stack reloaded in a river should not
     // splash on the tick the world opens.
@@ -202,13 +214,25 @@ struct ItemEntity {
     i16 fire = 0;
 
     bool alive() const { return count > 0; }
+    bool collecting() const { return collectTicks > 0; }
 
     // `Entity.setPosition` for a box whose `yOffset` is half its height.
     void setPosition(double px, double py, double pz)
     {
-        x = prevX = px;
-        y = prevY = py;
-        z = prevZ = pz;
+        prevX = px;
+        prevY = py;
+        prevZ = pz;
+        moveTo(px, py, pz);
+    }
+
+    // The position and the box and nothing else -- `kh.a(DDD)V` as the jar has
+    // it, which writes `ak`/`al`/`am` and leaves last tick's position alone.
+    // What a server's teleport uses; a spawn wants `setPosition`'s `prev` too.
+    void moveTo(double px, double py, double pz)
+    {
+        x = px;
+        y = py;
+        z = pz;
         box = AABB{px - kItemHalf, py - kItemHalf, pz - kItemHalf,
                    px + kItemHalf, py + kItemHalf, pz + kItemHalf};
     }
@@ -310,6 +334,11 @@ public:
 
     ItemEntity* findById(i32 entityId);
 
+    // **A server's Collect**: the stack stops being one and flies to
+    // (`tx`,`ty`,`tz`) for `kCollectTicks`, as `EntityPickupFX` does. False
+    // when there is no such item or it is already on its way.
+    bool collectById(i32 entityId, double tx, double ty, double tz);
+
     // **One item by position in the pool, to be written to.** The const
     // `operator[]` below is what the renderer and the tick use; this is for the
     // host of a session, which has to stamp a server id onto an item the
@@ -356,6 +385,7 @@ private:
     ItemEntity* place(const tick::TickWorld& world, double px, double py, double pz,
                       item::ItemId id, int count, i16 damage, int pickupDelay, bool mayEvict);
     void removeAt(int index);
+    static void beginCollect(ItemEntity& e, double tx, double ty, double tz);
 
     SegmentedPool<ItemEntity, kInitialCapacity> items_;
     u32 refused_ = 0;

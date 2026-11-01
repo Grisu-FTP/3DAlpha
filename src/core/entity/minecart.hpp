@@ -50,6 +50,7 @@
 // and the connection matrix below is those ten shapes written as offsets.
 
 #include "core/entity/rider.hpp"
+#include "core/entity/server_track.hpp"
 #include "core/item/item_def.hpp"
 #include "core/item/item_stack.hpp"
 #include "core/util/aabb.hpp"
@@ -203,6 +204,20 @@ struct Minecart {
     u8 light = 0;
     bool alive = false;
 
+    // ---- across a link ---------------------------------------------------
+    //
+    // The same four a boat carries -- see `Boat::entityId`. A cart's tilt is
+    // never on the wire: the mesh reads it off the rail under the cart, on
+    // whichever console draws it, as `RenderMinecart` does.
+    i32 entityId = 0;
+    bool remote = false;
+    ServerTrack track{};
+    // **Just taken over from the wire** -- by a guest taking the wheel, or by
+    // the host taking it back -- so the first local tick lifts it out of the
+    // floor the wire's rounding sank it into. See core/entity/wire_settle.hpp.
+    bool settle = false;
+    i32 riderId = 0;
+
     void setPosition(double px, double py, double pz);
 };
 
@@ -320,7 +335,67 @@ public:
 
     int count() const { return carts_.size(); }
     const Minecart& operator[](int i) const { return carts_[i]; }
+    // For the host, which names each cart the first time it announces it.
+    Minecart& at(int i) { return carts_[i]; }
     u32 refused() const { return refused_; }
+
+    // ---- across a link ---------------------------------------------------
+    //
+    // **The host's carts on a guest** -- `gy`'s Vehicle Spawn types 10, 11 and
+    // 12 -- and riding one across the link. Each is `BoatSystem`'s method of
+    // the same name; see there. The walk between moves is the jar's own here:
+    // `oc.e_()`'s multiplayer branch, core/entity/server_track.hpp.
+    //
+    // A remote chest cart arrives empty and stays empty: its slots are the
+    // host's, and nothing on the wire carries them.
+    int indexOfEntity(i32 entityId) const;
+    bool spawnRemote(const tick::TickWorld& world, i32 entityId, MinecartType type, double x,
+                     double y, double z);
+    bool placeRemote(i32 entityId, double x, double y, double z, float yaw);
+    bool removeById(i32 entityId);
+    // **Broken, with what a broken one leaves** -- on the host, for a guest
+    // whose console broke the one it was steering. A guest's world has no drop
+    // sink (the host owns every drop), so the host's copy is what breaks.
+    bool breakById(const tick::TickWorld& world, i32 entityId)
+    {
+        const int index = indexOfEntity(entityId);
+        if (index < 0) {
+            return false;
+        }
+        dropAndRemove(world, index);
+        return true;
+    }
+    // **On a guest, a vehicle the host runs is the host's to damage.** A blow
+    // that reaches one here anyway -- a guest's own arrow, which no other
+    // console sees -- strikes it and does nothing, rather than breaking it on
+    // this screen alone. The host's own `remote` vehicles are the ones a guest
+    // is steering, and those it damages as it damages any other.
+    void setGuest(bool guest) { guest_ = guest; }
+    // Gone from this console with nothing dropped -- a guest handing the one
+    // it just put down to its host.
+    void removeLocal(int index)
+    {
+        if (index >= 0 && index < count()) {
+            removeAt(index);
+        }
+    }
+    bool hurtRemote(i32 entityId);
+    // **A furnace cart's chimney, as the host says it is**: a remote one puffs
+    // on the one tick in four a burning one spends its fuel on, which is the
+    // whole of what a guest can see of its fire. On a remote cart `fuel` holds
+    // only this, 1 or 0.
+    bool setRemoteBurning(i32 entityId, bool burning);
+    // Whether the host's own cart is pushing itself along -- what it puffs on,
+    // and what `setRemoteBurning` tells a guest.
+    static bool burning(const Minecart& c)
+    {
+        return c.type == MinecartType::Furnace && c.pushX * c.pushX + c.pushZ * c.pushZ > 0.0001;
+    }
+    // Only a plain cart can be ridden, here as anywhere.
+    bool driveHere(i32 entityId);
+    bool driveElsewhere(i32 entityId, i32 riderId);
+    bool takeBack(i32 entityId);
+    bool setRider(i32 entityId, i32 riderId);
 
     // **Where the track is**, exposed because the renderer needs it: a cart is
     // drawn tilted along the rail, and the tilt comes from sampling the track a
@@ -364,6 +439,7 @@ private:
     SegmentedPool<Minecart, kInitialCapacity> carts_;
     int ridden_ = -1;
     u32 refused_ = 0;
+    bool guest_ = false;
     // The next `Minecart::id`. Never reused inside a session, and set past
     // every loaded cart's when a world is restored.
     u32 nextId_ = 1;

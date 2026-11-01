@@ -75,7 +75,7 @@ void bipedModel(ModelPart* out);
 // `cr.a(FFFFFF)` as a player is posed by it; see the header.
 void posePlayer(ModelPart* parts, float limbSwing, float limbAmount, float ageTicks,
                 float headYaw, float headPitch, float swingProgress = 0.0f,
-                bool sneaking = false);
+                bool sneaking = false, bool holding = false, bool sitting = false);
 
 // b1.2's `RenderPlayer`: a sneaking body is drawn this much lower, in blocks.
 inline constexpr double kSneakModelDrop = 0.125;
@@ -86,5 +86,27 @@ inline constexpr double kSneakModelDrop = 0.125;
 // count, 0 when `max` cannot hold all of them.
 int buildPlayerPreview(const ModelPart* parts, const Placement& place, int pageX, int pageY,
                        mesh::DetailVertex* out, int max);
+
+// **Worn armour**, `bu.a(dm, int)`: slot 0 is the helmet and 3 the boots, and
+// each is the same biped built with its boxes grown by 1 (0.5 for the leggings,
+// slot 2), textured from `armor/<material>_<1 or 2>.png` and showing only some
+// of its parts:
+//
+//     slot 0  head, hat            slot 2  body, both legs  (page 2)
+//     slot 1  body, both arms      slot 3  both legs
+//
+// `materials[slot]` is `ItemArmor.renderIndex` or -1 for an empty slot, and
+// `parts` is the already-posed player. The UVs are on the armour sheet's pages,
+// not the entity sheet's. Returns the vertex count.
+inline constexpr int kArmourPreviewVertices = 10 * kBoxVertices;
+int buildPlayerArmour(const ModelPart* parts, const int* materials, const Placement& place,
+                      mesh::DetailVertex* out, int max, u8 light = 0xFF);
+
+// `bu.b(dm, F)`: a player is drawn at 15/16 of the biped's size.
+inline constexpr float kPlayerModelScale = 0.9375f;
+
+// `ItemArmor.renderIndex` of an item id: the twenty armour items are
+// 298 to 317, four to a material. -1 for anything else.
+int armourMaterialOf(int itemId);
 
 }  // namespace mc::render

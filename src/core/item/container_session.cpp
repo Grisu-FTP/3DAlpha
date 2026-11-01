@@ -442,6 +442,7 @@ SlotClick ContainerSession::quickMove(tick::TickWorld* world, Inventory& invento
     const int end = own + kScreenPlayerSlots;
     ItemStack& from = *where.stack;
     bool moved = false;
+    bool intoGrid = false;
 
     if (where.result) {
         // `an.a()` once per craft, and only for a result the player has room
@@ -479,6 +480,16 @@ SlotClick ContainerSession::quickMove(tick::TickWorld* world, Inventory& invento
                                       tick::kFurnaceFuelSlot + 1, false);
                 }
             }
+            if (!moved && kind_ == ScreenKind::Workbench) {
+                // **Ours: straight into the crafting grid**, topping up the
+                // cells already holding the item before an empty one is taken.
+                // A full grid falls through to the backpack/hand crossing.
+                // The workbench only: the inventory's 2x2 is small enough to
+                // be filled by hand, and a shift-click there should move the
+                // stack between the hotbar and the backpack as it always did.
+                moved = mergeInto(inventory, from, 1, 1 + grid_.size(), false);
+                intoGrid = moved;
+            }
             if (!moved) {
                 moved = where.playerSlot < kHotbarSlots
                             ? mergeInto(inventory, from, own, handStart, false)
@@ -491,7 +502,7 @@ SlotClick ContainerSession::quickMove(tick::TickWorld* world, Inventory& invento
         return out;
     }
     out.changed = true;
-    if (where.grid) {
+    if (where.grid || intoGrid) {
         refreshResult(grid_);
     }
     if (kind_ == ScreenKind::Furnace || kind_ == ScreenKind::Chest) {

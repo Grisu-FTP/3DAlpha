@@ -114,6 +114,13 @@ public:
     // has not been reached yet.
     void destroy(TickWorld& world);
 
+    // **Phase 3's fireball and smoke with none of its writes**, for a blast
+    // that happened on another console: the same two particles from every
+    // recorded cell, in the same order and off the same draws, and no block
+    // read, cleared or dropped. The crater arrives as that console's Block
+    // Changes. See `PrimedTntSystem::goOffRemote`.
+    void puff(TickWorld& world);
+
     double x() const { return x_; }
     double y() const { return y_; }
     double z() const { return z_; }
@@ -127,6 +134,8 @@ public:
 private:
     bool marked(int ix, int iy, int iz) const;
     void mark(int ix, int iy, int iz);
+    // The two particles one recorded cell throws. See `destroy`.
+    void puffCell(TickWorld& world, i32 bx, int by, i32 bz) const;
 
     double x_, y_, z_;
     float strength_;

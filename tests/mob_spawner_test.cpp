@@ -35,6 +35,7 @@ using mc::entity::kSpawnerDelaySpread;
 using mc::entity::kSpawnerStartDelay;
 using mc::entity::MobSpawnerBlock;
 using mc::entity::MobSpawnerCounters;
+using mc::entity::MobPlayer;
 using mc::entity::MobSpawnerStore;
 using mc::entity::MobSystem;
 using mc::entity::MobType;
@@ -703,4 +704,30 @@ TEST(an_unknown_mob_draws_nothing_and_a_known_one_draws_a_model)
         render::buildSpawnerMobs(store, 0, 0, 0, 1.0f, out.data(), int(out.size()));
     // A biped is seven boxes.
     CHECK_EQ(written, 7 * render::kBoxVertices);
+}
+
+TEST(a_guest_beside_a_spawner_wakes_it_when_the_host_is_far)
+{
+    // `getClosestPlayer` asks the whole player list, and a host's guests are on
+    // it. See `SpawnContext::guests`.
+    Room room;
+    room.place("Zombie", 1000);
+    SpawnContext context = room.near();
+    context.playerX = 40.0;
+    MobPlayer guest;
+    guest.present = true;
+    guest.x = 4.0;
+    guest.y = double(Room::kSpawnerY);
+    guest.z = 0.0;
+    context.guests = &guest;
+    context.guestCount = 1;
+    MobSpawnerCounters counters;
+    room.run(1, context, &counters);
+    CHECK_EQ(counters.inRange, 1);
+
+    // One who is not in the world any more wakes nothing.
+    guest.present = false;
+    MobSpawnerCounters none;
+    room.run(1, context, &none);
+    CHECK_EQ(none.inRange, 0);
 }

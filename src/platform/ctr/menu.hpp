@@ -638,6 +638,7 @@ private:
     // settings of one sound the game already had: quiet and low for moving,
     // full and open for choosing.
     void playMoveClick();
+    void playLeverOff();
 
     // The cursor step every screen shares, wrapping at both ends -- and the one
     // place the move click is played, so no screen can forget it and none can

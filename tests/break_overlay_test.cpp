@@ -42,8 +42,8 @@ TEST(every_face_samples_the_stage_tile_in_the_last_row)
     const int u0 = (tile % mesh::kAtlasTilesPerEdge) * mesh::kUvUnitsPerTile;
     const int v0 = (tile / mesh::kAtlasTilesPerEdge) * mesh::kUvUnitsPerTile;
     for (int i = 0; i < n; ++i) {
-        CHECK(int(v[i].u) == u0 || int(v[i].u) == u0 + mesh::kUvUnitsPerTile);
-        CHECK(int(v[i].v) == v0 || int(v[i].v) == v0 + mesh::kUvUnitsPerTile);
+        CHECK(int(v[i].u) >= u0 && int(v[i].u) <= u0 + mesh::kUvUnitsPerTile);
+        CHECK(int(v[i].v) >= v0 && int(v[i].v) <= v0 + mesh::kUvUnitsPerTile);
     }
 }
 
@@ -52,12 +52,39 @@ TEST(the_overlay_stands_just_off_the_block_it_covers)
     auto v = buffer();
     const int n = render::buildBreakOverlay(block::BlockId(Block::Stone), 0, 0, v.data(),
                                             render::kBreakOverlayMaxVertices);
-    for (int i = 0; i < n; ++i) {
-        for (const double c : {blocks(v[i].x), blocks(v[i].y), blocks(v[i].z)}) {
-            CHECK(c < -0.001 || c > 1.001);
-            CHECK(c > -0.01 && c < 1.01);
+    for (int q = 0; q < n; q += 4) {
+        // Each face is lifted along its normal only, so its edges stay on the
+        // block and the crack never overlaps a neighbour.
+        int lifted = 0;
+        for (int axis = 0; axis < 3; ++axis) {
+            const double c0 = blocks(axis == 0 ? v[q].x : axis == 1 ? v[q].y : v[q].z);
+            if (c0 < -0.001 || c0 > 1.001) {
+                ++lifted;
+                CHECK(c0 > -0.01 && c0 < 1.01);
+            } else {
+                CHECK(c0 > -0.0001 && c0 < 1.0001 && (c0 < 0.0001 || c0 > 0.9999));
+            }
         }
+        CHECK_EQ(lifted, 1);
     }
+}
+
+TEST(a_small_block_cracks_at_the_tiles_pixel_scale)
+{
+    auto v = buffer();
+    const int n = render::buildBreakOverlay(block::BlockId(Block::StoneButton), 0, 0, v.data(),
+                                            render::kBreakOverlayMaxVertices);
+    CHECK(n > 0);
+    for (int i = 0; i < n; ++i) {
+        CHECK(int(v[i].u) >= 0);
+    }
+    // A button face covers a few texels of the tile, never the whole tile.
+    int span = 0;
+    for (int i = 1; i < 4; ++i) {
+        const int d = int(v[i].u) - int(v[0].u);
+        span = (d < 0 ? -d : d) > span ? (d < 0 ? -d : d) : span;
+    }
+    CHECK(span < mesh::kUvUnitsPerTile);
 }
 
 TEST(a_slab_cracks_as_a_slab)

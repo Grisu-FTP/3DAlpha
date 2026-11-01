@@ -67,6 +67,14 @@ private:
 struct Teleport {
     double x = 0.0;
     double eyeY = 0.0;
+    // **The feet, as the server sent them** -- the packet's third number,
+    // `stance`, which a server fills with the feet (`teleportTo` writes
+    // `y + 1.62, y`). Taken as sent rather than worked back from the eye:
+    // `eye - 1.62f` lands a few billionths of a block *under* the floor the
+    // server stood the player on (1.62 there, 1.62f widened here), a box that
+    // starts inside a block is not stopped by it, and the player fell a whole
+    // block into the ground on every join.
+    double feetY = 0.0;
     double z = 0.0;
     float yaw = 0.0f;
     float pitch = 0.0f;

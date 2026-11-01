@@ -45,6 +45,7 @@
 //     the same split `EntityArrow`'s bubbles take.
 
 #include "core/entity/rider.hpp"
+#include "core/entity/server_track.hpp"
 #include "core/entity/water_entry.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/java_random.hpp"
@@ -152,6 +153,25 @@ struct Boat {
     u8 light = 0;
     bool alive = false;
 
+    // ---- across a link ---------------------------------------------------
+    //
+    // **The session's name for it**, given by the host the first time the
+    // boat is announced and zero until then. A guest's copy carries the
+    // host's.
+    i32 entityId = 0;
+    // **Moved by another console**: the host's boat on a guest, or a boat a
+    // guest is steering on the host. Not simulated -- it walks to `track`.
+    // See core/entity/server_track.hpp.
+    bool remote = false;
+    ServerTrack track{};
+    // **Just taken over from the wire** -- by a guest taking the wheel, or by
+    // the host taking it back -- so the first local tick lifts it out of the
+    // floor the wire's rounding sank it into. See core/entity/wire_settle.hpp.
+    bool settle = false;
+    // **Somebody at another console is sitting in it**, by their entity id.
+    // `ridden` is set too, so nobody here can climb in on top of them.
+    i32 riderId = 0;
+
     // `Entity.setPosition` for a box whose `yOffset` is half its height.
     void setPosition(double px, double py, double pz);
 };
@@ -211,8 +231,73 @@ public:
 
     int count() const { return boats_.size(); }
     const Boat& operator[](int i) const { return boats_[i]; }
+    // For the host, which names each boat the first time it announces it.
+    Boat& at(int i) { return boats_[i]; }
 
     u32 refused() const { return refused_; }
+
+    // ---- across a link ---------------------------------------------------
+    //
+    // **The host's boats on a guest**, spawned, moved, struck and removed by
+    // what the host says -- `gy`'s Vehicle Spawn type 1 and the moves that
+    // follow it. A second spawn under one id replaces the first.
+
+    // Which boat carries this entity id, or -1.
+    int indexOfEntity(i32 entityId) const;
+    // `x, y, z` are the host's `posX/posY/posZ`, which is what the wire
+    // carries. **Not `dc(cn, DDD)`'s `+ yOffset`**: the jar's constructor lifts
+    // a spawned boat half a hull above the server's position until the first
+    // move puts it back, which is a stutter rather than a decision.
+    bool spawnRemote(const tick::TickWorld& world, i32 entityId, double x, double y, double z);
+    // A move from the other end. Ignored for a boat this console is steering:
+    // it is the one saying where that boat is.
+    bool placeRemote(i32 entityId, double x, double y, double z, float yaw);
+    bool removeById(i32 entityId);
+    // **Broken, with what a broken one leaves** -- on the host, for a guest
+    // whose console broke the one it was steering. A guest's world has no drop
+    // sink (the host owns every drop), so the host's copy is what breaks.
+    bool breakById(const tick::TickWorld& world, i32 entityId)
+    {
+        const int index = indexOfEntity(entityId);
+        if (index < 0) {
+            return false;
+        }
+        dropAndRemove(world, index);
+        return true;
+    }
+    // **On a guest, a vehicle the host runs is the host's to damage.** A blow
+    // that reaches one here anyway -- a guest's own arrow, which no other
+    // console sees -- strikes it and does nothing, rather than breaking it on
+    // this screen alone. The host's own `remote` vehicles are the ones a guest
+    // is steering, and those it damages as it damages any other.
+    void setGuest(bool guest) { guest_ = guest; }
+    // Gone from this console with nothing dropped -- a guest handing the one
+    // it just put down to its host.
+    void removeLocal(int index)
+    {
+        if (index >= 0 && index < count()) {
+            removeAt(index);
+        }
+    }
+    // A hit somebody else landed, as an Entity Status: the hull rocks the way
+    // `attack` rocks it, for one bare hand's worth -- the status does not say
+    // how hard, and the breaking is the owner's.
+    bool hurtRemote(i32 entityId);
+
+    // **Riding across a link.** Whoever sits in a boat steers it, wherever they
+    // are: the guest's console runs a boat its player is in and tells the host
+    // where it went, and the host's copy only walks there.
+    //
+    // A guest's player is in it: run it here and put them aboard.
+    bool driveHere(i32 entityId);
+    // Somebody elsewhere is steering it (`riderId`), or nobody is and the host
+    // runs it again (`riderId` 0, which is how a guest hands it back).
+    bool driveElsewhere(i32 entityId, i32 riderId);
+    // The host runs it again, with nobody in it: a guest got out or went.
+    bool takeBack(i32 entityId);
+    // Who another console says is sitting in it, for drawing and for refusing
+    // a second rider. Changes nothing about who moves it.
+    bool setRider(i32 entityId, i32 riderId);
 
 private:
     friend struct PersistentEntities;
@@ -225,6 +310,7 @@ private:
     SegmentedPool<Boat, kInitialCapacity> boats_;
     int ridden_ = -1;
     u32 refused_ = 0;
+    bool guest_ = false;
     JavaRandom rand_;
 };
 

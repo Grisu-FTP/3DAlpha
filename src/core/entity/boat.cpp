@@ -4,6 +4,7 @@
 
 #include "core/entity/block_contact.hpp"
 #include "core/entity/fire_entry.hpp"
+#include "core/entity/wire_settle.hpp"
 
 #include "core/block/fluid_flow.hpp"
 #include "core/block/registry.hpp"
@@ -29,6 +30,34 @@ u8 packedLightAt(const tick::TickWorld& world, double x, double y, double z)
     const int by = int(MathHelper::floorDouble(y));
     const i32 bz = MathHelper::floorDouble(z);
     return u8((world.skyLightAt(bx, by, bz) << 4) | world.blockLightAt(bx, by, bz));
+}
+
+// `Entity.applyEntityCollision`: `other` is pushed away from `self` and `self`
+// from `other`, along the larger of the two axis gaps, by 0.05 over the root of
+// that gap (capped at 0.05). Two boats on the very same spot have no line to
+// push along, and the original does nothing for a gap under 0.01: boats placed
+// into each other sit still until something nudges one, and then burst apart.
+void shove(Boat& self, Boat& other)
+{
+    double dx = other.x - self.x;
+    double dz = other.z - self.z;
+    double gap = std::fabs(dx) > std::fabs(dz) ? std::fabs(dx) : std::fabs(dz);
+    if (gap < 0.01) {
+        return;
+    }
+    gap = std::sqrt(gap);
+    dx /= gap;
+    dz /= gap;
+    double fall = 1.0 / gap;
+    if (fall > 1.0) {
+        fall = 1.0;
+    }
+    dx *= fall * 0.05000000074505806;
+    dz *= fall * 0.05000000074505806;
+    self.motionX -= dx;
+    self.motionZ -= dz;
+    other.motionX += dx;
+    other.motionZ += dz;
 }
 
 }  // namespace
@@ -153,12 +182,152 @@ bool BoatSystem::attack(const tick::TickWorld& world, int index, int amount)
         return false;
     }
     Boat& b = boats_[index];
+    if (guest_ && b.remote) {
+        return true;  // the host's; see `setGuest`
+    }
     b.forwardDirection = -b.forwardDirection;
     b.timeSinceHit = kVehicleHitTime;
     b.damage += amount * kVehicleDamageScale;
     if (b.damage > kVehicleBreakDamage) {
         dropAndRemove(world, index);
     }
+    return true;
+}
+
+int BoatSystem::indexOfEntity(i32 entityId) const
+{
+    if (entityId == 0) {
+        return -1;
+    }
+    for (int i = 0; i < boats_.size(); ++i) {
+        if (boats_[i].alive && boats_[i].entityId == entityId) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool BoatSystem::spawnRemote(const tick::TickWorld& world, i32 entityId, double x, double y,
+                             double z)
+{
+    removeById(entityId);
+    Boat* slot = boats_.push();
+    if (slot == nullptr) {
+        ++refused_;
+        return false;
+    }
+    Boat b{};
+    b.alive = true;
+    b.entityId = entityId;
+    b.remote = true;
+    b.forwardDirection = 1;
+    b.setPosition(x, y, z);
+    b.prevX = x;
+    b.prevY = y;
+    b.prevZ = z;
+    b.track.reset(x, y, z, 0.0f);
+    b.light = packedLightAt(world, x, y, z);
+    *slot = b;
+    return true;
+}
+
+bool BoatSystem::placeRemote(i32 entityId, double x, double y, double z, float yaw)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || !boats_[index].remote) {
+        return false;
+    }
+    auto& b = boats_[index];
+    if (b.track.aim(x, y, z, yaw)) {
+        b.yaw = b.prevYaw = yaw;
+    }
+    return true;
+}
+
+bool BoatSystem::removeById(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    removeAt(index);
+    return true;
+}
+
+bool BoatSystem::hurtRemote(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    Boat& b = boats_[index];
+    b.forwardDirection = -b.forwardDirection;
+    b.timeSinceHit = kVehicleHitTime;
+    b.damage += kVehicleDamageScale;
+    return true;
+}
+
+bool BoatSystem::driveHere(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    Boat& b = boats_[index];
+    b.remote = false;
+    b.riderId = 0;
+    b.ridden = false;
+    b.motionX = b.motionY = b.motionZ = 0.0;
+    b.track.reset(b.x, b.y, b.z, b.yaw);
+    b.settle = true;
+    return mount(index);
+}
+
+bool BoatSystem::driveElsewhere(i32 entityId, i32 riderId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    if (ridden_ == index) {
+        ridden_ = -1;
+    }
+    Boat& b = boats_[index];
+    b.remote = true;
+    b.riderId = riderId;
+    b.ridden = riderId != 0;
+    b.motionX = b.motionY = b.motionZ = 0.0;
+    b.track.reset(b.x, b.y, b.z, b.yaw);
+    return true;
+}
+
+bool BoatSystem::takeBack(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    Boat& b = boats_[index];
+    // **Where the rider last put it, and still.** The reports carried no
+    // motion, so the host's own physics starts it from rest -- afloat, it
+    // simply bobs where it was left.
+    b.remote = false;
+    b.riderId = 0;
+    b.ridden = ridden_ == index;
+    b.motionX = b.motionY = b.motionZ = 0.0;
+    b.track.reset(b.x, b.y, b.z, b.yaw);
+    b.settle = true;
+    return true;
+}
+
+bool BoatSystem::setRider(i32 entityId, i32 riderId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || ridden_ == index) {
+        return false;
+    }
+    boats_[index].riderId = riderId;
+    boats_[index].ridden = riderId != 0;
     return true;
 }
 
@@ -174,6 +343,44 @@ void BoatSystem::tick(const tick::TickWorld& world, const VehicleRider& rider)
                                  MathHelper::floorDouble(b.z) >> 4)) {
             ++i;
             continue;
+        }
+
+        // **Another console's boat walks to where it was last said to be**, and
+        // nothing else: no buoyancy, no wall to break on, no spray. Only the
+        // rocking a hit started still runs down, so a struck boat settles here
+        // as it does there. See core/entity/server_track.hpp.
+        if (b.remote) {
+            if (b.timeSinceHit > 0) {
+                --b.timeSinceHit;
+            }
+            if (b.damage > 0) {
+                --b.damage;
+            }
+            b.prevX = b.x;
+            b.prevY = b.y;
+            b.prevZ = b.z;
+            b.prevYaw = b.yaw;
+            double px = b.x;
+            double py = b.y;
+            double pz = b.z;
+            float yaw = b.yaw;
+            if (b.track.step(&px, &py, &pz, &yaw)) {
+                b.setPosition(px, py, pz);
+                b.yaw = yaw;
+            }
+            b.light = packedLightAt(world, b.x, b.y, b.z);
+            ++i;
+            continue;
+        }
+
+        // Out of the floor the wire's rounding sank it into, once, before the
+        // first sweep can let it fall through. See core/entity/wire_settle.hpp.
+        if (b.settle) {
+            b.settle = false;
+            const double lift = wireSettleLift(world, b.box);
+            if (lift > 0.0) {
+                b.setPosition(b.x, b.y + lift, b.z);
+            }
         }
 
         // **`kh.y()`'s splash**, and a boat is one of the four entities that
@@ -403,6 +610,22 @@ void BoatSystem::tick(const tick::TickWorld& world, const VehicleRider& rider)
             delta = -kBoatTurnLimit;
         }
         b.yaw = float(double(b.yaw) + delta);
+
+        // **Boats shove each other apart.** The end of `dc.e_()`: every other
+        // boat within 0.2 of this box's footprint gets `applyEntityCollision`,
+        // which pushes the pair away from each other along the line between
+        // them at 0.05 a tick, less the further apart they are. Each pair is
+        // reached from both ends, so it is shoved twice a tick, and boats
+        // placed into each other burst outwards instead of sitting overlapped.
+        {
+            const AABB reach = b.box.expand(0.2, 0.0, 0.2);
+            for (int j = 0; j < boats_.size(); ++j) {
+                if (j == i || !reach.intersects(boats_[j].box)) {
+                    continue;
+                }
+                shove(b, boats_[j]);
+            }
+        }
 
         b.light = packedLightAt(world, b.x, b.y, b.z);
         ++i;

@@ -221,6 +221,7 @@ void HostPlay::close(const std::string& reason)
 
 void HostPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                     const item::Effects& effects, entity::ItemEntitySystem& drops,
+                    entity::FallingBlockSystem& falling, entity::PrimedTntSystem& tnt,
                     gui::ChatLog& chat, const u8* fontWidths)
 {
     if (link_ == nullptr) {
@@ -243,6 +244,8 @@ void HostPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     chunks_ = &chunks;
     effects_ = &effects;
     drops_ = &drops;
+    falling_ = &falling;
+    tnt_ = &tnt;
 
     // **Reading the radio comes first**, because everything below is an answer
     // to it: a guest's move decides which columns it is owed, and a guest's
@@ -321,6 +324,8 @@ void HostPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     chunks_ = nullptr;
     effects_ = nullptr;
     drops_ = nullptr;
+    falling_ = nullptr;
+    tnt_ = nullptr;
     chat_ = nullptr;
 
     // Whatever the pool wants, to whichever console can answer soonest. The
@@ -552,6 +557,10 @@ void HostPlay::placeBlock(const PlaceRequest& request)
     if (streamer_ == nullptr || chunks_ == nullptr) {
         return;
     }
+    if (request.face == net::kPlaceOnCell) {
+        placeBoat(request);
+        return;
+    }
     if (request.face < 0 || request.face >= mesh::kFaceCount) {
         return;
     }
@@ -581,6 +590,21 @@ void HostPlay::placeBlock(const PlaceRequest& request)
     box.minZ = request.playerZ - 0.3;
     box.maxZ = request.playerZ + 0.3;
 
+    // **Somebody else's click opens nothing on this screen.** A chest, a
+    // workbench and a furnace all answer a right click by asking the frame loop
+    // for their window, and this click is a guest's -- so without the silence a
+    // guest right-clicking a chest two hundred blocks away opened that chest on
+    // the host's screen, over whatever the host was doing. See
+    // `TickWorld::SilenceContainers`.
+    //
+    // **Only the screen is held back**, not the click: the block still takes
+    // it and a furnace still lights. A guest sees the contents through
+    // core/net/tile_sync.hpp, which asks for them separately.
+    tick::TickWorld* world = streamer_->worldTick();
+    if (world == nullptr) {
+        return;  // no world open, so there is no block to click
+    }
+    tick::TickWorld::SilenceContainers quiet(*world);
     bool itemTook = false;
     streamer_->rightClick(*chunks_, item::ItemId(request.item), hit, box, request.yawDegrees,
                           effects_ != nullptr ? *effects_ : item::Effects{}, &itemTook);
@@ -634,6 +658,29 @@ void HostPlay::useItem(const UseRequest& request)
     }
 }
 
+// **A guest's boat, on the cell its own ray found.** `me.a(...)` is not a block
+// placement -- it casts its own ray, with liquids on, from the guest's eye -- so
+// the guest says where it landed and the host puts its own there: the same
+// `BoatSystem::place` the host's own right click reaches. Within the boat's
+// reach of where the guest stands, plus the slack of a pose three ticks old.
+void HostPlay::placeBoat(const PlaceRequest& request)
+{
+    tick::TickWorld* world = streamer_->worldTick();
+    entity::BoatSystem* boats = effects_ != nullptr ? effects_->entities.boats : nullptr;
+    if (world == nullptr || boats == nullptr
+        || item::def(item::ItemId(request.item)).spawns != item::SpawnsEntity::Boat) {
+        return;
+    }
+    const double dx = double(request.x) + 0.5 - request.playerX;
+    const double dy = double(request.y) + 0.5 - (request.playerFeetY + 1.62);
+    const double dz = double(request.z) + 0.5 - request.playerZ;
+    constexpr double kReach = entity::kBoatReach + 2.0;
+    if (dx * dx + dy * dy + dz * dz > kReach * kReach) {
+        return;
+    }
+    boats->place(*world, request.x, request.y, request.z);
+}
+
 void HostPlay::setWorldRules(settings::Gamemode gamemode, settings::Difficulty difficulty)
 {
     gamemode_ = gamemode;
@@ -664,8 +711,39 @@ void HostPlay::attackEntity(const AttackRequest& request)
             }
         }
     }
-    // **Only what the guest can see and has an id for**: the animals, and the
-    // paintings above. Boats and carts do not cross the link yet.
+    // **A boat or a cart**, broken here exactly as the host's own fist breaks
+    // one, so the planks or the cart drop in this world and its Destroy Entity
+    // takes it off every screen -- the guest steering it included.
+    {
+        item::EntityTarget vehicle;
+        if (entity::BoatSystem* boats = effects_->entities.boats) {
+            const int at = boats->indexOfEntity(request.entityId);
+            if (at >= 0) {
+                vehicle.kind = item::EntityTarget::Kind::Boat;
+                vehicle.index = at;
+            }
+        }
+        if (!vehicle.found()) {
+            if (entity::MinecartSystem* carts = effects_->entities.minecarts) {
+                const int at = carts->indexOfEntity(request.entityId);
+                if (at >= 0) {
+                    vehicle.kind = item::EntityTarget::Kind::Minecart;
+                    vehicle.index = at;
+                }
+            }
+        }
+        if (vehicle.found()) {
+            item::Attacker attacker;
+            attacker.present = true;
+            attacker.x = request.playerX;
+            attacker.z = request.playerZ;
+            item::attackEntity(*world, vehicle, item::ItemId(request.item), *effects_,
+                               attacker);
+            return;
+        }
+    }
+    // **And the animals**, which are the rest of what a guest can see and has
+    // an id for.
     int index = -1;
     for (int i = 0; i < pool->count(); ++i) {
         if ((*pool)[i].entityId == request.entityId) {

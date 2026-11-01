@@ -191,6 +191,28 @@ ItemEntity* ItemEntitySystem::findById(i32 entityId)
     return nullptr;
 }
 
+void ItemEntitySystem::beginCollect(ItemEntity& e, double tx, double ty, double tz)
+{
+    e.collectTicks = 1;
+    e.collectX = tx;
+    e.collectY = ty;
+    e.collectZ = tz;
+    e.motionX = e.motionY = e.motionZ = 0.0;
+    e.prevX = e.x;
+    e.prevY = e.y;
+    e.prevZ = e.z;
+}
+
+bool ItemEntitySystem::collectById(i32 entityId, double tx, double ty, double tz)
+{
+    ItemEntity* e = findById(entityId);
+    if (e == nullptr || e->collecting()) {
+        return false;
+    }
+    beginCollect(*e, tx, ty, tz);
+    return true;
+}
+
 bool ItemEntitySystem::removeById(i32 entityId)
 {
     if (entityId == 0) {
@@ -208,7 +230,7 @@ bool ItemEntitySystem::removeById(i32 entityId)
 bool ItemEntitySystem::placeById(i32 entityId, double px, double py, double pz)
 {
     ItemEntity* item = findById(entityId);
-    if (item == nullptr) {
+    if (item == nullptr || item->collecting()) {
         return false;
     }
     item->serverX = px;
@@ -248,7 +270,7 @@ int ItemEntitySystem::removeUnowned()
     int removed = 0;
     // Backwards, because `swapRemove` moves the last entry into the hole.
     for (int i = items_.size() - 1; i >= 0; --i) {
-        if (items_[i].entityId == 0) {
+        if (items_[i].entityId == 0 && !items_[i].collecting()) {
             removeAt(i);
             ++removed;
         }
@@ -264,7 +286,7 @@ void ItemEntitySystem::takeBlast(const tick::TickWorld& world, const Explosion& 
     double vz = 0.0;
     for (int i = 0; i < items_.size(); ++i) {
         ItemEntity& e = items_[i];
-        if (!e.alive()
+        if (!e.alive() || e.collecting()
             || !blast.effectOn(world, e.x, e.y, e.z, e.box, &damage, &vx, &vy, &vz)) {
             continue;
         }
@@ -418,6 +440,15 @@ void ItemEntitySystem::tick(const tick::TickWorld& world)
         // remove an entry while it runs -- and the sweep at the bottom is what
         // reclaims it.
         if (!e.alive()) {
+            continue;
+        }
+
+        // **A collected stack only counts down.** No physics, no ageing out, no
+        // residency test: it is leaving and the collector is next to it.
+        if (e.collecting()) {
+            if (++e.collectTicks > kCollectTicks) {
+                e.count = 0;
+            }
             continue;
         }
 
@@ -668,7 +699,7 @@ int ItemEntitySystem::collect(const AABB& playerBox, item::Inventory& inventory)
     int taken = 0;
     for (int i = 0; i < items_.size();) {
         ItemEntity& e = items_[i];
-        if (e.pickupDelay != 0 || !e.box.intersects(playerBox)) {
+        if (e.pickupDelay != 0 || e.collecting() || !e.box.intersects(playerBox)) {
             ++i;
             continue;
         }
@@ -684,13 +715,17 @@ int ItemEntitySystem::collect(const AABB& playerBox, item::Inventory& inventory)
             ++i;
             continue;
         }
-        e.count = leftover;
         if (leftover > 0) {
+            e.count = leftover;
             ++i;
             continue;
         }
         ++taken;
-        removeAt(i);
+        // Gone from the ground, not from the screen: it flies to the chest,
+        // still holding its count so the pile is drawn the size it was.
+        beginCollect(e, (playerBox.minX + playerBox.maxX) / 2.0, playerBox.minY + 0.9,
+                     (playerBox.minZ + playerBox.maxZ) / 2.0);
+        ++i;
     }
     return taken;
 }

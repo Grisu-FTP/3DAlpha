@@ -79,7 +79,8 @@ i16 sheetV(int originTexels, float pageFractionRaw)
 
 }  // namespace
 
-Placement placeModel(double x, double y, double z, float yawRadians, float fallRadians)
+Placement placeModel(double x, double y, double z, float yawRadians, float fallRadians,
+                     float scale)
 {
     // The same two steps `placeMob` takes with no per-axis scale: the flip,
     // and then the lift expressed in the flipped frame so a downward shift in
@@ -101,12 +102,12 @@ Placement placeModel(double x, double y, double z, float yawRadians, float fallR
     };
 
     Placement place;
-    turn(-kModelUnit, 0.0f, 0.0f, place.ax);
-    turn(0.0f, -kModelUnit, 0.0f, place.ay);
-    turn(0.0f, 0.0f, kModelUnit, place.az);
+    turn(-kModelUnit * scale, 0.0f, 0.0f, place.ax);
+    turn(0.0f, -kModelUnit * scale, 0.0f, place.ay);
+    turn(0.0f, 0.0f, kModelUnit * scale, place.az);
 
     float lift[3];
-    turn(0.0f, kModelHeight * kModelUnit + kFootLift, 0.0f, lift);
+    turn(0.0f, (kModelHeight * kModelUnit + kFootLift) * scale, 0.0f, lift);
     place.x = x + double(lift[0]);
     place.y = y + double(lift[1]);
     place.z = z + double(lift[2]);

@@ -133,6 +133,18 @@ struct World {
         return true;
     }
 
+    // **Closed on the way out if a test did not get to.** CHECK returns from
+    // the test, and a streamer dropped open leaves its worker asleep on a
+    // condition variable that is then destroyed under it -- glibc waits for
+    // the waiter, so one failed check hung the whole suite rather than
+    // reporting itself.
+    ~World()
+    {
+        if (streamer.isOpen()) {
+            streamer.close(kNow);
+        }
+    }
+
     void step(i32 cx, i32 cz) { frame(streamer, renderer, counter++, cx, cz, budget); }
     int settleAt(i32 cx, i32 cz)
     {
@@ -255,19 +267,23 @@ TEST(offered_column_work_runs_on_the_generation_worker_when_it_has_nothing_to_ge
     i32 otherZ[1] = {kChunkZ};
     CHECK(w.streamer.offerColumnWork(other, otherZ, 1, &Seen::visit, &seen) == 0);
 
-    // **Collected only after the streamer has withdrawn it**, which is what
-    // update() does at its top -- and what makes the borrowed columns safe.
-    // Before that there is no answer to give.
+    // **Collected once the worker is out of it**: when update() withdraws it at
+    // its top, or when the worker has finished the batch on its own, which
+    // marks it ready too (runColumnWorkLocked). Four trivial callbacks can
+    // finish before this line on a slow scheduler -- qemu does it -- so an
+    // early answer is allowed, and must then be the whole batch. What may
+    // never happen is an answer for a batch the worker is still inside.
     int done = -1;
-    CHECK(!w.streamer.takeColumnWork(&done));
-    CHECK(done == -1);
+    if (!w.streamer.takeColumnWork(&done)) {
+        CHECK(done == -1);
 
-    // The world is settled, so the worker is idle and takes it at once; the
-    // sleep is slack, not synchronisation.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    w.step(kChunkX, kChunkZ);
+        // The world is settled, so the worker is idle and takes it at once;
+        // the sleep is slack, not synchronisation.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50 * mc::test::slowScale()));
+        w.step(kChunkX, kChunkZ);
 
-    CHECK(w.streamer.takeColumnWork(&done));
+        CHECK(w.streamer.takeColumnWork(&done));
+    }
     CHECK(done == 4);
     CHECK(seen.calls == 4);
     for (int i = 0; i < 4 && i < seen.calls; ++i) {
@@ -361,7 +377,8 @@ TEST(an_offer_made_while_the_world_is_still_being_generated_never_holds_generati
     // it comes back having run over no more than it was given.
     int offers = 0;
     int ran = 0;
-    for (int i = 0; i < 400 && w.streamer.stats().pendingGeneration > 0; ++i) {
+    for (int i = 0; i < 400 * mc::test::slowScale() && w.streamer.stats().pendingGeneration > 0;
+         ++i) {
         i32 x[2] = {kChunkX, kChunkX};
         i32 z[2] = {kChunkZ, kChunkZ + 1};
         Seen seen;

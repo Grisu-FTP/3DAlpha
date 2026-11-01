@@ -42,11 +42,16 @@
 // borrowed column pointer is safe; only the deflate crosses. See `ColumnOven`.
 
 #include "core/entity/arrow.hpp"
+#include "core/entity/boat.hpp"
+#include "core/entity/falling_block.hpp"
 #include "core/entity/item_entity.hpp"
+#include "core/entity/minecart.hpp"
 #include "core/entity/mob.hpp"
 #include "core/entity/painting.hpp"
+#include "core/entity/primed_tnt.hpp"
 #include "core/net/packet_channel.hpp"
 #include "core/net/packets.hpp"
+#include "core/net/tile_sync.hpp"
 #include "core/util/types.hpp"
 #include "core/world/chunk.hpp"
 
@@ -163,16 +168,28 @@ public:
     // and taken down with a Destroy Entity. Null for a world with no pool.
     virtual entity::PaintingSystem* paintings() { return nullptr; }
 
+    // **The boats and carts**, announced as a1.1.2's own Vehicle Spawn, moved,
+    // rocked when struck and destroyed -- and lent to a guest who climbs in,
+    // whose console then steers it. Null for a world with none.
+    virtual entity::BoatSystem* boats() { return nullptr; }
+    virtual entity::MinecartSystem* minecarts() { return nullptr; }
+
+    // **The falling blocks and lit TNT**, which no a1.1.2 client is told about
+    // and ours are: a Vehicle Spawn 70/71 or 50, the moves, and a Destroy
+    // Entity that for TNT is the blast. Null for a world with none.
+    virtual entity::FallingBlockSystem* fallingBlocks() { return nullptr; }
+    virtual entity::PrimedTntSystem* primedTnt() { return nullptr; }
+
     // **What is in flight or stuck in the ground**, the host's own pool. An
     // arrow a guest fires is fired here, on their behalf, and the guests are
     // told where every arrow is -- see `WorldServer::syncArrows`. Null for a
     // world with no pool.
     virtual entity::ArrowSystem* arrows() { return nullptr; }
 
-    // **A guest's right click in the air** -- `makeUseItem`. Only the bow
-    // means anything at protocol 2's end of the game: the host fires the
-    // arrow from the guest's eye along their look, as theirs. The ammunition
-    // is the guest's and was spent on their own console before they asked.
+    // **A guest's right click in the air** -- `makeUseItem`. Only the bow means
+    // anything at protocol 2's end of the game: the host fires the arrow from
+    // the guest's eye along their look, as theirs. The ammunition is the
+    // guest's and was spent on their own console before they asked.
     struct UseRequest {
         int item = 0;
         i32 shooterEntityId = 0;
@@ -181,6 +198,12 @@ public:
         float pitchDegrees = 0.0f;
     };
     virtual void useItem(const UseRequest& request) { (void)request; }
+
+    // **The tick world, for the chests and furnaces a guest opens.** The
+    // server reads their contents from it and writes a guest's clicks back; see
+    // core/net/tile_sync.hpp. Null for a world with none, which is what the
+    // tests that do not care pass.
+    virtual tick::TickWorld* tickWorld() { return nullptr; }
 
     // A guest threw something. `mx/my/mz` are blocks per tick.
     virtual void spawnItem(double x, double y, double z, item::ItemId id, int count,
@@ -330,9 +353,14 @@ public:
     // Called every tick; nothing goes out unless something changed.
     void setHostStance(bool sneaking, bool alive);
 
+    // **What is in the host's hand**, told to every guest when it changes so
+    // it is drawn there -- not only ahead of a blow (`hostAttack`), which was
+    // the one time it used to go out. See `NetPlay::tick` for the guest's half.
+    void setHostHeld(int heldItem);
+
     // **The skin the host is wearing**, a 64 x 32 RGBA page -- see
-    // core/net/player_skin.hpp. Sent to every guest that has said it understands
-    // our packets, and to each as it does. A page of the wrong size is ignored.
+    // core/net/player_skin.hpp. Sent to every guest as they join, and at once to
+    // those already here. A page of the wrong size is ignored.
     void setHostSkin(const u8* page, usize size);
 
     // **The host swinging at a guest.** The host has no stream of its own, so
@@ -354,11 +382,19 @@ public:
     // nothing more can be sent to them. For a line on the screen.
     bool starved(u8 playerId) const;
 
-    // **The guests, as targets for the host's arrows**: where each one who is
-    // in the world and alive is standing. Writes at most `max` and returns how
-    // many. The host's own player is not here -- it is the local player of the
-    // arrow tick already.
+    // **The guests, as bodies in the host's world**: where each one who is in
+    // the world and alive is standing. Writes at most `max` and returns how
+    // many. The host's own player is not here -- it is the local player of
+    // every tick already. One list for every question the world asks about
+    // players: the arrows, the mobs, the plates, the carts and the spawners.
     int arrowTargets(entity::RemoteTarget* out, int max) const;
+
+    // **One of the host's mobs struck a guest** -- a zombie's swing, a
+    // spider's, a slime's touch. The guest is told "that mob hit you", a Use
+    // Entity from the mob's id, and works out the cost from the mob it has, as
+    // for an arrow. A mob the guests were never told about has no id and is
+    // not named.
+    void mobStruck(i32 victimEntityId, i32 mobEntityId);
 
     // **One of the host's arrows struck a guest.** The guest is told "that
     // arrow hit you" -- a Use Entity from the arrow's id, announced first if
@@ -370,6 +406,7 @@ public:
     u32 columnsSent() const { return columnsSent_; }
     u32 itemsSpawned() const { return itemsSpawned_; }
     u32 mobsSpawned() const { return mobsSpawned_; }
+    u32 arrowsSpawned() const { return arrowsSpawned_; }
     u32 columnsQueued() const;
     u32 blockPacketsSent() const { return blockPacketsSent_; }
     usize outboundBytes() const;
@@ -516,6 +553,20 @@ private:
         i32 lastSentX = 0, lastSentY = 0, lastSentZ = 0;
         i8 lastSentYaw = 0, lastSentPitch = 0;
         bool everSent = false;
+
+        // **The container this guest has open**, if any: every tile entity its
+        // screen is on (a double chest is two), and what each looked like when
+        // the guest last had it, so only a change is sent and a guest's own
+        // click is never echoed back to it.
+        struct Watch {
+            int parts = 0;
+            i32 x[tick::kMaxChestParts] = {};
+            int y[tick::kMaxChestParts] = {};
+            i32 z[tick::kMaxChestParts] = {};
+            std::vector<u8> last[tick::kMaxChestParts];
+        };
+        Watch watch;
+        i64 lastTileMs = 0;
     };
 
     // One column's worth of changed blocks, waiting to be sent.
@@ -572,22 +623,45 @@ private:
     // is the only one that decides what art a wall gets, so a guest's own
     // placement is a guess the first announcement replaces.
     void syncPaintings();
-    // A guest's own page, attributed to them; see `packet::PlayerSkin`.
-    void acceptSkin(Player& player, const Packet& packet);
-    // `broadcast`, to the guests that have said they understand our packets.
-    void broadcastExtended(const Packet& packet, u8 exceptPlayerId);
-    void collectFor(Player& player, entity::ItemEntitySystem& items);
-
+    // **The boats and carts**, as the mobs are -- plus who is sitting in each,
+    // which is told to everybody as it changes. One a guest is steering is
+    // moved by that guest's reports and its moves go to everybody else.
+    void syncVehicles(i64 nowMillis);
+    // **The falling blocks and lit TNT.** Run before the Block Changes go out,
+    // so a guest hears a blast before it sees the crater and works the smoke
+    // out over the blocks the blast went through.
+    void syncFallers(i64 nowMillis);
+    // **The creepers that went off**, as `kStatusExploded`, before the Block
+    // Changes for the same reason as `syncFallers`.
+    void syncBlasts();
     // **The arrows, as the guests see them.** Not in a1.1.2 at all -- see
-    // `packet::kObjectArrow` -- and otherwise `syncItems` again: an id and a
-    // Vehicle Spawn for a new one, a teleport each tick for one that moved, a
-    // Destroy for one that went, and a guest walking over their own stuck
-    // arrow takes it back.
+    // `kObjectArrow` -- and otherwise `syncItems` again: an id and a Vehicle
+    // Spawn for a new one, a teleport each tick for one that moved, a Destroy
+    // for one that went, and a guest walking over their own stuck arrow takes
+    // it back.
     void syncArrows(i64 nowMillis);
     void collectArrowsFor(Player& player, entity::ArrowSystem& arrows);
     // Tells every guest about `arrow` now, if they have not been told; gives it
     // an id first when it has none.
     void announceArrow(entity::Arrow& arrow);
+    // A guest's right click on a boat or cart (`vehicle`), or their getting out
+    // (`kNoVehicle`). See `kNoVehicle` in core/net/entities.hpp.
+    void rideRequest(Player& player, i32 vehicle);
+    // The guest is out of whatever they were steering -- they got out, left
+    // the session or climbed into something else -- and the host runs it.
+    void releaseVehiclesOf(const Player& player);
+    // **Containers open on a guest.** See core/net/tile_sync.hpp.
+    void openTile(Player& player, i32 x, int y, i32 z);
+    // A chest cart, which a guest names by entity id -- see `kCartTileY`.
+    void openCart(Player& player, i32 entityId);
+    void closeTile(Player& player);
+    void syncTiles(i64 nowMillis);
+    // A guest's own page, attributed to them; see `packet::PlayerSkin`.
+    void acceptSkin(Player& player, const Packet& packet);
+    // `broadcast`, to the guests that have said they understand our packets.
+    void broadcastExtended(const Packet& packet, u8 exceptPlayerId);
+    void acceptTile(Player& player, const TileSnapshot& snapshot);
+    void collectFor(Player& player, entity::ItemEntitySystem& items);
 
     // A guest still waiting for ground that is never coming. See
     // `kPlacementPatienceMs`.
@@ -635,6 +709,8 @@ private:
         // `packet::EntityStatus`.
         u8 hurtSerial = 0;
         bool deathSent = false;
+        // `Mob::flag` as the guests last heard it: the fleece, the saddle.
+        bool flag = false;
     };
     std::vector<KnownMob> knownMobs_;
 
@@ -644,7 +720,23 @@ private:
     };
     std::vector<KnownPainting> knownPaintings_;
 
-    // And for the arrows, which also carry a heading worth sending.
+    // A boat or a cart the guests have been told about: where, how recently it
+    // was struck (`timeSinceHit`, which a new blow sends back up), and who they
+    // were told is sitting in it.
+    struct KnownVehicle {
+        i32 entityId = 0;
+        bool boat = true;
+        i32 x = 0, y = 0, z = 0;
+        i8 yaw = 0;
+        int hit = 0;
+        i32 rider = 0;
+        // A furnace cart pushing itself, which puffs -- see
+        // `MinecartSystem::burning`.
+        bool burning = false;
+        bool seen = false;
+    };
+    std::vector<KnownVehicle> knownVehicles_;
+
     struct KnownArrow {
         i32 entityId = 0;
         i32 x = 0, y = 0, z = 0;
@@ -653,6 +745,14 @@ private:
     };
     std::vector<KnownArrow> knownArrows_;
 
+    // A falling block or a lit TNT the guests have been told about.
+    struct KnownFaller {
+        i32 entityId = 0;
+        i32 x = 0, y = 0, z = 0;
+        bool seen = false;
+    };
+    std::vector<KnownFaller> knownFallers_;
+
     std::vector<SavedPlayer> saved_;
 
     i64 nowMs_ = 0;
@@ -660,6 +760,8 @@ private:
     i64 lastEntityMs_ = 0;
     i64 lastItemMs_ = 0;
     i64 lastMobMs_ = 0;
+    i64 lastVehicleMs_ = 0;
+    i64 lastFallerMs_ = 0;
     i64 lastArrowMs_ = 0;
     // Whether the host's own player has reported a position yet, which decides
     // where a joiner lands. See `addPlayer`.

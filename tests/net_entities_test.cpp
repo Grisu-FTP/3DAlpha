@@ -7,13 +7,19 @@
 
 #include "framework.hpp"
 
+#include "core/entity/boat.hpp"
+#include "core/entity/falling_block.hpp"
 #include "core/entity/item_entity.hpp"
+#include "core/entity/minecart.hpp"
 #include "core/entity/mob.hpp"
+#include "core/entity/primed_tnt.hpp"
 #include "core/net/entities.hpp"
 #include "core/render/mob_mesh.hpp"
 #include "core/render/remote_player_mesh.hpp"
 #include "scene_world.hpp"
 #include "sound_catcher.hpp"
+
+#include "blocks.hpp"  // generated; see tools/configure.py
 
 #include <cmath>
 
@@ -321,7 +327,7 @@ TEST(an_item_on_the_ground_is_the_ordinary_pool_driven_by_its_server_id)
     CHECK(near(items[0].z, -7.5));
     CHECK(near(items[0].motionX, 0.0));
 
-    // Collect removes it; a1.1.2 animates the flight and this does not.
+    // Collect takes it, and it flies to whoever did. See `ItemEntity::collectTicks`.
     Packet collect;
     collect.reset(packet::Collect);
     collect.pushInt(42);
@@ -520,6 +526,12 @@ TEST(a_mob_the_server_owns_is_drawn_here_and_decided_there)
     CHECK(near(herd[0].body.x, 4.5));  // nothing until the next tick
     herd.tick(scene.w(), around);
     CHECK(near(herd[0].body.x, 4.75));
+    // **And the frames between two ticks slide across the step**: the body
+    // still remembers where the tick began, so half way to the next tick is
+    // drawn half way along. A placement would have snapped that away and the
+    // animal would step twenty times a second.
+    CHECK(near(herd[0].body.prevX, 4.5));
+    CHECK(near(herd[0].body.renderX(0.5f), 4.625));
     CHECK(entities.apply(relMove(77, 8, 0, 0), &scene.w()));
     herd.tick(scene.w(), around);
     CHECK(near(herd[0].body.x, 5.0));
@@ -630,6 +642,39 @@ TEST(a_server_mobs_hit_and_death_are_seen_and_heard_here)
 
     // A status for an animal this console never met is nothing.
     CHECK(entities.apply(makeEntityStatus(123, entity::kStatusHurt), &scene.w()));
+}
+
+// **A blow on another player is seen as a red flash**, ten ticks long, which
+// the victim's own console cannot say for them.
+TEST(another_player_flashes_red_for_ten_ticks_when_struck)
+{
+    RemoteEntities entities;
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 0.0, 64.0, 0.0, 0, 0, 0), nullptr));
+    CHECK_EQ(entities.player(0).hurtTime, 0);
+    CHECK(entities.apply(makeEntityStatus(7, entity::kStatusHurt), nullptr));
+    CHECK_EQ(entities.player(0).hurtTime, RemoteEntities::kHurtTicks);
+    for (int i = 0; i < RemoteEntities::kHurtTicks; ++i) {
+        entities.tick(nullptr);
+    }
+    CHECK_EQ(entities.player(0).hurtTime, 0);
+    CHECK(!entities.player(0).dead);
+}
+
+// **A shorn sheep stays shorn on the other console.** Protocol 2 has no
+// metadata, so the host says it in an Entity Status of ours.
+TEST(a_server_mobs_fleece_and_saddle_follow_the_hosts_flag)
+{
+    test::SceneWorld scene(0, 0);
+    entity::MobSystem herd(99);
+    RemoteEntities entities;
+    entities.bindMobs(&herd);
+    CHECK(entities.apply(mobSpawn(78, 91), &scene.w()));  // a sheep
+    CHECK_EQ(herd.count(), 1);
+    CHECK(!herd[0].flag);
+    CHECK(entities.apply(makeEntityStatus(78, entity::kStatusFlagSet), &scene.w()));
+    CHECK(herd[0].flag);
+    CHECK(entities.apply(makeEntityStatus(78, entity::kStatusFlagClear), &scene.w()));
+    CHECK(!herd[0].flag);
 }
 
 // **Another player's swing**, which a1.1.2 draws and this did not: `gy.a(hf)`
@@ -831,6 +876,57 @@ TEST(every_console_works_out_the_same_colour_for_the_same_player)
     CHECK_EQ(int(b), 255);
 }
 
+TEST(a_players_body_lets_the_head_turn_freely_and_follows_past_seventy_five_degrees)
+{
+    // `ge.n`: standing still, the body stays put while the head turns up to 75
+    // degrees; beyond that the body is dragged round so the head is at 75.
+    RemotePlayer player;
+    player.yaw = 0.0f;
+    player.renderYaw = 0.0f;
+    player.yaw = 40.0f;
+    player.turnBody(0.0, 0.0);
+    CHECK(std::fabs(player.renderYaw) < 0.001f);
+    player.yaw = 120.0f;
+    player.turnBody(0.0, 0.0);
+    // Clamped to 75 behind the head (45), then the over-50 drag of a fifth of it.
+    CHECK(std::fabs(player.renderYaw - 60.0f) < 0.01f);
+}
+
+TEST(a_walking_players_body_faces_the_way_they_walk)
+{
+    RemotePlayer player;
+    player.yaw = 0.0f;
+    // +Z is yaw 0 in a1.1.2; atan2(1, 0) - 90 = 0.
+    for (int i = 0; i < 20; ++i) {
+        player.turnBody(0.0, 0.2);
+    }
+    CHECK(std::fabs(player.renderYaw) < 1.0f);
+    // Walking to -X (yaw 90) with the head looking +Z: the body turns toward the
+    // walk, but the head limit stops it short of 75 degrees round.
+    for (int i = 0; i < 40; ++i) {
+        player.turnBody(-0.2, 0.0);
+    }
+    CHECK(player.renderYaw > 40.0f && player.renderYaw < 80.0f);
+}
+
+TEST(a_player_holding_a_sword_draws_it_in_the_hand)
+{
+    RemoteEntities entities;
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 0.5, 64.0, 0.5, 0, 0, 267), nullptr));
+    static std::vector<mesh::DetailVertex> body(render::kRemotePlayerVerticesEach * 2);
+    static std::vector<mesh::DetailVertex> held(render::kMaxHeldItemVertices * 2);
+    render::PlayerPasses passes;
+    passes.body = body.data();
+    passes.bodyMax = int(body.size());
+    passes.held[1] = held.data();
+    passes.heldMax[1] = int(held.size());
+    CHECK(render::buildRemotePlayers(entities, 0.0, 64.0, 0.0, 1.0f, &passes) > 0);
+    CHECK(passes.heldCount[1] > 0);
+    CHECK_EQ(passes.heldCount[0], 0);
+}
+
+// ---- vehicles, falling blocks and lit TNT -----------------------------------
+
 namespace {
 
 Packet vehicleSpawn(i32 id, int type, double x, double y, double z)
@@ -845,7 +941,7 @@ Packet vehicleSpawn(i32 id, int type, double x, double y, double z)
     return p;
 }
 
-Packet teleportTo(i32 id, double x, double y, double z, int yawByte, int pitchByte)
+Packet teleportTo(i32 id, double x, double y, double z, int yawByte)
 {
     Packet p;
     p.reset(packet::EntityTeleport);
@@ -854,11 +950,273 @@ Packet teleportTo(i32 id, double x, double y, double z, int yawByte, int pitchBy
     p.pushInt(i64(std::floor(y * 32.0)));
     p.pushInt(i64(std::floor(z * 32.0)));
     p.pushInt(yawByte);
-    p.pushInt(pitchByte);
+    p.pushInt(0);
+    return p;
+}
+
+Packet ride(i32 rider, i32 vehicle) { return makeUseEntity(rider, vehicle, false); }
+
+Packet teleportTo(i32 id, double x, double y, double z, int yawByte, int pitchByte)
+{
+    Packet p = teleportTo(id, x, y, z, yawByte);
+    p.ints[5] = pitchByte;
     return p;
 }
 
 }  // namespace
+
+// **`oc.e_()`'s multiplayer branch**, which the boat borrows: a third of the way
+// to the host's word, then half of what is left, then the rest -- and nothing of
+// its own in between: no buoyancy, no gravity, no wall to break on.
+TEST(a_host_boat_follows_where_the_host_says)
+{
+    test::SceneWorld scene(0, 0);
+    entity::BoatSystem boats(1);
+    entity::MinecartSystem carts(2);
+    RemoteEntities entities;
+    entities.bindVehicles(&boats, &carts);
+
+    CHECK(entities.apply(vehicleSpawn(40, kVehicleBoat, 4.5, 64.3, 4.5), &scene.w()));
+    CHECK_EQ(boats.count(), 1);
+    CHECK(boats[0].remote);
+    CHECK_EQ(boats[0].entityId, i32(40));
+    // The wire's `posY`, not lifted by `dc`'s constructor.
+    CHECK(near(boats[0].y, std::floor(64.3 * 32.0) / 32.0));
+
+    // It rides the same track a mob and a player do: going at once, and on the
+    // host's word once the silence says the host's copy stopped. See
+    // core/entity/server_track.hpp.
+    CHECK(entities.apply(teleportTo(40, 7.5, 64.3, 4.5, 64), &scene.w()));
+    boats.tick(scene.w(), entity::VehicleRider{});
+    CHECK(boats[0].x > 4.5);
+    for (int i = 0; i < 40; ++i) {
+        boats.tick(scene.w(), entity::VehicleRider{});
+    }
+    CHECK(near(boats[0].x, 7.5));
+    CHECK(near(double(boats[0].yaw), 90.0));
+
+    // In the air with nothing owed, it stays exactly where it was put.
+    const double y = boats[0].y;
+    for (int i = 0; i < 20; ++i) {
+        boats.tick(scene.w(), entity::VehicleRider{});
+    }
+    CHECK(near(boats[0].x, 7.5));
+    CHECK(near(boats[0].y, y));
+
+    // A relative move is against the host's word, and keeps the heading.
+    CHECK(entities.apply(relMove(40, 32, 0, 0), &scene.w()));
+    for (int i = 0; i < 40; ++i) {
+        boats.tick(scene.w(), entity::VehicleRider{});
+    }
+    CHECK(near(boats[0].x, 8.5));
+    CHECK(near(double(boats[0].yaw), 90.0));
+
+    // A guest's own blow -- its arrow, which nobody else sees -- strikes the
+    // host's boat and leaves it alone: breaking it is the host's.
+    boats.setGuest(true);
+    for (int i = 0; i < 10; ++i) {
+        CHECK(boats.attack(scene.w(), 0, 4));
+    }
+    CHECK_EQ(boats.count(), 1);
+    CHECK_EQ(boats[0].damage, 0);
+
+    CHECK(entities.apply(destroy(40), &scene.w()));
+    CHECK_EQ(boats.count(), 0);
+}
+
+TEST(a_host_cart_arrives_as_its_type_and_rocks_when_struck)
+{
+    test::SceneWorld scene(0, 0);
+    entity::BoatSystem boats(1);
+    entity::MinecartSystem carts(2);
+    RemoteEntities entities;
+    entities.bindVehicles(&boats, &carts);
+
+    CHECK(entities.apply(vehicleSpawn(41, 11, 4.5, 64.35, 4.5), &scene.w()));
+    CHECK(entities.apply(vehicleSpawn(42, 12, 6.5, 64.35, 4.5), &scene.w()));
+    CHECK(entities.apply(vehicleSpawn(43, 10, 8.5, 64.35, 4.5), &scene.w()));
+    CHECK_EQ(carts.count(), 3);
+    CHECK(carts[carts.indexOfEntity(41)].type == entity::MinecartType::Chest);
+    CHECK(carts[carts.indexOfEntity(42)].type == entity::MinecartType::Furnace);
+    CHECK(carts[carts.indexOfEntity(43)].type == entity::MinecartType::Rideable);
+    CHECK(carts[0].remote);
+    CHECK_EQ(entities.unhandledSpawns(), u32(0));
+
+    CHECK(entities.apply(makeEntityStatus(41, entity::kStatusHurt), &scene.w()));
+    const entity::Minecart& struck = carts[carts.indexOfEntity(41)];
+    CHECK_EQ(struck.timeSinceHit, entity::kVehicleHitTime);
+    CHECK_EQ(struck.damage, entity::kVehicleDamageScale);
+    carts.tick(scene.w(), entity::VehicleRider{});
+    CHECK_EQ(carts[carts.indexOfEntity(41)].timeSinceHit, entity::kVehicleHitTime - 1);
+
+    // A 3DS host's arrow is a type this build draws nothing for.
+    CHECK(entities.apply(vehicleSpawn(44, 60, 8.5, 64.0, 4.5), &scene.w()));
+    CHECK_EQ(entities.unhandledSpawns(), u32(1));
+}
+
+// **The host's falling block and lit TNT are drawn here and decide nothing**:
+// no block is cleared, landed on or blown up on this console, and the TNT goes
+// off -- sound and smoke, no crater -- when the host says it is gone.
+TEST(a_host_falling_block_and_lit_tnt_are_drawn_here_and_change_no_block)
+{
+    test::SceneWorld scene(0, 0);
+    test::SoundCatcher sounds;
+    sounds.watch(scene.w());
+    for (i32 x = 2; x <= 14; ++x) {
+        for (i32 z = 2; z <= 14; ++z) {
+            scene.place(x, 60, z, block::BlockId(mcver::Block::Stone), 0);
+        }
+    }
+    entity::FallingBlockSystem falling;
+    entity::PrimedTntSystem tnt(3);
+    RemoteEntities entities;
+    entities.bindFallers(&falling, &tnt);
+
+    CHECK(entities.apply(vehicleSpawn(50, kObjectFallingSand, 4.5, 70.5, 4.5), &scene.w()));
+    CHECK(entities.apply(vehicleSpawn(51, kObjectFallingGravel, 5.5, 70.5, 4.5), &scene.w()));
+    CHECK(entities.apply(vehicleSpawn(52, kObjectPrimedTnt, 8.5, 61.5, 8.5), &scene.w()));
+    CHECK_EQ(falling.count(), 2);
+    CHECK(falling[0].block == block::BlockId(mcver::Block::Sand));
+    CHECK(falling[1].block == block::BlockId(mcver::Block::Gravel));
+    CHECK(falling[0].remote);
+    CHECK_EQ(tnt.count(), 1);
+    CHECK_EQ(tnt[0].fuse, entity::kPrimedTntFuse);
+
+    for (int i = 0; i < 200; ++i) {
+        falling.tick(scene.w());
+        tnt.tick(scene.w());
+    }
+    // Nothing owed, so nothing moved -- and neither landed nor went off.
+    CHECK_EQ(falling.count(), 2);
+    CHECK(near(falling[0].y, 70.5));
+    CHECK_EQ(tnt.count(), 1);
+    CHECK_EQ(tnt[0].fuse, 0);
+    CHECK_EQ(sounds.countOf("random.explode"), 0);
+    for (int y = 61; y <= 72; ++y) {
+        CHECK(scene.w().blockAt(4, y, 4) == block::kAir);
+        CHECK(scene.w().blockAt(5, y, 4) == block::kAir);
+    }
+
+    // The host's Destroy Entity for lit TNT is the blast.
+    CHECK(entities.apply(destroy(52), &scene.w()));
+    CHECK_EQ(tnt.count(), 0);
+    CHECK_EQ(sounds.countOf("random.explode"), 1);
+    int stone = 0;
+    for (i32 x = 2; x <= 14; ++x) {
+        for (i32 z = 2; z <= 14; ++z) {
+            stone += int(scene.w().blockAt(x, 60, z) == block::BlockId(mcver::Block::Stone));
+        }
+    }
+    CHECK_EQ(stone, 13 * 13);
+
+    // And for a falling block it is only gone.
+    CHECK(entities.apply(destroy(50), &scene.w()));
+    CHECK_EQ(falling.count(), 1);
+    CHECK_EQ(sounds.countOf("random.explode"), 1);
+}
+
+// **Whoever sits in a vehicle steers it**: once the host says this player is in
+// the boat, this console runs it and reports where it went, that the player got
+// out, or that it broke.
+TEST(the_host_putting_this_player_in_a_boat_hands_them_the_wheel)
+{
+    test::SceneWorld scene(0, 0);
+    entity::BoatSystem boats(1);
+    entity::MinecartSystem carts(2);
+    RemoteEntities entities;
+    entities.bindVehicles(&boats, &carts);
+    entities.setSelf(5);
+    Packet out;
+
+    CHECK(entities.apply(vehicleSpawn(40, kVehicleBoat, 4.5, 70.3, 4.5), &scene.w()));
+    CHECK_EQ(entities.driveReport(&out), 0);
+
+    CHECK(entities.apply(ride(5, 40), &scene.w()));
+    CHECK_EQ(entities.driving(), i32(40));
+    CHECK(!boats[0].remote);
+    CHECK_EQ(boats.riddenIndex(), 0);
+
+    // This console is the one saying where it is now.
+    CHECK(entities.apply(teleportTo(40, 20.5, 70.3, 4.5, 0), &scene.w()));
+    entity::VehicleRider rider;
+    rider.present = true;
+    boats.tick(scene.w(), rider);
+    CHECK(near(boats[0].x, 4.5));
+
+    CHECK_EQ(entities.driveReport(&out), 1);
+    CHECK(out.id == packet::EntityTeleport);
+    CHECK_EQ(out.integer(0), i64(40));
+    CHECK_EQ(out.integer(1), i64(toWirePosition(boats[0].x)));
+    CHECK_EQ(out.integer(2), i64(toWirePosition(boats[0].y)));
+    // Unmoved, nothing to say.
+    CHECK_EQ(entities.driveReport(&out), 0);
+    // In the air it falls -- its own physics, here -- and that is said.
+    boats.tick(scene.w(), rider);
+    CHECK_EQ(entities.driveReport(&out), 1);
+    CHECK_EQ(out.integer(2), i64(toWirePosition(boats[0].y)));
+
+    // The sneak button: the host hears, and the boat is the host's again.
+    boats.dismount();
+    CHECK_EQ(entities.driveReport(&out), 1);
+    CHECK(out.id == packet::UseEntity);
+    CHECK_EQ(out.integer(0), i64(5));
+    CHECK_EQ(out.integer(1), i64(kNoVehicle));
+    CHECK_EQ(out.integer(2), i64(0));
+    CHECK(boats[0].remote);
+    CHECK_EQ(entities.driving(), i32(0));
+
+    // In again, and it breaks here.
+    CHECK(entities.apply(ride(5, 40), &scene.w()));
+    boats.removeLocal(0);
+    CHECK_EQ(entities.driveReport(&out), 1);
+    CHECK(out.id == packet::DestroyEntity);
+    CHECK_EQ(out.integer(0), i64(40));
+    CHECK_EQ(entities.driving(), i32(0));
+
+    // The host breaks one out from under the player: thrown clear, nothing to say.
+    CHECK(entities.apply(vehicleSpawn(41, kVehicleBoat, 4.5, 70.3, 4.5), &scene.w()));
+    CHECK(entities.apply(ride(5, 41), &scene.w()));
+    CHECK(entities.apply(destroy(41), &scene.w()));
+    CHECK_EQ(entities.driving(), i32(0));
+    CHECK(boats.riddenIndex() < 0);
+    CHECK_EQ(entities.driveReport(&out), 0);
+
+    // Put in something this console does not have: it says it is out, once,
+    // rather than leave the host waiting for reports.
+    CHECK(entities.apply(ride(5, 99), &scene.w()));
+    CHECK_EQ(entities.driving(), i32(0));
+    CHECK_EQ(entities.driveReport(&out), 1);
+    CHECK(out.id == packet::UseEntity);
+    CHECK_EQ(out.integer(1), i64(kNoVehicle));
+    CHECK_EQ(entities.driveReport(&out), 0);
+}
+
+TEST(another_player_sits_in_the_vehicle_the_host_says)
+{
+    test::SceneWorld scene(0, 0);
+    entity::BoatSystem boats(1);
+    entity::MinecartSystem carts(2);
+    RemoteEntities entities;
+    entities.bindVehicles(&boats, &carts);
+    entities.setSelf(5);
+
+    CHECK(entities.apply(namedSpawn(7, "Bea", 4.5, 70.0, 4.5, 0, 0, 0), &scene.w()));
+    CHECK(entities.apply(vehicleSpawn(40, kVehicleBoat, 4.5, 70.3, 4.5), &scene.w()));
+    CHECK(entities.apply(ride(7, 40), &scene.w()));
+    CHECK(entities.player(0).riding);
+    CHECK(boats[0].ridden);
+    CHECK_EQ(boats[0].riderId, i32(7));
+    CHECK(boats[0].remote);
+    CHECK_EQ(entities.driving(), i32(0));
+
+    CHECK(entities.apply(ride(7, kNoVehicle), &scene.w()));
+    CHECK(!entities.player(0).riding);
+    CHECK(!boats[0].ridden);
+    CHECK_EQ(boats[0].riderId, i32(0));
+
+    // A blow is not about riding: it is left for the caller, which is NetPlay.
+    CHECK(!entities.apply(makeUseEntity(7, 5, true), &scene.w()));
+}
 
 TEST(an_arrow_from_a_3dalpha_host_is_drawn_where_the_host_says)
 {
@@ -912,4 +1270,155 @@ TEST(an_arrow_from_a_3dalpha_host_is_drawn_where_the_host_says)
     collect.pushInt(2);
     CHECK(entities.apply(collect, &scene.w()));
     CHECK_EQ(arrows.count(), 0);
+}
+
+// **The host's fuse rides in the yaw byte**, since lit TNT has no heading: a
+// block a blast lit on a short fuse swells here when it does there.
+TEST(a_host_tnt_burns_the_fuse_the_host_says_it_has)
+{
+    test::SceneWorld scene(0, 0);
+    entity::FallingBlockSystem falling;
+    entity::PrimedTntSystem tnt(3);
+    RemoteEntities entities;
+    entities.bindFallers(&falling, &tnt);
+
+    CHECK(entities.apply(vehicleSpawn(52, kObjectPrimedTnt, 8.5, 61.5, 8.5), &scene.w()));
+    CHECK_EQ(tnt[0].fuse, entity::kPrimedTntFuse);
+    CHECK(entities.apply(teleportTo(52, 8.5, 61.5, 8.5, 17), &scene.w()));
+    CHECK_EQ(tnt[0].fuse, 17);
+    tnt.tick(scene.w());
+    CHECK_EQ(tnt[0].fuse, 16);
+}
+
+// **A blast from the host reaches this player**: the creeper's status and the
+// TNT's Destroy Entity each play `je` here and, close enough, queue what it
+// costs for the player's own vitals. Far away, only the sound.
+TEST(a_host_blast_is_heard_here_and_hurts_this_player_when_close)
+{
+    test::SceneWorld scene(0, 0);
+    test::SoundCatcher sounds;
+    sounds.watch(scene.w());
+    entity::MobSystem herd(99);
+    entity::FallingBlockSystem falling;
+    entity::PrimedTntSystem tnt(3);
+    RemoteEntities entities;
+    entities.bindMobs(&herd);
+    entities.bindFallers(&falling, &tnt);
+
+    Packet spawn;
+    spawn.reset(packet::MobSpawn);
+    spawn.pushInt(60);
+    spawn.pushInt(50);  // a creeper
+    spawn.pushInt(i64(std::floor(4.5 * 32.0)));
+    spawn.pushInt(i64(std::floor(64.0 * 32.0)));
+    spawn.pushInt(i64(std::floor(4.5 * 32.0)));
+    spawn.pushInt(0);
+    spawn.pushInt(0);
+    CHECK(entities.apply(spawn, &scene.w()));
+
+    // Two blocks away: heard, and felt.
+    entities.setLocalFeet(6.5, 64.0, 4.5);
+    CHECK(entities.apply(makeEntityStatus(60, entity::kStatusExploded), &scene.w()));
+    CHECK_EQ(sounds.countOf("random.explode"), 1);
+    IncomingBlast blast;
+    CHECK(entities.takeBlast(&blast));
+    CHECK(blast.damage > 0);
+    CHECK(blast.monster);
+    CHECK(blast.vx > 0.0);  // pushed away from the creeper, along +x
+    CHECK(!entities.takeBlast(&blast));
+
+    // Lit TNT, twenty blocks off: heard, not felt.
+    CHECK(entities.apply(vehicleSpawn(61, kObjectPrimedTnt, 26.5, 64.5, 4.5), &scene.w()));
+    CHECK(entities.apply(destroy(61), &scene.w()));
+    CHECK_EQ(sounds.countOf("random.explode"), 2);
+    CHECK(!entities.takeBlast(&blast));
+
+    // And beside this player: TNT is not a monster, so no difficulty.
+    CHECK(entities.apply(vehicleSpawn(62, kObjectPrimedTnt, 7.5, 64.5, 4.5), &scene.w()));
+    CHECK(entities.apply(destroy(62), &scene.w()));
+    CHECK(entities.takeBlast(&blast));
+    CHECK(blast.damage > 0);
+    CHECK(!blast.monster);
+}
+
+TEST(a_host_furnace_cart_smokes_while_the_host_says_it_burns)
+{
+    test::SceneWorld scene(0, 0);
+    int puffs = 0;
+    scene.w().setParticleSink(
+        [](void* ctx, int kind, double, double, double, double, double, double) {
+            if (kind == int(entity::ParticleKind::LargeSmoke)) {
+                ++*static_cast<int*>(ctx);
+            }
+        },
+        &puffs);
+    entity::BoatSystem boats(1);
+    entity::MinecartSystem carts(2);
+    RemoteEntities entities;
+    entities.bindVehicles(&boats, &carts);
+
+    CHECK(entities.apply(vehicleSpawn(41, 12, 4.5, 64.35, 4.5), &scene.w()));
+    for (int i = 0; i < 40; ++i) {
+        carts.tick(scene.w(), entity::VehicleRider{});
+    }
+    CHECK_EQ(puffs, 0);
+    CHECK(entities.apply(makeEntityStatus(41, entity::kStatusFlagSet), &scene.w()));
+    for (int i = 0; i < 40; ++i) {
+        carts.tick(scene.w(), entity::VehicleRider{});
+    }
+    CHECK(puffs > 0);
+    const int lit = puffs;
+    CHECK(entities.apply(makeEntityStatus(41, entity::kStatusFlagClear), &scene.w()));
+    for (int i = 0; i < 40; ++i) {
+        carts.tick(scene.w(), entity::VehicleRider{});
+    }
+    CHECK_EQ(puffs, lit);
+}
+
+TEST(a_blow_named_to_this_player_is_priced_by_whoever_the_attacker_is)
+{
+    // `RemoteEntities::hitFrom`: a Use Entity aimed at this player names who
+    // swung, and the cost is worked out here from what this console has of
+    // them -- a player's held item, an arrow, or the mob itself.
+    test::SceneWorld scene(0, 0);
+    entity::MobSystem herd(99);
+    entity::ArrowSystem arrows(5);
+    RemoteEntities entities;
+    entities.bindMobs(&herd);
+    entities.bindArrows(&arrows);
+
+    CHECK(entities.apply(namedSpawn(3, "Other", 1.5, 64.0, 0.5, 0, 0, 276), &scene.w()));
+    CHECK(entities.apply(vehicleSpawn(40, kObjectArrow, 2.5, 70.0, -6.5), &scene.w()));
+    CHECK(entities.apply(mobSpawn(77, 54), &scene.w()));  // a zombie
+    CHECK(entities.apply(mobSpawn(78, 55), &scene.w()));  // a slime
+
+    IncomingHit hit;
+    CHECK(entities.hitFrom(3, &hit));
+    CHECK(hit.present);
+    CHECK(!hit.arrow);
+    CHECK_EQ(hit.item, 276);
+    CHECK_EQ(hit.mobDamage, 0);
+
+    CHECK(entities.hitFrom(40, &hit));
+    CHECK(hit.arrow);
+    CHECK_EQ(hit.mobDamage, 0);
+
+    // **A zombie's swing is its five, as a monster** -- difficulty scales it,
+    // as it scales the one the host's own player takes.
+    CHECK(entities.hitFrom(77, &hit));
+    CHECK(!hit.arrow);
+    CHECK_EQ(hit.mobDamage, entity::mobDef(entity::MobType::Zombie).attackStrength);
+    CHECK(hit.monster);
+    CHECK(near(hit.fromX, 4.5));
+
+    // A slime's touch is its size, and `ma` is not a `dq`.
+    CHECK(entities.hitFrom(78, &hit));
+    const entity::Mob* slime = herd.findById(78);
+    CHECK(slime != nullptr);
+    CHECK_EQ(hit.mobDamage, int(slime->slimeSize));
+    CHECK(!hit.monster);
+
+    // Somebody this console was never told about is no hit at all.
+    CHECK(!entities.hitFrom(999, &hit));
+    CHECK(!hit.present);
 }

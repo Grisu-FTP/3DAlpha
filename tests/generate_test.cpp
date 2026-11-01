@@ -535,3 +535,28 @@ TEST(a_generated_dungeon_carries_its_mob_and_its_loot)
     CHECK(chests > 0);
     CHECK(stacks > 0);
 }
+
+// `Chunk.setBlock` runs `onBlockAdded` on every population write, so the
+// sand, gravel and spring cells a pass places are owed a tick. The generator
+// has to hand them to the column; the tick world runs them.
+TEST(the_chunk_generator_hands_over_the_cells_population_owes_a_tick)
+{
+    worldgen::GeneratorOptions options;
+    ChunkGenerator::Store store;
+    auto generator = std::make_unique<ChunkGenerator>(12345, options, store);
+    auto column = std::make_unique<world::ChunkColumn>();
+
+    usize owed = 0;
+    for (int cx = 0; cx < 6; ++cx) {
+        for (int cz = 0; cz < 6; ++cz) {
+            CHECK(generator->provide(cx, cz, column.get()));
+            for (const world::PendingAdd& add : column->pendingAdds) {
+                CHECK_EQ(add.x >> 4, cx);
+                CHECK_EQ(add.z >> 4, cz);
+                CHECK_EQ(int(column->block(add.x & 15, add.y, add.z & 15)), int(add.id));
+                ++owed;
+            }
+        }
+    }
+    CHECK(owed > 0);
+}

@@ -91,6 +91,14 @@ void PlayerBody::tickRiding(const PlayerInput& input, double seatX, double seatY
 
     sneaking = input.sneak;
 
+    // **`Entity.updateRidden` zeroes the rider's motion, then runs its tick.**
+    // So what a vehicle reads off a rider is one tick of acceleration and
+    // friction -- about 0.018 -- and never the speed a walker builds up over
+    // many. Without this a boat took a fifth of a rider that had settled near
+    // 0.22, ten times the push, and slid about on land and turned at once.
+    motionX = 0.0;
+    motionZ = 0.0;
+
     // **The heading, applied exactly as it would be on foot.** `EntityLiving`
     // has no idea it is riding anything -- see the declaration -- so this is
     // `moveEntityWithHeading`'s air branch and nothing is special about it.
@@ -152,7 +160,7 @@ void PlayerBody::setSize(float w, float h, float offset, float step)
     setFeet(x, y, z);
 }
 
-void PlayerBody::setFeet(double fx, double fy, double fz)
+void PlayerBody::moveFeet(double fx, double fy, double fz)
 {
     x = fx;
     y = fy;
@@ -162,6 +170,11 @@ void PlayerBody::setFeet(double fx, double fy, double fz)
     box = AABB{fx - half, fy, fz - half,
                fx + half, fy + double(height), fz + half};
     posY = fy + double(yOffset) - double(ySize);
+}
+
+void PlayerBody::setFeet(double fx, double fy, double fz)
+{
+    moveFeet(fx, fy, fz);
     // A placement is a teleport, and a teleport has no previous position to
     // interpolate from. `Entity.setPositionAndRotation` does the same thing for
     // the same reason.

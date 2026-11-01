@@ -279,7 +279,9 @@ void ProgressScreen::drawTop(C3D_RenderTarget* target)
     const float trackH = kBarH - 4.0f;
     C2D_DrawRectSolid(trackX, trackY, 0.2f, trackW, trackH, colour(0x37, 0x37, 0x37));
 
-    const float filled = float(gui::barFillWidth(int(trackW), done_, total_));
+    // A phase that counts nothing has no fill to show: an empty track and its name.
+    const bool uncounted = stage_ != nullptr && total_ == 0;
+    const float filled = uncounted ? 0.0f : float(gui::barFillWidth(int(trackW), done_, total_));
     if (filled > 0.0f) {
         C2D_DrawRectSolid(trackX, trackY, 0.3f, filled, trackH, colour(0x80, 0xFF, 0x20));
         C2D_DrawRectSolid(trackX, trackY, 0.4f, filled, 3.0f, colour(0xC6, 0xFF, 0x96));
@@ -287,13 +289,20 @@ void ProgressScreen::drawTop(C3D_RenderTarget* target)
                           colour(0x4C, 0x9E, 0x10));
     }
 
-    char text[64];
+    char text[96];
     const int percent =
         total_ == 0 ? 100 : int((u64(done_ > total_ ? total_ : done_) * 100u) / u64(total_));
-    std::snprintf(text, sizeof(text), "%d%%", percent);
-    label(text, kTopWidth * 0.5f, kBarY + kBarH + 8.0f, 0.6f, kInk, C2D_AlignCenter);
+    if (!uncounted) {
+        std::snprintf(text, sizeof(text), "%d%%", percent);
+        label(text, kTopWidth * 0.5f, kBarY + kBarH + 8.0f, 0.6f, kInk, C2D_AlignCenter);
+    }
 
-    if (total_ == 0) {
+    if (uncounted) {
+        std::snprintf(text, sizeof(text), "%s", stage_);
+    } else if (stage_ != nullptr) {
+        std::snprintf(text, sizeof(text), "%s: %lu of %lu chunks", stage_,
+                      (unsigned long)(done_ > total_ ? total_ : done_), (unsigned long)total_);
+    } else if (total_ == 0) {
         // The answer to "did pressing START a moment ago already do this", and
         // it is yes. Without it a world the pause menu saved shows a full bar
         // and no reason for it.
@@ -311,6 +320,11 @@ void ProgressScreen::drawTop(C3D_RenderTarget* target)
     // Handed over before the caller ends the frame or draws the next eye over
     // it; citro2d otherwise holds the batch until its own next flush.
     C2D_Flush();
+}
+
+void ProgressScreen::setStage(const char* stage)
+{
+    stage_ = stage;
 }
 
 void ProgressScreen::drawBottomChrome(const gui::Surface& surface)

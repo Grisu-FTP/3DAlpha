@@ -188,6 +188,11 @@ void playBowSound(const Effects& effects, double x, double y, double z);
 ItemUse useItem(tick::TickWorld& world, ItemId held, double eyeX, double eyeY, double eyeZ,
                 double dirX, double dirY, double dirZ, const Effects& effects = {});
 
+// `random.bow`, at the pitch `jg` gives it -- for a shot fired somewhere else:
+// a guest whose host fires its arrow still hears the twang, and a host firing
+// for a guest plays it where the guest stands.
+void playBowSound(const Effects& effects, double x, double y, double z);
+
 // `hq.b(IIII)Z` -- **PlayerController.onPlayerDestroyBlock**, and its three
 // steps are in an order that cannot be shuffled:
 //

@@ -474,3 +474,57 @@ TEST(a_ray_that_misses_the_canvas_picks_nothing)
     CHECK(item::pickEntity(pools, 0.5, box.maxY + 0.05, -2.0, 0.0, 0.0, 1.0, noBlock).found());
     CHECK(!item::pickEntity(pools, 0.5, box.maxY + 0.15, -2.0, 0.0, 0.0, 1.0, noBlock).found());
 }
+
+// ---- across a link ---------------------------------------------------------
+
+TEST(a_guests_own_painting_is_replaced_by_the_hosts_and_never_judged_by_its_wall)
+{
+    // The host decides the art -- a1.1.2 has no painting packet, so before this a
+    // guest and a host each saw their own random picture on the same wall.
+    Wall wall(2, 2);
+    wall.paintings.setPredictPlacements(true);
+    CHECK(wall.hang(0, 64));
+    CHECK_EQ(wall.paintings.count(), 1);
+    CHECK(wall.paintings[0].predicted);
+    const Painting guess = wall.paintings[0];
+
+    // The host's answer for the same wall takes its place, whatever it chose.
+    const int other = guess.art == 0 ? 1 : 0;
+    CHECK(wall.paintings.spawnRemote(&wall.w(), 77, mcver::kPaintings[other].name, guess.tileX,
+                                     guess.tileY, guess.tileZ, guess.direction));
+    CHECK_EQ(wall.paintings.count(), 1);
+    CHECK_EQ(wall.paintings[0].art, other);
+    CHECK(!wall.paintings[0].predicted);
+    CHECK_EQ(int(wall.paintings[0].entityId), 77);
+
+    // Said again, it is replaced rather than doubled.
+    CHECK(wall.paintings.spawnRemote(&wall.w(), 77, mcver::kPaintings[other].name, guess.tileX,
+                                     guess.tileY, guess.tileZ, guess.direction));
+    CHECK_EQ(wall.paintings.count(), 1);
+
+    // Its wall is the host's to judge: mined here, it hangs on until told.
+    wall.w().setBlockWithNotify(0, 64, 0, block::kAir);
+    for (int i = 0; i < entity::kPaintingCheckInterval * 2; ++i) {
+        wall.paintings.tick(wall.w());
+    }
+    CHECK_EQ(wall.paintings.count(), 1);
+    CHECK(wall.paintings.removeById(77));
+    CHECK_EQ(wall.paintings.count(), 0);
+    CHECK(!wall.paintings.spawnRemote(&wall.w(), 78, "no such picture", 0, 64, 0, 0));
+}
+
+TEST(a_guests_painting_the_host_never_confirms_is_taken_down_without_an_item)
+{
+    Wall wall(1, 1);
+    wall.paintings.setPredictPlacements(true);
+    mc::test::DropCatcher caught;
+    caught.watch(wall.w());
+    CHECK(wall.hang(0, 64));
+    for (int i = 0; i < entity::kPaintingConfirmTicks; ++i) {
+        wall.paintings.tick(wall.w());
+    }
+    CHECK_EQ(wall.paintings.count(), 1);
+    wall.paintings.tick(wall.w());
+    CHECK_EQ(wall.paintings.count(), 0);
+    CHECK_EQ(int(caught.drops.size()), 0);
+}

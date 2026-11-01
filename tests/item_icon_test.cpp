@@ -567,3 +567,43 @@ TEST(a_button_icon_is_a_button_and_not_the_stone_block_it_is_made_of)
     CHECK(buttonPixels > 0);
     CHECK(buttonPixels < stonePixels / 2);
 }
+
+// A golden hash over every item at five sizes, drawn from noisy sheets. The face
+// loop visits only the parallelogram's bounding box; this pins that narrowing
+// (and any later one) to the pixels the full-icon scan produced. The value was
+// taken from that scan before the bounding box existed.
+TEST(every_icon_at_every_size_is_pixel_stable)
+{
+    std::vector<u8> terrain(texture::kAtlasBytes), items(texture::kAtlasBytes);
+    unsigned lcg = 12345;
+    const auto next = [&]() {
+        lcg = lcg * 1664525u + 1013904223u;
+        return u8(lcg >> 24);
+    };
+    for (usize i = 0; i < terrain.size(); ++i) {
+        terrain[i] = next();
+        items[i] = next();
+    }
+    IconSheets sheets;
+    sheets.terrain = terrain.data();
+    sheets.items = items.data();
+
+    unsigned long long hash = 1469598103934665603ull;
+    for (const int size : {16, 20, 24, 40, 64}) {
+        const int edge = size + 6;
+        for (int id = 1; id < 2300; ++id) {
+            std::vector<gui::Pixel> pixels(usize(edge) * usize(edge), 0x1234);
+            Surface surface;
+            surface.pixels = pixels.data();
+            surface.strideX = 1;
+            surface.strideY = edge;
+            surface.width = edge;
+            surface.height = edge;
+            gui::drawItemIcon(surface, 3, 2, size, sheets, ItemId(id));
+            for (const gui::Pixel p : pixels) {
+                hash = (hash ^ p) * 1099511628211ull;
+            }
+        }
+    }
+    CHECK(hash == 0x4c72fb73a68a3084ull);
+}

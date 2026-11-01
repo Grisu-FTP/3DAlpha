@@ -197,7 +197,7 @@ TEST(an_unknown_id_and_a_negative_length_are_not_waited_for)
     CHECK(parsePacket(partial.data(), partial.size(), &p, &consumed) == ParseResult::NeedMore);
 }
 
-TEST(the_table_holds_the_jars_thirty_three_packets_and_the_four_additions)
+TEST(the_table_holds_the_jars_thirty_three_packets_and_the_eight_additions)
 {
     int registered = 0;
     for (int id = 0; id < 256; ++id) {
@@ -212,10 +212,11 @@ TEST(the_table_holds_the_jars_thirty_three_packets_and_the_four_additions)
     // was hit or died, and `0x13` and `0x09` so a player's crouch, death and
     // respawn are seen by the others -- protocol 2 has no way to say any of it,
     // and none of it is ever sent to a Java server. See protocol-a1.1.2.md,
-    // "What a 3DAlpha host adds to protocol 2". And two more of ours: `0x19`, a
-    // painting the host hung, and `0xE3`, a player's skin -- see
+    // "What a host of this family adds to protocol 2". And more of ours: `0x19`, a
+    // painting the host hung, `0xE0`..`0xE2`, a chest's or a furnace's contents --
+    // see core/net/tile_sync.hpp -- and `0xE3`, a player's skin -- see
     // core/net/player_skin.hpp.
-    CHECK_EQ(registered, 39);
+    CHECK_EQ(registered, 42);
 
     const PacketShape* status = shapeOf(packet::EntityStatus);
     CHECK(status != nullptr);

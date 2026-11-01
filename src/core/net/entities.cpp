@@ -2,8 +2,12 @@
 
 #include "core/net/entities.hpp"
 
+#include "core/entity/explosion.hpp"
 #include "core/entity/particle.hpp"
+#include "core/entity/player_body.hpp"
 #include "core/util/math_helper.hpp"
+
+#include "blocks.hpp"  // generated; see tools/configure.py
 
 #include <cmath>
 #include <cstring>
@@ -235,18 +239,323 @@ void RemoteEntities::moveTo(i32 id, double x, double y, double z, bool hasLook, 
         return;
     }
 
-    if (items_ == nullptr) {
+    if (items_ != nullptr) {
+        if (entity::ItemEntity* item = items_->findById(id)) {
+            // An item runs its own fall here, as `EntityItem` on a client does,
+            // so it is corrected rather than walked -- see `placeById`. A
+            // relative move is against the server's position, not the local one.
+            const double nx = relative ? item->serverX + x : x;
+            const double ny = relative ? item->serverY + y : y;
+            const double nz = relative ? item->serverZ + z : z;
+            items_->placeById(id, nx, ny, nz);
+            return;
+        }
+    }
+
+    // **The vehicles and the fallers walk to the server's word**, a relative
+    // move being against the server's position -- `track`, which is the last
+    // thing it said -- for the reason it is for a player. A vehicle with no
+    // look in the packet keeps the heading it was given.
+    if (boats_ != nullptr) {
+        const int index = boats_->indexOfEntity(id);
+        if (index >= 0) {
+            const entity::ServerTrack& t = (*boats_)[index].track;
+            boats_->placeRemote(id, relative ? t.x + x : x, relative ? t.y + y : y,
+                                relative ? t.z + z : z, hasLook ? yaw : t.yaw);
+            return;
+        }
+    }
+    if (minecarts_ != nullptr) {
+        const int index = minecarts_->indexOfEntity(id);
+        if (index >= 0) {
+            const entity::ServerTrack& t = (*minecarts_)[index].track;
+            minecarts_->placeRemote(id, relative ? t.x + x : x, relative ? t.y + y : y,
+                                    relative ? t.z + z : z, hasLook ? yaw : t.yaw);
+            return;
+        }
+    }
+    if (falling_ != nullptr) {
+        const int index = falling_->indexOfEntity(id);
+        if (index >= 0) {
+            const entity::ServerTrack& t = (*falling_)[index].track;
+            falling_->placeRemote(id, relative ? t.x + x : x, relative ? t.y + y : y,
+                                  relative ? t.z + z : z);
+            return;
+        }
+    }
+    if (tnt_ != nullptr) {
+        const int index = tnt_->indexOfEntity(id);
+        if (index >= 0) {
+            const entity::ServerTrack& t = (*tnt_)[index].track;
+            tnt_->placeRemote(id, relative ? t.x + x : x, relative ? t.y + y : y,
+                              relative ? t.z + z : z);
+        }
+    }
+}
+
+int RemoteEntities::objectTypeForFalling(block::BlockId id)
+{
+    switch (id) {
+    case block::BlockId(mcver::Block::Sand):   return kObjectFallingSand;
+    case block::BlockId(mcver::Block::Gravel): return kObjectFallingGravel;
+    default:                                   return 0;
+    }
+}
+
+bool RemoteEntities::spawnVehicle(const Packet& packet, tick::TickWorld* world)
+{
+    if (world == nullptr) {
+        return false;
+    }
+    const i32 id = i32(packet.integer(0));
+    const int type = int(packet.integer(1));
+    const double x = fromFixed(packet.integer(2));
+    const double y = fromFixed(packet.integer(3));
+    const double z = fromFixed(packet.integer(4));
+    switch (type) {
+    case kVehicleBoat:
+        return boats_ != nullptr && boats_->spawnRemote(*world, id, x, y, z);
+    case kVehicleMinecart + int(entity::MinecartType::Rideable):
+    case kVehicleMinecart + int(entity::MinecartType::Chest):
+    case kVehicleMinecart + int(entity::MinecartType::Furnace):
+        return minecarts_ != nullptr
+               && minecarts_->spawnRemote(*world, id,
+                                          entity::MinecartType(type - kVehicleMinecart), x, y,
+                                          z);
+    case kObjectPrimedTnt:
+        return tnt_ != nullptr && tnt_->spawnRemote(*world, id, x, y, z);
+    case kObjectFallingSand:
+        return falling_ != nullptr
+               && falling_->spawnRemote(*world, id, x, y, z,
+                                        block::BlockId(mcver::Block::Sand));
+    case kObjectFallingGravel:
+        return falling_ != nullptr
+               && falling_->spawnRemote(*world, id, x, y, z,
+                                        block::BlockId(mcver::Block::Gravel));
+    case kObjectArrow:
+        // The heading follows in a teleport, as the host sends it.
+        return arrows_ != nullptr && arrows_->spawnRemote(*world, id, x, y, z);
+    default:
+        return false;
+    }
+}
+
+void RemoteEntities::seat(i32 rider, i32 vehicle)
+{
+    // **Out of whatever they were in first**, so a rider is never in two.
+    for (int i = 0; boats_ != nullptr && i < boats_->count(); ++i) {
+        const entity::Boat& b = (*boats_)[i];
+        if (b.riderId == rider && b.entityId != vehicle) {
+            boats_->setRider(b.entityId, 0);
+        }
+    }
+    for (int i = 0; minecarts_ != nullptr && i < minecarts_->count(); ++i) {
+        const entity::Minecart& c = (*minecarts_)[i];
+        if (c.riderId == rider && c.entityId != vehicle) {
+            minecarts_->setRider(c.entityId, 0);
+        }
+    }
+    if (vehicle == kNoVehicle) {
         return;
     }
-    if (entity::ItemEntity* item = items_->findById(id)) {
-        // An item runs its own fall here, as `EntityItem` on a client does, so
-        // it is corrected rather than walked -- see `placeById`. A relative
-        // move is against the server's position, not the local one.
-        const double nx = relative ? item->serverX + x : x;
-        const double ny = relative ? item->serverY + y : y;
-        const double nz = relative ? item->serverZ + z : z;
-        items_->placeById(id, nx, ny, nz);
+    if (boats_ != nullptr && boats_->setRider(vehicle, rider)) {
+        return;
     }
+    if (minecarts_ != nullptr) {
+        minecarts_->setRider(vehicle, rider);
+    }
+}
+
+void RemoteEntities::takeWheel(i32 vehicle)
+{
+    if (driving_.id == vehicle) {
+        return;  // already steering it
+    }
+    letGo();
+    if (boats_ != nullptr && boats_->driveHere(vehicle)) {
+        driving_ = Driving{};
+        driving_.kind = Driving::Kind::Boat;
+        driving_.id = vehicle;
+        return;
+    }
+    if (minecarts_ != nullptr && minecarts_->driveHere(vehicle)) {
+        driving_ = Driving{};
+        driving_.kind = Driving::Kind::Minecart;
+        driving_.id = vehicle;
+        return;
+    }
+    owesRelease_ = true;
+}
+
+void RemoteEntities::letGo()
+{
+    if (driving_.kind == Driving::Kind::Boat && boats_ != nullptr) {
+        boats_->driveElsewhere(driving_.id, 0);
+    } else if (driving_.kind == Driving::Kind::Minecart && minecarts_ != nullptr) {
+        minecarts_->driveElsewhere(driving_.id, 0);
+    }
+    driving_ = Driving{};
+}
+
+void RemoteEntities::blastAt(tick::TickWorld& world, double x, double y, double z,
+                             float strength, bool monster)
+{
+    // Phase one -- `random.explode` and the rays -- then phase two against this
+    // player, while this console's blocks still stand (the host's Block
+    // Changes come after the word that it went off), then phase three's
+    // particles without its writes. See core/entity/explosion.hpp.
+    entity::Explosion blast(x, y, z, strength);
+    blast.cast(world);
+    if (hasLocalFeet_) {
+        const double half = double(entity::kPlayerWidth) / 2.0;
+        const AABB box{localFeet_[0] - half, localFeet_[1], localFeet_[2] - half,
+                       localFeet_[0] + half, localFeet_[1] + double(entity::kPlayerHeight),
+                       localFeet_[2] + half};
+        int damage = 0;
+        double vx = 0.0, vy = 0.0, vz = 0.0;
+        // `posY` is the eye, as `applyBlast` hands it over for the host's own
+        // player.
+        if (blast.effectOn(world, localFeet_[0], localFeet_[1] + double(entity::kEyeHeight),
+                           localFeet_[2], box, &damage, &vx, &vy, &vz)) {
+            if (!blast_.present || damage > blast_.damage) {
+                blast_.damage = damage;
+                blast_.monster = monster;
+                blast_.fromX = x;
+                blast_.fromZ = z;
+            }
+            blast_.present = true;
+            blast_.vx += vx;
+            blast_.vy += vy;
+            blast_.vz += vz;
+        }
+    }
+    blast.puff(world);
+}
+
+bool RemoteEntities::takeBlast(IncomingBlast* out)
+{
+    if (!blast_.present) {
+        return false;
+    }
+    *out = blast_;
+    blast_ = IncomingBlast{};
+    return true;
+}
+
+bool RemoteEntities::hitFrom(i32 attackerId, IncomingHit* out)
+{
+    *out = IncomingHit{};
+    for (int i = 0; i < playerCount_; ++i) {
+        const RemotePlayer& from = players_[i];
+        if (from.id != attackerId) {
+            continue;
+        }
+        out->present = true;
+        out->item = int(from.heldItem);
+        out->fromX = from.x;
+        out->fromZ = from.z;
+        return true;
+    }
+    // Knocked back from where the arrow is, as the host's own player is.
+    const entity::Arrow* arrow = arrows_ != nullptr ? arrows_->findById(attackerId) : nullptr;
+    if (arrow != nullptr) {
+        out->present = true;
+        out->arrow = true;
+        out->fromX = arrow->x;
+        out->fromZ = arrow->z;
+        return true;
+    }
+    // **A mob's blow is priced by the mob**, the same numbers the host's own
+    // player is hit with: `attackStrength` through `dq` for a swing, the size
+    // and no difficulty for a slime landing on them (mob.cpp's `ma.b(Ldm;)V`).
+    const entity::Mob* mob = mobs_ != nullptr ? mobs_->findById(attackerId) : nullptr;
+    if (mob != nullptr) {
+        const entity::MobDef& def = entity::mobDef(mob->type);
+        const bool slime = def.ai == entity::MobAi::Hop;
+        out->mobDamage = slime ? int(mob->slimeSize) : def.attackStrength;
+        out->monster = !slime;
+        out->fromX = mob->body.x;
+        out->fromZ = mob->body.z;
+        out->present = out->mobDamage > 0;
+        return out->present;
+    }
+    return false;
+}
+
+int RemoteEntities::driveReport(Packet* out)
+{
+    if (owesRelease_ && driving_.id == 0) {
+        owesRelease_ = false;
+        *out = makeUseEntity(self_, kNoVehicle, false);
+        return 1;
+    }
+    owesRelease_ = false;
+    if (driving_.id == 0) {
+        return 0;
+    }
+    const bool boat = driving_.kind == Driving::Kind::Boat;
+    int index = -1;
+    bool aboard = false;
+    double x = 0.0, y = 0.0, z = 0.0;
+    float yaw = 0.0f;
+    if (boat && boats_ != nullptr) {
+        index = boats_->indexOfEntity(driving_.id);
+        if (index >= 0) {
+            const entity::Boat& b = (*boats_)[index];
+            aboard = boats_->riddenIndex() == index;
+            x = b.x;
+            y = b.y;
+            z = b.z;
+            yaw = b.yaw;
+        }
+    } else if (!boat && minecarts_ != nullptr) {
+        index = minecarts_->indexOfEntity(driving_.id);
+        if (index >= 0) {
+            const entity::Minecart& c = (*minecarts_)[index];
+            aboard = minecarts_->riddenIndex() == index;
+            x = c.x;
+            y = c.y;
+            z = c.z;
+            yaw = c.yaw;
+        }
+    }
+
+    if (index < 0) {
+        // Broken here: on a wall, a cactus or in a fire.
+        out->reset(packet::DestroyEntity);
+        out->pushInt(driving_.id);
+        driving_ = Driving{};
+        return 1;
+    }
+    if (!aboard) {
+        // The sneak button: the player is on the roof and the vehicle is the
+        // host's to run again.
+        *out = makeUseEntity(self_, kNoVehicle, false);
+        letGo();
+        return 1;
+    }
+
+    const i32 wx = toWirePosition(x);
+    const i32 wy = toWirePosition(y);
+    const i32 wz = toWirePosition(z);
+    const i8 wyaw = toWireAngle(yaw);
+    if (driving_.sent && wx == driving_.x && wy == driving_.y && wz == driving_.z
+        && wyaw == driving_.yaw) {
+        return 0;
+    }
+    driving_.sent = true;
+    driving_.x = wx;
+    driving_.y = wy;
+    driving_.z = wz;
+    driving_.yaw = wyaw;
+    out->reset(packet::EntityTeleport);
+    out->pushInt(driving_.id);
+    out->pushInt(wx);
+    out->pushInt(wy);
+    out->pushInt(wz);
+    out->pushInt(wyaw);
+    out->pushInt(0);
+    return 1;
 }
 
 bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
@@ -280,6 +589,7 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         player->yaw = fromByteAngle(packet.integer(4));
         player->pitch = fromByteAngle(packet.integer(5));
         player->prevYaw = player->yaw;
+        player->renderYaw = player->prevRenderYaw = player->yaw;
         player->prevPitch = player->pitch;
         player->targetYaw = player->yaw;
         player->targetPitch = player->pitch;
@@ -311,9 +621,23 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
     case packet::Collect:
         // `bm`: the collected entity is gone, and whoever collected it is told
         // separately with Add To Inventory. a1.1.2 animates the item flying to
-        // the collector; this does not, so it simply goes.
+        // the collector, so it does when it knows where the collector is and
+        // simply goes when it does not.
         if (items_ != nullptr) {
-            items_->removeById(i32(packet.integer(0)));
+            const RemotePlayer* collector = findPlayer(i32(packet.integer(1)));
+            if (collector != nullptr) {
+                items_->collectById(i32(packet.integer(0)), collector->x, collector->y + 0.9,
+                                    collector->z);
+            } else if (hasLocalFeet_) {
+                items_->collectById(i32(packet.integer(0)), localFeet_[0], localFeet_[1] + 0.9,
+                                    localFeet_[2]);
+            } else {
+                items_->removeById(i32(packet.integer(0)));
+            }
+        }
+        // A stuck arrow its shooter walked over goes the same way.
+        if (arrows_ != nullptr) {
+            arrows_->removeById(i32(packet.integer(0)));
         }
         if (arrows_ != nullptr) {
             arrows_->removeById(i32(packet.integer(0)));
@@ -323,8 +647,8 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
 
     case packet::PlayerSkin: {
         // Only for somebody this pool is tracking: a skin about an entity that
-        // is not a player here has nothing to be worn by. **On the heap**: a
-        // page is 8 KB and a frame here may not be.
+        // is not a player here has nothing to be worn by.
+        // **On the heap**: a page is 8 KB and a frame here may not be.
         i32 id = 0;
         std::vector<u8> page(kSkinPageBytes);
         if (readPlayerSkin(packet, &id, page.data()) && findPlayer(id) != nullptr) {
@@ -332,6 +656,49 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         }
         return true;
     }
+
+    case packet::DestroyEntity:
+        skins_.release(i32(packet.integer(0)));
+        removePlayer(i32(packet.integer(0)));
+        if (paintings_ != nullptr) {
+            paintings_->removeById(i32(packet.integer(0)));
+        }
+        if (items_ != nullptr) {
+            items_->removeById(i32(packet.integer(0)));
+        }
+        if (mobs_ != nullptr) {
+            mobs_->removeById(i32(packet.integer(0)));
+        }
+        if (paintings_ != nullptr) {
+            paintings_->removeById(i32(packet.integer(0)));
+        }
+        // **A vehicle this console is steering can go too** -- the host broke
+        // it -- and then the player is thrown clear the way a wall throws
+        // them: the seat is gone from under them.
+        if (i32(packet.integer(0)) == driving_.id) {
+            driving_ = Driving{};
+        }
+        if (boats_ != nullptr) {
+            boats_->removeById(i32(packet.integer(0)));
+        }
+        if (minecarts_ != nullptr) {
+            minecarts_->removeById(i32(packet.integer(0)));
+        }
+        if (falling_ != nullptr) {
+            falling_->removeById(i32(packet.integer(0)));
+        }
+        if (arrows_ != nullptr) {
+            arrows_->removeById(i32(packet.integer(0)));
+        }
+        // **Lit TNT leaves the host's pool one way only**, so its Destroy
+        // Entity is the bang. See `PrimedTntSystem::takeRemote`.
+        if (tnt_ != nullptr) {
+            double bx = 0.0, by = 0.0, bz = 0.0;
+            if (tnt_->takeRemote(i32(packet.integer(0)), &bx, &by, &bz) && world != nullptr) {
+                blastAt(*world, bx, by, bz, entity::kPrimedTntStrength, false);
+            }
+        }
+        return true;
 
     case packet::Painting:
         // Ours; see `packet::Painting`. A title this build has no art for is
@@ -347,29 +714,15 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         }
         return true;
 
-    case packet::DestroyEntity:
-        skins_.release(i32(packet.integer(0)));
-        removePlayer(i32(packet.integer(0)));
-        if (paintings_ != nullptr) {
-            paintings_->removeById(i32(packet.integer(0)));
-        }
-        if (items_ != nullptr) {
-            items_->removeById(i32(packet.integer(0)));
-        }
-        if (mobs_ != nullptr) {
-            mobs_->removeById(i32(packet.integer(0)));
-        }
-        if (arrows_ != nullptr) {
-            arrows_->removeById(i32(packet.integer(0)));
-        }
-        return true;
-
     case packet::EntityStatus:
         // Ours; see `packet::EntityStatus`. **A player answers only a death**:
         // `handleHealthUpdate(3)`'s death noise -- `random.hurt`, which `dm`
         // uses for both -- and the fall that `tick` counts. A second 3 for a
         // body already falling is not a second death.
         if (RemotePlayer* player = findPlayer(i32(packet.integer(0)))) {
+            if (int(packet.integer(1)) == entity::kStatusHurt) {
+                player->hurtTime = kHurtTicks;
+            }
             if (int(packet.integer(1)) == entity::kStatusDead && !player->dead) {
                 player->dead = true;
                 player->sneaking = false;
@@ -384,7 +737,60 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         if (mobs_ != nullptr && world != nullptr) {
             mobs_->statusFromServer(*world, i32(packet.integer(0)), int(packet.integer(1)));
         }
+        // **A struck boat or cart rocks**, which a1.1.2 never shows anybody but
+        // the one who hit it.
+        if (int(packet.integer(1)) == entity::kStatusHurt) {
+            if (boats_ != nullptr) {
+                boats_->hurtRemote(i32(packet.integer(0)));
+            }
+            if (minecarts_ != nullptr) {
+                minecarts_->hurtRemote(i32(packet.integer(0)));
+            }
+        }
+        // **A furnace cart's chimney**, which the flag pair carries for a cart
+        // as it carries a fleece for a sheep.
+        if (minecarts_ != nullptr
+            && (int(packet.integer(1)) == entity::kStatusFlagSet
+                || int(packet.integer(1)) == entity::kStatusFlagClear)) {
+            minecarts_->setRemoteBurning(i32(packet.integer(0)),
+                                         int(packet.integer(1)) == entity::kStatusFlagSet);
+        }
+        // **A creeper went off**: the bang, the smoke, and the blow if this
+        // player was close -- from where the host last put it.
+        if (int(packet.integer(1)) == entity::kStatusExploded && mobs_ != nullptr
+            && world != nullptr) {
+            if (const entity::Mob* mob = mobs_->findById(i32(packet.integer(0)))) {
+                blastAt(*world, mob->track.x, mob->track.y, mob->track.z, entity::kCreeperBlast,
+                        true);
+            }
+        }
         return true;
+
+    case packet::UseEntity: {
+        // **A blow is `NetPlay`'s** -- the player's health is the player's.
+        // A right click from the host is who rides what; see `kNoVehicle`.
+        if (packet.integer(2) != 0) {
+            return false;
+        }
+        const i32 rider = i32(packet.integer(0));
+        const i32 vehicle = i32(packet.integer(1));
+        hostRides_ = true;
+        if (RemotePlayer* player = findPlayer(rider)) {
+            player->riding = vehicle != kNoVehicle;
+        }
+        if (self_ != 0 && rider == self_) {
+            if (vehicle == kNoVehicle) {
+                // Only ever a host taking the wheel back; a player who got out
+                // has let go already.
+                letGo();
+            } else {
+                takeWheel(vehicle);
+            }
+        } else {
+            seat(rider, vehicle);
+        }
+        return true;
+    }
 
     case packet::Entity:
         // `lq`: a keep-alive for one entity, which says only that it still
@@ -403,6 +809,11 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         return true;
 
     case packet::EntityTeleport:
+        // Lit TNT has no heading, so the host's fuse rides in the yaw byte --
+        // see `PrimedTnt::remote`.
+        if (tnt_ != nullptr) {
+            tnt_->setRemoteFuse(i32(packet.integer(0)), int(packet.integer(4)));
+        }
         moveTo(i32(packet.integer(0)), fromFixed(packet.integer(1)), fromFixed(packet.integer(2)),
                fromFixed(packet.integer(3)), true, fromByteAngle(packet.integer(4)),
                fromByteAngle(packet.integer(5)), false);
@@ -418,6 +829,24 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         if (mobs_ != nullptr) {
             mobs_->turnById(i32(packet.integer(0)), fromByteAngle(packet.integer(1)),
                             fromByteAngle(packet.integer(2)));
+        }
+        // A Java server turns a cart on the spot with this; it stays where the
+        // server last put it.
+        const i32 id = i32(packet.integer(0));
+        const float yaw = fromByteAngle(packet.integer(1));
+        if (boats_ != nullptr) {
+            const int index = boats_->indexOfEntity(id);
+            if (index >= 0) {
+                const entity::ServerTrack& t = (*boats_)[index].track;
+                boats_->placeRemote(id, t.x, t.y, t.z, yaw);
+            }
+        }
+        if (minecarts_ != nullptr) {
+            const int index = minecarts_->indexOfEntity(id);
+            if (index >= 0) {
+                const entity::ServerTrack& t = (*minecarts_)[index].track;
+                minecarts_->placeRemote(id, t.x, t.y, t.z, yaw);
+            }
         }
         return true;
     }
@@ -469,18 +898,12 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
     }
 
     case packet::VehicleSpawn:
-        // **An arrow, from a 3DAlpha host** -- see `kObjectArrow`; a Java
-        // server never sends 60. Its heading follows in a teleport.
-        if (int(packet.integer(1)) == kObjectArrow && arrows_ != nullptr && world != nullptr) {
-            arrows_->spawnRemote(*world, i32(packet.integer(0)), fromFixed(packet.integer(2)),
-                                 fromFixed(packet.integer(3)), fromFixed(packet.integer(4)));
-            return true;
+        // `kj`: id, type, x, y, z -- and no angles: a cart's tilt is the rail
+        // under it on whichever console draws it, and the heading follows in
+        // the first move. See `kVehicleBoat`.
+        if (!spawnVehicle(packet, world)) {
+            ++unhandledSpawns_;
         }
-        // **Received, understood, and not drawn.** A boat and a cart are two
-        // more pools, and a cart is tilted along the track it stands on rather
-        // than by anything the packet carries. Counted so the debug page can
-        // say the server is sending more than is on screen.
-        ++unhandledSpawns_;
         return true;
 
     default:
@@ -580,9 +1003,13 @@ void RemoteEntities::tick(const tick::TickWorld* world)
         player.prevY = player.y;
         player.prevZ = player.z;
         player.prevYaw = player.yaw;
+        player.prevRenderYaw = player.renderYaw;
         player.prevPitch = player.pitch;
         player.prevLimbAmount = player.limbAmount;
         ++player.ticksExisted;
+        if (player.hurtTime > 0) {
+            --player.hurtTime;
+        }
 
         // Where the body goes: the server's word, carried on through a late
         // packet and taken back when the silence says it stopped. A teleport
@@ -619,6 +1046,7 @@ void RemoteEntities::tick(const tick::TickWorld* world)
         }
         player.limbAmount += (speed - player.limbAmount) * 0.4f;
         player.limbSwing += player.limbAmount;
+        player.turnBody(dx, dz);
 
         // `dm.b_`'s swing counter, exactly as the local hand runs it.
         player.prevSwing = player.swing;
@@ -650,7 +1078,13 @@ void RemoteEntities::tick(const tick::TickWorld* world)
 
         if (world != nullptr) {
             const i32 bx = MathHelper::floorDouble(player.x);
-            const int by = int(MathHelper::floorDouble(player.y));
+            // **Mid-body, not the feet**: the feet are the wire's position floored
+            // to 1/32, so a body landing or jumping can sit a hair under the
+            // floor's top face and sample the solid block there -- light zero,
+            // a black model for a few frames. `Entity.getBrightness` samples at
+            // half the height for the same reason.
+            const int by = int(MathHelper::floorDouble(
+                player.y + double(entity::kPlayerHeight) * 0.5));
             const i32 bz = MathHelper::floorDouble(player.z);
             player.light = u8((world->skyLightAt(bx, by, bz) << 4)
                               | world->blockLightAt(bx, by, bz));
@@ -689,6 +1123,36 @@ void RemoteEntities::clear()
     unhandledSpawns_ = 0;
     dropCount_ = 0;
     revertedDrops_ = 0;
+    driving_ = Driving{};
+    hostRides_ = false;
+    owesRelease_ = false;
+    blast_ = IncomingBlast{};
+}
+
+void RemotePlayer::turnBody(double movedX, double movedZ)
+{
+    // `ge.b_`'s heading block, as `MobSystem::headingAndLight` runs it for an
+    // animal, plus the line only a player reaches: a swinging arm squares the
+    // body up to the look (`if (swingProgress > 0) f1 = rotationYaw`).
+    const auto wrap = [](float degrees) {
+        while (degrees < -180.0f) degrees += 360.0f;
+        while (degrees >= 180.0f) degrees -= 360.0f;
+        return degrees;
+    };
+    float heading = renderYaw;
+    if (std::sqrt(movedX * movedX + movedZ * movedZ) > 0.05) {
+        heading = float(std::atan2(movedZ, movedX) * 180.0 / 3.14159265358979323846) - 90.0f;
+    }
+    if (swing > 0.0f) {
+        heading = yaw;
+    }
+    renderYaw += wrap(heading - renderYaw) * 0.3f;
+    float headTurn = wrap(yaw - renderYaw);
+    headTurn = headTurn < -75.0f ? -75.0f : (headTurn > 75.0f ? 75.0f : headTurn);
+    renderYaw = yaw - headTurn;
+    if (headTurn * headTurn > 2500.0f) {
+        renderYaw += headTurn * 0.2f;
+    }
 }
 
 }  // namespace mc::net

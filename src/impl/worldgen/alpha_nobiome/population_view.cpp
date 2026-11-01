@@ -202,6 +202,13 @@ bool PopulationView::setBlock(i32 x, i32 y, i32 z, u8 id)
     const int oldHeight = heightAt(x, z);
     column[usize(localIndex(withinChunk(x), int(y), withinChunk(z)))] = id;
 
+    if (added_ != nullptr) {
+        const block::TickBehaviour tick = block::def(id).tick;
+        if (tick == block::TickBehaviour::Falling || tick == block::TickBehaviour::FluidFlowing) {
+            added_->push_back({x, z, u8(y), id});
+        }
+    }
+
     writtenColumns_ |= 1u << u32((chunkOf(x) - originChunkX_) * kMaxColumns +
                                  (chunkOf(z) - originChunkZ_));
 

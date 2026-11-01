@@ -255,6 +255,17 @@ inline constexpr int kDeathTicks = 20;
 // switch, and what `packet::EntityStatus` carries between two consoles.
 inline constexpr int kStatusHurt = 2;
 inline constexpr int kStatusDead = 3;
+// **Ours, beyond a1.1.2's two**: the type-specific flag (`Mob::flag` -- a sheared
+// fleece, a saddle) changed. Protocol 2 has no metadata, so without these a
+// guest's sheep kept its wool after the host's was shorn.
+inline constexpr int kStatusFlagSet = 4;
+inline constexpr int kStatusFlagClear = 5;
+// **Ours: this creeper went off.** a1.1.2's server says nothing about a blast --
+// the creeper is simply gone and the blocks change -- so a guest heard no bang
+// and was never hurt by one. Sent just before the host's Block Changes, so a
+// guest works the blast out over the blocks it went through. An older console
+// ignores a status it does not know. See `RemoteEntities`.
+inline constexpr int kStatusExploded = 6;
 
 // `ge.z()` -- spawnExplosionParticle: twenty `explode` puffs, each drifting on
 // a **Gaussian** fiftieth of a block, and each placed ten times that drift back
@@ -720,11 +731,42 @@ struct MobPlayer {
     double* motionX = nullptr;
     double* motionY = nullptr;
     double* motionZ = nullptr;
+
+    // **A player another console runs** -- a host's guest -- named by the
+    // entity id the link knows them by. Zero is the body this console runs.
+    // A guest has no motion here (their console moves them) and is never hurt
+    // here either: a blow is named to them through
+    // `MobSurroundings::guestStruck` and their own console spends it.
+    i32 entityId = 0;
 };
 
 // Everything else one tick may reach.
 struct MobSurroundings {
+    // **The player this tick is about.** The caller passes the body it runs;
+    // with guests present `MobSystem::tick` hands each mob its own copy in
+    // which this is whichever player is nearest that mob -- `cn.a(Lkh;D)Ldm;`,
+    // getClosestPlayerToEntity, which is the only way any mob in a1.1.2 ever
+    // picks a player to hunt, watch, or despawn by.
     MobPlayer player;
+
+    // **Every other player in the world**: a host's guests, where each last
+    // said they stand. Nobody, in any other world. See `MobSystem::tick`.
+    const MobPlayer* guests = nullptr;
+    int guestCount = 0;
+
+    // Where a mob's blow on a guest goes -- who was hit and which mob swung,
+    // because the guest's console works the cost out from the mob it has
+    // (`net::RemoteEntities::hitFrom`), the same split an arrow's hit takes.
+    // Unset is a guest that a mob reaches and cannot hurt.
+    void (*guestStruck)(void* ctx, i32 victimEntityId, i32 attackerEntityId) = nullptr;
+    void* guestStruckCtx = nullptr;
+
+    // **The surroundings as the caller gave them**, set only in a mob's own
+    // copy whose `player` is a guest. A blast and a shove are worked out
+    // against the body this console runs and nobody else's -- a guest's
+    // console works out its own (`net::IncomingBlast`) -- so `applyBlast` and
+    // the shove read this rather than `player`.
+    const MobSurroundings* home = nullptr;
 
     // `cn.l` -- **the world's difficulty**, which three separate things read:
     // `dq.e_()` removes every monster on Peaceful, `ma.a()Z` refuses to spawn
@@ -813,6 +855,11 @@ public:
     // twenty ticks of falling over that `tick` then counts. Anything else is
     // ignored. False when no such mob is here.
     bool statusFromServer(tick::TickWorld& world, i32 entityId, int status);
+
+    // **The creepers that went off since the last call**, by entity id, for a
+    // host to tell its guests (`kStatusExploded`). One that was never given an
+    // id was never on anybody's screen and is not here. Writes at most `max`.
+    int takeExploded(i32* out, int max);
 
     // One 20 Hz tick of `ge.e_()` for every live animal.
     void tick(tick::TickWorld& world, const MobSurroundings& around);
@@ -926,6 +973,7 @@ public:
     {
         mobs_.clear();
         ridden_ = -1;
+        explodedCount_ = 0;
     }
 
     int count() const { return mobs_.size(); }
@@ -946,6 +994,26 @@ private:
     friend struct PersistentEntities;
 
     void removeAt(int index);
+
+    // **A blow on a guest, carried through a `PlayerHurt`**: the three places
+    // a mob deals damage call `around.hurtPlayer` and know nothing of who is
+    // on the other end, so a guest's copy of the surroundings points that sink
+    // here, with who was hit and which mob swung. What it cost is the guest's
+    // console's to work out; the amount is dropped on purpose.
+    struct GuestBlow {
+        void (*struck)(void* ctx, i32 victimEntityId, i32 attackerEntityId) = nullptr;
+        void* ctx = nullptr;
+        i32 victim = 0;
+        i32 attacker = 0;
+    };
+    static void strikeGuest(void* ctx, int amount, DamageSource source, double fromX,
+                            double fromZ);
+
+    // The surroundings `mob` is ticked with: `around` itself, unless a guest is
+    // nearer it than `around.player` -- then a copy in `scratch` whose player
+    // is that guest and whose blows go through `blow`. See `MobSurroundings`.
+    static const MobSurroundings& nearestFor(const Mob& mob, const MobSurroundings& around,
+                                             MobSurroundings* scratch, GuestBlow* blow);
 
     // `ge.j()`'s first block -- one tick of the walk towards where the server
     // last said this animal was. See the implementation.
@@ -1047,6 +1115,12 @@ private:
     int ridden_ = -1;
     u32 refused_ = 0;
     JavaRandom rand_;
+
+    // See `takeExploded`. A handful: creepers go off one at a time, and a
+    // single-player world that nobody asks simply stops recording.
+    static constexpr int kMaxExploded = 8;
+    i32 exploded_[kMaxExploded] = {};
+    int explodedCount_ = 0;
 
     // **How many searches this tick has run, counted and no longer capped.**
     //

@@ -90,6 +90,60 @@ bool FallingBlockSystem::spawn(const tick::TickWorld& world, i32 x, int y, i32 z
     return true;
 }
 
+int FallingBlockSystem::indexOfEntity(i32 entityId) const
+{
+    if (entityId == 0) {
+        return -1;
+    }
+    for (int i = 0; i < items_.size(); ++i) {
+        if (items_[i].alive() && items_[i].entityId == entityId) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool FallingBlockSystem::spawnRemote(const tick::TickWorld& world, i32 entityId, double x,
+                                     double y, double z, BlockId id)
+{
+    if (id == block::kAir) {
+        return false;
+    }
+    removeById(entityId);
+    FallingBlock* e = allocate();
+    if (e == nullptr) {
+        return false;
+    }
+    *e = FallingBlock{};
+    e->block = id;
+    e->entityId = entityId;
+    e->remote = true;
+    e->setPosition(x, y, z);
+    e->track.reset(x, y, z, 0.0f);
+    e->light = packedLightAt(world, x, y, z);
+    return true;
+}
+
+bool FallingBlockSystem::placeRemote(i32 entityId, double x, double y, double z)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || !items_[index].remote) {
+        return false;
+    }
+    items_[index].track.aim(x, y, z, 0.0f);
+    return true;
+}
+
+bool FallingBlockSystem::removeById(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    removeAt(index);
+    return true;
+}
+
 void FallingBlockSystem::tick(tick::TickWorld& world)
 {
     for (int i = 0; i < items_.size();) {
@@ -97,6 +151,24 @@ void FallingBlockSystem::tick(tick::TickWorld& world)
         // Restored entities can precede the chunks beneath them.
         if (!world.chunkResident(MathHelper::floorDouble(e.x) >> 4,
                                  MathHelper::floorDouble(e.z) >> 4)) {
+            ++i;
+            continue;
+        }
+
+        // **The host's block, walking to where the host says** -- and never
+        // touching a cell: the source cell's clearing and the landing both
+        // arrive as the host's own Block Changes.
+        if (e.remote) {
+            e.prevX = e.x;
+            e.prevY = e.y;
+            e.prevZ = e.z;
+            double px = e.x;
+            double py = e.y;
+            double pz = e.z;
+            if (e.track.step(&px, &py, &pz, nullptr)) {
+                e.moveTo(px, py, pz);
+            }
+            e.light = packedLightAt(world, e.x, e.y, e.z);
             ++i;
             continue;
         }

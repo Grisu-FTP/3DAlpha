@@ -230,6 +230,24 @@ bool decodePlayerSkinPage(io::FileSystem& fs, std::string_view path, bool fromPa
 // kz.png is not 256 x 256 is rescaled to it rather than refused.
 void buildArtSheet(io::FileSystem& fs, std::string_view packPath, std::vector<u8>* out);
 
+// **The armour sheet**: the ten `armor/<material>_<layer>.png` files `bu`
+// (RenderPlayer) binds for a worn piece, laid out as 64 x 32 pages four to a
+// row in a 256 x 256 sheet of their own. They do not fit the entity sheet, which
+// is full, and a player wearing armour is two draws rather than one either way.
+//
+// `material` is `ItemArmor.renderIndex` -- 0 cloth, 1 chain, 2 iron, 3 diamond,
+// 4 gold -- and `layer` is 1, or 2 for the leggings. **A page the pack lacks is
+// left transparent**, not stood in for: armour with no texture draws as nothing
+// rather than as a coloured grid on a player.
+inline constexpr int kArmourMaterials = 5;
+inline constexpr int kArmourSheetEdge = 256;
+inline constexpr usize kArmourSheetBytes = usize(kArmourSheetEdge) * kArmourSheetEdge * 4;
+
+// Where that page begins, in texels; false outside the table.
+bool armourPageOrigin(int material, int layer, int* x, int* y);
+
+void buildArmourSheet(io::FileSystem& fs, std::string_view packPath, std::vector<u8>* out);
+
 // The stand-ins, exposed for the same reason `buildDevArt` is: they are what
 // Dev Art draws with, and the host suite checks them.
 //

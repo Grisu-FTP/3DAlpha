@@ -144,9 +144,13 @@ public:
     // **The streamer, the renderer and the effects are borrowed for the length
     // of the call**, which is the whole of the window in which a guest's dig
     // or place is applied. Nothing here holds them afterwards.
+    //
+    // `falling` and `tnt` are announced to the guests as they are made; they
+    // are not click targets, so `effects` does not carry them.
     void pump(render::WorldStreamer& world, render::ChunkRenderer& chunks,
-              const item::Effects& effects, entity::ItemEntitySystem& drops, gui::ChatLog& chat,
-              const u8* fontWidths);
+              const item::Effects& effects, entity::ItemEntitySystem& drops,
+              entity::FallingBlockSystem& falling, entity::PrimedTntSystem& tnt,
+              gui::ChatLog& chat, const u8* fontWidths);
 
     // Terrain columns guests have made for this world, and the ones that
     // arrived after the generator had already made them. For the debug page.
@@ -205,6 +209,12 @@ public:
     {
         static_cast<HostPlay*>(context)->server_.arrowStruck(victimEntityId, arrow);
     }
+    // `MobSurroundings::guestStruck`, for the same bodies. See
+    // `net::WorldServer::mobStruck`.
+    static void mobStruck(void* context, i32 victimEntityId, i32 mobEntityId)
+    {
+        static_cast<HostPlay*>(context)->server_.mobStruck(victimEntityId, mobEntityId);
+    }
 
     // One 20 Hz tick of those bodies: the walk toward wherever each guest last
     // said they were, and the light they are standing in.
@@ -216,6 +226,8 @@ public:
     // **How this console's player stands** -- crouched, dead, or back -- for
     // every guest to draw. Once a tick; see `WorldServer::setHostStance`.
     void reportStance(bool sneaking, bool alive) { server_.setHostStance(sneaking, alive); }
+    // ...and what is in its hand. See `net::WorldServer::setHostHeld`.
+    void reportHeld(int heldItem) { server_.setHostHeld(heldItem); }
 
     // The host's arm swinging, for the guests to draw. See
     // `net::WorldServer::hostSwing`.
@@ -270,6 +282,22 @@ private:
         return effects_ != nullptr ? effects_->entities.arrows : nullptr;
     }
     void useItem(const UseRequest& request) override;
+    entity::BoatSystem* boats() override
+    {
+        return effects_ != nullptr ? effects_->entities.boats : nullptr;
+    }
+    entity::MinecartSystem* minecarts() override
+    {
+        return effects_ != nullptr ? effects_->entities.minecarts : nullptr;
+    }
+    entity::FallingBlockSystem* fallingBlocks() override { return falling_; }
+    entity::PrimedTntSystem* primedTnt() override { return tnt_; }
+    tick::TickWorld* tickWorld() override
+    {
+        return streamer_ != nullptr ? streamer_->worldTick() : nullptr;
+    }
+    // A guest's boat; see `net::kPlaceOnCell`.
+    void placeBoat(const PlaceRequest& request);
 
     // The server's way back onto the link. One player at a time; false is the
     // window being full, which is back-pressure rather than a failure.
@@ -297,6 +325,8 @@ private:
     render::ChunkRenderer* chunks_ = nullptr;
     const item::Effects* effects_ = nullptr;
     entity::ItemEntitySystem* drops_ = nullptr;
+    entity::FallingBlockSystem* falling_ = nullptr;
+    entity::PrimedTntSystem* tnt_ = nullptr;
 
     net::RemoteEntities entities_;
     net::IncomingHit hit_;

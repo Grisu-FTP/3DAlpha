@@ -11,8 +11,12 @@
 // breaker where `nj` sits -- so the loop reads the same with it and without it.
 //
 // What a protocol-2 server cannot tell a client is not guessed at: there is no
-// health to show, no container contents to edit, and the other entities are
-// sent but not drawn yet.
+// health to show and no container contents to edit. The other players, the mobs,
+// the boats and the carts are drawn -- `entities()` is the pool, bound into the
+// scene and into the click targets by `runGame` -- and from a host of this family
+// so are the falling blocks and the lit TNT. A boat or a cart is ridden by asking
+// the host (`ride`) and steered here once it says yes; see
+// `RemoteEntities::driveReport`.
 
 #include "core/entity/item_entity.hpp"
 #include "core/entity/player_body.hpp"
@@ -21,6 +25,7 @@
 #include "core/net/packet_channel.hpp"
 #include "core/net/entities.hpp"
 #include "core/net/player_sync.hpp"
+#include "core/net/tile_sync.hpp"
 #include "core/render/world_streamer.hpp"
 
 #include <string>
@@ -75,6 +80,22 @@ public:
     // a sword the server has not heard about would punch for one.
     void attackEntity(i32 targetEntityId, int heldItem);
 
+    // **A right click on the host's boat or cart: "let me in".** Nothing
+    // happens here until the host answers; then this console steers it. Silent
+    // unless the host is of this family. See `net::kNoVehicle`.
+    //
+    // **A furnace cart takes the same click**, with what is in the hand: the
+    // host puts the coal in its cart and points it away from this player.
+    void ride(i32 vehicleEntityId, int heldItem);
+
+    // **The host's blast reached this player.** True once per blast. See
+    // `net::IncomingBlast`.
+    bool takeBlast(net::IncomingBlast* out) { return entities_.takeBlast(out); }
+
+    // **A boat this console's player put down, for the host to put down
+    // instead** -- the cell its ray found. See `net::kPlaceOnCell`.
+    void placeBoat(int heldItem, i32 x, int y, i32 z);
+
     // **A right click in the air, for the host to act on** -- the bow, which
     // a1.1.2 never puts on the wire (see `net::makeUseItem`). The pose goes
     // first, so the arrow leaves along the look the player has *now* rather
@@ -94,11 +115,44 @@ public:
     // the wrong size is ignored. Only ever sent when extensions are allowed.
     void setOwnSkin(const std::vector<u8>& page);
     bool extensionsAllowed() const { return extensions_; }
+    // The host shares its boats, carts, falling blocks and TNT: see
+    // `RemoteEntities::sharesVehicles`.
+    bool vehiclesShared() const { return extensions_ && entities_.sharesVehicles(); }
 
     // **Somebody hit this player.** True once per blow, and then the blow is
     // gone -- the caller applies it to the player's own vitals, which is the
     // only place health lives in this protocol. See `net::IncomingHit`.
     bool takeHit(net::IncomingHit* out);
+
+    // ---- chests and furnaces ---------------------------------------------
+    //
+    // **The host owns the contents; this console mirrors them while the screen
+    // is up.** See core/net/tile_sync.hpp. Nothing here is sent to a server that
+    // is not this port: `extensionsAllowed` gates all of it.
+    //
+    // Asks the host for the container at x, y, z. `tileArrived` turns true when
+    // its contents have been written into this console's own copy of the
+    // column, which is when the screen can open on it without lying.
+    void openTile(i32 x, int y, i32 z);
+    bool tileArrived(i32 x, int y, i32 z) const;
+    // The screen is shut.
+    void closeTile();
+    // **After a click on the open screen**: sends every part of the container
+    // whose contents differ from what the host last said, so it learns what was
+    // moved. `world` is this console's own.
+    void sendTileEdits(const tick::TickWorld& world, i32 x, int y, i32 z);
+    // **A chest cart's 27 slots**, the same way: the host's, mirrored into this
+    // console's copy of the cart while its screen is up. `openTile` with the
+    // cart's entity id and `net::kCartTileY` asks; this sends a click's worth
+    // of difference back. `cartId` is the cart's local id, as the screen has it.
+    void sendCartEdits(entity::MinecartSystem& carts, u32 cartId);
+    // True once after the host said the container is gone.
+    bool takeTileClosed()
+    {
+        const bool closed = tileClosed_;
+        tileClosed_ = false;
+        return closed;
+    }
 
     void chat(std::string_view text);
 
@@ -147,6 +201,23 @@ private:
     net::PacketChannel::Event event_;
     net::RemoteEntities entities_;
     net::IncomingHit hit_;
+
+    // What the host last said about each part of the open container, encoded,
+    // so a click is the only thing that reads as an edit. See `sendTileEdits`.
+    struct TileMirror {
+        bool used = false;
+        i32 x = 0;
+        int y = 0;
+        i32 z = 0;
+        std::vector<u8> last;
+    };
+    TileMirror tiles_[tick::kMaxChestParts];
+    bool tileAsked_ = false;
+    i32 tileAskX_ = 0;
+    int tileAskY_ = 0;
+    i32 tileAskZ_ = 0;
+    bool tileArrived_ = false;
+    bool tileClosed_ = false;
 
     i32 entityId_ = 0;
     int columns_ = 0;

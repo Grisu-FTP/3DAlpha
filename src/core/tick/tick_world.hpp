@@ -441,10 +441,39 @@ public:
     }
     void openContainer(ContainerKind kind, i32 x, int y, i32 z) const
     {
-        if (containerSink_ != nullptr) {
+        if (containerSink_ != nullptr && !containersSilenced_) {
             containerSink_(containerSinkCtx_, kind, x, y, z);
         }
     }
+
+    // **A click that must open nothing on this screen**, which is what a
+    // right click somebody else made is: a host applies a guest's place
+    // through the same `item::rightClick` its own hand goes through, and a
+    // chest, a workbench or a furnace answers that click by asking for a
+    // screen. Nothing says whose click it was, so the guest's one opened the
+    // window on the *host's* screen -- the player who was not clicking
+    // anything. Held for the length of the one call that applies somebody
+    // else's click, which is the only place that cannot want the screen. See
+    // `HostPlay::placeBlock`.
+    //
+    // The sink itself is left installed, so this cannot lose the host's own
+    // next click by forgetting to put one back.
+    class SilenceContainers {
+    public:
+        explicit SilenceContainers(TickWorld& world)
+            : world_(world), was_(world.containersSilenced_)
+        {
+            world_.containersSilenced_ = true;
+        }
+        ~SilenceContainers() { world_.containersSilenced_ = was_; }
+
+        SilenceContainers(const SilenceContainers&) = delete;
+        SilenceContainers& operator=(const SilenceContainers&) = delete;
+
+    private:
+        TickWorld& world_;
+        bool was_;
+    };
 
     // **`cn.a(Ljava/lang/String;III)V` -- World.playRecord**, which is the one
     // sound in a1.1.2 that is not fire-and-forget: it is a streaming source
@@ -732,6 +761,9 @@ private:
     void* columnModifiedSinkCtx_ = nullptr;
     ContainerSink containerSink_ = nullptr;
     void* containerSinkCtx_ = nullptr;
+    // See `SilenceContainers`. Not part of the sink, so that installing one
+    // and silencing it are two independent things.
+    bool containersSilenced_ = false;
     RecordSink recordSink_ = nullptr;
     void* recordSinkCtx_ = nullptr;
     StackSink stackSink_ = nullptr;
@@ -799,6 +831,11 @@ private:
 
     void runScheduled();
     void randomTickChunk(world::ChunkColumn& column);
+
+    // Runs the `onBlockAdded` population owed (ChunkColumn::pendingAdds) for
+    // cells whose 17-cube surroundings are now resident; the rest wait, since
+    // `scheduleBlockUpdate` would refuse them.
+    void runPendingAdds(world::ChunkColumn& column);
     void snowAndIce(world::ChunkColumn& column);
 
     // `ic.b()` for every tile entity in the column that ticks -- the furnace;

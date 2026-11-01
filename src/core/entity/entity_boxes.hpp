@@ -67,6 +67,7 @@ class MobSystem;
 class PaintingSystem;
 class PrimedTntSystem;
 struct PlayerBody;
+struct RemoteTarget;
 
 // The world's entity list, as the sweep will ask about it. Every pointer may
 // be null, which means there are none of that kind.
@@ -102,6 +103,12 @@ struct EntityBoxes {
     // overlaps the vehicle's on all three axes -- and `calculateOffset` clips
     // only against a box that is ahead and clear, never one already overlapping.
     const PlayerBody* player = nullptr;
+
+    // **A host's guests**, where each last said they stand -- players in this
+    // world exactly as the one above is, so a cart rolling at a guest on the
+    // track stops at them too. Nobody, in any other world.
+    const RemoteTarget* guests = nullptr;
+    int guestCount = 0;
 };
 
 // Installs `entities` as the world's solid-box query. Null clears it, which

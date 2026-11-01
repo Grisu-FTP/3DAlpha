@@ -53,6 +53,7 @@
 #include "core/audio/sound_engine.hpp"
 #include "core/entity/falling_block.hpp"
 #include "core/entity/primed_tnt.hpp"
+#include "core/entity/remote_walk.hpp"
 #include "core/gui/chat_log.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/entity/arrow.hpp"
@@ -83,6 +84,7 @@
 #include "core/texture/fluid_fx.hpp"
 #include "core/texture/texture_fx.hpp"
 #include "core/tick/tick_timer.hpp"
+#include "core/render/player_model.hpp"
 #include "core/render/held_item.hpp"
 #include "core/render/world_streamer.hpp"
 #include "core/util/coord_text.hpp"
@@ -154,21 +156,59 @@ void drawPausedWorld(void* context, void* overlayContext,
 // `owed` is 0 when there was nothing to write, and that is not a degenerate
 // case: it is the answer to "did pressing START a moment ago already do this",
 // and the answer is yes. The bar reads full and the line under it says so.
+//
+// **Every phase of close() has a name now**, which is what the screen shows while
+// the phase counts nothing: joining the generation worker, finishing what the
+// generator holds, the commit. Those used to share the drain's first frame, so a
+// stall in any of them was a still picture nobody could tell apart from the rest.
 struct SaveScreen {
     ctr::ProgressScreen* screen;
     ctr::Renderer* renderer;
     const ctr::Camera* camera;
+    const mc::render::WorldStreamer* world;
+    const char* lastStage = nullptr;
+    u64 lastFrameMs = 0;
+    bool warned = false;
 };
 
-void drawSaveProgress(void* context, u32 written, u32 owed)
+void drawSaveProgress(void* context, const char* stage, u32 done, u32 total)
 {
+    using Streamer = mc::render::WorldStreamer;
     SaveScreen& save = *static_cast<SaveScreen*>(context);
-    save.screen->setCounts(written, owed);
-    // One frame per call, and close() calls this about every 16 ms. The frame
-    // blocks on VBlank inside drawFrame, so the drain is polled at the refresh
-    // rate rather than at whatever the loop would otherwise spin at -- and the
-    // writes themselves are on the I/O thread, so nothing here slows them.
+    // **The drain's frame is its pacing; nothing else's is.** The drain polls the
+    // queue on this call, so a frame blocking on VBlank is what stops it spinning,
+    // and the writes are on the I/O thread either way. But collecting changes calls
+    // this once per column on the main thread, and a VBlank each is 5 seconds added
+    // to 300 changed columns. So those frames are drawn when there is something new
+    // to show or a tenth of a second has gone by.
+    const bool draining = stage == Streamer::kSaveStageWriting;
+    const u64 now = ctr::nowMillis();
+    if (!draining && stage == save.lastStage && now - save.lastFrameMs < 100) {
+        return;
+    }
+    save.lastStage = stage;
+    save.lastFrameMs = now;
+    save.screen->setCounts(done, total);
+    // An empty drain is the existing "already saved" answer rather than a phase.
+    save.screen->setStage(draining && total == 0 ? nullptr : stage);
     save.screen->present(*save.renderer, *save.camera);
+    // **Columns the card would not take, which the world is about to lose**, said
+    // here because this is the last phase with the world still there to draw behind
+    // it. See crashlogs/009-save-with-a-minecart/. Four seconds, then the world goes.
+    if (stage == Streamer::kSaveStageFinishing && !save.warned) {
+        const u32 lost = save.world->saveFailures();
+        if (lost > 0) {
+            save.warned = true;
+            char line[64];
+            std::snprintf(line, sizeof(line), "%lu chunks could not be written",
+                          static_cast<unsigned long>(lost));
+            save.screen->setStage(line);
+            for (int frame = 0; frame < 240; ++frame) {
+                save.screen->present(*save.renderer, *save.camera);
+            }
+            save.screen->setStage(stage);
+        }
+    }
 }
 
 // An analogue axis as -1..1, with the deadzone taken out.
@@ -442,6 +482,19 @@ struct EntityScene {
     const mc::tick::TickWorld* world = nullptr;
     mc::entity::FallingBlockSystem* falling = nullptr;
     mc::entity::PrimedTntSystem* primedTnt = nullptr;
+
+    // **A host's guests**, where each last said they stand: players in this
+    // world, refreshed every frame before any tick. See `net::WorldServer::
+    // arrowTargets`. Null and zero in every world but a hosted one.
+    const mc::entity::RemoteTarget* guests = nullptr;
+    int guestCount = 0;
+
+    // **A guest's world primes no TNT and drops no sand of its own.** Its blocks
+    // are the host's, so a block it breaks or burns is the host's to light or let
+    // fall, and the host's entity arrives over the link. Left on, a guest mining
+    // a TNT block saw two fuses, and the one that was only its own went off on
+    // this screen alone. Set once the host has said it shares them.
+    bool serverOwnsBlocks = false;
 };
 
 bool anyEntityIn(void* ctx, const mc::AABB& box, mc::tick::EntityFilter filter)
@@ -456,6 +509,14 @@ bool anyEntityIn(void* ctx, const mc::AABB& box, mc::tick::EntityFilter filter)
     // filters differ only in what they *exclude*, below.
     if (scene->body != nullptr && scene->body->box.intersects(box)) {
         return true;
+    }
+    // **A host's guests answer all three, as the host does**: they are players
+    // in this world, and a plate one of them stands on is pressed here and the
+    // wire carries the change to everybody.
+    for (int g = 0; g < scene->guestCount; ++g) {
+        if (scene->guests[g].box.intersects(box)) {
+            return true;
+        }
     }
 
     // **An animal answers two of the three.** `js.b` selects `EntityLiving`,
@@ -579,7 +640,7 @@ void playRecordSound(void* ctx, const char* track, mc::i32 x, int y, mc::i32 z)
 bool spawnFallingBlock(void* ctx, mc::i32 x, int y, mc::i32 z, mc::u16 block)
 {
     EntityScene* scene = static_cast<EntityScene*>(ctx);
-    if (scene->falling == nullptr || scene->world == nullptr) {
+    if (scene->falling == nullptr || scene->world == nullptr || scene->serverOwnsBlocks) {
         return false;
     }
     return scene->falling->spawn(*scene->world, x, y, z, mc::block::BlockId(block));
@@ -592,7 +653,7 @@ bool spawnFallingBlock(void* ctx, mc::i32 x, int y, mc::i32 z, mc::u16 block)
 bool spawnPrimedTnt(void* ctx, mc::i32 x, int y, mc::i32 z, int fuse)
 {
     EntityScene* scene = static_cast<EntityScene*>(ctx);
-    if (scene->primedTnt == nullptr || scene->world == nullptr) {
+    if (scene->primedTnt == nullptr || scene->world == nullptr || scene->serverOwnsBlocks) {
         return false;
     }
     return scene->primedTnt->spawn(*scene->world, x, y, z, fuse);
@@ -737,6 +798,42 @@ void spendHeld(ctr::Overlay& overlay, int count)
     overlay.inventoryEdited();
 }
 
+// **The boats and carts this console's player just put down, handed to the host.**
+// On a guest whose host is of this family a vehicle is the host's, like every other
+// entity: the local placement still decides whether the click took and what it
+// cost, and then the boat or cart is taken back off this console's water or rail
+// and the host's own -- placed from the same click -- arrives in its place a moment
+// later. A cart's click already reached the host as an ordinary Place; a boat's did
+// not, so each boat is answered with the cell its ray put it on.
+void handOverPlacedVehicles(const mc::item::EntityPools& pools, ctr::NetPlay& net,
+                            mc::item::ItemId held)
+{
+    if (mc::entity::BoatSystem* boats = pools.boats) {
+        for (int i = boats->count() - 1; i >= 0; --i) {
+            const mc::entity::Boat& b = (*boats)[i];
+            if (b.entityId != 0 || b.remote) {
+                continue;
+            }
+            // `me.a(...)` put it at `(cell + 0.5, cell + 1.5, cell + 0.5)` and the
+            // constructor lifted it by its own `yOffset`. Less 1.0 rather than 1.5,
+            // which lands mid-cell: a sum an ulp short of the cell's floor cannot
+            // floor to the cell beneath.
+            net.placeBoat(int(held), mc::MathHelper::floorDouble(b.x),
+                          int(mc::MathHelper::floorDouble(b.y - mc::entity::kBoatYOffset - 1.0)),
+                          mc::MathHelper::floorDouble(b.z));
+            boats->removeLocal(i);
+        }
+    }
+    if (mc::entity::MinecartSystem* carts = pools.minecarts) {
+        for (int i = carts->count() - 1; i >= 0; --i) {
+            const mc::entity::Minecart& c = (*carts)[i];
+            if (c.entityId == 0 && !c.remote) {
+                carts->removeLocal(i);
+            }
+        }
+    }
+}
+
 void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                 const ctr::Camera& camera, const mc::entity::PlayerBody& body,
                 ctr::Overlay& overlay, u32 down, u32 heldButtons, i64 nowTick,
@@ -831,6 +928,25 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
                     return;
                 }
             }
+            // **A boat or a cart the server announced is the server's to break**,
+            // as an animal is: the blow goes to it and the planks drop there.
+            // Against a server that is not this port no blow can be sent, and a
+            // copy broken here alone would leave its drops on this screen only,
+            // so nothing is hit.
+            if (net != nullptr
+                && (target.kind == mc::item::EntityTarget::Kind::Boat
+                    || target.kind == mc::item::EntityTarget::Kind::Minecart)) {
+                const mc::i32 vehicleId =
+                    target.kind == mc::item::EntityTarget::Kind::Boat
+                        ? (*effects.entities.boats)[target.index].entityId
+                        : (*effects.entities.minecarts)[target.index].entityId;
+                if (vehicleId != 0) {
+                    if (net->extensionsAllowed()) {
+                        net->attackEntity(vehicleId, int(heldItem));
+                    }
+                    return;
+                }
+            }
             // **Another player, which no console resolves for itself.** The
             // blow is sent to whoever is running them and their own vitals
             // decide what it costs -- there is no health on this wire. A host
@@ -922,6 +1038,47 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // `interact` refuses. A boat or a plain cart takes the player aboard, a
     // chest cart opens its slots and a furnace cart takes coal, and any of
     // those ends the click.
+    //
+    // **The server's boat or cart is climbed into by asking.** Whoever sits in a
+    // vehicle steers it, so the host has to agree first -- somebody may already
+    // be in it -- and its answer puts this player aboard. Against a server that
+    // is not this port the click is simply taken: riding a copy the server keeps
+    // moving would be a seat that jumps every packet.
+    if (net != nullptr && target.found()
+        && (target.kind == mc::item::EntityTarget::Kind::Boat
+            || target.kind == mc::item::EntityTarget::Kind::Minecart)) {
+        const bool boat = target.kind == mc::item::EntityTarget::Kind::Boat;
+        const mc::i32 vehicleId = boat ? (*effects.entities.boats)[target.index].entityId
+                                       : (*effects.entities.minecarts)[target.index].entityId;
+        if (vehicleId != 0) {
+            const mc::entity::MinecartType type =
+                boat ? mc::entity::MinecartType::Rideable
+                     : (*effects.entities.minecarts)[target.index].type;
+            if (type == mc::entity::MinecartType::Furnace) {
+                // **The host's furnace cart takes this player's coal** and is
+                // pointed away from them there; the coal is this console's to
+                // spend, as `oc.a(Ldm;)Z` spends it from the clicker's hand.
+                net->ride(vehicleId, int(heldItem));
+                if (net->vehiclesShared()
+                    && overlay.gamemode() == mc::settings::Gamemode::Survival
+                    && heldItem == mc::item::ItemId(mcver::Item::Coal)) {
+                    spendHeld(overlay, 1);
+                }
+            } else if (type == mc::entity::MinecartType::Chest) {
+                // **Its 27 slots are the host's**, asked for and mirrored as a
+                // chest's are. See `net::kCartTileY`.
+                if (pendingContainer != nullptr) {
+                    pendingContainer->open = true;
+                    pendingContainer->cart = (*effects.entities.minecarts)[target.index].id;
+                }
+            } else if (effects.entities.boats->riddenIndex() < 0
+                       && effects.entities.minecarts->riddenIndex() < 0
+                       && effects.entities.mobs->riddenIndex() < 0) {
+                net->ride(vehicleId, int(heldItem));
+            }
+            return;
+        }
+    }
     if (target.found()) {
         const mc::item::EntityInteraction answer = mc::item::interactWithEntity(
             *tickWorld, target, effects.entities, heldItem, body.x, body.z);
@@ -1008,6 +1165,11 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
             wearHeld(overlay, mc::item::wearOnUse(heldItem));
             spendHeld(overlay, mc::item::spendOnUse(heldItem));
         }
+        // A cart on a rail is placed through this path. See
+        // `handOverPlacedVehicles`.
+        if (net != nullptr && net->vehiclesShared()) {
+            handOverPlacedVehicles(effects.entities, *net, heldItem);
+        }
         // **The keyboard, which is the other half of "signs don't work".**
         // `ItemSign.onItemUse` ends with `displayGUIEditSign`, and a sign
         // placed with no way to type into it can never say anything. The store
@@ -1038,6 +1200,20 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // allowed to see water at all, and that is the whole reason this is here
     // rather than folded into the call above. See core/item/use.hpp.
     if (survival) {
+        // **Armour in the hand goes on**, the way every later version has it:
+        // the piece swaps with whatever is already worn, so the old one lands in
+        // the slot the new one came from. a1.1.2 has no such click -- armour is
+        // only ever worn from the inventory screen -- so this one is ours.
+        // Creative's hand is a catalogue, not a stock, and has nothing to swap
+        // with.
+        const int armourSlot = mc::item::Inventory::armourSlotFor(heldItem);
+        if (armourSlot >= 0) {
+            mc::item::Inventory& worn = overlay.editInventory();
+            worn.swap(worn.selected, armourSlot);
+            hand->reequip();
+            overlay.inventoryEdited();
+            return;
+        }
         // `oj.a(Lev;Lcn;Ldm;)Lev;` -- **ItemFood**: one off the stack and the
         // health back, on every right-click and whatever the health already is.
         const int heals = mc::item::foodHeals(heldItem);
@@ -1077,6 +1253,10 @@ void editBlocks(render::WorldStreamer& world, render::ChunkRenderer& chunks,
     // into something else below instead, and the bow spent its arrow above.
     if (survival && used.changed && used.becomes == heldItem) {
         spendHeld(overlay, mc::item::spendOnUse(heldItem));
+    }
+    // And a boat on water through this one.
+    if (net != nullptr && net->vehiclesShared()) {
+        handOverPlacedVehicles(effects.entities, *net, heldItem);
     }
     // Either entry point may have been the one refused -- a cart or a sign
     // goes through the first, a boat or an arrow through the second -- and
@@ -1377,6 +1557,32 @@ void* spawnWorker(void (*entry)(void*), void* arg, mc::WorkerRole role)
         // decoder's deadline, and a session waiting on the network is not
         // waiting on the CPU.
         const s32 priority = mainPriority + 2 > 0x3F ? 0x3F : mainPriority + 2;
+        return threadCreate(entry, arg, kWorkerStackBytes, priority, 0, false);
+    }
+
+    if (role == mc::WorkerRole::Mesh) {
+        // **Above generation wherever the two share a core, and that is not a
+        // preference.** The kernel is SCHED_FIFO (3dbrew, Multi-threading):
+        // generation takes its next job the moment it finishes one, so a full
+        // slate never blocks, and anything below it on that core would mesh
+        // nothing until the world finished generating. A mesh job is short and
+        // there are at most four, so it cannot starve generation in return.
+        //
+        // On a New 3DS that is core 2 at the main thread's own number: one below
+        // the audio decoder when the kernel granted it the step, and level with
+        // it when not -- where a job of a few milliseconds is covered by the
+        // decoder's deep ring. On an Old 3DS, or a New one without core 2, it is
+        // core 0 below everything with a deadline, in the slack the main thread
+        // leaves while it waits for VBlank; generation there is at 0x3F.
+        //
+        // Hardware numbers for this do not exist yet. See docs/current-work.md.
+        if (gWorkerIsNew3DS) {
+            Thread thread = threadCreate(entry, arg, kWorkerStackBytes, mainPriority, 2, false);
+            if (thread != nullptr) {
+                return thread;
+            }
+        }
+        const s32 priority = mainPriority + 3 > 0x3E ? 0x3E : mainPriority + 3;
         return threadCreate(entry, arg, kWorkerStackBytes, priority, 0, false);
     }
 
@@ -1925,6 +2131,21 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // being guesses until it says -- see `Painting::predicted`.
         net->entities().bindPaintings(paintings.get());
         paintings->setPredictPlacements(true);
+        // **And the host's boats, carts, falling blocks and lit TNT**, the same
+        // way, so a world is one list and one draw whoever owns what is in it.
+        net->entities().bindVehicles(boats.get(), minecarts.get());
+        net->entities().bindFallers(fallingBlocks.get(), primedTnt.get());
+    }
+    // **A host's own guests, drawn from the same record.** Only the bodies arrive
+    // here -- the world's own entities go out with `broadcast` and never reach the
+    // local sink -- and a mob or a vehicle hook has nothing to do on this pool, but
+    // the hooks are what let `hitFrom` and a guest's seat find what they name.
+    if (host != nullptr) {
+        host->entities().bindMobs(mobs.get());
+        host->entities().bindPaintings(paintings.get());
+        host->entities().bindVehicles(boats.get(), minecarts.get());
+        host->entities().bindFallers(fallingBlocks.get(), primedTnt.get());
+        host->entities().bindArrows(arrows.get());
     }
 
     world.bindEntities(mc::entity::EntityPools{paintings.get(), arrows.get(), boats.get(),
@@ -2000,11 +2221,42 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // is standing on it, and the sweep wants what is in the way. The first two
     // are solid to everything; the rest are what a moving boat or minecart
     // alone collides with. See core/entity/entity_boxes.hpp.
-    const mc::entity::EntityBoxes entityBoxes{boats.get(),      minecarts.get(),
-                                              mobs.get(),       droppedItems.get(),
-                                              arrows.get(),     paintings.get(),
-                                              primedTnt.get(),  fallingBlocks.get(),
-                                              &body};
+    mc::entity::EntityBoxes entityBoxes{boats.get(),      minecarts.get(),
+                                        mobs.get(),       droppedItems.get(),
+                                        arrows.get(),     paintings.get(),
+                                        primedTnt.get(),  fallingBlocks.get(),
+                                        &body};
+    // **A host's guests, where each last said they stand**, and each one's walk so
+    // far. Refreshed once a frame, before any tick, and shared with every pool that
+    // asks about players -- a1.1.2's world has one player list and every one of
+    // them walks it. On the stack is too much for a 3DSX, and nobody else wants it.
+    static mc::entity::RemoteTarget guestBodies[mc::net::WorldServer::kMaxPlayers];
+    static mc::entity::RemoteWalk guestWalks[mc::net::WorldServer::kMaxPlayers];
+    for (mc::entity::RemoteWalk& walk : guestWalks) {
+        walk = mc::entity::RemoteWalk{};
+    }
+    int guestBodyCount = 0;
+    // A guest's chest, furnace or chest cart, between asking the host and hearing
+    // back. See `core/net/tile_sync.hpp`.
+    struct PendingTile {
+        bool waiting = false;
+        bool cart = false;
+        mc::u32 cartId = 0;
+        mc::i32 cartEntity = 0;
+        mc::tick::TickWorld::ContainerKind kind = mc::tick::TickWorld::ContainerKind::Chest;
+        mc::i32 x = 0;
+        int y = 0;
+        mc::i32 z = 0;
+        mc::u64 askedAtMs = 0;
+    };
+    PendingTile pendingTile;
+    // Whether a host-owned screen was up last frame, so its closing can be told to
+    // the host whichever road closed it. See `NetPlay::closeTile`.
+    bool tileScreenUp = false;
+    mc::u32 tileClicksSent = 0;
+    // The last count of refused writes the player has been told. See
+    // `WorldStreamer::writeFailures`.
+    mc::u32 toldWriteFailures = 0;
     static PendingContainer pendingContainer;
     pendingContainer = PendingContainer{};
     if (mc::tick::TickWorld* entityWorld = world.worldTick()) {
@@ -2280,6 +2532,15 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // Only used if the worker thread could not be started; with it running the
     // main thread posts a job and moves on. See WorldStreamer::Budget.
     budget.generatedPerFrame = 1;
+    // **A time limit on top of the count**: what is left of the queue waits for the
+    // next frame once this frame has spent its share. It changes when a section
+    // appears and never how it looks. An Old 3DS runs under half a New one's clock,
+    // so the same few sections take over twice as long. These are starting numbers,
+    // not measured ones. See docs/current-work.md.
+    budget.meshNanos = isNew3DS ? 4000000 : 8000000;
+    budget.clockNanos = +[]() -> mc::i64 {
+        return mc::i64(svcGetSystemTick() * 1000000000.0 / double(SYSCLOCK_ARM11));
+    };
 
     bool dragging = false;
     touchPosition lastTouch{};
@@ -2646,6 +2907,58 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // START does in a session. See the note on the START branch below.
     bool pauseMenuUp = false;
 
+    // **The third-person views**, a lone tap of SELECT: first person, then from
+    // behind, then from the front. `EntityRenderer.orientCamera`'s 4-block boom,
+    // shortened to stop short of whatever it meets so the lens is not buried in a
+    // wall. Ray casts, footsteps and everything else that asks where the player is
+    // keep reading `camera`; this is only where the picture is taken from.
+    enum class ViewMode { First, Behind, Front };
+    ViewMode viewMode = ViewMode::First;
+    // SELECT is a modifier everywhere else, so the tap counts only when nothing
+    // else was pressed while it was down.
+    bool selectAlone = false;
+    const auto viewCameraOf = [&](const ctr::Camera& eye) {
+        if (viewMode == ViewMode::First
+            || overlay.gamemode() == settings::Gamemode::Spectator) {
+            return eye;
+        }
+        constexpr double kBoom = 4.0;
+        constexpr double kClearance = 0.25;
+        float lx = 0.0f;
+        float ly = 0.0f;
+        float lz = 0.0f;
+        eye.look(&lx, &ly, &lz);
+        const double sign = viewMode == ViewMode::Behind ? -1.0 : 1.0;
+        const double dx = double(lx) * sign;
+        const double dy = double(ly) * sign;
+        const double dz = double(lz) * sign;
+        double reach = kBoom;
+        if (const mc::tick::TickWorld* tick = world.worldTick()) {
+            const mc::entity::RayHit boomHit =
+                mc::entity::rayTrace(*tick, eye.x, eye.y, eye.z, dx, dy, dz, kBoom);
+            if (boomHit.hit) {
+                const double hx = boomHit.hitX - eye.x;
+                const double hy = boomHit.hitY - eye.y;
+                const double hz = boomHit.hitZ - eye.z;
+                reach = std::sqrt(hx * hx + hy * hy + hz * hz) - kClearance;
+                reach = reach < 0.0 ? 0.0 : reach;
+            }
+        }
+        ctr::Camera view = eye;
+        view.x += dx * reach;
+        view.y += dy * reach;
+        view.z += dz * reach;
+        if (viewMode == ViewMode::Front) {
+            view.yaw += kPi;
+            view.pitch = -view.pitch;
+        }
+        return view;
+    };
+    // This console's body as the views draw it: a stand-in in the shape another
+    // player has, so one mesh builder serves both. See `RemotePlayer::turnBody`.
+    auto selfBody = std::make_unique<mc::net::RemotePlayer>();
+    selfBody->renderYaw = selfBody->prevRenderYaw = camera.yaw * 180.0f / kPi;
+
     while (!leaveBeforePlay && aptMainLoop()) {
         hidScanInput();
         if (haveCstick) {
@@ -2697,7 +3010,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 // while it is -- the camera does not move and the sun does not
                 // either -- so every one of those frames is the same picture
                 // with the menu over it.
-                PausedWorld backdropWorld{&renderer, &camera};
+                // From where the picture was being taken, or a third-person view pauses inside
+                // the player's own head.
+                const ctr::Camera pausedView = viewCameraOf(camera);
+                PausedWorld backdropWorld{&renderer, &pausedView};
                 ctr::PauseBackdrop backdrop;
                 backdrop.context = &backdropWorld;
                 backdrop.drawFrame = drawPausedWorld;
@@ -2793,6 +3109,23 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // and this is derived from it.
         constexpr u32 kDpad = KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT;
         const u32 stickHeld = overlay.dpadTakenByScreen() ? (held & ~kDpad) : held;
+
+        // **A tap of SELECT on its own cycles the view**, on the way up so that a
+        // chord -- SELECT with Y, X or the d-pad, which all mean something -- is
+        // never also a tap. See `viewCameraOf`.
+        if ((down & KEY_SELECT) != 0) {
+            selectAlone = true;
+        } else if ((held & KEY_SELECT) != 0 && down != 0) {
+            selectAlone = false;
+        }
+        if ((hidKeysUp() & KEY_SELECT) != 0) {
+            if (selectAlone && !pauseMenuUp) {
+                viewMode = viewMode == ViewMode::First    ? ViewMode::Behind
+                           : viewMode == ViewMode::Behind ? ViewMode::Front
+                                                          : ViewMode::First;
+            }
+            selectAlone = false;
+        }
 
         // Cleared by letting go, claimed by any frame a screen was up for. The
         // release is checked first, so a claim is never carried past the press
@@ -3222,9 +3555,12 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         ctr::FrameTiming timing;
 
         const u64 beforeWalk = svcGetSystemTick();
-        const Frustum frustum = renderer.cullFrustum(camera);
-        renderer.chunks().beginFrame(++frameCounter, frustum, camera.chunkX(), camera.sectionY(),
-                                     camera.chunkZ());
+        // From where the picture is taken, which in a third-person view is not the
+        // eye: the walk has to reach what the boom can see.
+        const ctr::Camera walkCamera = viewCameraOf(camera);
+        const Frustum frustum = renderer.cullFrustum(walkCamera);
+        renderer.chunks().beginFrame(++frameCounter, frustum, walkCamera.chunkX(),
+                                     walkCamera.sectionY(), walkCamera.chunkZ());
 
         // **What the server sent, before the streamer looks at the grid**, which
         // is where `gs.g()` polls its handler: columns join, blocks change and
@@ -3268,9 +3604,30 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // what the guests said, answered before anything reads the world, and
         // then the world itself on its way out to them.
         if (host != nullptr) {
-            host->pump(world, renderer.chunks(), effects, *droppedItems, *chat,
+            host->pump(world, renderer.chunks(), effects, *droppedItems, *fallingBlocks,
+                       *primedTnt, *chat,
                        menu.fontImage().empty() ? nullptr : menu.fontImage().widths);
             host->reportPose(body, camera);
+        }
+
+        // **The guests, as bodies in this world**, once a frame and before any
+        // tick: where each last said they stand, for every pool that asks about
+        // players.
+        guestBodyCount = host != nullptr
+                             ? host->arrowTargets(guestBodies, mc::net::WorldServer::kMaxPlayers)
+                             : 0;
+        scene.guests = guestBodies;
+        scene.guestCount = guestBodyCount;
+        entityBoxes.guests = guestBodies;
+        entityBoxes.guestCount = guestBodyCount;
+        // **Only once the host has said it shares them** does this console leave
+        // TNT, sand and the host's vehicles to the host -- an older host or a Java
+        // server never sends them, and then this console's own stay as they were.
+        {
+            const bool guestShares = net != nullptr && net->vehiclesShared();
+            scene.serverOwnsBlocks = guestShares;
+            boats->setGuest(guestShares);
+            minecarts->setGuest(guestShares);
         }
 
         const u64 beforeStream = svcGetSystemTick();
@@ -3320,23 +3677,48 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     pendingContainer.open = false;
                     const mc::u32 cart = pendingContainer.cart;
                     pendingContainer.cart = 0;
-                    // **A chest's and a furnace's contents are the client's in
-                    // a1.1.2 multiplayer**, sent back to the server as Complex
-                    // Entity NBT -- which is not built yet, so opening one here
-                    // would lose whatever was put in. A workbench holds nothing.
-                    // A chest cart is refused for the same reason and is not
-                    // even spawned by a server this build can talk to.
-                    const bool refused =
+                    // **Protocol 2 has no window packets at all**, so a chest's or
+                    // a furnace's contents never reach this console by themselves.
+                    // A host that is this port sends them on request
+                    // (`packet::TileOpen`), and the screen opens when they arrive;
+                    // anything else cannot open one, and says so rather than
+                    // ignoring the click. A workbench holds nothing.
+                    const bool hostOwned =
                         net != nullptr
                         && (cart != 0
                             || pendingContainer.kind
                                    != mc::tick::TickWorld::ContainerKind::Workbench);
-                    if (refused) {
-                        chat->post(chatSink.widths,
-                                   "Chests and furnaces do not work in multiplayer yet.");
-                    }
-                    if (mc::tick::TickWorld* screenWorld =
-                            refused ? nullptr : world.worldTick()) {
+                    if (hostOwned) {
+                        const int cartIndex = cart != 0 ? minecarts->indexOfId(cart) : -1;
+                        const mc::i32 cartEntity =
+                            cartIndex >= 0 ? (*minecarts)[cartIndex].entityId : 0;
+                        if (cart != 0 ? !net->vehiclesShared() || cartEntity == 0
+                                      : !net->extensionsAllowed()) {
+                            chat->post(chatSink.widths,
+                                       cart != 0
+                                           ? "Chest minecarts need a newer protocol than this "
+                                             "server speaks."
+                                           : "Chests and furnaces need a newer protocol than "
+                                             "this server speaks.");
+                        } else {
+                            pendingTile = PendingTile{};
+                            pendingTile.waiting = true;
+                            pendingTile.cart = cart != 0;
+                            pendingTile.cartId = cart;
+                            pendingTile.cartEntity = cartEntity;
+                            pendingTile.kind = pendingContainer.kind;
+                            pendingTile.x = pendingContainer.x;
+                            pendingTile.y = pendingContainer.y;
+                            pendingTile.z = pendingContainer.z;
+                            pendingTile.askedAtMs = ctr::nowMillis();
+                            if (cart != 0) {
+                                net->openTile(cartEntity, mc::net::kCartTileY, 0);
+                            } else {
+                                net->openTile(pendingContainer.x, pendingContainer.y,
+                                              pendingContainer.z);
+                            }
+                        }
+                    } else if (mc::tick::TickWorld* screenWorld = world.worldTick()) {
                         if (cart != 0) {
                             overlay.openMinecartChest(*screenWorld, *minecarts, cart);
                         } else {
@@ -3375,6 +3757,62 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                             chatSink.limitReached(mc::item::LimitedEntity::DroppedItem);
                         }
                     }
+                }
+            }
+
+            // **A guest's chest or furnace, once the host has answered -- or given
+            // up on it.** Five seconds: a host that is not answering is not going
+            // to, and a click that silently did nothing is worse than a sentence.
+            if (net != nullptr && pendingTile.waiting) {
+                const bool arrived =
+                    pendingTile.cart
+                        ? net->tileArrived(pendingTile.cartEntity, mc::net::kCartTileY, 0)
+                        : net->tileArrived(pendingTile.x, pendingTile.y, pendingTile.z);
+                if (arrived) {
+                    pendingTile.waiting = false;
+                    if (mc::tick::TickWorld* screenWorld = world.worldTick()) {
+                        if (pendingTile.cart) {
+                            overlay.openMinecartChest(*screenWorld, *minecarts,
+                                                      pendingTile.cartId);
+                        } else {
+                            overlay.openContainer(*screenWorld, pendingTile.kind, pendingTile.x,
+                                                  pendingTile.y, pendingTile.z);
+                        }
+                    }
+                    tileClicksSent = overlay.containerClicks();
+                } else if (ctr::nowMillis() - pendingTile.askedAtMs > 5000
+                           || net->takeTileClosed()) {
+                    pendingTile.waiting = false;
+                    net->closeTile();
+                    chat->post(menu.fontImage().empty() ? nullptr : menu.fontImage().widths,
+                               "The host did not open that.");
+                }
+            }
+            // **And the host is told what the open screen now holds**, because on a
+            // guest its contents are the host's and this console only mirrors them.
+            // Only a difference is sent. And when the screen shuts, by whichever
+            // road, the host stops watching it.
+            if (net != nullptr) {
+                const bool shared = overlay.containerOpen()
+                                    && overlay.containerKind() != mc::item::ScreenKind::Workbench;
+                if (shared && overlay.containerClicks() != tileClicksSent) {
+                    tileClicksSent = overlay.containerClicks();
+                    const mc::tick::TickWorld* screenWorld = world.worldTick();
+                    const mc::item::ContainerSession& open = overlay.containerSession();
+                    if (open.kind() == mc::item::ScreenKind::MinecartChest) {
+                        net->sendCartEdits(*minecarts, open.minecartChest());
+                    } else if (screenWorld != nullptr) {
+                        net->sendTileEdits(*screenWorld, open.x(), open.y(), open.z());
+                    }
+                }
+                if (tileScreenUp && !shared) {
+                    net->closeTile();
+                }
+                tileScreenUp = shared;
+                // The host broke it, or it went some other way, under an open
+                // screen.
+                if (shared && net->takeTileClosed()) {
+                    overlay.closeContainerIntoInventory();
                 }
             }
 
@@ -3660,6 +4098,202 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                         }
                     }
 
+                    // **The tail of the player's tick, which both branches below reach.**
+                    // It used to sit at the bottom of the walking branch, and the riding
+                    // one left the loop early past all of it: a rider picked nothing up,
+                    // took no blow until they got out, saw every other entity stand
+                    // still, and -- on a guest -- sent neither where they were nor where
+                    // the boat went.
+                    const auto finishPlayerTick = [&]() {
+                        // The walk, from the distance covered -- the same arithmetic
+                        // `RemoteEntities::tick` does for a visitor.
+                        {
+                            mc::net::RemotePlayer& me = *selfBody;
+                            const double mx = body.x - body.prevX;
+                            const double mz = body.z - body.prevZ;
+                            float speed = float(std::sqrt(mx * mx + mz * mz)) * 4.0f;
+                            speed = speed > 1.0f ? 1.0f : speed;
+                            me.prevLimbAmount = me.limbAmount;
+                            me.prevRenderYaw = me.renderYaw;
+                            me.yaw = camera.yaw * 180.0f / kPi;
+                            me.limbAmount += (speed - me.limbAmount) * 0.4f;
+                            me.limbSwing += me.limbAmount;
+                            me.turnBody(mx, mz);
+                            ++me.ticksExisted;
+                        }
+                        // **Walking over what is lying about**, once per tick.
+                        // `EntityPlayer.onUpdate` expands its own box by a block on
+                        // the two horizontal axes and by nothing on y before it
+                        // asks the world what is inside -- so an item is reached
+                        // from a step away sideways and never from a floor below.
+                        //
+                        // **A corpse picks nothing up.** `dm.j()` guards the whole
+                        // sweep with `if (health > 0)`, and it has to: death drops
+                        // the inventory at the player's feet with the pool's own
+                        // pickup delay on it, and the death screen stands there for
+                        // longer than that delay. Without the guard the body
+                        // vacuums its own grave back up and the player respawns
+                        // holding everything, which is what "dying did not drop my
+                        // items" looks like from the outside.
+                        // **Nobody picks anything up on a multiplayer client.** The
+                        // server decides who collected what and says so with
+                        // Collect and Add To Inventory; a client that also took it
+                        // would be holding an item the server never gave it.
+                        //
+                        // **The player's own arrows are in the same sweep** --
+                        // `kg.b(dm)` is called from the same loop as `dx.b(dm)`,
+                        // with the same pop. Only arrows this session's player
+                        // loosed, stuck and still: see `ArrowSystem::collect`.
+                        const AABB reach = body.box.expand(1.0, 0.0, 1.0);
+                        const bool sweeps = vitals.alive() && net == nullptr;
+                        int picked = sweeps ? overlay.collectItems(*droppedItems, reach) : 0;
+                        if (sweeps && arrows != nullptr) {
+                            picked += overlay.collectArrows(*arrows, reach);
+                        }
+                        for (int p = 0; p < picked; ++p) {
+                            // `random.pop` at volume 0.2, and the pitch is the
+                            // original's expression rather than a constant: two
+                            // draws subtracted, so most pickups land near 2.0 and
+                            // few at the edges.
+                            const float pitch =
+                                ((pickupRand.nextFloat() - pickupRand.nextFloat()) * 0.7f
+                                 + 1.0f) * 2.0f;
+                            sound.playSoundAt("random.pop", body.x,
+                                              body.posY - double(mc::entity::kEyeHeight),
+                                              body.z, 0.2f, pitch);
+                        }
+
+                        // `la.J()`, at the end of the player's tick, and the other
+                        // entities' own.
+                        if (net != nullptr) {
+                            net->tick(body, camera, overlay.inventory(), tickWorld,
+                                      vitals.alive());
+                        }
+                        // **A host has the same bodies to walk and no session to
+                        // do it.** Its guests are entities exactly as they are on
+                        // a guest's screen; the only difference is where the
+                        // packets describing them came from. See
+                        // `WorldServer::setLocalSink`.
+                        if (host != nullptr) {
+                            host->tickEntities(tickWorld);
+                            host->reportStance(body.sneaking, vitals.alive());
+                            host->reportHeld(int(overlay.inventory().selectedItem()));
+                        }
+
+                        // **A blow from another console, on the tick it arrived.**
+                        // No health crosses the link -- protocol 2 has no packet
+                        // for it -- so the wire carries only who swung and with
+                        // what, and the cost is worked out here by the same
+                        // `damageVsEntity` lookup the attacker's own console would
+                        // have used. `Other` rather than `Monster`: `dm.a(Lkh;I)Z`
+                        // scales by difficulty only for a `dq` or a `kg`, and a
+                        // player is neither. See core/net/entities.hpp.
+                        mc::net::IncomingHit hit;
+                        const bool struck = net != nullptr    ? net->takeHit(&hit)
+                                            : host != nullptr ? host->takeHit(&hit)
+                                                              : false;
+                        if (struck) {
+                            // **An arrow is `kg`'s four, scaled by difficulty** as
+                            // `DamageSource::Arrow` -- the host's own player takes it
+                            // that way, so a guest does too -- a blow is the hand that
+                            // dealt it, and a mob's is that mob's, already priced by
+                            // `hitFrom`.
+                            const int amount =
+                                hit.mobDamage > 0 ? hit.mobDamage
+                                : hit.arrow       ? mc::entity::kArrowDamage
+                                                  : int(mc::item::def(mc::item::ItemId(hit.item))
+                                                            .damageVsEntity);
+                            // **Except a mob's on a Creative player**, who is not hunted
+                            // at home and is not hurt by a blast either: the host cannot
+                            // know this console's mode, so this end draws the line.
+                            const bool spared =
+                                hit.mobDamage > 0
+                                && overlay.gamemode() != mc::settings::Gamemode::Survival;
+                            if (amount > 0 && !spared) {
+                                harm.world = tickWorld;
+                                harm.difficulty = int(difficulty);
+                                harm.yawDegrees = camera.yaw * 180.0f / kPi;
+                                harm.deal(amount,
+                                          hit.mobDamage > 0
+                                              ? (hit.monster ? mc::entity::DamageSource::Monster
+                                                             : mc::entity::DamageSource::Other)
+                                          : hit.arrow ? mc::entity::DamageSource::Arrow
+                                                      : mc::entity::DamageSource::Other,
+                                          hit.fromX, hit.fromZ);
+                            }
+                        }
+
+                        // **The host's TNT or creeper went off near this player**: `je`'s
+                        // phase two, worked out on this console over its own blocks, as
+                        // the host's own player's is -- the cost and the push, which `je`
+                        // adds straight to the motion. Creative is not hurt by a blast,
+                        // as it is not by one at home. See `net::IncomingBlast`.
+                        mc::net::IncomingBlast blast;
+                        if (net != nullptr && net->takeBlast(&blast)
+                            && overlay.gamemode() == mc::settings::Gamemode::Survival) {
+                            harm.world = tickWorld;
+                            harm.difficulty = int(difficulty);
+                            harm.yawDegrees = camera.yaw * 180.0f / kPi;
+                            harm.deal(blast.damage,
+                                      blast.monster ? mc::entity::DamageSource::Monster
+                                                    : mc::entity::DamageSource::World,
+                                      blast.fromX, blast.fromZ);
+                            body.motionX += blast.vx;
+                            body.motionY += blast.vy;
+                            body.motionZ += blast.vz;
+                        }
+
+                        // **`kh.c(DDD)V`'s tail for each guest**, on the host's own
+                        // world -- what a1.1.2's server runs for every player it moves,
+                        // and the two places a body writes to the world by walking on
+                        // it: the blocks their box overlaps, which is the pressure
+                        // plate, and the cell underfoot once per step, which is farmland
+                        // trampling and redstone ore lighting. The cactus is not here:
+                        // what touching one costs is the guest's console's, as all their
+                        // health is. See core/entity/remote_walk.hpp.
+                        if (host != nullptr) {
+                            mc::entity::RemoteWalk walks[mc::net::WorldServer::kMaxPlayers];
+                            for (int g = 0; g < guestBodyCount; ++g) {
+                                const mc::entity::RemoteTarget& guest = guestBodies[g];
+                                // How they stand, from the host's own copy of them.
+                                bool crouched = false;
+                                bool riding = false;
+                                const mc::net::RemoteEntities& bodies = host->entities();
+                                for (int i = 0; i < bodies.playerCount(); ++i) {
+                                    if (bodies.player(i).id == guest.entityId) {
+                                        crouched = bodies.player(i).sneaking;
+                                        riding = bodies.player(i).riding;
+                                        break;
+                                    }
+                                }
+                                // Their walk so far, kept by id across ticks and across
+                                // the list reordering as guests come and go.
+                                mc::entity::RemoteWalk walk;
+                                walk.entityId = guest.entityId;
+                                for (const mc::entity::RemoteWalk& kept : guestWalks) {
+                                    if (kept.entityId == guest.entityId) {
+                                        walk = kept;
+                                        break;
+                                    }
+                                }
+                                const double gx = (guest.box.minX + guest.box.maxX) * 0.5;
+                                const double gz = (guest.box.minZ + guest.box.maxZ) * 0.5;
+                                mc::i32 bx = 0;
+                                int by = 0;
+                                mc::i32 bz = 0;
+                                if (walk.step(*tickWorld, gx, guest.box.minY, gz, crouched, riding,
+                                              &bx, &by, &bz)) {
+                                    mc::tick::entityWalkedOnBlock(*tickWorld, bx, by, bz);
+                                }
+                                walks[g] = walk;
+                                mc::tick::entityCollidedWithBlocks(*tickWorld, guest.box);
+                            }
+                            for (int g = 0; g < mc::net::WorldServer::kMaxPlayers; ++g) {
+                                guestWalks[g] = walks[g];
+                            }
+                        }
+                    };
+
                     // **Riding, which is neither walking nor flying.**
                     //
                     // The body keeps turning the stick into motion exactly as
@@ -3718,6 +4352,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                             }
                             if (where.valid) {
                                 body.tickRiding(bodyInput, where.x, where.y, where.z);
+                                finishPlayerTick();
                                 continue;
                             }
                             // The vehicle went -- broken on a wall, or streamed
@@ -3800,48 +4435,6 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     minecarts->collideWithPlayer(body.box, body.x, body.z,
                                                   &body.motionX, &body.motionZ);
 
-                    // **Walking over what is lying about**, once per tick.
-                    // `EntityPlayer.onUpdate` expands its own box by a block on
-                    // the two horizontal axes and by nothing on y before it
-                    // asks the world what is inside -- so an item is reached
-                    // from a step away sideways and never from a floor below.
-                    //
-                    // **A corpse picks nothing up.** `dm.j()` guards the whole
-                    // sweep with `if (health > 0)`, and it has to: death drops
-                    // the inventory at the player's feet with the pool's own
-                    // pickup delay on it, and the death screen stands there for
-                    // longer than that delay. Without the guard the body
-                    // vacuums its own grave back up and the player respawns
-                    // holding everything, which is what "dying did not drop my
-                    // items" looks like from the outside.
-                    // **Nobody picks anything up on a multiplayer client.** The
-                    // server decides who collected what and says so with
-                    // Collect and Add To Inventory; a client that also took it
-                    // would be holding an item the server never gave it.
-                    //
-                    // **The player's own arrows are in the same sweep** --
-                    // `kg.b(dm)` is called from the same loop as `dx.b(dm)`,
-                    // with the same pop. Only arrows this session's player
-                    // loosed, stuck and still: see `ArrowSystem::collect`.
-                    const AABB reach = body.box.expand(1.0, 0.0, 1.0);
-                    const bool sweeps = vitals.alive() && net == nullptr;
-                    int picked = sweeps ? overlay.collectItems(*droppedItems, reach) : 0;
-                    if (sweeps && arrows != nullptr) {
-                        picked += overlay.collectArrows(*arrows, reach);
-                    }
-                    for (int p = 0; p < picked; ++p) {
-                        // `random.pop` at volume 0.2, and the pitch is the
-                        // original's expression rather than a constant: two
-                        // draws subtracted, so most pickups land near 2.0 and
-                        // few at the edges.
-                        const float pitch =
-                            ((pickupRand.nextFloat() - pickupRand.nextFloat()) * 0.7f
-                             + 1.0f) * 2.0f;
-                        sound.playSoundAt("random.pop", body.x,
-                                          body.posY - double(mc::entity::kEyeHeight),
-                                          body.z, 0.2f, pitch);
-                    }
-
                     // **The footstep, once per tick and not once per frame.**
                     // `move()` decides whether this tick earned one and which
                     // block it belongs to; all that is left here is a listener
@@ -3856,52 +4449,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                                           body.z, step.volume, step.pitch);
                     }
 
-                    // `la.J()`, at the end of the player's tick, and the other
-                    // entities' own.
-                    if (net != nullptr) {
-                        net->tick(body, camera, overlay.inventory(), tickWorld,
-                                  vitals.alive());
-                    }
-                    // **A host has the same bodies to walk and no session to
-                    // do it.** Its guests are entities exactly as they are on
-                    // a guest's screen; the only difference is where the
-                    // packets describing them came from. See
-                    // `WorldServer::setLocalSink`.
-                    if (host != nullptr) {
-                        host->tickEntities(tickWorld);
-                        host->reportStance(body.sneaking, vitals.alive());
-                    }
-
-                    // **A blow from another console, on the tick it arrived.**
-                    // No health crosses the link -- protocol 2 has no packet
-                    // for it -- so the wire carries only who swung and with
-                    // what, and the cost is worked out here by the same
-                    // `damageVsEntity` lookup the attacker's own console would
-                    // have used. `Other` rather than `Monster`: `dm.a(Lkh;I)Z`
-                    // scales by difficulty only for a `dq` or a `kg`, and a
-                    // player is neither. See core/net/entities.hpp.
-                    mc::net::IncomingHit hit;
-                    const bool struck = net != nullptr    ? net->takeHit(&hit)
-                                        : host != nullptr ? host->takeHit(&hit)
-                                                          : false;
-                    if (struck) {
-                        // **An arrow is `kg`'s four, scaled by difficulty**
-                        // as `DamageSource::Arrow` -- the host's own player
-                        // takes it that way, so a guest does too.
-                        const int amount =
-                            hit.arrow ? mc::entity::kArrowDamage
-                                      : int(mc::item::def(mc::item::ItemId(hit.item))
-                                                .damageVsEntity);
-                        if (amount > 0) {
-                            harm.world = tickWorld;
-                            harm.difficulty = int(difficulty);
-                            harm.yawDegrees = camera.yaw * 180.0f / kPi;
-                            harm.deal(amount,
-                                      hit.arrow ? mc::entity::DamageSource::Arrow
-                                                : mc::entity::DamageSource::Other,
-                                      hit.fromX, hit.fromZ);
-                        }
-                    }
+                    finishPlayerTick();
                 }
             }
             // **Between two ticks, not on the last one.** The body runs at
@@ -3943,10 +4491,43 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                                | lit->blockLightAt(hx, hy, hz));
             }
             const float handPartial = tickTimer.partialTicks();
-            if (overlay.gamemode() == settings::Gamemode::Spectator) {
+            // **The body the views draw**, once a frame and after the ticks, because
+            // the camera is read after them: a stand-in filled before them would
+            // interpolate last tick's positions with this frame's fraction, and the
+            // body would jump against the camera.
+            const bool thirdPerson = viewMode != ViewMode::First
+                                     && overlay.gamemode() != settings::Gamemode::Spectator;
+            if (thirdPerson) {
+                mc::net::RemotePlayer& me = *selfBody;
+                me.x = body.x;
+                me.y = body.y;
+                me.z = body.z;
+                me.prevX = body.prevX;
+                me.prevZ = body.prevZ;
+                me.prevY = body.prevEyeY - (body.posY - body.y);
+                // The look is read every frame, so the head is smooth between
+                // ticks; the body's own heading is `turnBody`'s, run on the tick.
+                me.yaw = me.prevYaw = camera.yaw * 180.0f / kPi;
+                me.pitch = me.prevPitch = camera.pitch * 180.0f / kPi;
+                me.heldItem = i16(overlay.inventory().selectedItem());
+                for (int slot = 0; slot < 4; ++slot) {
+                    const mc::item::ItemStack& piece = overlay.inventory().armour[3 - slot];
+                    me.armour[slot] = piece.empty() ? -1 : mc::render::armourMaterialOf(piece.id);
+                }
+                me.swing = me.prevSwing = hand.swingProgress(handPartial);
+                me.sneaking = body.sneaking;
+                me.riding = boats->riddenIndex() >= 0 || minecarts->riddenIndex() >= 0
+                            || mobs->riddenIndex() >= 0;
+                me.hurtTime = vitals.hurtTime;
+                me.deathTime = vitals.deathTime;
+                me.dead = !vitals.alive();
+                me.light = handLight;
+            }
+            renderer.setSelfPlayer(thirdPerson ? selfBody.get() : nullptr);
+            if (overlay.gamemode() == settings::Gamemode::Spectator || thirdPerson) {
                 // **Not an empty hand -- no hand.** An empty hand draws the
                 // player's arm, which is exactly what a camera with no body
-                // should not have.
+                // should not have -- nor one looking at the body from outside.
                 renderer.clearHeldItem();
             } else {
                 renderer.setHeldItem(hand.item(), hand.equippedProgress(handPartial),
@@ -3954,7 +4535,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             }
             // **The flames over the view** while the fire counter runs --
             // `jh.b(F)V` asks nothing else. Spectator has no body to be alight.
-            renderer.setBurning(vitals.fire > 0
+            renderer.setBurning(vitals.fire > 0 && !thirdPerson
                                 && overlay.gamemode() != settings::Gamemode::Spectator);
             // **The water over the view** while the head is under -- the same
             // question the fog asked this frame. Lit at `getEntityBrightness`'s
@@ -3965,7 +4546,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 u8 waterLight = 0xFF;
                 const mc::tick::TickWorld* wet = world.worldTick();
                 if (wet != nullptr && overlay.gamemode() != settings::Gamemode::Spectator
-                    && mc::entity::playerEyeInWater(*wet, body)) {
+                    && !thirdPerson && mc::entity::playerEyeInWater(*wet, body)) {
                     underwater = true;
                     const double probeY =
                         body.box.minY + (body.box.maxY - body.box.minY) * 0.66;
@@ -4129,6 +4710,26 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     // A creeper's blast and TNT's both destroy what is lying
                     // near them. See `MobSurroundings::items`.
                     around.items = droppedItems.get();
+                    // **And everybody else in the world**: a host's guests, each a
+                    // player to every mob as the host is -- hunted, watched,
+                    // despawned by. See `MobSystem::nearestFor`.
+                    mc::entity::MobPlayer guestPlayers[mc::net::WorldServer::kMaxPlayers];
+                    for (int g = 0; g < guestBodyCount; ++g) {
+                        const mc::AABB& guestBox = guestBodies[g].box;
+                        mc::entity::MobPlayer& guest = guestPlayers[g];
+                        guest.present = true;
+                        guest.entityId = guestBodies[g].entityId;
+                        guest.x = (guestBox.minX + guestBox.maxX) * 0.5;
+                        guest.y = guestBox.minY + double(mc::entity::kEyeHeight);
+                        guest.z = (guestBox.minZ + guestBox.maxZ) * 0.5;
+                        guest.box = guestBox;
+                    }
+                    around.guests = guestPlayers;
+                    around.guestCount = guestBodyCount;
+                    if (host != nullptr) {
+                        around.guestStruck = &ctr::HostPlay::mobStruck;
+                        around.guestStruckCtx = host;
+                    }
                     mobs->tick(*fxWorld, around);
 
                     // **Primed TNT, ticked here and not beside the falling
@@ -4153,6 +4754,8 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     spawnAt.spawnZ = world.level().spawnZ;
                     spawnAt.difficulty = int(difficulty);
                     spawnAt.worldSeed = world.level().randomSeed;
+                    spawnAt.guests = guestPlayers;
+                    spawnAt.guestCount = guestBodyCount;
                     // `ia.c()` runs both spawners every tick, monsters first,
                     // out of the same random. The order is observable -- the
                     // two share `world.rand` -- so it is the jar's.
@@ -4233,11 +4836,9 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                     }
                     // **And the guests, on a host**: an arrow that reaches one
                     // is named to them and they spend their own health on it.
-                    mc::entity::RemoteTarget guests[mc::net::WorldServer::kMaxPlayers];
                     if (host != nullptr) {
-                        hits.remotePlayers = guests;
-                        hits.remotePlayerCount =
-                            host->arrowTargets(guests, mc::net::WorldServer::kMaxPlayers);
+                        hits.remotePlayers = guestBodies;
+                        hits.remotePlayerCount = guestBodyCount;
                         hits.hurtRemote = &ctr::HostPlay::arrowStruck;
                         hits.hurtRemoteCtx = host;
                     }
@@ -4315,6 +4916,22 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                 overlay.setAnimatedItemsTile(compassTile, compass->texels());
             }
         }
+        // **A card that stops taking writes is said out loud**, and only when the
+        // count has moved: it used to be a world that simply never finished saving.
+        if (net == nullptr && ticksDue > 0) {
+            const mc::u32 refused = world.writeFailures();
+            if (refused != toldWriteFailures) {
+                toldWriteFailures = refused;
+                mc::i32 failedX = 0;
+                mc::i32 failedZ = 0;
+                world.lastFailedWrite(&failedX, &failedZ);
+                char line[96];
+                std::snprintf(line, sizeof(line),
+                              "\xC2\xA7\x63" "The SD card refused %u chunk writes (at %d, %d).",
+                              unsigned(refused), int(failedX), int(failedZ));
+                chat->post(menu.fontImage().empty() ? nullptr : menu.fontImage().widths, line);
+            }
+        }
         // The autosave timer. It writes level.dat and refreshes session.lock,
         // neither of which had any trigger but close() before, and hands
         // anything still dirty to the I/O thread. Generated columns do not wait
@@ -4345,9 +4962,9 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             // calls back for the world, here the world owns it and calls back
             // for the menu. The bottom screen is the menu's while it is up, so
             // the HUD is not drawn over its console.
-            renderer.drawFrame(camera, &menu, &ctr::Menu::pauseOverlayEntry);
+            renderer.drawFrame(viewCameraOf(camera), &menu, &ctr::Menu::pauseOverlayEntry);
         } else {
-            renderer.drawFrame(camera);
+            renderer.drawFrame(viewCameraOf(camera));
 
             overlay.draw(renderer, world, camera, timing, dt * 1000.0f, timeOfDay, settings);
         }
@@ -4408,6 +5025,11 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         world.setPlayerInventory(stacks);
     }
 
+    // **The generation thread is told to stop first of all**, so it is already
+    // winding down when the save needs it joined rather than being asked for the
+    // first time inside it. See `WorldStreamer::requestWorkerStop`.
+    world.requestWorkerStop();
+
     // The original says the same thing on its way out of a world, and it is
     // worth saying: close() rewrites level.dat and flushes every dirty column,
     // which on a card is long enough for a still screen to look like a hang.
@@ -4425,7 +5047,10 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // A multiplayer world owes this console nothing, so there is no screen.
     if (net == nullptr && saving.init()) {
         saving.begin(ctr::ProgressScreen::Kind::Saving, choice.worldName.c_str());
-        SaveScreen saveScreen{&saving, &renderer, &camera};
+        // The same view the world was last drawn from, worked out while there is a
+        // world to clip the boom against.
+        const ctr::Camera savingView = viewCameraOf(camera);
+        SaveScreen saveScreen{&saving, &renderer, &savingView, &world};
         world.close(ctr::nowMillis(), &saveScreen, drawSaveProgress);
         saving.shutdown();
     } else {
@@ -4441,6 +5066,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
     // crashlogs/009-save-with-a-minecart/.
     renderer.setMinecarts(nullptr, nullptr);
     renderer.setRemotePlayers(nullptr);
+    renderer.setSelfPlayer(nullptr);
     // **And the one the *streamer* borrows.** `world` is static and outlives
     // this call (see the note on its declaration), while the spawner store is a
     // local; leaving the sinks bound would point the next world's first

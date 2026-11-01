@@ -54,6 +54,7 @@
 // scale -- scaling camera-space x would stretch the item as well as move it.
 
 #include "core/item/item_def.hpp"
+#include "core/render/box_model.hpp"
 #include "core/mesh/vertex.hpp"
 #include "core/util/types.hpp"
 
@@ -106,6 +107,16 @@ public:
     // `EntityPlayer.swingItem`. Left click always; right click only when the
     // use was accepted -- `Minecraft.clickMouse`'s own split.
     void swing();
+    // Whether a swing is still running. A held dig restarts the arm when one
+    // finishes and never mid-swing, which is what keeps it swinging rather
+    // than frozen at the first frame of one.
+    bool swinging() const { return swinging_; }
+    // **Whether a held dig should start the next swing now**: none is running,
+    // or the one running ends on the next tick. Restarting then, rather than
+    // after it has ended, chains the swings with no tick of the arm at rest
+    // between them -- that pause is what made a held dig look like a row of
+    // separate clicks.
+    bool swingDue() const { return !swinging_ || swingTicks_ >= 7; }
 
     // `jh.b()` and `jh.c()`, which are the same one line: put the item back on
     // the floor of its own animation so it is raised again from nothing.
@@ -144,5 +155,20 @@ private:
 // `drawItemIcon` makes, and for the same reason.
 HeldItemMesh buildHeldItem(item::ItemId item, float equipped, float swing, float aspect,
                            u8 light, mesh::DetailVertex* out, int max);
+
+// Which sheet `buildHeldItemInHand` draws `item` from, without building it, so
+// a caller can pick the buffer first. Terrain for a block and for any item below
+// 256, the items sheet otherwise.
+HeldSheet heldSheetOf(item::ItemId item);
+
+// **The item as a body carries it**, `bu.a(dm, F)` -- `RenderPlayer`'s held
+// item. The item is posed against the right arm (`ModelPart.postRender`), moved
+// to the hand, and then oriented one of four ways by what it is: a block, a
+// tool or stick held upright (`Item.isFull3D`), or a flat icon laid in the palm.
+// `arm` is the already-posed right arm and `place` the body's placement; the
+// geometry comes out in `place`'s space. Writes nothing for an empty hand or an
+// item this build does not know.
+HeldItemMesh buildHeldItemInHand(item::ItemId item, const ModelPart& arm, const Placement& place,
+                                 u8 light, mesh::DetailVertex* out, int max);
 
 }  // namespace mc::render

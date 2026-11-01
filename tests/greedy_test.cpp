@@ -121,7 +121,7 @@ void takeApart(const WorldVertex* v, std::vector<UnitFace>& out, Run* run = null
     }
 
     // The UVs cover exactly w by h copies of one tile from its slot's start,
-    // in by the inset at both ends -- a run that sampled one tile stretched,
+    // back by the inset at the start -- a run that sampled one tile stretched,
     // or strayed into the next slot, fails here.
     int minU = v[0].u, maxU = v[0].u, minV = v[0].v, maxV = v[0].v;
     for (int c = 1; c < 4; ++c) {
@@ -130,10 +130,10 @@ void takeApart(const WorldVertex* v, std::vector<UnitFace>& out, Run* run = null
         minV = std::min(minV, int(v[c].v));
         maxV = std::max(maxV, int(v[c].v));
     }
-    CHECK_EQ(minU % mesh::kCubeUvPerSlot, mesh::kCubeUvGutter + mesh::kCubeUvInset);
-    CHECK_EQ(minV % mesh::kCubeUvPerSlot, mesh::kCubeUvGutter + mesh::kCubeUvInset);
-    CHECK_EQ(maxU - minU, w * mesh::kCubeUvPerTile - 2 * mesh::kCubeUvInset);
-    CHECK_EQ(maxV - minV, h * mesh::kCubeUvPerTile - 2 * mesh::kCubeUvInset);
+    CHECK_EQ(minU % mesh::kCubeUvPerSlot, mesh::kCubeUvGutter - mesh::kCubeUvInset);
+    CHECK_EQ(minV % mesh::kCubeUvPerSlot, mesh::kCubeUvGutter - mesh::kCubeUvInset);
+    CHECK_EQ(maxU - minU, w * mesh::kCubeUvPerTile);
+    CHECK_EQ(maxV - minV, h * mesh::kCubeUvPerTile);
     const int slot = (minV / mesh::kCubeUvPerSlot) * mesh::kCubeSlotsPerEdge
                      + minU / mesh::kCubeUvPerSlot;
     CHECK(slot < mesh::kCubeAtlas.slotCount);
@@ -577,13 +577,18 @@ TEST(the_cube_atlas_holds_each_tile_three_times_over_inside_a_gutter)
     }
     CHECK_EQ(mesh::kCubeGutterPixels * 2 + mesh::kCubeRepeat * 16, mesh::kCubeSlotPixels);
 
-    // And every run's UVs stay inside the copies, a whole gutter clear of the
-    // slot on both sides.
+    // And every run's UVs stay inside the slot, the near edge in the gutter
+    // (which repeats the first texel) and the far edge inside the last copy.
     for (int slotAxis = 0; slotAxis < mesh::kCubeSlotsPerEdge; ++slotAxis) {
         const int slotStart = slotAxis * mesh::kCubeUvPerSlot;
-        CHECK_EQ(mesh::cubeUvStart(slotAxis) - slotStart, mesh::kCubeUvGutter + mesh::kCubeUvInset);
+        CHECK_EQ(mesh::cubeUvStart(slotAxis) - slotStart, mesh::kCubeUvGutter - mesh::kCubeUvInset);
         CHECK_EQ(slotStart + mesh::kCubeUvPerSlot - mesh::cubeUvEnd(slotAxis, mesh::kCubeRepeat),
                  mesh::kCubeUvGutter + mesh::kCubeUvInset);
+        // One tile of UV per block, whatever the run's length.
+        for (int tiles = 1; tiles <= mesh::kCubeRepeat; ++tiles) {
+            CHECK_EQ(mesh::cubeUvEnd(slotAxis, tiles) - mesh::cubeUvStart(slotAxis),
+                     tiles * mesh::kCubeUvPerTile);
+        }
     }
 
     // The slots nobody claimed are left out of the upload altogether.

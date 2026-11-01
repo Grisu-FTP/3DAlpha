@@ -37,18 +37,142 @@ Placement placeRemotePlayer(const net::RemotePlayer& player, double originX, dou
     // **Lower by an eighth when crouched**, as b1.2's `RenderPlayer` draws
     // one -- the crouch pose alone leaves the feet three pixels up -- and
     // tipped over while dying, as `dn` draws any living thing.
-    const float yaw = interpolate(player.prevYaw, player.yaw, partial);
+    const float yaw = interpolate(player.prevRenderYaw, player.renderYaw, partial);
     const double drop = player.sneaking ? kSneakModelDrop : 0.0;
     return placeModel(player.renderX(partial) - originX,
                       player.renderY(partial) - originY - drop,
                       player.renderZ(partial) - originZ, (180.0f - yaw) * kPi / 180.0f,
-                      deathFall(player.deathTime, partial));
+                      deathFall(player.deathTime, partial), kPlayerModelScale);
 }
 
-int buildRemotePlayers(const net::RemoteEntities& entities, double originX, double originY,
-                       double originZ, float partial, mesh::DetailVertex* out, int max)
+namespace {
+
+float wrapDegrees(float degrees)
 {
-    if (out == nullptr || max < kRemotePlayerVerticesEach) {
+    while (degrees < -180.0f) degrees += 360.0f;
+    while (degrees >= 180.0f) degrees -= 360.0f;
+    return degrees;
+}
+
+// One body, as `buildRemotePlayers` and `buildSelfPlayer` draw it: the biped
+// into `passes.body`, what it wears into `passes.armour` and what it carries
+// into `passes.held`. `skins` is null and `own` true for this console's player:
+// they wear the skin they chose, `EntitySkin::Player`, and have no slot among
+// the visitors' pages. Returns false when the body pass had no room.
+bool appendPlayerBody(const net::RemotePlayer& player, const net::PlayerSkins* skins, bool own,
+                      double originX, double originY, double originZ, float partial,
+                      PlayerPasses* passes)
+{
+    if (passes->bodyMax - passes->bodyCount < kRemotePlayerVerticesEach) {
+        return false;
+    }
+    mesh::DetailVertex* out = passes->body + passes->bodyCount;
+    const int max = passes->bodyMax - passes->bodyCount;
+    int written = 0;
+
+    ModelPart parts[kBipedParts];
+    bipedModel(parts);
+
+    // **The head turns against the body**, which has a heading of its own:
+    // `dn.a` hands the model `rotationYaw - renderYawOffset` and the placement
+    // turns the body by the offset. The pitch is the head's alone.
+    const float bodyYaw = interpolate(player.prevRenderYaw, player.renderYaw, partial);
+    const float headYaw =
+        wrapDegrees(interpolate(player.prevYaw, player.yaw, partial) - bodyYaw);
+    const float pitch = interpolate(player.prevPitch, player.pitch, partial);
+    const float amount =
+        player.prevLimbAmount + (player.limbAmount - player.prevLimbAmount) * partial;
+    // `limbSwing - limbAmount * (1 - partial)`: the phase walked back from the
+    // tick's value rather than stepped, so the legs do not move at 20 Hz.
+    const float swing = player.limbSwing - player.limbAmount * (1.0f - partial);
+    const bool holding = player.heldItem > 0;
+    posePlayer(parts, swing, amount, float(player.ticksExisted) + partial, headYaw, pitch,
+               player.swingProgress(partial), player.sneaking, holding, player.riding);
+
+    const Placement place = placeRemotePlayer(player, originX, originY, originZ, partial);
+
+    // **Their own skin if it has arrived**, which is the same page layout
+    // somewhere else in the sheet: the UVs are `OtherPlayer`'s moved by a
+    // whole number of texels, as `buildPlayerPreview` moves them.
+    int shiftU = 0;
+    int shiftV = 0;
+    int slotX = 0;
+    int slotY = 0;
+    if (!own && skins != nullptr
+        && texture::remoteSkinOrigin(skins->slotOf(player.id), &slotX, &slotY)) {
+        int baseX = 0;
+        int baseY = 0;
+        texture::skinOrigin(texture::EntitySkin::OtherPlayer, &baseX, &baseY);
+        constexpr int kUnitsPerTexel = mesh::kUvUnitsPerAtlas / texture::kEntitySheetWidth;
+        shiftU = (slotX - baseX) * kUnitsPerTexel;
+        shiftV = (slotY - baseY) * kUnitsPerTexel;
+    }
+    for (int part = 0; part < kBipedParts; ++part) {
+        // **Visitors are not `EntitySkin::Player`**: that page is whatever skin
+        // this console's owner picked for themselves, and other people are not
+        // them. See the note on `EntitySkin::OtherPlayer`.
+        const int first = written;
+        written += buildBox(parts[part], place,
+                            own ? texture::EntitySkin::Player : texture::EntitySkin::OtherPlayer,
+                            player.light, out + written, max - written, kEntityUnitsPerBlock);
+        for (int v = first; v < written; ++v) {
+            out[v].u = i16(out[v].u + shiftU);
+            out[v].v = i16(out[v].v + shiftV);
+        }
+    }
+
+    // A dying or freshly struck body is red, as `dn` draws any living thing.
+    const bool hurt = player.deathTime > 0 || player.hurtTime > 0;
+    if (hurt) {
+        for (int v = 0; v < written; ++v) {
+            out[v].g = kHurtChannel;
+            out[v].b = kHurtChannel;
+        }
+    }
+    passes->bodyCount += written;
+
+    // **Worn armour**, `bu.a(dm, int)`: the same posed biped, grown, off the
+    // armour sheet. It is hurt-tinted with the body.
+    if (passes->armour != nullptr) {
+        const int count = buildPlayerArmour(parts, player.armour, place,
+                                            passes->armour + passes->armourCount,
+                                            passes->armourMax - passes->armourCount,
+                                            player.light);
+        if (hurt) {
+            for (int v = 0; v < count; ++v) {
+                passes->armour[passes->armourCount + v].g = kHurtChannel;
+                passes->armour[passes->armourCount + v].b = kHurtChannel;
+            }
+        }
+        passes->armourCount += count;
+    }
+
+    // **What is in the right hand**, `bu.a(dm, F)`. In detail-vertex units, which
+    // run out 31 blocks from the origin where the body's reach 127: past that a
+    // held item is a pixel or two, and leaving it off beats wrapping it.
+    constexpr double kHeldReach = 30.0;
+    if (holding && place.x > -kHeldReach && place.x < kHeldReach && place.y > -kHeldReach
+        && place.y < kHeldReach && place.z > -kHeldReach && place.z < kHeldReach) {
+        const item::ItemId item = item::ItemId(player.heldItem);
+        const int sheet = heldSheetOf(item) == HeldSheet::Items ? 1 : 0;
+        if (passes->held[sheet] != nullptr
+            && passes->heldMax[sheet] - passes->heldCount[sheet] >= kMaxHeldItemVertices) {
+            passes->heldCount[sheet] +=
+                buildHeldItemInHand(item, parts[kBipedArmRight], place, player.light,
+                                    passes->held[sheet] + passes->heldCount[sheet],
+                                    passes->heldMax[sheet] - passes->heldCount[sheet])
+                    .vertices;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+int buildRemotePlayers(const net::RemoteEntities& entities, double originX, double originY,
+                       double originZ, float partial, PlayerPasses* passes)
+{
+    if (passes == nullptr || passes->body == nullptr) {
         return 0;
     }
 
@@ -58,16 +182,12 @@ int buildRemotePlayers(const net::RemoteEntities& entities, double originX, doub
     // own range for another player (640 blocks) is never the nearer limit.
     constexpr double kLimit = kEntityPlacementLimit;
 
-    int written = 0;
+    const int before = passes->bodyCount;
     for (int index = 0; index < entities.playerCount(); ++index) {
         const net::RemotePlayer& player = entities.player(index);
         if (!player.used) {
             continue;
         }
-        if (written + kRemotePlayerVerticesEach > max) {
-            break;
-        }
-
         const double rx = player.renderX(partial) - originX;
         const double ry = player.renderY(partial) - originY;
         const double rz = player.renderZ(partial) - originZ;
@@ -75,60 +195,32 @@ int buildRemotePlayers(const net::RemoteEntities& entities, double originX, doub
             || rz > kLimit) {
             continue;
         }
-
-        ModelPart parts[kBipedParts];
-        bipedModel(parts);
-
-        // The head turns against the body: the body is already turned by the
-        // placement, so what is left for the head is the pitch alone. One yaw
-        // is all protocol 2 carries for a player, so there is no look to
-        // separate from the stance.
-        const float pitch = interpolate(player.prevPitch, player.pitch, partial);
-        const float amount =
-            player.prevLimbAmount + (player.limbAmount - player.prevLimbAmount) * partial;
-        posePlayer(parts, player.limbSwing, amount, float(player.ticksExisted) + partial, 0.0f,
-                   pitch, player.swingProgress(partial), player.sneaking);
-
-        const Placement place = placeRemotePlayer(player, originX, originY, originZ, partial);
-        const int before = written;
-
-        // **Their own skin if it has arrived**, which is the same page layout
-        // somewhere else in the sheet: the UVs are `OtherPlayer`'s moved by a
-        // whole number of texels, as `buildPlayerPreview` moves them.
-        int shiftU = 0;
-        int shiftV = 0;
-        int slotX = 0;
-        int slotY = 0;
-        if (texture::remoteSkinOrigin(entities.skins().slotOf(player.id), &slotX, &slotY)) {
-            int baseX = 0;
-            int baseY = 0;
-            texture::skinOrigin(texture::EntitySkin::OtherPlayer, &baseX, &baseY);
-            constexpr int kUnitsPerTexel = mesh::kUvUnitsPerAtlas / texture::kEntitySheetWidth;
-            shiftU = (slotX - baseX) * kUnitsPerTexel;
-            shiftV = (slotY - baseY) * kUnitsPerTexel;
-        }
-        for (int part = 0; part < kBipedParts; ++part) {
-            // **Not `EntitySkin::Player`**: that page is whatever skin this
-            // console's owner picked for themselves, and other people are not
-            // them. See the note on `EntitySkin::OtherPlayer`.
-            const int first = written;
-            written += buildBox(parts[part], place, texture::EntitySkin::OtherPlayer,
-                                player.light, out + written, max - written, kEntityUnitsPerBlock);
-            for (int v = first; v < written; ++v) {
-                out[v].u = i16(out[v].u + shiftU);
-                out[v].v = i16(out[v].v + shiftV);
-            }
-        }
-
-        // A dying body is red while it falls, as `dn` draws any living thing.
-        if (player.deathTime > 0) {
-            for (int v = before; v < written; ++v) {
-                out[v].g = kHurtChannel;
-                out[v].b = kHurtChannel;
-            }
+        if (!appendPlayerBody(player, &entities.skins(), false, originX, originY, originZ,
+                              partial, passes)) {
+            break;
         }
     }
-    return written;
+    return passes->bodyCount - before;
+}
+
+int buildRemotePlayers(const net::RemoteEntities& entities, double originX, double originY,
+                       double originZ, float partial, mesh::DetailVertex* out, int max)
+{
+    PlayerPasses passes;
+    passes.body = out;
+    passes.bodyMax = max;
+    return buildRemotePlayers(entities, originX, originY, originZ, partial, &passes);
+}
+
+int buildSelfPlayer(const net::RemotePlayer& player, double originX, double originY,
+                    double originZ, float partial, PlayerPasses* passes)
+{
+    if (passes == nullptr || passes->body == nullptr) {
+        return 0;
+    }
+    const int before = passes->bodyCount;
+    appendPlayerBody(player, nullptr, true, originX, originY, originZ, partial, passes);
+    return passes->bodyCount - before;
 }
 
 int buildNameTags(const net::RemoteEntities& entities, const texture::FontImage& font,

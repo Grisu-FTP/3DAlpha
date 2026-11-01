@@ -146,7 +146,42 @@ struct SpawnContext {
     // and the int-versus-long boundaries in that expression are load-bearing;
     // see mob_spawn.cpp.
     i64 worldSeed = 0;
+
+    // **A host's guests**, who are players to both spawners exactly as the one
+    // above is: `getClosestPlayer` asks the world's whole list, so a spawner
+    // cage wakes for a guest beside it and nothing appears within 24 blocks of
+    // one. The *eligible chunks* are still the ones round the player above --
+    // the host simulates only the ground round itself, so a guest far from it
+    // stands in columns this world is not ticking at all.
+    const MobPlayer* guests = nullptr;
+    int guestCount = 0;
 };
+
+// Whether any player in `context` is closer to `(x, y, z)` than `range` --
+// `World.getClosestPlayer(x, y, z, range) != null`.
+inline bool anyPlayerWithin(const SpawnContext& context, double x, double y, double z,
+                            double range)
+{
+    const double rangeSq = range * range;
+    if (context.playerPresent) {
+        const double dx = context.playerX - x;
+        const double dy = context.playerY - y;
+        const double dz = context.playerZ - z;
+        if (dx * dx + dy * dy + dz * dz < rangeSq) {
+            return true;
+        }
+    }
+    for (int g = 0; g < context.guestCount; ++g) {
+        const MobPlayer& guest = context.guests[g];
+        const double dx = guest.x - x;
+        const double dy = guest.y - y;
+        const double dz = guest.z - z;
+        if (guest.present && dx * dx + dy * dy + dz * dz < rangeSq) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // **Where the attempts went**, which is the one thing a spawn report from a
 // console can be. Nothing here changes behaviour: a null pointer is the default

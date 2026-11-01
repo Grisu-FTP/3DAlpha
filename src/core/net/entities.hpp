@@ -27,14 +27,27 @@
 // worse problems than the cap.
 //
 // **Mobs are the same pool again**, with their local mind held off -- see
-// `MobSystem::spawnFromServer`. What this still does not do is vehicles
-// (`0x17`): boats and carts are two more pools, and a cart's tilt is read off
-// the track it is on rather than off the packet.
+// `MobSystem::spawnFromServer`.
+//
+// **So are the boats, the carts, the falling blocks and the lit TNT** -- all
+// four arrive as a Vehicle Spawn (`0x17`) and are drawn by the pools a single
+// player world already has, walking to wherever their owner last said. The
+// boat and the cart are a1.1.2's (types 1 and 10..12, the only ones `gy`
+// reads); the falling block and the TNT are ours, at the numbers later
+// protocols gave them, so a console that does not know them counts them and
+// carries on. See core/entity/server_track.hpp.
+//
+// **Riding crosses the link with them.** Whoever sits in a boat or a cart
+// steers it, wherever they are -- see `driveReport`.
 
 #include "core/entity/arrow.hpp"
+#include "core/entity/boat.hpp"
+#include "core/entity/falling_block.hpp"
 #include "core/entity/item_entity.hpp"
+#include "core/entity/minecart.hpp"
 #include "core/entity/mob.hpp"
 #include "core/entity/painting.hpp"
+#include "core/entity/primed_tnt.hpp"
 #include "core/entity/server_track.hpp"
 #include "core/net/packets.hpp"
 #include "core/net/player_skin.hpp"
@@ -42,12 +55,47 @@
 #include "core/util/java_random.hpp"
 #include "core/util/types.hpp"
 
+#include <cmath>
+
 namespace mc::net {
 
 // The wire's fixed point: positions are `floor(v * 32)` absolute, relative moves
 // are eighths of that in a byte, and a rotation is a byte of a whole turn.
 inline constexpr double kPositionUnitsPerBlock = 32.0;
 inline constexpr float kRotationUnitsPerTurn = 256.0f;
+
+inline i8 toWireAngle(float degrees)
+{
+    return i8(int(degrees * 256.0f / 360.0f) & 0xFF);
+}
+
+inline i32 toWirePosition(double value)
+{
+    return i32(std::floor(value * kPositionUnitsPerBlock));
+}
+
+// **What a Vehicle Spawn's type byte means.** 1 and 10..12 are a1.1.2's own --
+// `gy.a(kj)` builds a `dc` for 1 and an `oc` of type 0, 1 or 2 for 10, 11 and
+// 12, and nothing for anything else. 50, 70 and 71 are ours, at the numbers
+// later protocols gave the same entities: lit TNT, falling sand and falling
+// gravel. An a1.1.2 client builds nothing for them, which is exactly what a
+// console that predates them does too.
+inline constexpr int kVehicleBoat = 1;
+inline constexpr int kVehicleMinecart = 10;  // + `MinecartType`
+inline constexpr int kObjectPrimedTnt = 50;
+inline constexpr int kObjectFallingSand = 70;
+inline constexpr int kObjectFallingGravel = 71;
+
+// **Who is riding what**, which protocol 2 has no packet for -- a1.1.2's client
+// registers no Attach Entity at all. Ours rides on Use Entity's right click,
+// which every console of this family already parses and ignores, rather than
+// on a new id an older one would end the connection over:
+//
+//   * guest to host, `(self, vehicle, false)`: "let me in";
+//   * guest to host, `(self, kNoVehicle, false)`: "I got out";
+//   * host to everyone, `(rider, vehicle, false)`: "they are in it", and
+//     `(rider, kNoVehicle, false)`: "they are out".
+inline constexpr i32 kNoVehicle = -1;
 
 // **Entity ids one upward belong to the players, and a player's is the
 // session's own player id.** Nothing on the wire says what colour anybody is,
@@ -107,6 +155,19 @@ struct RemotePlayer {
     float prevLimbAmount = 0.0f;
 
     i16 heldItem = 0;
+
+    // **The body's own heading**, `ge.n` -- `renderYawOffset`. It is not where
+    // the player looks: the head turns freely up to 75 degrees either side and
+    // drags the body round past that, or when the player walks. Interpolated
+    // for drawing; `turnBody` is its tick.
+    float renderYaw = 0.0f, prevRenderYaw = 0.0f;
+    void turnBody(double movedX, double movedZ);
+
+    // `ItemArmor.renderIndex` worn at each slot, helmet first, -1 for none.
+    // The wire says nothing about what a visitor wears, so only this console's
+    // own stand-in ever sets them.
+    int armour[4] = {-1, -1, -1, -1};
+
     int ticksExisted = 0;
     u8 light = 0;
     bool used = false;
@@ -136,6 +197,13 @@ struct RemotePlayer {
     // twenty ticks `ge.y()` gives a body to fall over before it goes in a
     // puff: `dm` overrides none of it, so a player dies the way an animal does.
     bool sneaking = false;
+    // `fo.l`: sitting in a boat, a cart or on a pig. a1.1.2's client registers
+    // no Attach Entity (0x27), so against a Java server a visitor is never told
+    // and is drawn standing, as the original does. A host of this family says
+    // who is in what -- see `kNoVehicle` -- and then they sit.
+    bool riding = false;
+    // Ticks of red flash left after a blow, from an Entity Status of `kStatusHurt`.
+    int hurtTime = 0;
     bool dead = false;
     int deathTime = 0;
 
@@ -156,15 +224,39 @@ struct RemotePlayer {
 // what `kHasServerSideDamage` has always said about this protocol.
 struct IncomingHit {
     bool present = false;
+    // **An arrow, not a hand**: `kArrowDamage` as `DamageSource::Arrow`. The
+    // host names the arrow as the attacker -- see `WorldServer::arrowStruck`.
+    bool arrow = false;
     // What the attacker was holding, for `ItemDef::damageVsEntity`.
     int item = 0;
-    // **An arrow, not a hand**: `kArrowDamage` as `DamageSource::Arrow`,
-    // which difficulty scales, and `item` means nothing. A 3DAlpha host says
-    // so by naming the arrow as the attacker -- see `WorldServer::arrowStruck`.
-    bool arrow = false;
+    // **One of the host's mobs**, and what its blow costs, worked out from the
+    // copy of it this console has: a zombie's or a spider's attack strength,
+    // a slime's size. Zero for a player's blow or an arrow. See
+    // `WorldServer::mobStruck`.
+    int mobDamage = 0;
+    // Whether that mob is a monster, which `dm.a(Lkh;I)Z` scales by
+    // difficulty -- a zombie's swing is, a slime's touch is not (`ma` is not
+    // a `dq`).
+    bool monster = false;
     // Where they were standing, for the knockback.
     double fromX = 0.0;
     double fromZ = 0.0;
+};
+
+// **A blast from another console that reached this player**, waiting for the
+// frame loop to hand it to the player's own vitals -- the host's lit TNT or one
+// of its creepers. What it costs is worked out here, by `je`'s own phase two
+// over this console's copy of the blocks, because health is each console's:
+// the same split `IncomingHit` makes for a blow.
+struct IncomingBlast {
+    bool present = false;
+    int damage = 0;
+    // **Who went off.** A creeper is a monster, so `dm.a(Lkh;I)Z` scales the
+    // blow by difficulty; TNT hands `je` a null exploder, which it does not.
+    bool monster = false;
+    double fromX = 0.0, fromZ = 0.0;
+    // `je`'s impulse, added straight to the player's motion.
+    double vx = 0.0, vy = 0.0, vz = 0.0;
 };
 
 class RemoteEntities {
@@ -176,6 +268,8 @@ public:
 
     // `ge.y()`'s death count: past this many ticks a dead player goes.
     static constexpr int kDeathTicks = entity::kDeathTicks;
+    // `ge.j`: a hit keeps a body red for ten ticks, as it does for an animal.
+    static constexpr int kHurtTicks = 10;
 
     // The pool remote items are spawned into. Null leaves them untracked, which
     // is what a caller with no world wants.
@@ -184,10 +278,74 @@ public:
     // **The paintings the host announces** (`packet::Painting`), hung where it
     // says and judged by nobody here. Null leaves them uncounted.
     void bindPaintings(entity::PaintingSystem* paintings) { paintings_ = paintings; }
-    // **Arrows a 3DAlpha host announces** (`kObjectArrow`), drawn where it
-    // says and never simulated here. Null leaves them uncounted.
+    // **The boats and carts** -- Vehicle Spawn 1 and 10..12 -- and **the
+    // falling blocks and lit TNT**, 70/71 and 50. Each null leaves its kind
+    // counted as unhandled.
+    void bindVehicles(entity::BoatSystem* boats, entity::MinecartSystem* minecarts)
+    {
+        boats_ = boats;
+        minecarts_ = minecarts;
+    }
+    void bindFallers(entity::FallingBlockSystem* blocks, entity::PrimedTntSystem* tnt)
+    {
+        falling_ = blocks;
+        tnt_ = tnt;
+    }
+    // **The arrows a host announces** (`kObjectArrow`), drawn where it says
+    // and decided by nobody here -- 3DAlpha's arrangement and its bytes.
     void bindArrows(entity::ArrowSystem* arrows) { arrows_ = arrows; }
     entity::ArrowSystem* arrows() const { return arrows_; }
+    entity::MinecartSystem* minecarts() const { return minecarts_; }
+
+    // **This console's own entity id**, which is how a "they are in it" that
+    // names this player is told from one about somebody else. Zero -- a host,
+    // or a guest that has not logged in -- never drives anything.
+    void setSelf(i32 entityId) { self_ = entityId; }
+
+    // **The boat or cart this console's player is steering**, which the host
+    // put them in. Run here, by this console's own physics and its player's
+    // own keys, exactly as a single-player boat is; what this answers is what
+    // the host has to hear about it, once a tick, after the vehicle has moved:
+    //
+    //   * where it is now, as an Entity Teleport, when that changed;
+    //   * that the player got out, `(self, kNoVehicle, false)`, after which it
+    //     is the host's again and walks to where the host says;
+    //   * that it is gone -- broken on a wall or a cactus here -- as a Destroy
+    //     Entity, and the host's copy breaks and drops what it drops: a
+    //     guest's world has no drop sink, every drop being the host's.
+    //
+    // 0 when there is nothing to say, else 1 with the packet in `out`.
+    int driveReport(Packet* out);
+    // The entity id of what this console is steering, or 0.
+    i32 driving() const { return driving_.id; }
+
+    // **A blast that reached this player** since the last call -- see
+    // `IncomingBlast`. True once per blast; two in one frame are one, the
+    // harder of the two with both pushes, as the second would land inside the
+    // first's ten ticks of grace anyway.
+    bool takeBlast(IncomingBlast* out);
+
+    // **Who a Use Entity aimed at this player came from**, worked out into a
+    // hit: another player (what they hold), one of the host's arrows
+    // (`WorldServer::arrowStruck`) or one of its mobs (`mobStruck`). False for
+    // an id this console was never told about, which is then no hit at all.
+    bool hitFrom(i32 attackerId, IncomingHit* out);
+
+    // **Whether the host shares its vehicles at all**: true once it has said
+    // anything about who rides what, which a host that does says to every
+    // guest as it logs in -- "the host is in nothing", if that is so. An older
+    // host, a 3DS host or a Java server never does, and then a boat this
+    // console puts down stays its own, as it always did.
+    bool sharesVehicles() const { return hostRides_; }
+
+    // The type byte a Vehicle Spawn gives a cart of this type.
+    static int vehicleTypeFor(entity::MinecartType type)
+    {
+        return kVehicleMinecart + int(type);
+    }
+    // The type byte for a falling block, or 0 for a block no later protocol
+    // numbered -- nothing in a1.1.2 falls but sand and gravel.
+    static int objectTypeForFalling(block::BlockId id);
 
     // **What a Mob Spawn's type byte means.** `ew`'s table in the client jar,
     // read with javap: 50 creeper, 51 skeleton, 52 spider, 53 giant, 54 zombie,
@@ -258,9 +416,25 @@ public:
     const PlayerSkins& skins() const { return skins_; }
     const RemotePlayer& player(int index) const { return players_[index]; }
 
-    // Spawns this client has been sent and cannot draw yet: mob spawns and
-    // vehicle spawns. Counted rather than dropped silently, so the debug page
-    // can say "the server is sending you things you cannot see".
+    // **The skins the other people are wearing**, from `packet::PlayerSkin`. A
+    // player's entry survives their respawn (which is a new spawn) and goes
+    // with their Destroy Entity. See core/net/player_skin.hpp.
+
+    // Where this console's own player stands (feet), so a Collect that names
+    // them can fly the stack to them. Without it the stack just vanishes.
+    void setLocalFeet(double x, double y, double z)
+    {
+        localFeet_[0] = x;
+        localFeet_[1] = y;
+        localFeet_[2] = z;
+        hasLocalFeet_ = true;
+    }
+
+    // Spawns this client has been sent and cannot draw: a type it has no model
+    // for (a giant, or a 3DS host's arrow), a kind whose pool is not bound, or
+    // more players than its pool holds. Counted rather than dropped silently,
+    // so the debug page can say "the server is sending you things you cannot
+    // see".
     u32 unhandledSpawns() const { return unhandledSpawns_; }
 
 private:
@@ -283,12 +457,31 @@ private:
     RemotePlayer players_[kMaxPlayers];
     PlayerSkins skins_;
     int playerCount_ = 0;
+    double localFeet_[3] = {};
+    bool hasLocalFeet_ = false;
     // The death noise's pitch and the puff's scatter. Nothing else draws on
     // it, and two consoles never agree on either.
     JavaRandom rand_;
+    // A Vehicle Spawn, by type: false when it is not one this console draws.
+    bool spawnVehicle(const Packet& packet, tick::TickWorld* world);
+    // "They are in it" / "they are out", for anybody but this console.
+    void seat(i32 rider, i32 vehicle);
+    // This console's player has been put in `vehicle`, or taken out of the
+    // one it was steering.
+    void takeWheel(i32 vehicle);
+    void letGo();
+    // **The host's blast, played here**: `je`'s sound and particles over this
+    // console's blocks, and its phase two against this player's own box.
+    void blastAt(tick::TickWorld& world, double x, double y, double z, float strength,
+                 bool monster);
+
     entity::ItemEntitySystem* items_ = nullptr;
     entity::MobSystem* mobs_ = nullptr;
     entity::PaintingSystem* paintings_ = nullptr;
+    entity::BoatSystem* boats_ = nullptr;
+    entity::MinecartSystem* minecarts_ = nullptr;
+    entity::FallingBlockSystem* falling_ = nullptr;
+    entity::PrimedTntSystem* tnt_ = nullptr;
     entity::ArrowSystem* arrows_ = nullptr;
     u32 unhandledSpawns_ = 0;
 
@@ -304,6 +497,24 @@ private:
     int dropCount_ = 0;
     i32 nextProvisionalId_ = -1;
     u32 revertedDrops_ = 0;
+    i32 self_ = 0;
+    bool hostRides_ = false;
+    IncomingBlast blast_;
+    // The host put this player in something this console could not take the
+    // wheel of -- not on this screen, or not a plain cart -- so the host is
+    // told they are out rather than left waiting for reports that never come.
+    bool owesRelease_ = false;
+
+    // What this console is steering, and where the host was last told it is.
+    struct Driving {
+        enum class Kind : u8 { None, Boat, Minecart };
+        Kind kind = Kind::None;
+        i32 id = 0;
+        bool sent = false;
+        i32 x = 0, y = 0, z = 0;
+        i8 yaw = 0;
+    };
+    Driving driving_;
 };
 
 }  // namespace mc::net

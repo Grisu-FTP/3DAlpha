@@ -37,7 +37,9 @@ namespace mc::net::ac {
 // AuthOk, which is where world sharing listens -- see core/net/world_share.hpp.
 // 4 added StillPlaying/PlaytimeAck, which is how playtime is counted: the
 // console says it is in a world and **the server decides what that is worth**.
-inline constexpr u16 kProtocol = 4;
+// 5 added HelloPassword (the desktop build's login, which a console never sends)
+// and made AuthOk's key fingerprint optional, since that login has no key.
+inline constexpr u16 kProtocol = 5;
 
 // "ACMP".
 inline constexpr u8 kMagic[4] = {0x41, 0x43, 0x4d, 0x50};
@@ -212,6 +214,9 @@ struct ServerMsg {
     // key fingerprint is worth showing once at that moment, so a player has
     // something to compare against if the identity is ever disputed.
     bool firstClaim = false;
+    // Protocol 5: absent for a password login, which has no key to show. A
+    // console login always carries one.
+    bool hasKeyFingerprint = false;
     std::string keyFingerprint;
     // Protocol 3. The TCP port world sharing listens on, on the host this
     // console reached the server at; 0 when the server does not share worlds.

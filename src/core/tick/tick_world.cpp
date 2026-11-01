@@ -369,6 +369,21 @@ void TickWorld::scheduleBlockUpdate(i32 x, int y, i32 z, block::BlockId id)
     }
 }
 
+void TickWorld::runPendingAdds(world::ChunkColumn& column)
+{
+    std::vector<world::PendingAdd> owed;
+    owed.swap(column.pendingAdds);
+    constexpr int r = 8;
+    for (const world::PendingAdd& add : owed) {
+        if (!chunksExist(add.x - r, add.y - r, add.z - r, add.x + r, add.y + r, add.z + r)) {
+            column.pendingAdds.push_back(add);
+            continue;
+        }
+        // Whatever population put there may since have been replaced.
+        if (blockAt(add.x, add.y, add.z) == add.id) blockAdded(*this, add.x, add.y, add.z, add.id);
+    }
+}
+
 void TickWorld::runScheduled()
 {
     // `cn.a(Z)Z`. The count is taken once, before anything runs, so updates a
@@ -567,6 +582,7 @@ void TickWorld::tick(const Centre* centres, int centreCount, int radius)
                     columnFor(centres[c].chunkX + dx, centres[c].chunkZ + dz);
                 if (column == nullptr) continue;
                 ++stats_.chunksTicked;
+                if (!column->pendingAdds.empty()) runPendingAdds(*column);
                 snowAndIce(*column);
                 randomTickChunk(*column);
                 // **Over the same square the random ticks walk**, which is a

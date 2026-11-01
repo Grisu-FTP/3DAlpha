@@ -20,6 +20,7 @@ ChunkColumn ChunkColumn::clone() const
     copy.preserved = preserved;
     copy.preservedRoot = preservedRoot;
     copy.tileEntities = tileEntities;
+    copy.pendingAdds = pendingAdds;
     for (int sy = 0; sy < kSectionCount; ++sy) {
         copy.sections_[sy] = sections_[sy].clone();
     }

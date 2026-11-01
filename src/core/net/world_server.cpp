@@ -6,9 +6,12 @@
 #include "core/net/entities.hpp"
 #include "core/net/player_skin.hpp"
 #include "core/net/player_sync.hpp"
+#include "core/tick/tick_world.hpp"
 #include "core/util/compress.hpp"
 #include "core/util/span.hpp"
 #include "core/util/worker.hpp"
+#include "items.hpp"  // generated; see tools/configure.py
+
 #include "items.hpp"  // generated; see tools/configure.py
 
 #include <algorithm>
@@ -86,15 +89,6 @@ i64 columnKey(i32 chunkX, i32 chunkZ)
     return i64((u64(u32(chunkX)) << 32) | u64(u32(chunkZ)));
 }
 
-i8 toWireAngle(float degrees)
-{
-    return i8(int(degrees * 256.0f / 360.0f) & 0xFF);
-}
-
-i32 toWirePosition(double value)
-{
-    return i32(std::floor(value * 32.0));
-}
 
 const world::ChunkColumn* lookupColumn(void* ctx, i32 chunkX, i32 chunkZ)
 {
@@ -303,9 +297,13 @@ void WorldServer::open(ServerWorld* world, SendFn send, void* ctx, const std::st
     knownItems_.clear();
     knownMobs_.clear();
     knownPaintings_.clear();
+    knownVehicles_.clear();
+    knownFallers_.clear();
     knownArrows_.clear();
     lastItemMs_ = 0;
     lastMobMs_ = 0;
+    lastVehicleMs_ = 0;
+    lastFallerMs_ = 0;
     lastArrowMs_ = 0;
 
     for (Player& player : players_) {
@@ -340,6 +338,8 @@ void WorldServer::close()
     knownItems_.clear();
     knownMobs_.clear();
     knownPaintings_.clear();
+    knownVehicles_.clear();
+    knownFallers_.clear();
     knownArrows_.clear();
 }
 
@@ -461,6 +461,8 @@ void WorldServer::removePlayer(u8 playerId)
         return;
     }
     remember(*player);
+    // **Whatever they were steering is the host's again**, where they left it.
+    releaseVehiclesOf(*player);
     if (player->spawned) {
         packet_.reset(packet::DestroyEntity);
         packet_.pushInt(player->entityId);
@@ -536,6 +538,16 @@ void WorldServer::resendPositions(Player& player)
     }
     for (const KnownMob& mob : knownMobs_) {
         teleport(mob.entityId, mob.x, mob.y, mob.z, mob.yaw, mob.pitch);
+    }
+    for (const KnownVehicle& vehicle : knownVehicles_) {
+        // Not the one this guest is steering: it is the one saying where that
+        // is.
+        if (vehicle.rider != player.entityId) {
+            teleport(vehicle.entityId, vehicle.x, vehicle.y, vehicle.z, vehicle.yaw, 0);
+        }
+    }
+    for (const KnownFaller& faller : knownFallers_) {
+        teleport(faller.entityId, faller.x, faller.y, faller.z, 0, 0);
     }
     for (const KnownArrow& arrow : knownArrows_) {
         teleport(arrow.entityId, arrow.x, arrow.y, arrow.z, arrow.yaw, arrow.pitch);
@@ -636,6 +648,13 @@ void WorldServer::login(Player& player)
         }
     }
 
+    // **"The host is in nothing"**, which is also how a guest learns this host
+    // shares its vehicles at all -- see `RemoteEntities::sharesVehicles`. If the
+    // host is in one, the re-announcement below says so straight after. Every
+    // console of this family parses a right-click Use Entity and ignores what
+    // it does not understand, a 3DS guest included.
+    write(player, makeUseEntity(host().entityId, kNoVehicle, false));
+
     // ...and everyone else hears about this one.
     fillNamedSpawn(player);
     announce(packet_, player.id);
@@ -657,6 +676,12 @@ void WorldServer::login(Player& player)
     knownItems_.clear();
     knownMobs_.clear();
     knownPaintings_.clear();
+    // The boats, the carts and whoever is in them, and anything mid-fall or
+    // mid-fuse. A guest steering a vehicle is left out of its re-announcement:
+    // a spawn replaces, and replacing the boat under them would tip them out.
+    knownVehicles_.clear();
+    knownFallers_.clear();
+    // The arrows the same way; `ArrowSystem::spawnRemote` replaces too.
     knownArrows_.clear();
 
     rebuildView(player);
@@ -1053,6 +1078,20 @@ void WorldServer::setHostStance(bool sneaking, bool alive)
     }
 }
 
+void WorldServer::setHostHeld(int heldItem)
+{
+    Player& self = players_[0];
+    if (!self.used || self.entityId == 0 || self.heldItem == i16(heldItem)) {
+        return;
+    }
+    // Kept for a guest who joins later, whose Named Entity Spawn carries it.
+    self.heldItem = i16(heldItem);
+    packet_.reset(packet::BlockItemSwitch);
+    packet_.pushInt(self.entityId);
+    packet_.pushInt(heldItem);
+    broadcast(packet_, self.id);
+}
+
 void WorldServer::setHostPose(double x, double feetY, double z, float yaw, float pitch)
 {
     hostPosed_ = true;
@@ -1152,6 +1191,9 @@ bool WorldServer::hostAttack(i32 targetEntityId, int heldItem)
     packet_.pushInt(heldItem);
     write(*victim, packet_);
     write(*victim, makeUseEntity(players_[0].entityId, victim->entityId, true));
+    // **Everyone else sees the flash**, this console included: the victim's own
+    // console takes the damage, but nobody else would ever hear it happened.
+    announce(makeEntityStatus(victim->entityId, entity::kStatusHurt), victim->id);
     return true;
 }
 
@@ -1206,151 +1248,53 @@ void WorldServer::sendEntities(i64 nowMillis)
     }
 }
 
-// ---- the items on the ground -----------------------------------------------
+// ---- the paintings ---------------------------------------------------------
 
-void WorldServer::collectFor(Player& player, entity::ItemEntitySystem& items)
+void WorldServer::syncPaintings()
 {
-    // `EntityPlayer.onUpdate` expands the player's box by one block
-    // horizontally before it asks what is in it; the vertical reach is the
-    // box's own.
-    AABB reach;
-    reach.minX = player.x - 0.3 - 1.0;
-    reach.maxX = player.x + 0.3 + 1.0;
-    reach.minY = player.feetY;
-    reach.maxY = player.feetY + 1.8;
-    reach.minZ = player.z - 0.3 - 1.0;
-    reach.maxZ = player.z + 0.3 + 1.0;
-
-    for (int i = items.count() - 1; i >= 0; --i) {
-        const entity::ItemEntity& item = items[i];
-        if (item.entityId == 0 || item.pickupDelay > 0 || item.count <= 0) {
-            continue;
-        }
-        if (item.box.maxX < reach.minX || item.box.minX > reach.maxX
-            || item.box.maxY < reach.minY || item.box.minY > reach.maxY
-            || item.box.maxZ < reach.minZ || item.box.minZ > reach.maxZ) {
-            continue;
-        }
-
-        // **Everyone is told it is gone; only the collector is told what it
-        // was.** That is `bm` and `ld`, and it is why a client never decides a
-        // pickup for itself -- two players reaching for the same stack would
-        // both take it.
-        const i32 itemId = item.entityId;
-        const item::ItemId kind = item.item;
-        const int count = item.count;
-        const i16 damage = item.damage;
-
-        packet_.reset(packet::Collect);
-        packet_.pushInt(itemId);
-        packet_.pushInt(player.entityId);
-        broadcast(packet_, 0);
-
-        packet_.reset(packet::AddToInventory);
-        packet_.pushInt(i64(kind));
-        packet_.pushInt(count);
-        packet_.pushInt(damage);
-        write(player, packet_);
-
-        items.removeById(itemId);
-        for (usize k = 0; k < knownItems_.size(); ++k) {
-            if (knownItems_[k].entityId == itemId) {
-                knownItems_[k] = knownItems_.back();
-                knownItems_.pop_back();
-                break;
-            }
-        }
-    }
-}
-
-void WorldServer::syncItems(i64 nowMillis)
-{
-    entity::ItemEntitySystem* items = world_->items();
-    if (items == nullptr) {
+    entity::PaintingSystem* pool = world_->paintings();
+    if (pool == nullptr) {
         return;
     }
-
-    // Pick up for the guests first, so a stack taken this frame is never also
-    // announced as having moved.
-    for (int i = 1; i < kMaxPlayers; ++i) {
-        Player& player = players_[i];
-        if (player.used && player.loggedIn && player.placed) {
-            collectFor(player, *items);
-        }
-    }
-
-    const bool moveDue = nowMillis - lastItemMs_ >= kEntityIntervalMs;
-    if (moveDue) {
-        lastItemMs_ = nowMillis;
-    }
-
-    for (KnownItem& known : knownItems_) {
+    for (KnownPainting& known : knownPaintings_) {
         known.seen = false;
     }
-
-    for (int i = 0; i < items->count(); ++i) {
-        entity::ItemEntity& item = *items->at(i);
-        if (item.count <= 0) {
+    for (int i = 0; i < pool->count(); ++i) {
+        entity::Painting& painting = pool->at(i);
+        // A guest-side prediction or a server's painting is not this world's to
+        // announce; on a host neither exists, but the pool is shared code.
+        if (!painting.alive || painting.remote || painting.predicted) {
             continue;
         }
-
-        // **A stack the single-player game spawned has no id**, because until
-        // this moment nothing needed one. See `ItemEntity::entityId`.
-        const bool fresh = item.entityId == 0;
-        if (fresh) {
-            item.entityId = nextEntityId_++;
+        if (painting.entityId == 0) {
+            painting.entityId = nextEntityId_++;
         }
-
-        const i32 wx = toWirePosition(item.x);
-        const i32 wy = toWirePosition(item.y);
-        const i32 wz = toWirePosition(item.z);
-
-        KnownItem* known = nullptr;
-        for (KnownItem& candidate : knownItems_) {
-            if (candidate.entityId == item.entityId) {
+        KnownPainting* known = nullptr;
+        for (KnownPainting& candidate : knownPaintings_) {
+            if (candidate.entityId == painting.entityId) {
                 known = &candidate;
                 break;
             }
         }
-
-        if (known == nullptr) {
-            knownItems_.push_back(KnownItem{item.entityId, wx, wy, wz, true});
-            packet_ = pickupSpawnFor(item);
-            packet_.ints[0] = item.entityId;
-            broadcast(packet_, 0);
-            ++itemsSpawned_;
+        if (known != nullptr) {
+            known->seen = true;
             continue;
         }
-
-        known->seen = true;
-        if (!moveDue || (wx == known->x && wy == known->y && wz == known->z)) {
-            continue;
-        }
-        known->x = wx;
-        known->y = wy;
-        known->z = wz;
-        packet_.reset(packet::EntityTeleport);
-        packet_.pushInt(item.entityId);
-        packet_.pushInt(wx);
-        packet_.pushInt(wy);
-        packet_.pushInt(wz);
-        packet_.pushInt(0);
-        packet_.pushInt(0);
-        broadcastMove(packet_, 0);
+        knownPaintings_.push_back(KnownPainting{painting.entityId, true});
+        broadcastExtended(makePainting(painting.entityId, painting.artwork().name, painting.tileX,
+                               painting.tileY, painting.tileZ, painting.direction),
+                  0);
     }
-
-    // What the pool no longer holds: aged out, blown up, or picked up by the
-    // host's own player.
-    for (usize i = 0; i < knownItems_.size();) {
-        if (knownItems_[i].seen) {
+    for (usize i = 0; i < knownPaintings_.size();) {
+        if (knownPaintings_[i].seen) {
             ++i;
             continue;
         }
         packet_.reset(packet::DestroyEntity);
-        packet_.pushInt(knownItems_[i].entityId);
-        broadcast(packet_, 0);
-        knownItems_[i] = knownItems_.back();
-        knownItems_.pop_back();
+        packet_.pushInt(knownPaintings_[i].entityId);
+        broadcastExtended(packet_, 0);
+        knownPaintings_[i] = knownPaintings_.back();
+        knownPaintings_.pop_back();
     }
 }
 
@@ -1551,6 +1495,733 @@ void WorldServer::arrowStruck(i32 victimEntityId, entity::Arrow& arrow)
     write(*victim, makeUseEntity(arrow.entityId, victim->entityId, true));
 }
 
+void WorldServer::mobStruck(i32 victimEntityId, i32 mobEntityId)
+{
+    Player* victim = playerByEntity(victimEntityId);
+    if (victim == nullptr || victim->id == players_[0].id || !victim->loggedIn
+        || mobEntityId == 0) {
+        return;
+    }
+    write(*victim, makeUseEntity(mobEntityId, victim->entityId, true));
+}
+
+// ---- the vehicles ----------------------------------------------------------
+
+void WorldServer::syncVehicles(i64 nowMillis)
+{
+    entity::BoatSystem* boats = world_->boats();
+    entity::MinecartSystem* carts = world_->minecarts();
+    if (boats == nullptr && carts == nullptr) {
+        return;
+    }
+
+    const bool moveDue = nowMillis - lastVehicleMs_ >= kEntityIntervalMs;
+    if (moveDue) {
+        lastVehicleMs_ = nowMillis;
+    }
+    for (KnownVehicle& known : knownVehicles_) {
+        known.seen = false;
+    }
+
+    // **Who got out and who got in, told after everything else and in that
+    // order**, so a rider who moved from one vehicle to another in the same
+    // frame is never last heard of as getting out.
+    struct Seat {
+        i32 rider;
+        i32 vehicle;
+    };
+    std::vector<Seat> outs;
+    std::vector<Seat> ins;
+
+    const auto visit = [&](bool boat, i32 entityId, int type, double x, double y, double z,
+                           float yaw, int hit, i32 rider, bool burning) {
+        const i32 wx = toWirePosition(x);
+        const i32 wy = toWirePosition(y);
+        const i32 wz = toWirePosition(z);
+        const i8 wyaw = toWireAngle(yaw);
+        // The guest steering it, who is never told where it is: they are the
+        // one saying.
+        const Player* driver = rider != 0 && rider != host().entityId ? playerByEntity(rider)
+                                                                     : nullptr;
+        const u8 except = driver != nullptr ? driver->id : 0;
+
+        KnownVehicle* known = nullptr;
+        for (KnownVehicle& candidate : knownVehicles_) {
+            if (candidate.entityId == entityId) {
+                known = &candidate;
+                break;
+            }
+        }
+        if (known == nullptr) {
+            KnownVehicle fresh;
+            fresh.entityId = entityId;
+            fresh.boat = boat;
+            fresh.x = wx;
+            fresh.y = wy;
+            fresh.z = wz;
+            fresh.yaw = wyaw;
+            fresh.hit = hit;
+            fresh.rider = rider;
+            fresh.burning = burning;
+            fresh.seen = true;
+            knownVehicles_.push_back(fresh);
+            // **The spawn and then the heading**, because a Vehicle Spawn has
+            // no angles: without the teleport a guest would draw the first
+            // ticks of every boat pointing the same way.
+            packet_.reset(packet::VehicleSpawn);
+            packet_.pushInt(entityId);
+            packet_.pushInt(type);
+            packet_.pushInt(wx);
+            packet_.pushInt(wy);
+            packet_.pushInt(wz);
+            broadcast(packet_, except);
+            packet_.reset(packet::EntityTeleport);
+            packet_.pushInt(entityId);
+            packet_.pushInt(wx);
+            packet_.pushInt(wy);
+            packet_.pushInt(wz);
+            packet_.pushInt(wyaw);
+            packet_.pushInt(0);
+            broadcast(packet_, except);
+            if (burning) {
+                broadcast(makeEntityStatus(entityId, entity::kStatusFlagSet), 0);
+            }
+            if (rider != 0) {
+                ins.push_back(Seat{rider, entityId});
+            }
+            return;
+        }
+
+        known->seen = true;
+        // **A blow, as it lands**: `attack` puts `timeSinceHit` back up to ten
+        // and nothing else ever raises it. Everybody sees the rock, the one
+        // steering included.
+        if (hit > known->hit) {
+            broadcast(makeEntityStatus(entityId, entity::kStatusHurt), 0);
+        }
+        known->hit = hit;
+        if (burning != known->burning) {
+            known->burning = burning;
+            broadcast(makeEntityStatus(entityId, burning ? entity::kStatusFlagSet
+                                                         : entity::kStatusFlagClear),
+                      0);
+        }
+        if (rider != known->rider) {
+            if (known->rider != 0) {
+                outs.push_back(Seat{known->rider, entityId});
+            }
+            if (rider != 0) {
+                ins.push_back(Seat{rider, entityId});
+            }
+            known->rider = rider;
+        }
+        if (!moveDue
+            || (wx == known->x && wy == known->y && wz == known->z && wyaw == known->yaw)) {
+            return;
+        }
+        known->x = wx;
+        known->y = wy;
+        known->z = wz;
+        known->yaw = wyaw;
+        packet_.reset(packet::EntityTeleport);
+        packet_.pushInt(entityId);
+        packet_.pushInt(wx);
+        packet_.pushInt(wy);
+        packet_.pushInt(wz);
+        packet_.pushInt(wyaw);
+        packet_.pushInt(0);
+        broadcastMove(packet_, except);
+    };
+
+    // **A guest who is no longer here steers nothing.** `removePlayer` hands
+    // their vehicle back when it can reach the pools; this catches a guest who
+    // went while it could not.
+    const auto gone = [&](i32 rider) {
+        const Player* driver = rider != 0 ? playerByEntity(rider) : nullptr;
+        return rider != 0 && (driver == nullptr || !driver->loggedIn);
+    };
+
+    for (int i = 0; boats != nullptr && i < boats->count(); ++i) {
+        entity::Boat& b = boats->at(i);
+        if (!b.alive) {
+            continue;
+        }
+        if (b.entityId == 0) {
+            b.entityId = nextEntityId_++;
+        }
+        if (gone(b.riderId)) {
+            boats->takeBack(b.entityId);
+        }
+        const i32 rider = boats->riddenIndex() == i ? host().entityId : b.riderId;
+        // **A boat a guest is steering goes out where that guest last said**,
+        // not where the host's copy has walked to: everybody else walks it the
+        // same three ticks they walk its rider, and from the same report, so
+        // the rider stays in the seat on a third console's screen.
+        if (b.remote) {
+            visit(true, b.entityId, kVehicleBoat, b.track.x, b.track.y, b.track.z, b.track.yaw,
+                  b.timeSinceHit, rider, false);
+        } else {
+            visit(true, b.entityId, kVehicleBoat, b.x, b.y, b.z, b.yaw, b.timeSinceHit, rider,
+                  false);
+        }
+    }
+    for (int i = 0; carts != nullptr && i < carts->count(); ++i) {
+        entity::Minecart& c = carts->at(i);
+        if (!c.alive) {
+            continue;
+        }
+        if (c.entityId == 0) {
+            c.entityId = nextEntityId_++;
+        }
+        if (gone(c.riderId)) {
+            carts->takeBack(c.entityId);
+        }
+        const i32 rider = carts->riddenIndex() == i ? host().entityId : c.riderId;
+        const int type = RemoteEntities::vehicleTypeFor(c.type);
+        const bool burning = entity::MinecartSystem::burning(c);
+        if (c.remote) {
+            visit(false, c.entityId, type, c.track.x, c.track.y, c.track.z, c.track.yaw,
+                  c.timeSinceHit, rider, burning);
+        } else {
+            visit(false, c.entityId, type, c.x, c.y, c.z, c.yaw, c.timeSinceHit, rider, burning);
+        }
+    }
+
+    // Broken, or gone with a column the host let go of. Whoever was in it is
+    // out of it on every screen.
+    for (usize i = 0; i < knownVehicles_.size();) {
+        if (knownVehicles_[i].seen) {
+            ++i;
+            continue;
+        }
+        if (knownVehicles_[i].rider != 0) {
+            outs.push_back(Seat{knownVehicles_[i].rider, knownVehicles_[i].entityId});
+        }
+        packet_.reset(packet::DestroyEntity);
+        packet_.pushInt(knownVehicles_[i].entityId);
+        broadcast(packet_, 0);
+        knownVehicles_[i] = knownVehicles_.back();
+        knownVehicles_.pop_back();
+    }
+
+    // `announce`, so the host's own screen sits its guests down as well.
+    for (const Seat& seat : outs) {
+        announce(makeUseEntity(seat.rider, kNoVehicle, false), 0);
+    }
+    for (const Seat& seat : ins) {
+        announce(makeUseEntity(seat.rider, seat.vehicle, false), 0);
+    }
+}
+
+void WorldServer::releaseVehiclesOf(const Player& player)
+{
+    if (world_ == nullptr || player.entityId == 0) {
+        return;
+    }
+    if (entity::BoatSystem* boats = world_->boats()) {
+        for (int i = 0; i < boats->count(); ++i) {
+            if ((*boats)[i].riderId == player.entityId) {
+                boats->takeBack((*boats)[i].entityId);
+            }
+        }
+    }
+    if (entity::MinecartSystem* carts = world_->minecarts()) {
+        for (int i = 0; i < carts->count(); ++i) {
+            if ((*carts)[i].riderId == player.entityId) {
+                carts->takeBack((*carts)[i].entityId);
+            }
+        }
+    }
+}
+
+void WorldServer::rideRequest(Player& player, i32 vehicle)
+{
+    if (!player.loggedIn || !player.placed || player.dead) {
+        return;
+    }
+    if (vehicle == kNoVehicle) {
+        releaseVehiclesOf(player);
+        return;
+    }
+    // **Within reach of where they are**, so a stale id or a guest half a world
+    // away cannot take a boat out from under somebody's nose. Generous: the
+    // guest's own click was within `kEntityReach` of its own copy, which walks
+    // three ticks behind the host's.
+    constexpr double kRideReach = 8.0;
+    const auto inReach = [&](double x, double y, double z) {
+        const double dx = x - player.x;
+        const double dy = y - player.feetY;
+        const double dz = z - player.z;
+        return dx * dx + dy * dy + dz * dz <= kRideReach * kRideReach;
+    };
+    // **Nobody in it already** -- `ridden` is the host's own player or another
+    // guest -- which is `EntityBoat.interact`'s one rule, and `oc`'s for a
+    // plain cart. A chest or furnace cart is not ridden at all.
+    if (entity::BoatSystem* boats = world_->boats()) {
+        const int index = boats->indexOfEntity(vehicle);
+        if (index >= 0) {
+            const entity::Boat& b = (*boats)[index];
+            if (!b.ridden && inReach(b.x, b.y, b.z)) {
+                releaseVehiclesOf(player);
+                boats->driveElsewhere(vehicle, player.entityId);
+            }
+            return;
+        }
+    }
+    if (entity::MinecartSystem* carts = world_->minecarts()) {
+        const int index = carts->indexOfEntity(vehicle);
+        if (index >= 0) {
+            const entity::Minecart& c = (*carts)[index];
+            if (!inReach(c.x, c.y, c.z)) {
+                return;
+            }
+            // **A furnace cart takes the guest's coal and is pointed away from
+            // them**, `oc.a(Ldm;)Z`'s third body, run here on the host's cart
+            // with what the guest last said it holds. The coal itself is the
+            // guest's and their console spends it.
+            if (c.type == entity::MinecartType::Furnace) {
+                carts->interact(index, item::ItemId(player.heldItem), player.x, player.z);
+                return;
+            }
+            if (!c.ridden && c.type == entity::MinecartType::Rideable) {
+                releaseVehiclesOf(player);
+                carts->driveElsewhere(vehicle, player.entityId);
+            }
+        }
+    }
+}
+
+// ---- the falling blocks and lit TNT -----------------------------------------
+
+void WorldServer::syncBlasts()
+{
+    entity::MobSystem* mobs = world_->mobs();
+    if (mobs == nullptr) {
+        return;
+    }
+    i32 exploded[8];
+    const int n = mobs->takeExploded(exploded, 8);
+    for (int i = 0; i < n; ++i) {
+        broadcast(makeEntityStatus(exploded[i], entity::kStatusExploded), 0);
+    }
+}
+
+void WorldServer::syncFallers(i64 nowMillis)
+{
+    entity::FallingBlockSystem* falling = world_->fallingBlocks();
+    entity::PrimedTntSystem* tnt = world_->primedTnt();
+    if (falling == nullptr && tnt == nullptr) {
+        return;
+    }
+
+    const bool moveDue = nowMillis - lastFallerMs_ >= kEntityIntervalMs;
+    if (moveDue) {
+        lastFallerMs_ = nowMillis;
+    }
+    for (KnownFaller& known : knownFallers_) {
+        known.seen = false;
+    }
+
+    // `heading` is the yaw byte: nothing for a falling block, and **the fuse
+    // for lit TNT**, which has no heading of its own -- see `PrimedTnt::remote`.
+    const auto visit = [&](i32 entityId, int type, double x, double y, double z, int heading) {
+        const i32 wx = toWirePosition(x);
+        const i32 wy = toWirePosition(y);
+        const i32 wz = toWirePosition(z);
+        const auto teleport = [&](u8 except) {
+            packet_.reset(packet::EntityTeleport);
+            packet_.pushInt(entityId);
+            packet_.pushInt(wx);
+            packet_.pushInt(wy);
+            packet_.pushInt(wz);
+            packet_.pushInt(heading);
+            packet_.pushInt(0);
+            broadcastMove(packet_, except);
+        };
+        for (KnownFaller& known : knownFallers_) {
+            if (known.entityId != entityId) {
+                continue;
+            }
+            known.seen = true;
+            if (!moveDue || (wx == known.x && wy == known.y && wz == known.z)) {
+                return;
+            }
+            known.x = wx;
+            known.y = wy;
+            known.z = wz;
+            teleport(0);
+            return;
+        }
+        knownFallers_.push_back(KnownFaller{entityId, wx, wy, wz, true});
+        packet_.reset(packet::VehicleSpawn);
+        packet_.pushInt(entityId);
+        packet_.pushInt(type);
+        packet_.pushInt(wx);
+        packet_.pushInt(wy);
+        packet_.pushInt(wz);
+        broadcast(packet_, 0);
+        // The spawn has no angles, so the fuse follows at once.
+        teleport(0);
+    };
+
+    for (int i = 0; falling != nullptr && i < falling->count(); ++i) {
+        entity::FallingBlock& e = falling->at(i);
+        const int type = RemoteEntities::objectTypeForFalling(e.block);
+        if (!e.alive() || e.remote || type == 0) {
+            continue;
+        }
+        if (e.entityId == 0) {
+            e.entityId = nextEntityId_++;
+        }
+        visit(e.entityId, type, e.x, e.y, e.z, 0);
+    }
+    for (int i = 0; tnt != nullptr && i < tnt->count(); ++i) {
+        entity::PrimedTnt& e = tnt->at(i);
+        if (!e.alive() || e.remote) {
+            continue;
+        }
+        if (e.entityId == 0) {
+            e.entityId = nextEntityId_++;
+        }
+        const int fuse = e.fuse < 0 ? 0 : (e.fuse > 127 ? 127 : e.fuse);
+        visit(e.entityId, kObjectPrimedTnt, e.x, e.y, e.z, fuse);
+    }
+
+    // Landed, given up, or gone off -- which for TNT is the only way out of
+    // the pool, so a guest reads this one as the bang.
+    for (usize i = 0; i < knownFallers_.size();) {
+        if (knownFallers_[i].seen) {
+            ++i;
+            continue;
+        }
+        packet_.reset(packet::DestroyEntity);
+        packet_.pushInt(knownFallers_[i].entityId);
+        broadcast(packet_, 0);
+        knownFallers_[i] = knownFallers_.back();
+        knownFallers_.pop_back();
+    }
+}
+
+// ---- containers a guest has open -------------------------------------------
+
+void WorldServer::openCart(Player& player, i32 entityId)
+{
+    entity::MinecartSystem* carts = world_->minecarts();
+    const int index = carts != nullptr ? carts->indexOfEntity(entityId) : -1;
+    TileSnapshot snapshot;
+    bool open = index >= 0 && readCart(*carts, entityId, &snapshot);
+    if (open) {
+        // The reach a chest gets, measured to the cart's middle.
+        const entity::Minecart& c = (*carts)[index];
+        const double dx = c.x - player.x;
+        const double dy = c.y - player.eyeY;
+        const double dz = c.z - player.z;
+        open = dx * dx + dy * dy + dz * dz <= 10.0 * 10.0;
+    }
+    if (!open) {
+        write(player, makeTileClose(entityId, kCartTileY, 0));
+        return;
+    }
+    Player::Watch& watch = player.watch;
+    watch.x[0] = entityId;
+    watch.y[0] = kCartTileY;
+    watch.z[0] = 0;
+    encodeTile(snapshot, &watch.last[0]);
+    watch.parts = 1;
+    write(player, makeTileSync(snapshot));
+    player.lastTileMs = nowMs_;
+}
+
+void WorldServer::openTile(Player& player, i32 x, int y, i32 z)
+{
+    closeTile(player);
+    if (!player.loggedIn || !player.placed || player.dead) {
+        return;
+    }
+    if (y == kCartTileY) {
+        openCart(player, x);
+        return;
+    }
+    tick::TickWorld* world = world_->tickWorld();
+    if (world == nullptr) {
+        return;
+    }
+    // **Within reach of where they stand**, because a guest that names a chest
+    // two hundred blocks away is not clicking one. a1.1.2's own reach is six
+    // blocks; a little over, for the lag between the click and this.
+    const double dx = double(x) + 0.5 - player.x;
+    const double dy = double(y) + 0.5 - player.eyeY;
+    const double dz = double(z) + 0.5 - player.z;
+    if (dx * dx + dy * dy + dz * dz > 10.0 * 10.0) {
+        return;
+    }
+    tick::ChestPart parts[tick::kMaxChestParts];
+    const int count = tileParts(*world, x, y, z, parts);
+    if (count == 0) {
+        write(player, makeTileClose(x, y, z));
+        return;
+    }
+    Player::Watch& watch = player.watch;
+    for (int i = 0; i < count; ++i) {
+        TileSnapshot snapshot;
+        if (!readTile(*world, parts[i].x, parts[i].y, parts[i].z, &snapshot)) {
+            continue;
+        }
+        watch.x[watch.parts] = parts[i].x;
+        watch.y[watch.parts] = parts[i].y;
+        watch.z[watch.parts] = parts[i].z;
+        encodeTile(snapshot, &watch.last[watch.parts]);
+        ++watch.parts;
+        write(player, makeTileSync(snapshot));
+    }
+    player.lastTileMs = nowMs_;
+}
+
+void WorldServer::closeTile(Player& player)
+{
+    Player::Watch& watch = player.watch;
+    for (int i = 0; i < watch.parts; ++i) {
+        watch.last[i].clear();
+    }
+    watch.parts = 0;
+}
+
+void WorldServer::acceptTile(Player& player, const TileSnapshot& snapshot)
+{
+    Player::Watch& watch = player.watch;
+    // **A chest cart the guest has open**, by its entity id.
+    if (snapshot.y == kCartTileY) {
+        entity::MinecartSystem* carts = world_->minecarts();
+        for (int i = 0; carts != nullptr && i < watch.parts; ++i) {
+            if (watch.y[i] != kCartTileY || watch.x[i] != snapshot.x) {
+                continue;
+            }
+            if (writeCart(*carts, snapshot)) {
+                TileSnapshot now;
+                if (readCart(*carts, snapshot.x, &now)) {
+                    encodeTile(now, &watch.last[i]);
+                }
+            }
+            return;
+        }
+        return;
+    }
+    tick::TickWorld* world = world_->tickWorld();
+    if (world == nullptr) {
+        return;
+    }
+    for (int i = 0; i < watch.parts; ++i) {
+        if (watch.x[i] != snapshot.x || watch.y[i] != snapshot.y || watch.z[i] != snapshot.z) {
+            continue;
+        }
+        // **Only a tile the guest has open**, and only its slots: a furnace's
+        // burn and cook belong to this world's own tick.
+        if (!writeTile(*world, snapshot, false)) {
+            return;
+        }
+        TileSnapshot now;
+        if (readTile(*world, snapshot.x, snapshot.y, snapshot.z, &now)) {
+            encodeTile(now, &watch.last[i]);
+        }
+        return;
+    }
+}
+
+void WorldServer::syncTiles(i64 nowMillis)
+{
+    tick::TickWorld* world = world_->tickWorld();
+    if (world == nullptr) {
+        return;
+    }
+    for (int p = 1; p < kMaxPlayers; ++p) {
+        Player& player = players_[p];
+        Player::Watch& watch = player.watch;
+        if (!player.used || !player.loggedIn || watch.parts == 0) {
+            continue;
+        }
+        // A tenth of a second: a furnace's flame changes every tick and a guest
+        // has no use for twenty copies of it.
+        if (nowMillis - player.lastTileMs < 100) {
+            continue;
+        }
+        player.lastTileMs = nowMillis;
+        std::vector<u8> encoded;
+        for (int i = 0; i < watch.parts; ++i) {
+            TileSnapshot snapshot;
+            entity::MinecartSystem* carts = world_->minecarts();
+            const bool read = watch.y[i] == kCartTileY
+                                  ? carts != nullptr && readCart(*carts, watch.x[i], &snapshot)
+                                  : readTile(*world, watch.x[i], watch.y[i], watch.z[i],
+                                             &snapshot);
+            if (!read) {
+                // The block went under the screen.
+                write(player, makeTileClose(watch.x[i], watch.y[i], watch.z[i]));
+                closeTile(player);
+                break;
+            }
+            encodeTile(snapshot, &encoded);
+            if (encoded == watch.last[i]) {
+                continue;
+            }
+            watch.last[i] = encoded;
+            write(player, makeTileSync(snapshot));
+        }
+    }
+}
+
+// ---- the items on the ground -----------------------------------------------
+
+void WorldServer::collectFor(Player& player, entity::ItemEntitySystem& items)
+{
+    // `EntityPlayer.onUpdate` expands the player's box by one block
+    // horizontally before it asks what is in it; the vertical reach is the
+    // box's own.
+    AABB reach;
+    reach.minX = player.x - 0.3 - 1.0;
+    reach.maxX = player.x + 0.3 + 1.0;
+    reach.minY = player.feetY;
+    reach.maxY = player.feetY + 1.8;
+    reach.minZ = player.z - 0.3 - 1.0;
+    reach.maxZ = player.z + 0.3 + 1.0;
+
+    for (int i = items.count() - 1; i >= 0; --i) {
+        const entity::ItemEntity& item = items[i];
+        // A stack already flying to somebody (the host's own pickup) is taken.
+        if (item.entityId == 0 || item.pickupDelay > 0 || item.count <= 0 || item.collecting()) {
+            continue;
+        }
+        if (item.box.maxX < reach.minX || item.box.minX > reach.maxX
+            || item.box.maxY < reach.minY || item.box.minY > reach.maxY
+            || item.box.maxZ < reach.minZ || item.box.minZ > reach.maxZ) {
+            continue;
+        }
+
+        // **Everyone is told it is gone; only the collector is told what it
+        // was.** That is `bm` and `ld`, and it is why a client never decides a
+        // pickup for itself -- two players reaching for the same stack would
+        // both take it.
+        const i32 itemId = item.entityId;
+        const item::ItemId kind = item.item;
+        const int count = item.count;
+        const i16 damage = item.damage;
+
+        packet_.reset(packet::Collect);
+        packet_.pushInt(itemId);
+        packet_.pushInt(player.entityId);
+        broadcast(packet_, 0);
+
+        packet_.reset(packet::AddToInventory);
+        packet_.pushInt(i64(kind));
+        packet_.pushInt(count);
+        packet_.pushInt(damage);
+        write(player, packet_);
+
+        items.removeById(itemId);
+        for (usize k = 0; k < knownItems_.size(); ++k) {
+            if (knownItems_[k].entityId == itemId) {
+                knownItems_[k] = knownItems_.back();
+                knownItems_.pop_back();
+                break;
+            }
+        }
+    }
+}
+
+void WorldServer::syncItems(i64 nowMillis)
+{
+    entity::ItemEntitySystem* items = world_->items();
+    if (items == nullptr) {
+        return;
+    }
+
+    // Pick up for the guests first, so a stack taken this frame is never also
+    // announced as having moved.
+    for (int i = 1; i < kMaxPlayers; ++i) {
+        Player& player = players_[i];
+        if (player.used && player.loggedIn && player.placed) {
+            collectFor(player, *items);
+        }
+    }
+
+    const bool moveDue = nowMillis - lastItemMs_ >= kEntityIntervalMs;
+    if (moveDue) {
+        lastItemMs_ = nowMillis;
+    }
+
+    for (KnownItem& known : knownItems_) {
+        known.seen = false;
+    }
+
+    for (int i = 0; i < items->count(); ++i) {
+        entity::ItemEntity& item = *items->at(i);
+        // **A collected stack is not on the ground.** It is in an inventory and
+        // only still drawn; announcing it would hand the guests a second copy.
+        if (item.count <= 0 || item.collecting()) {
+            continue;
+        }
+
+        // **A stack the single-player game spawned has no id**, because until
+        // this moment nothing needed one. See `ItemEntity::entityId`.
+        const bool fresh = item.entityId == 0;
+        if (fresh) {
+            item.entityId = nextEntityId_++;
+        }
+
+        const i32 wx = toWirePosition(item.x);
+        const i32 wy = toWirePosition(item.y);
+        const i32 wz = toWirePosition(item.z);
+
+        KnownItem* known = nullptr;
+        for (KnownItem& candidate : knownItems_) {
+            if (candidate.entityId == item.entityId) {
+                known = &candidate;
+                break;
+            }
+        }
+
+        if (known == nullptr) {
+            knownItems_.push_back(KnownItem{item.entityId, wx, wy, wz, true});
+            packet_ = pickupSpawnFor(item);
+            packet_.ints[0] = item.entityId;
+            broadcast(packet_, 0);
+            ++itemsSpawned_;
+            continue;
+        }
+
+        known->seen = true;
+        if (!moveDue || (wx == known->x && wy == known->y && wz == known->z)) {
+            continue;
+        }
+        known->x = wx;
+        known->y = wy;
+        known->z = wz;
+        packet_.reset(packet::EntityTeleport);
+        packet_.pushInt(item.entityId);
+        packet_.pushInt(wx);
+        packet_.pushInt(wy);
+        packet_.pushInt(wz);
+        packet_.pushInt(0);
+        packet_.pushInt(0);
+        broadcastMove(packet_, 0);
+    }
+
+    // What the pool no longer holds: aged out, blown up, or picked up by the
+    // host's own player.
+    for (usize i = 0; i < knownItems_.size();) {
+        if (knownItems_[i].seen) {
+            ++i;
+            continue;
+        }
+        packet_.reset(packet::DestroyEntity);
+        packet_.pushInt(knownItems_[i].entityId);
+        broadcast(packet_, 0);
+        knownItems_[i] = knownItems_.back();
+        knownItems_.pop_back();
+    }
+}
+
+// ---- the arrows ------------------------------------------------------------
+
 void WorldServer::syncMobs(i64 nowMillis)
 {
     entity::MobSystem* mobs = world_->mobs();
@@ -1609,6 +2280,11 @@ void WorldServer::syncMobs(i64 nowMillis)
             packet_.pushInt(wpitch);
             broadcast(packet_, 0);
             ++mobsSpawned_;
+            // A shorn sheep or a saddled pig is spawned plain; say otherwise.
+            if (mob.flag) {
+                knownMobs_.back().flag = true;
+                broadcast(makeEntityStatus(mob.entityId, entity::kStatusFlagSet), 0);
+            }
             continue;
         }
 
@@ -1621,6 +2297,12 @@ void WorldServer::syncMobs(i64 nowMillis)
         if (mob.hurtSerial != known->hurtSerial) {
             known->hurtSerial = mob.hurtSerial;
             broadcast(makeEntityStatus(mob.entityId, entity::kStatusHurt), 0);
+        }
+        if (mob.flag != known->flag) {
+            known->flag = mob.flag;
+            broadcast(makeEntityStatus(mob.entityId, mob.flag ? entity::kStatusFlagSet
+                                                              : entity::kStatusFlagClear),
+                      0);
         }
         if (mob.health <= 0 && !known->deathSent) {
             known->deathSent = true;
@@ -1662,54 +2344,6 @@ void WorldServer::syncMobs(i64 nowMillis)
 }
 
 // ---- the paintings ---------------------------------------------------------
-
-void WorldServer::syncPaintings()
-{
-    entity::PaintingSystem* pool = world_->paintings();
-    if (pool == nullptr) {
-        return;
-    }
-    for (KnownPainting& known : knownPaintings_) {
-        known.seen = false;
-    }
-    for (int i = 0; i < pool->count(); ++i) {
-        entity::Painting& painting = pool->at(i);
-        // A guest-side prediction or a server's painting is not this world's to
-        // announce; on a host neither exists, but the pool is shared code.
-        if (!painting.alive || painting.remote || painting.predicted) {
-            continue;
-        }
-        if (painting.entityId == 0) {
-            painting.entityId = nextEntityId_++;
-        }
-        KnownPainting* known = nullptr;
-        for (KnownPainting& candidate : knownPaintings_) {
-            if (candidate.entityId == painting.entityId) {
-                known = &candidate;
-                break;
-            }
-        }
-        if (known != nullptr) {
-            known->seen = true;
-            continue;
-        }
-        knownPaintings_.push_back(KnownPainting{painting.entityId, true});
-        broadcastExtended(makePainting(painting.entityId, painting.artwork().name, painting.tileX,
-                               painting.tileY, painting.tileZ, painting.direction),
-                  0);
-    }
-    for (usize i = 0; i < knownPaintings_.size();) {
-        if (knownPaintings_[i].seen) {
-            ++i;
-            continue;
-        }
-        packet_.reset(packet::DestroyEntity);
-        packet_.pushInt(knownPaintings_[i].entityId);
-        broadcastExtended(packet_, 0);
-        knownPaintings_[i] = knownPaintings_.back();
-        knownPaintings_.pop_back();
-    }
-}
 
 // ---- the guests' packets ---------------------------------------------------
 
@@ -1782,21 +2416,39 @@ void WorldServer::onPacket(Player& player, const Packet& p)
         player.pitch = float(p.real(1));
         break;
 
+    case packet::PlayerSkin: {
+        // **Theirs, whatever id it says**: the entity is the one this guest is,
+        // so a guest cannot dress somebody else. Once per connection, and
+        // sanitised before anything is kept or passed on.
+        if (player.skinSeen) {
+            break;
+        }
+        acceptSkin(player, p);
+        break;
+    }
+
+    case packet::TileOpen:
+        openTile(player, i32(p.integer(0)), int(p.integer(1)), i32(p.integer(2)));
+        break;
+
+    case packet::TileClose:
+        closeTile(player);
+        break;
+
+    case packet::TileSync: {
+        TileSnapshot snapshot;
+        if (readTileSync(p, &snapshot)) {
+            acceptTile(player, snapshot);
+        }
+        break;
+    }
+
     case packet::BlockItemSwitch:
         player.heldItem = i16(p.integer(1));
         packet_.reset(packet::BlockItemSwitch);
         packet_.pushInt(player.entityId);
         packet_.pushInt(player.heldItem);
         announce(packet_, player.id);
-        break;
-
-    case packet::PlayerSkin:
-        // **Theirs, whatever id it says**: the entity is the one this guest is,
-        // so a guest cannot dress somebody else. Once per connection, and
-        // sanitised before anything is kept or passed on.
-        if (!player.skinSeen) {
-            acceptSkin(player, p);
-        }
         break;
 
     case packet::PlayerInventory: {
@@ -1841,9 +2493,9 @@ void WorldServer::onPacket(Player& player, const Packet& p)
     }
 
     case packet::Place: {
-        // **A right click in the air**, which only a 3DAlpha guest sends. See
-        // `makeUseItem`: the arrow is fired here, from where they stand and
-        // the way they face, and it is theirs.
+        // **A right click in the air**, which only a guest of this family
+        // sends. See `makeUseItem`: the arrow is fired here, from where they
+        // stand and the way they face, and it is theirs.
         if (isUseItem(p)) {
             if (player.dead || !player.placed) {
                 break;
@@ -1884,9 +2536,10 @@ void WorldServer::onPacket(Player& player, const Packet& p)
 
     case packet::UseEntity: {
         // Field 0 is the attacker's own id, which this side does not need --
-        // the frame it came in on already said who it was. A right click
-        // (leftClick false) is not sent by anything yet.
+        // the frame it came in on already said who it was. **A right click is
+        // "let me in"**, or with `kNoVehicle` "I got out" -- see `kNoVehicle`.
         if (p.integer(2) == 0) {
+            rideRequest(player, i32(p.integer(1)));
             break;
         }
         ServerWorld::AttackRequest request;
@@ -1904,12 +2557,66 @@ void WorldServer::onPacket(Player& player, const Packet& p)
         if (Player* victim = playerByEntity(request.entityId)) {
             if (victim->id == players_[0].id) {
                 world_->attackHost(request);
+                broadcast(makeEntityStatus(victim->entityId, entity::kStatusHurt), 0);
             } else if (victim->loggedIn) {
                 write(*victim, makeUseEntity(player.entityId, victim->entityId, true));
+                announce(makeEntityStatus(victim->entityId, entity::kStatusHurt), victim->id);
             }
             break;
         }
         world_->attackEntity(request);
+        break;
+    }
+
+    case packet::EntityTeleport: {
+        // **Where the boat or cart this guest is steering went**, which only
+        // that guest knows: its console runs the vehicle its player is in.
+        // From anybody else, or about anything else, it is nothing.
+        const i32 id = i32(p.integer(0));
+        const double x = double(p.integer(1)) / kPositionUnitsPerBlock;
+        const double y = double(p.integer(2)) / kPositionUnitsPerBlock;
+        const double z = double(p.integer(3)) / kPositionUnitsPerBlock;
+        const float yaw = float(p.integer(4)) * 360.0f / kRotationUnitsPerTurn;
+        if (entity::BoatSystem* boats = world_->boats()) {
+            const int index = boats->indexOfEntity(id);
+            if (index >= 0 && (*boats)[index].riderId == player.entityId) {
+                boats->placeRemote(id, x, y, z, yaw);
+                break;
+            }
+        }
+        if (entity::MinecartSystem* carts = world_->minecarts()) {
+            const int index = carts->indexOfEntity(id);
+            if (index >= 0 && (*carts)[index].riderId == player.entityId) {
+                carts->placeRemote(id, x, y, z, yaw);
+            }
+        }
+        break;
+    }
+
+    case packet::DestroyEntity: {
+        // **The vehicle this guest was steering broke on their side** -- a wall,
+        // a cactus, a fire. A guest's world drops nothing (every drop is the
+        // host's), so the host's copy breaks here, where it walked to, and
+        // leaves the planks or the cart in this world.
+        const i32 id = i32(p.integer(0));
+        tick::TickWorld* ticks = world_->tickWorld();
+        if (entity::BoatSystem* boats = world_->boats()) {
+            const int index = boats->indexOfEntity(id);
+            if (index >= 0 && (*boats)[index].riderId == player.entityId) {
+                if (ticks == nullptr || !boats->breakById(*ticks, id)) {
+                    boats->removeById(id);
+                }
+                break;
+            }
+        }
+        if (entity::MinecartSystem* carts = world_->minecarts()) {
+            const int index = carts->indexOfEntity(id);
+            if (index >= 0 && (*carts)[index].riderId == player.entityId) {
+                if (ticks == nullptr || !carts->breakById(*ticks, id)) {
+                    carts->removeById(id);
+                }
+            }
+        }
         break;
     }
 
@@ -2013,6 +2720,8 @@ void WorldServer::pump(i64 nowMillis)
         }
     }
 
+    syncBlasts();
+    syncFallers(nowMillis);
     sendBlockChanges();
     streamColumns();
     takeOven();
@@ -2030,7 +2739,9 @@ void WorldServer::pump(i64 nowMillis)
     syncItems(nowMillis);
     syncArrows(nowMillis);
     syncMobs(nowMillis);
+    syncVehicles(nowMillis);
     syncPaintings();
+    syncTiles(nowMillis);
 
     if (nowMillis - lastTimeMs_ >= kTimeIntervalMs) {
         lastTimeMs_ = nowMillis;

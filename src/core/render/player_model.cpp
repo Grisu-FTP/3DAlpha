@@ -54,7 +54,8 @@ void bipedModel(ModelPart* out)
 }
 
 void posePlayer(ModelPart* parts, float limbSwing, float limbAmount, float ageTicks,
-                float headYaw, float headPitch, float swingProgress, bool sneaking)
+                float headYaw, float headPitch, float swingProgress, bool sneaking, bool holding,
+                bool sitting)
 {
     parts[kBipedHead].angleY = headYaw / kDegreesPerRadian;
     parts[kBipedHead].angleX = headPitch / kDegreesPerRadian;
@@ -66,6 +67,11 @@ void posePlayer(ModelPart* parts, float limbSwing, float limbAmount, float ageTi
     parts[kBipedArmLeft].angleX = MathHelper::cos(phase) * 2.0f * limbAmount * 0.5f;
     parts[kBipedArmRight].angleZ = 0.0f;
     parts[kBipedArmLeft].angleZ = 0.0f;
+    // **`cr.i`, an item in the right hand**: the arm is half as wide a swing and
+    // held a tenth of a turn forward, which is what raises it to carry the item.
+    if (holding) {
+        parts[kBipedArmRight].angleX = parts[kBipedArmRight].angleX * 0.5f - kPi * 0.1f;
+    }
     parts[kBipedLegRight].angleX = MathHelper::cos(phase) * kLegAmplitude * limbAmount;
     parts[kBipedLegLeft].angleX = MathHelper::cos(phase + kPi) * kLegAmplitude * limbAmount;
     parts[kBipedLegRight].angleY = 0.0f;
@@ -128,6 +134,19 @@ void posePlayer(ModelPart* parts, float limbSwing, float limbAmount, float ageTi
     parts[kBipedArmLeft].angleZ -= sway;
     parts[kBipedArmRight].angleX += roll;
     parts[kBipedArmLeft].angleX -= roll;
+
+    // **Seated, in a boat, a cart or on a pig**: `fo.l`, which `dn` sets from
+    // `entity.ridingEntity != null` and `cr.a(FFFFFF)` reads at offsets 170 to
+    // 229. Both arms forward by -0.2 pi, both legs at -0.4 pi, and the legs
+    // splayed 0.1 pi outwards -- the constants are the class file's.
+    if (sitting) {
+        parts[kBipedArmRight].angleX += -kPi / 5.0f;
+        parts[kBipedArmLeft].angleX += -kPi / 5.0f;
+        parts[kBipedLegRight].angleX = -kPi * 2.0f / 5.0f;
+        parts[kBipedLegLeft].angleX = -kPi * 2.0f / 5.0f;
+        parts[kBipedLegRight].angleY = kPi / 10.0f;
+        parts[kBipedLegLeft].angleY = -kPi / 10.0f;
+    }
 }
 
 int buildPlayerPreview(const ModelPart* parts, const Placement& place, int pageX, int pageY,
@@ -158,6 +177,55 @@ int buildPlayerPreview(const ModelPart* parts, const Placement& place, int pageX
             out[v].v = i16(out[v].v + dv);
         }
         written += count;
+    }
+    return written;
+}
+
+int armourMaterialOf(int itemId)
+{
+    return itemId >= 298 && itemId <= 317 ? (itemId - 298) / 4 : -1;
+}
+
+int buildPlayerArmour(const ModelPart* parts, const int* materials, const Placement& place,
+                      mesh::DetailVertex* out, int max, u8 light)
+{
+    constexpr int kUnitsPerTexel = mesh::kUvUnitsPerAtlas / 256;
+    // Which parts each slot shows: `bu.a(dm, int)`'s seven `showModel` stores.
+    static constexpr bool kShows[4][kBipedParts] = {
+        // head   hat    body   armR   armL   legR   legL
+        {true, true, false, false, false, false, false},
+        {false, false, true, true, true, false, false},
+        {false, false, true, false, false, true, true},
+        {false, false, false, false, false, true, true},
+    };
+    int originX = 0;
+    int originY = 0;
+    texture::skinOrigin(texture::EntitySkin::Player, &originX, &originY);
+
+    int written = 0;
+    for (int slot = 0; slot < 4; ++slot) {
+        int pageX = 0;
+        int pageY = 0;
+        if (materials[slot] < 0
+            || !texture::armourPageOrigin(materials[slot], slot == 2 ? 2 : 1, &pageX, &pageY)) {
+            continue;
+        }
+        const int du = (pageX - originX) * kUnitsPerTexel;
+        const int dv = (pageY - originY) * kUnitsPerTexel;
+        for (int part = 0; part < kBipedParts; ++part) {
+            if (!kShows[slot][part]) {
+                continue;
+            }
+            ModelPart grown = parts[part];
+            grown.grow += slot == 2 ? 0.5f : 1.0f;
+            const int count = buildBox(grown, place, texture::EntitySkin::Player, light,
+                                       out + written, max - written);
+            for (int v = written; v < written + count; ++v) {
+                out[v].u = i16(out[v].u + du);
+                out[v].v = i16(out[v].v + dv);
+            }
+            written += count;
+        }
     }
     return written;
 }

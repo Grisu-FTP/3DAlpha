@@ -1440,6 +1440,7 @@ void Menu::buildOptionsInfo(int row)
                     settings::stickLabel(settings::Stick::Dpad));
         }
         appendf(&out, "§7START: §fPause\n");
+        appendf(&out, "§7SELECT: §fChange view\n");
         appendf(&out, "§7SELECT + Y / X: §fCycle screen\n");
         appendf(&out, "§7SELECT + %s: §fTune the 3D",
                 settings::stickLabel(settings::Stick::Dpad));
@@ -2041,6 +2042,9 @@ MenuChoice Menu::run()
 
         hidScanInput();
         const u32 down = hidKeysDown();
+        if ((down & KEY_B) != 0) {
+            playLeverOff();
+        }
 
         bool done = false;
         switch (screen_) {
@@ -2217,6 +2221,9 @@ void Menu::beginPause(const char* worldName, const char* worldPath, int renderDi
 
 bool Menu::stepPause(u32 down)
 {
+    if ((down & KEY_B) != 0) {
+        playLeverOff();
+    }
     // **Between the frame that said "Searching" and the search.** The scan
     // holds the radio for about a second, so it is asked for on one frame
     // and done at the top of the next, with the message already drawn.
@@ -2335,6 +2342,15 @@ void Menu::playClick()
 }
 
 void Menu::playMoveClick()
+{
+    if (sound_ != nullptr) {
+        sound_->playSoundFX(kClickSound, 0.3f, 0.5f);
+    }
+}
+
+// The lever coming off: `random.click` at 0.3, pitched 0.5, as a lever plays it.
+// Leaving a screen with B is the press undone. Ours: a1.1.2's Escape is silent.
+void Menu::playLeverOff()
 {
     if (sound_ != nullptr) {
         sound_->playSoundFX(kClickSound, 0.3f, 0.5f);
@@ -3940,7 +3956,9 @@ void Menu::handleConfirmConvert(u32 down)
         return;
     }
     if ((down & KEY_A) != 0) {
-        playClick();
+        if ((down & KEY_B) == 0) {
+            playClick();
+        }
         runConvert();
     }
 }
@@ -7192,7 +7210,9 @@ bool Menu::handleSession(u32 down, MenuChoice* choice)
     if ((down & (KEY_B | KEY_START)) == 0) {
         return false;
     }
-    playClick();
+    if ((down & KEY_B) == 0) {
+        playClick();
+    }
     endSession("left the session");
     message_ = nullptr;
     setScreen(Screen::Multiplayer);
@@ -7494,7 +7514,9 @@ void Menu::handleTransfer(u32 down)
         return;
     }
     if (transfer_->finished()) {
-        playClick();
+        if ((down & KEY_B) == 0) {
+            playClick();
+        }
         endTransfer("the transfer was closed");
         return;
     }
@@ -7503,7 +7525,9 @@ void Menu::handleTransfer(u32 down)
     if ((down & (KEY_B | KEY_START)) == 0) {
         return;
     }
-    playClick();
+    if ((down & KEY_B) == 0) {
+        playClick();
+    }
     endTransfer("the other console cancelled");
 }
 
@@ -8059,7 +8083,9 @@ void Menu::handleDisconnected(u32 down)
     if ((down & (KEY_A | KEY_B)) == 0) {
         return;
     }
-    playClick();
+    if ((down & KEY_B) == 0) {
+        playClick();
+    }
     refreshServers();
     setScreen(Screen::Multiplayer);
 }

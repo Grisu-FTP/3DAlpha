@@ -161,6 +161,18 @@ bool blockActivated(TickWorld& world, i32 x, int y, i32 z);
 // Does nothing for `metadata` 0, which is a jukebox with nothing in it.
 void ejectRecord(TickWorld& world, i32 x, int y, i32 z, u8 metadata);
 
+// **A disc another console put in a jukebox**, as this one hears of it: a block
+// change from the host that left `(x, y, z)` a jukebox holding a disc it was
+// not holding before. a1.1.2 never tells its clients -- `playRecord` reaches
+// only the world it was called in -- so on a1.1.2's own server the music plays
+// for whoever clicked and nobody else. Ours: the metadata already crosses, and
+// it is the whole state of a jukebox, so every console plays what its copy of
+// the block says. The other direction needs nothing new: a jukebox emptied by a
+// block change runs `ejectRecord` through `writeBlock`'s removal hook, which
+// stops the music. `oldBlock`/`oldData` are what the cell held before.
+void jukeboxChangedByServer(TickWorld& world, i32 x, int y, i32 z, block::BlockId oldBlock,
+                            u8 oldData);
+
 // **Which chests a chest's screen joins**, in the order `hs` nests them: the
 // clicked chest, with a -x or -z neighbour put in front of it and a +x or +z one
 // after. A real double chest is two of these; the original builds the same

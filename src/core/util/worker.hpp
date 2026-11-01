@@ -59,6 +59,9 @@ enum class WorkerRole {
     // A multiplayer session: blocked in poll almost all the time, awake to parse
     // and inflate what arrives. See core/net/client_session.hpp.
     Net,
+    // Section meshing: pure CPU like Generation, but it must give way to it. See
+    // core/mesh/mesh_pool.hpp.
+    Mesh,
 };
 
 using WorkerSpawn = void* (*)(void (*entry)(void*), void* arg, WorkerRole role);

@@ -2,10 +2,12 @@
 
 #include "core/item/block_breaking.hpp"
 #include "core/settings/world_settings.hpp"
+#include "core/tick/behaviour.hpp"
 #include "core/util/worker.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cmath>
 #include <thread>
 
@@ -46,6 +48,7 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
     path_ = worldDir;
     level_ = cache_.level();
     lastSaveMillis_ = nowMillis;
+    saveSweepActive_ = false;
     open_ = true;
 
     meshDistance_ = meshDistance;
@@ -149,6 +152,7 @@ bool WorldStreamer::open(const char* worldDir, int meshDistance, i64 nowMillis)
     light_ = std::make_unique<world::LightUpdater>(lightAccess);
 
     builder_.reserveQuads(4096);
+    startMeshPool();
     return true;
 }
 
@@ -300,6 +304,10 @@ void WorldStreamer::tickBlockChanged(void* ctx, i32 x, int y, i32 z)
         // reads this whenever it next looks rather than at the moment of the
         // write. See `blockChangeSerial`.
         cell->mapSerial = ++self->blockSerial_;
+        if (cell->maskDirty == 0) {
+            self->maskPending_.emplace_back(cx, cz);
+        }
+        cell->maskDirty = u8(cell->maskDirty | (1u << (y / world::Section::kSize)));
         // **...and the coordinate goes on the list, once.** A fluid rewrites
         // hundreds of blocks in this chunk in one tick and every one of them
         // arrives here; `ChunkQueue::push` answers the second and the
@@ -314,6 +322,27 @@ void WorldStreamer::tickBlockChanged(void* ctx, i32 x, int y, i32 z)
     if (self->blockWatcher_ != nullptr) {
         self->blockWatcher_(self->blockWatcherCtx_, x, y, z);
     }
+}
+
+void WorldStreamer::refreshMasks(ChunkRenderer& renderer)
+{
+    for (const auto& [cx, cz] : maskPending_) {
+        Cell* cell = loadedCell(cx, cz);
+        if (cell == nullptr || cell->column == nullptr || cell->maskDirty == 0) {
+            continue;
+        }
+        for (int sy = 0; sy < world::ChunkColumn::kSectionCount; ++sy) {
+            if ((cell->maskDirty & (1u << sy)) == 0) {
+                continue;
+            }
+            cell->masks[sy] = mesh::computeVisibility(cell->column->section(sy), visScratch_);
+            if (cell->published) {
+                renderer.setSectionVisibility(cx, sy, cz, cell->masks[sy]);
+            }
+        }
+        cell->maskDirty = 0;
+    }
+    maskPending_.clear();
 }
 
 void WorldStreamer::stepTicks(ChunkRenderer& renderer, int ticks)
@@ -454,7 +483,14 @@ WorldStreamer::RenderBracket::~RenderBracket()
     streamer_.tickRenderer_ = previous_;
 }
 
-void WorldStreamer::flushTickDirty()
+const char* const WorldStreamer::kSaveStageCollecting = "Collecting changes";
+const char* const WorldStreamer::kSaveStageEntities = "Saving entities";
+const char* const WorldStreamer::kSaveStageStopping = "Stopping world generation";
+const char* const WorldStreamer::kSaveStageGenerated = "Finishing generated chunks";
+const char* const WorldStreamer::kSaveStageWriting = "Writing chunks";
+const char* const WorldStreamer::kSaveStageFinishing = "Finishing";
+
+void WorldStreamer::flushTickDirty(SaveReport* report)
 {
     if (remote_) {
         for (Cell& cell : cells_) {
@@ -481,6 +517,14 @@ void WorldStreamer::flushTickDirty()
             }
             // Main thread: queue the write, never perform it here.
             cache_.save(*cell.column, world::ChunkCache::SavePressure::Defer);
+            if (report != nullptr) {
+                // A clone is 46 KB of column and `save` pays for a write itself
+                // when the dirty set is over its ceiling, so a world exit with
+                // a few hundred changed columns spends real time in this loop.
+                // A frame a column is what keeps it from looking like a hang.
+                ++report->done;
+                report->step(kSaveStageCollecting);
+            }
         }
         cell.tickDirty = false;
     }
@@ -851,7 +895,10 @@ const world::ChunkColumn* WorldStreamer::generatorLoad(void* context, i32 chunkX
     // card -- so nothing about what the generator sees has changed. What has
     // changed is the cost: a column the sweep wrote a moment ago used to be a
     // deflate, a file write and a read back, and is now a clone.
-    return self.cache_.load(chunkX, chunkZ, scratch);
+    self.workerPhase_.store(kPhaseLoad);
+    const world::ChunkColumn* loaded = self.cache_.load(chunkX, chunkZ, scratch);
+    self.workerPhase_.store(kPhaseProvide);
+    return loaded;
 }
 
 void WorldStreamer::generatorDeliver(void* context, world::ChunkColumn& column)
@@ -866,7 +913,9 @@ void WorldStreamer::generatorDeliver(void* context, world::ChunkColumn& column)
     // "Stored" now means the cache rather than the card -- the write follows on
     // the I/O thread -- and that is the same guarantee, because the cache is
     // what load() reads and it answers with this column from here on.
+    self.workerPhase_.store(kPhaseDeliver);
     self.cache_.save(column);
+    self.workerPhase_.store(kPhaseProvide);
 
     // Then the grid gets it, and **not from here**: this runs on the worker,
     // and the grid, the renderer and the visibility masks are the main
@@ -880,11 +929,22 @@ void WorldStreamer::generatorDeliver(void* context, world::ChunkColumn& column)
 
 void WorldStreamer::workerEntry(void* self)
 {
-    static_cast<WorldStreamer*>(self)->workerMain();
+    WorldStreamer* streamer = static_cast<WorldStreamer*>(self);
+    streamer->workerMain();
+    streamer->workerExited_.store(true);
+}
+
+void WorldStreamer::requestWorkerStop()
+{
+    workerStopRequested_.store(true);
+    wake_.notify_all();
 }
 
 bool WorldStreamer::startWorker()
 {
+    workerStopRequested_.store(false);
+    workerExited_.store(false);
+    workerPhase_.store(kPhaseStarting);
     {
         std::lock_guard<std::mutex> guard(queueLock_);
         workerStop_ = false;
@@ -904,7 +964,10 @@ bool WorldStreamer::startWorker()
         return true;
     }
 
-    worker_ = std::thread([this] { workerMain(); });
+    worker_ = std::thread([this] {
+        workerMain();
+        workerExited_.store(true);
+    });
     return true;
 }
 
@@ -936,16 +999,54 @@ void WorldStreamer::resumeGeneration()
     wake_.notify_one();
 }
 
-void WorldStreamer::stopWorker()
+void WorldStreamer::stopWorker(SaveReport* report)
 {
     if (platformWorker_ == nullptr && !worker_.joinable()) {
         return;
     }
+    // Before the lock, for the reason on `workerStopRequested_`.
+    workerStopRequested_.store(true);
+    wake_.notify_all();
     {
         std::lock_guard<std::mutex> guard(queueLock_);
         workerStop_ = true;
     }
     wake_.notify_all();
+    // **Waited for in frames when someone is watching**, so a thread that does
+    // not come back says where it is instead of freezing the screen. The join
+    // below then returns at once. Every five hundred milliseconds is plenty: the
+    // number is for a person to read.
+    if (report != nullptr) {
+        static const char* const kNames[] = {"starting", "asleep",  "taking a job",
+                                             "checking a column", "retiring", "generating",
+                                             "loading",  "saving",  "map work",
+                                             "publishing"};
+        const auto began = std::chrono::steady_clock::now();
+        auto shown = began - std::chrono::seconds(1);
+        while (!workerExited_.load()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - shown >= std::chrono::milliseconds(500)) {
+                shown = now;
+                const int phase = workerPhase_.load();
+                const long seconds =
+                    long(std::chrono::duration_cast<std::chrono::seconds>(now - began).count());
+                std::snprintf(stopText_, sizeof(stopText_),
+                              "Stopping world generation: %s %d,%d (job %u, %lds)",
+                              phase >= 0 && phase < 10 ? kNames[phase] : "?",
+                              int(workerPhaseX_.load()), int(workerPhaseZ_.load()),
+                              unsigned(workerJobs_.load()), seconds);
+                report->done = 0;
+                report->total = 0;
+                report->step(stopText_);
+            }
+            // **Woken again on every pass.** A thread that was asleep on `wake_`
+            // when the first notify went out, and missed it for whatever reason
+            // a console's condition variable has, is shaken here until it sees
+            // the flag -- the flag is set, so one more notify is all it needs.
+            wake_.notify_all();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
     if (platformWorker_ != nullptr) {
         workerJoin()(platformWorker_);
         platformWorker_ = nullptr;
@@ -979,13 +1080,26 @@ void WorldStreamer::stopWorker()
 void WorldStreamer::workerMain()
 {
     for (;;) {
+        // Looked at before the lock is taken, so a stop does not wait its turn
+        // for it. The locked path below stays, for a stop that arrives while
+        // the worker is asleep.
+        if (workerStopRequested_.load()) {
+            std::lock_guard<std::mutex> guard(queueLock_);
+            jobActive_ = false;
+            columnWorkBusy_ = false;
+            idle_.notify_all();
+            return;
+        }
         std::pair<i32, i32> at{0, 0};
+        workerPhase_.store(kPhaseIdle);
         {
             std::unique_lock<std::mutex> guard(queueLock_);
             wake_.wait(guard, [this] {
-                return workerStop_ || (!queuePaused_ && !slate_.empty()) || columnWorkPosted_;
+                return workerStop_ || workerStopRequested_.load()
+                       || (!queuePaused_ && !slate_.empty()) || columnWorkPosted_;
             });
-            if (workerStop_) {
+            workerPhase_.store(kPhaseTaking);
+            if (workerStop_ || workerStopRequested_.load()) {
                 jobActive_ = false;
                 columnWorkBusy_ = false;
                 idle_.notify_all();
@@ -1001,6 +1115,7 @@ void WorldStreamer::workerMain()
                 if (!columnWorkPosted_) {
                     continue;
                 }
+                workerPhase_.store(kPhaseColumnWork);
                 runColumnWorkLocked(guard);
                 continue;
             }
@@ -1010,7 +1125,11 @@ void WorldStreamer::workerMain()
             jobActive_ = true;
         }
 
+        workerPhaseX_.store(at.first);
+        workerPhaseZ_.store(at.second);
+        workerJobs_.fetch_add(1);
         generateColumn(at.first, at.second);
+        workerPhase_.store(kPhasePublish);
 
         // The generator's own counters are published here rather than read
         // from the main thread. They belong to the worker, which is the only
@@ -1060,7 +1179,7 @@ void WorldStreamer::runColumnWorkLocked(std::unique_lock<std::mutex>& guard)
         // withdrawal means the main thread is waiting on this loop and the
         // column pointers are about to stop being anybody's; a column on the
         // slate means the world is owed something the player can walk into.
-        if (!columnWorkPosted_ || workerStop_) {
+        if (!columnWorkPosted_ || workerStop_ || workerStopRequested_.load()) {
             ++done;
             break;
         }
@@ -1336,6 +1455,7 @@ void WorldStreamer::setCubeFormat(mesh::CubeFormat format, ChunkRenderer& render
         return;
     }
     builder_.setCubeFormat(format);
+    meshPool_.setCubeFormat(format);
     republishAll(renderer);
 }
 
@@ -1348,6 +1468,7 @@ void WorldStreamer::setGreedy(bool on, ChunkRenderer& renderer)
     // should mesh the way the setting says without anyone having to call this
     // again.
     builder_.setGreedy(on);
+    meshPool_.setGreedy(on);
     if (open_) {
         republishAll(renderer);
     }
@@ -1435,18 +1556,36 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
         open_ = false;
         return;
     }
+    SaveReport report;
+    report.ctx = progressContext;
+    report.fn = progress;
+
+    // **Every step that blocks gets a name on the screen first**, so a save that
+    // stalls says where. They used to share "Collecting changes", which is how a
+    // stall in the join or in the generator's hand-over could not be told apart
+    // from one in the walk over the grid.
+    report.stage(kSaveStageEntities, 0);
     snapshotEntities();
     entityPools_ = {};
     entitiesBound_ = false;
+    // **The first frame of the save screen goes up here**, not after the work.
+    // Joining the generation worker below can take as long as the column it is
+    // part way through, and until this call the caller has drawn whatever it
+    // drew before it asked for the close.
+    report.stage(kSaveStageStopping, 0);
     // The worker first, and before anything touches storage: it is the other
     // user of the slot, and joining it is what makes the rest of this function
     // single-threaded again.
-    stopWorker();
+    stopWorker(&report);
+    // Also before the grid goes: a job's snapshot is its own copy, but its
+    // result names columns that are about to stop existing.
+    meshPool_.stop();
+    report.stage(kSaveStageCollecting, tickDirtyCells_);
 
     // Anything a tick changed and the autosave has not picked up yet. This has
     // to happen before the grid is torn down, because the columns it reads are
     // the grid's.
-    flushTickDirty();
+    flushTickDirty(&report);
 
     // Anything the generator finished and has not handed over yet goes to the
     // card now. Dropping it would mean regenerating it next session, and
@@ -1454,7 +1593,19 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     // the one this session's walk produced, not the one that made the columns
     // around it.
     if (generator_ != nullptr) {
-        generator_->flush();
+        struct Relay {
+            SaveReport* report;
+        } relay{&report};
+        report.stage(kSaveStageGenerated, 0);
+        generator_->flush(
+            [](void* ctx, u32 done, u32 total) {
+                SaveReport& r = *static_cast<Relay*>(ctx)->report;
+                r.done = done;
+                r.total = total;
+                r.step(kSaveStageGenerated);
+            },
+            &relay);
+        report.step(kSaveStageCollecting);
     }
 
     // The drain, watched rather than waited on, when the caller asked to be
@@ -1479,9 +1630,20 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
         cache_.flush(false);
         cache_.pump();
         const u32 owed = cache_.stats().dirtyColumns;
+        report.stage(kSaveStageWriting, owed);
         for (;;) {
-            const u32 left = cache_.stats().dirtyColumns;
-            progress(progressContext, owed - (left < owed ? left : owed), owed);
+            const world::ChunkCache::Stats now = cache_.stats();
+            const u32 left = now.dirtyColumns;
+            report.done = owed - (left < owed ? left : owed);
+            // **Said when the card is refusing writes**, so a save that is not
+            // going to finish names the column instead of looking frozen.
+            if (now.writeFailures > 0) {
+                std::snprintf(stopText_, sizeof(stopText_), "%s: %u refused", kSaveStageWriting,
+                              unsigned(now.writeFailures));
+                report.step(stopText_);
+            } else {
+                report.step(kSaveStageWriting);
+            }
             if (left == 0) {
                 break;
             }
@@ -1489,27 +1651,6 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
     }
-
-    // **The tick world outlives the drain, and that is the fix for a hardware
-    // crash rather than tidiness.** It used to be destroyed beside
-    // `flushTickDirty` above, before the loop that has just run -- and that
-    // loop calls back into the caller once per pumped write, which on the 3DS
-    // draws a whole frame of the world behind the progress bar. One of those
-    // passes borrows the `TickWorld` (a cart leans along the *track*, so the
-    // minecart pass is the one entity draw that needs the world), so every
-    // frame of the save screen was reading a freed object: the two words it
-    // reads first are `TickAccess`'s context and function pointer, and in a
-    // freed newlib chunk those two words are the bin's `fd` and `bk`. The
-    // console jumped into `__malloc_av_`. See
-    // crashlogs/009-save-with-a-minecart/.
-    //
-    // Nothing above needed it gone -- `flushTickDirty` has already handed the
-    // tick's changes to the cache, and neither the generator flush nor the
-    // drain asks the tick anything -- so it is released here, after the last
-    // frame the progress callback can draw and before the grid it reads goes
-    // away.
-    tick_.reset();
-    light_.reset();
 
     // **The ground held for the other consoles, before the cache shuts.** A
     // guest's last hour of mining is in these columns and nowhere else, so
@@ -1534,7 +1675,42 @@ void WorldStreamer::close(i64 nowMillis, void* progressContext, SaveProgressFn p
     // just flushed went into the cache, so this is where it becomes files --
     // level.dat, the lock and the format's own commit included, which is why it
     // still runs when the drain above has already emptied the queue.
+    //
+    // **It reports before it blocks and not during**, because it is one
+    // indivisible call: what is left in it is the level and the commit, not a
+    // count of anything. A phase with no number is still a phase with a name,
+    // and a name is what the screen needed -- it used to sit on the drain's
+    // last frame for all of this.
+    // Columns the card would not take, which the world is about to lose: the
+    // caller says so, because by the time it could ask they are gone.
+    saveFailures_ = cache_.stats().abandonedColumns;
+    report.stage(kSaveStageFinishing, 0);
     cache_.close(nowMillis, player_);
+    report.step(kSaveStageFinishing);
+
+    // **The tick world outlives every callback, and that is the fix for a
+    // hardware crash rather than tidiness.** It used to be destroyed beside
+    // `flushTickDirty` above, before the drain -- and the drain calls back into
+    // the caller once per pumped write, which on the 3DS draws a whole frame of
+    // the world behind the progress bar. One of those passes borrows the
+    // `TickWorld` (a cart leans along the *track*, so the minecart pass is the
+    // one entity draw that needs the world), so every frame of the save screen
+    // was reading a freed object: the two words it reads first are
+    // `TickAccess`'s context and function pointer, and in a freed newlib chunk
+    // those two words are the bin's `fd` and `bk`. The console jumped into
+    // `__malloc_av_`. See crashlogs/009-save-with-a-minecart/.
+    //
+    // It sat between the drain and the cache's own close for a while, which was
+    // right until the phases either side of the drain got callbacks of their
+    // own and `Finishing` began drawing frames after it. The rule with no edge
+    // to fall off is the one here: **nothing a progress callback can read is
+    // released until the last callback has returned.** Nothing above needs it
+    // gone -- `flushTickDirty` has already handed the tick's changes to the
+    // cache, and neither the generator flush nor the drain nor `cache_.close`
+    // asks the tick anything -- and it still goes before `cells_`, which is
+    // what it reads columns out of.
+    tick_.reset();
+    light_.reset();
     cells_.clear();
     finished_.clear();
     completed_.clear();
@@ -1586,6 +1762,7 @@ bool WorldStreamer::openRemote(int meshDistance)
     path_.clear();
     level_ = world::LevelData{};
     lastSaveMillis_ = 0;
+    saveSweepActive_ = false;
     open_ = true;
 
     meshDistance_ = meshDistance;
@@ -1610,6 +1787,7 @@ bool WorldStreamer::openRemote(int meshDistance)
     light_ = std::make_unique<world::LightUpdater>(lightAccess);
 
     builder_.reserveQuads(4096);
+    startMeshPool();
     return true;
 }
 
@@ -1723,6 +1901,7 @@ void WorldStreamer::applyRegion(ChunkRenderer& renderer, const net::MapChunkRegi
             for (int sy = 0; sy < world::ChunkColumn::kSectionCount; ++sy) {
                 cell->masks[sy] = mesh::computeVisibility(cell->column->section(sy), visScratch_);
             }
+            cell->maskDirty = 0;
             if (cell->published) {
                 renderer.dropColumn(cx, cz);
                 cell->published = false;
@@ -1758,9 +1937,15 @@ bool WorldStreamer::applyServerBlock(ChunkRenderer& renderer, i32 x, int y, i32 
 
     if (tick_->chunkResident(x >> 4, z >> 4)) {
         RenderBracket draws(*this, renderer);
+        const block::BlockId oldBlock = tick_->blockAt(x, y, z);
+        const u8 oldData = tick_->dataAt(x, y, z);
         applyingServer_ = true;
         const bool wrote = tick_->setBlockAndDataRaw(x, y, z, id, data);
         applyingServer_ = false;
+        // A disc somebody else put in: see `tick::jukeboxChangedByServer`.
+        if (wrote) {
+            tick::jukeboxChangedByServer(*tick_, x, y, z, oldBlock, oldData);
+        }
         return wrote;
     }
 
@@ -1974,6 +2159,7 @@ void WorldStreamer::adoptColumn(Cell& cell, std::unique_ptr<world::ChunkColumn> 
     for (int sy = 0; sy < world::ChunkColumn::kSectionCount; ++sy) {
         cell.masks[sy] = mesh::computeVisibility(column->section(sy), visScratch_);
     }
+    cell.maskDirty = 0;
     // **The tick's column cache holds a raw pointer at whatever was here.**
     // Replacing the cell's column leaves that pointer at a freed object, and
     // TickWorld's contract says whoever moves a column has to say so. It was
@@ -2100,6 +2286,7 @@ bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
     // took. Taking the stored column instead makes such a job a no-op, which is
     // exactly what it is.
     // -------------------------------------------------------------------
+    workerPhase_.store(kPhaseNoopCheck);
     {
         auto stored = std::make_unique<world::ChunkColumn>(chunkX, chunkZ);
         const bool have = cache_.load(chunkX, chunkZ, stored.get()) != nullptr;
@@ -2123,6 +2310,7 @@ bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
     //
     // Here rather than on the main thread because the generator belongs to
     // whichever thread is inside it, and this is that thread.
+    workerPhase_.store(kPhaseRetire);
     {
         mcver::ChunkGenerator::Centre centres[1 + kMaxServedAreas];
         int count = 0;
@@ -2155,6 +2343,7 @@ bool WorldStreamer::generateColumn(i32 chunkX, i32 chunkZ)
         }
     }
 
+    workerPhase_.store(kPhaseProvide);
     if (!generator_->provide(chunkX, chunkZ, generated_.get())) {
         // **Counted, because a silent one stops the world.** The nearest owed
         // column is asked for again next frame and fails again, so a column
@@ -2538,6 +2727,25 @@ bool WorldStreamer::meshSection(const VisibleSection& section, ChunkRenderer& re
         }
     }
 
+    // **A remesh beside the player stays on this thread.** Breaking a block
+    // must show this frame, and a job that goes out and comes back is at least
+    // a frame late. Anything else -- first meshes, and everything further than
+    // the neighbouring columns -- is background work. A section that already has
+    // a mesh (or a recorded empty one) is a remesh; kNoMesh is a first mesh.
+    const bool nearCamera = std::abs(section.chunkX - centreX_) <= 1
+                            && std::abs(section.chunkZ - centreZ_) <= 1;
+    const bool remesh = section.slot != SectionField::kNoMesh;
+    if (meshPool_.threaded() && !(nearCamera && remesh)) {
+        if (meshPool_.inFlight(section.chunkX, sy, section.chunkZ)) {
+            return true;
+        }
+        // No free slot is the pool saying it is full, which ends the frame's
+        // submitting exactly as a full VBO pool ends its uploading.
+        return meshPool_.submit(section.chunkX, sy, section.chunkZ,
+                                renderer.sectionRevision(section.chunkX, sy, section.chunkZ),
+                                neighbourhood);
+    }
+
     builder_.clear();
     scratch_.fill(neighbourhood, sy);
     mesh::meshSection(scratch_, builder_);
@@ -2565,12 +2773,66 @@ bool WorldStreamer::meshSection(const VisibleSection& section, ChunkRenderer& re
     return true;
 }
 
+void WorldStreamer::startMeshPool()
+{
+    // Four jobs in flight: each is a 23 KB snapshot, and the worker finishes one
+    // in well under a frame, so more would only queue.
+    constexpr int kMeshSlots = 4;
+    meshPool_.setGreedy(builder_.greedy());
+    meshPool_.setCubeFormat(builder_.cubeFormat());
+    meshPool_.start(kMeshSlots, meshThreaded_, 4096);
+}
+
+// Collects what the mesh thread has finished, on the main thread, before the
+// frame submits anything new. Uploading is the part that has to be here: GL and
+// the VBO pool are main-thread only.
+void WorldStreamer::drainMeshes(ChunkRenderer& renderer)
+{
+    mesh::MeshPool::Result done;
+    while (meshPool_.poll(&done)) {
+        const Cell* cell = find(done.chunkX, done.chunkZ);
+        const bool current =
+            cell != nullptr && cell->state == CellState::Loaded
+            && done.revision == renderer.sectionRevision(done.chunkX, done.sectionY, done.chunkZ);
+        if (!current) {
+            // The section changed after the snapshot, so the section is still
+            // dirty (or unmeshed) and the walk will ask for it again. Uploading
+            // this would show geometry that was already wrong.
+            ++stats_.meshStaleThisFrame;
+            ++stats_.meshStaleTotal;
+            meshPool_.release(done.slot);
+            continue;
+        }
+
+        const mesh::MeshBuilder& built = *done.builder;
+        if (built.empty()) {
+            renderer.noteEmptySection(done.chunkX, done.sectionY, done.chunkZ);
+            ++stats_.emptyThisFrame;
+        } else {
+            const mesh::MeshRanges ranges = built.ranges();
+            staging_.resize(ranges.total());
+            built.copyTo(staging_.data());
+            if (renderer.uploadSection(done.chunkX, done.sectionY, done.chunkZ, staging_.data(),
+                                       ranges)) {
+                ++stats_.meshedThisFrame;
+                ++stats_.meshedAsyncThisFrame;
+                ++stats_.meshAsyncTotal;
+            }
+            // A refused upload leaves the section dirty or unmeshed; it comes
+            // round again and the work is lost, which the budget keeps small.
+        }
+        meshPool_.release(done.slot);
+    }
+}
+
 void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 cameraChunkZ,
                        const Budget& budget)
 {
     stats_.columnsLoadedThisFrame = 0;
     stats_.meshedThisFrame = 0;
     stats_.emptyThisFrame = 0;
+    stats_.meshedAsyncThisFrame = 0;
+    stats_.meshStaleThisFrame = 0;
     stats_.generatedThisFrame = 0;
     stats_.adoptedThisFrame = 0;
     stats_.generateMicros = 0;
@@ -2584,6 +2846,8 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
     // column the next few hundred lines can drop, re-adopt or mesh, and this is
     // the line that says it is not. See `offerColumnWork`.
     reclaimColumnWork();
+
+    refreshMasks(renderer);
 
     // Moving the centre invalidates nothing by itself -- the grid wraps -- but
     // a cell now holding a column from outside the new radius has to go, or it
@@ -2716,7 +2980,8 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
         // counting it would mean one column still being read held up every
         // other one in the spiral behind it -- which at a budget of one or two
         // a frame is most of the world.
-        const LoadResult result = loadColumn(cx, cz);
+        LoadResult result;
+        result = loadColumn(cx, cz);
         if (result == LoadResult::Pending) {
             ++pendingReads;
             continue;
@@ -2763,8 +3028,14 @@ void WorldStreamer::update(ChunkRenderer& renderer, i32 cameraChunkX, i32 camera
 
     // Anything the walk asked for, up to the budget. The queue is already cut
     // to it by the renderer and is ordered nearest first.
+    drainMeshes(renderer);
+    const bool timed = budget.meshNanos > 0 && budget.clockNanos != nullptr;
+    const i64 meshStart = timed ? budget.clockNanos() : 0;
     for (const VisibleSection& section : renderer.meshQueue()) {
         if (!meshSection(section, renderer)) {
+            break;
+        }
+        if (timed && budget.clockNanos() - meshStart >= budget.meshNanos) {
             break;
         }
     }
@@ -2879,13 +3150,17 @@ void WorldStreamer::setPlayerInventory(const std::vector<item::ItemStack>& stack
 
 void WorldStreamer::tickSaves(i64 nowMillis)
 {
-    if (!open_ || remote_ || autosaveSeconds_ <= 0) {
+    if (!open_ || remote_) {
         return;
     }
-    if (nowMillis - lastSaveMillis_ < i64(autosaveSeconds_) * 1000) {
+    if (!saveSweepActive_) {
+        if (autosaveSeconds_ <= 0 || nowMillis - lastSaveMillis_ < i64(autosaveSeconds_) * 1000) {
+            return;
+        }
+        saveNow(nowMillis);
         return;
     }
-    saveNow(nowMillis);
+    stepSaveSweep(kSaveColumnsPerFrame);
 }
 
 void WorldStreamer::saveNow(i64 nowMillis)
@@ -2893,12 +3168,48 @@ void WorldStreamer::saveNow(i64 nowMillis)
     if (!open_ || remote_) {
         return;
     }
+    if (saveSweepActive_) {
+        return;  // one is already under way; it will take what has changed so far
+    }
     lastSaveMillis_ = nowMillis;
     snapshotEntities();
+    saveSweepActive_ = true;
+    saveSweepCursor_ = 0;
+    saveSweepMillis_ = nowMillis;
+    stepSaveSweep(kSaveColumnsPerFrame);
+}
 
+bool WorldStreamer::stepSaveSweep(int maxColumns)
+{
+    if (!saveSweepActive_) {
+        return true;
+    }
     // Whatever the tick changed since the last save becomes the cache's answer
     // for those columns now, so the flush below has something to write.
-    flushTickDirty();
+    // Same body as flushTickDirty, a few columns at a time.
+    int handed = 0;
+    while (saveSweepCursor_ < cells_.size() && handed < maxColumns) {
+        Cell& cell = cells_[saveSweepCursor_++];
+        if (!cell.tickDirty) {
+            continue;
+        }
+        if (cell.state == CellState::Loaded && cell.column != nullptr) {
+            if (columnSaving_ != nullptr) {
+                columnSaving_(columnSinkCtx_, *cell.column);
+            }
+            cache_.save(*cell.column, world::ChunkCache::SavePressure::Defer);
+            ++handed;
+        }
+        cell.tickDirty = false;
+        if (tickDirtyCells_ > 0) {
+            --tickDirtyCells_;
+        }
+    }
+    if (saveSweepCursor_ < cells_.size()) {
+        return false;
+    }
+    saveSweepActive_ = false;
+    flushServedDirty();
 
     // level.dat and session.lock have no other trigger during a session --
     // close() is the only thing that rewrites either today, so a console that
@@ -2921,7 +3232,8 @@ void WorldStreamer::saveNow(i64 nowMillis)
     // next one. Queue the writes first and `takeJobLocked` settles it: writes
     // outrank housekeeping, so the commit necessarily follows them.
     flushSaves(false);
-    cache_.requestHousekeeping(nowMillis, player_);
+    cache_.requestHousekeeping(saveSweepMillis_, player_);
+    return true;
 }
 
 void WorldStreamer::flushSaves(bool blocking)

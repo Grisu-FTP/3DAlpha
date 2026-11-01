@@ -64,6 +64,7 @@
 //     ordinary world reaches it.
 
 #include "core/block/block_def.hpp"
+#include "core/entity/server_track.hpp"
 #include "core/util/aabb.hpp"
 #include "core/util/segmented_pool.hpp"
 #include "core/util/types.hpp"
@@ -114,13 +115,33 @@ struct FallingBlock {
 
     bool onGround = false;
 
+    // **A host's falling block on a guest.** Ours: an a1.1.2 client is never
+    // told about one -- `gy`'s Vehicle Spawn knows carts and boats -- so a
+    // guest watched sand vanish from the top of a pillar and appear at the
+    // bottom. The host says 70 for sand and 71 for gravel, the numbers later
+    // protocols gave them. A remote one walks to where the host says, writes
+    // no block and never lands; the host's Block Change does the landing and
+    // its Destroy Entity takes this away. See core/entity/server_track.hpp.
+    i32 entityId = 0;
+    bool remote = false;
+    ServerTrack track{};
+
     bool alive() const { return block != 0; }
 
     void setPosition(double px, double py, double pz)
     {
-        x = prevX = px;
-        y = prevY = py;
-        z = prevZ = pz;
+        prevX = px;
+        prevY = py;
+        prevZ = pz;
+        moveTo(px, py, pz);
+    }
+
+    // The position and the box, leaving the previous position alone.
+    void moveTo(double px, double py, double pz)
+    {
+        x = px;
+        y = py;
+        z = pz;
         box = AABB{px - kFallingBlockHalf, py - kFallingBlockHalf, pz - kFallingBlockHalf,
                    px + kFallingBlockHalf, py + kFallingBlockHalf, pz + kFallingBlockHalf};
     }
@@ -152,6 +173,16 @@ public:
 
     int count() const { return items_.size(); }
     const FallingBlock& operator[](int i) const { return items_[i]; }
+    // For the host, which names each one the first time it announces it.
+    FallingBlock& at(int i) { return items_[i]; }
+
+    // ---- across a link: see `FallingBlock::remote` ------------------------
+    int indexOfEntity(i32 entityId) const;
+    // `x, y, z` are the centre, which is the host's `posX/posY/posZ`.
+    bool spawnRemote(const tick::TickWorld& world, i32 entityId, double x, double y, double z,
+                     block::BlockId id);
+    bool placeRemote(i32 entityId, double x, double y, double z);
+    bool removeById(i32 entityId);
 
     // Spawns the pool has refused, for the debug page.
     u32 refused() const { return refused_; }

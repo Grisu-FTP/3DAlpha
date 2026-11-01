@@ -78,10 +78,10 @@ inline constexpr float kAirAcceleration = 0.02f;
 // `moveEntityWithHeading` takes its air branch.
 //
 // It matters more than it looks. A boat takes a fifth of the rider's motion and
-// drags at 0.99, so its steady speed is about twenty times the rider's; at 0.02
-// under 0.91 friction the rider settles near 0.22, and the boat is pinned at
-// its own 0.4 cap whenever the stick is held. That is a boat at full speed,
-// which is what a boat does.
+// drags at 0.99, so its steady speed is about twenty times the rider's -- and
+// the rider's motion is zeroed every tick (`tickRiding`), so it is one tick of
+// 0.02 under 0.91 friction, 0.018. In water that is a boat near 0.36 a tick;
+// on land the ground halving leaves it at about 0.007.
 inline constexpr float kRiderAcceleration = kAirAcceleration;
 inline constexpr double kSneakProbe = 0.05;
 
@@ -342,8 +342,17 @@ struct PlayerBody {
     // immediately afterwards would do anyway.
     void setSize(float w, float h, float offset = 0.0f, float step = kStepHeight);
 
-    // Places the body with its feet at (x, y, z) and rebuilds the box.
+    // Places the body with its feet at (x, y, z) and rebuilds the box -- a
+    // placement, so the previous position is snapped too and nothing is drawn
+    // sliding in from wherever the body was.
     void setFeet(double fx, double fy, double fz);
+
+    // **`Entity.setPosition`**: the feet and the box, and *not* the previous
+    // position. What a body walked somewhere one tick at a time is moved with
+    // -- a server's animal stepping toward its word, a mob on a mob's back --
+    // so the frames between two ticks still have somewhere to come from.
+    // Moved with `setFeet`, a guest's animals were drawn twenty steps a second.
+    void moveFeet(double fx, double fy, double fz);
 
     // Where the camera goes, and what `level.dat`'s `Pos[1]` holds -- the same
     // number, and the same one the original keeps in `posY`.

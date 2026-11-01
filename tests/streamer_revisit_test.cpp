@@ -86,6 +86,7 @@ int settle(WorldStreamer& streamer, ChunkRenderer& renderer, i32 cx, i32 cz,
            const WorldStreamer::Budget& budget, u32* counter, int maxFrames)
 {
     int n = 0;
+    maxFrames *= mc::test::slowScale();
     for (; n < maxFrames; ++n) {
         frame(streamer, renderer, (*counter)++, cx, cz, budget);
         if (streamer.stats().pendingColumns == 0 && streamer.stats().pendingGeneration == 0
@@ -377,6 +378,15 @@ TEST(revisiting_a_column_meshes_it_to_exactly_what_it_was)
     long long firstWas = 0;
     long long firstNow = 0;
     for (const auto& entry : before.sections) {
+        // **Never meshed the first time is not a section that changed.** The
+        // walk will not step back toward the camera, so what it reaches depends
+        // on where the camera is, and a section that was not on any line of
+        // sight from (0, 0) can be on one from a chunk along the way. It stays
+        // meshed after the camera returns. What this test is about is that a
+        // section that *was* meshed comes back as exactly the same mesh.
+        if (entry.second == -1) {
+            continue;
+        }
         auto other = after.sections.find(entry.first);
         if (other == after.sections.end()) {
             ++missing;
@@ -585,6 +595,98 @@ TEST(a_tick_edit_survives_the_column_leaving_the_grid)
     settle(reopened, renderer2, kEditChunkX, kEditChunkZ, budget, &counter2, 900);
     CHECK(reopened.worldTick() != nullptr);
     CHECK_EQ(reopened.worldTick()->blockAt(kEditX, kEditY, kEditZ), placed);
+    reopened.close(kNow);
+}
+
+// **An autosave hands its changed columns to the cache a few frames at a time**,
+// not all in the frame the timer fires on (a few hundred clones of 46 KB was a
+// measured 350 ms stall) -- and loses none of them.
+TEST(an_autosave_spreads_its_changed_columns_over_frames_and_keeps_every_one)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("World");
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 777LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    constexpr int kDistance = 2;
+    TestAllocator allocator;
+    ChunkRenderer renderer;
+    ChunkRendererConfig config;
+    config.meshDistance = kDistance;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+    renderer.reset(&allocator, config);
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    world::ChunkCache::Config cache;
+    cache.threaded = true;
+    streamer.setCacheConfig(cache);
+    streamer.setAutosaveSeconds(0);
+    CHECK(streamer.open(dir.c_str(), kDistance, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 2;
+    budget.generatedPerFrame = 2;
+    budget.meshesPerFrame = 8;
+    u32 counter = 1;
+    settle(streamer, renderer, -1, -1, budget, &counter, 900);
+
+    tick::TickWorld* world = streamer.worldTick();
+    CHECK(world != nullptr);
+    // One edit in every column of the 5 x 5 around the centre, negative
+    // coordinates included.
+    struct Edit {
+        i32 x, z;
+        block::BlockId id;
+    };
+    Edit edits[25];
+    int n = 0;
+    for (i32 cx = -3; cx <= 1; ++cx) {
+        for (i32 cz = -3; cz <= 1; ++cz) {
+            const i32 x = cx * 16 + 5, z = cz * 16 + 9;
+            const block::BlockId before = world->blockAt(x, 70, z);
+            const block::BlockId placed = before == block::BlockId(mcver::Block::Stone)
+                                              ? block::BlockId(mcver::Block::Cobblestone)
+                                              : block::BlockId(mcver::Block::Stone);
+            CHECK(world->setBlockWithNotify(x, 70, z, placed));
+            edits[n++] = Edit{x, z, placed};
+        }
+    }
+    const u32 dirty = streamer.tickDirtyColumns();
+    CHECK(dirty > 6);
+
+    streamer.saveNow(kNow + 1000);
+    CHECK(streamer.saveSweeping());
+    CHECK(streamer.tickDirtyColumns() > 0);
+    CHECK(streamer.tickDirtyColumns() < dirty);
+    int frames = 0;
+    while (streamer.saveSweeping() && frames < 100) {
+        streamer.tickSaves(kNow + 1000 + frames);
+        ++frames;
+    }
+    CHECK(!streamer.saveSweeping());
+    CHECK(frames > 1);
+    CHECK_EQ(streamer.tickDirtyColumns(), 0u);
+    streamer.close(kNow + 2000);
+
+    WorldStreamer reopened;
+    reopened.setGenerateMissing(true);
+    reopened.setCacheConfig(cache);
+    CHECK(reopened.open(dir.c_str(), kDistance, kNow));
+    ChunkRenderer renderer2;
+    renderer2.reset(&allocator, config);
+    u32 counter2 = 1;
+    settle(reopened, renderer2, -1, -1, budget, &counter2, 900);
+    CHECK(reopened.worldTick() != nullptr);
+    for (int i = 0; i < n; ++i) {
+        CHECK_EQ(reopened.worldTick()->blockAt(edits[i].x, 70, edits[i].z), edits[i].id);
+    }
     reopened.close(kNow);
 }
 
@@ -807,6 +909,86 @@ TEST(a_player_edit_marks_its_section_for_remesh_and_a_raw_tick_write_does_not)
     // An edit outside the loaded grid is refused rather than written into a
     // column that is about to be somebody else's.
     CHECK(!streamer.setBlock(renderer, kX + 4000, kY, kZ + 4000, second, 0));
+
+    streamer.close(kNow);
+}
+
+// **A shaft dug after a column loaded has to open the visibility walk**, not
+// just remesh. The mask a section is published with was computed once, when
+// the column was adopted, so a tunnel from bedrock to a mountaintop still read
+// as solid rock to the walk and to the horizon test, and the sections below
+// the player were culled. Pinned through the player's own door.
+TEST(digging_a_shaft_through_a_sealed_section_opens_its_published_mask)
+{
+    TestAllocator allocator;
+    ChunkRendererConfig config;
+    config.meshDistance = 2;
+    config.budget = {0, 8 * 1024 * 1024};
+    config.meshBudgetPerFrame = 8;
+
+    ChunkRenderer renderer;
+    renderer.reset(&allocator, config);
+
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    const std::string dir = temp.world("World");
+    {
+        io::PosixFileSystem fs;
+        mcver::Storage storage(fs);
+        CHECK(storage.create(dir.c_str(), 4242LL, kNow) == world::OpenResult::Ok);
+        CHECK(storage.close(kNow));
+    }
+
+    WorldStreamer streamer;
+    streamer.setGenerateMissing(true);
+    streamer.setAutosaveSeconds(0);
+    CHECK(streamer.open(dir.c_str(), 2, kNow));
+
+    WorldStreamer::Budget budget;
+    budget.columnsPerFrame = 2;
+    budget.generatedPerFrame = 2;
+    budget.meshesPerFrame = 8;
+    u32 counter = 1;
+
+    // Negative on both axes, per CONTRIBUTING.
+    constexpr i32 kChunkX = -2;
+    constexpr i32 kChunkZ = -3;
+    constexpr int kSectionY = 1;  // y 16..31, solid in every generated world
+    settle(streamer, renderer, kChunkX, kChunkZ, budget, &counter, 900);
+
+    CHECK(streamer.worldTick() != nullptr);
+    if (streamer.worldTick() == nullptr) {
+        return;
+    }
+
+    const block::BlockId stone = block::BlockId(mcver::Block::Stone);
+    const block::BlockId air = block::BlockId(mcver::Block::Air);
+    const i32 x0 = kChunkX * 16;
+    const i32 z0 = kChunkZ * 16;
+    const int y0 = kSectionY * 16;
+
+    // Seal the section completely, so the starting point is not whatever caves
+    // the generator left in it.
+    for (int y = 0; y < 16; ++y) {
+        for (int z = 0; z < 16; ++z) {
+            for (int x = 0; x < 16; ++x) {
+                CHECK(streamer.setBlock(renderer, x0 + x, y0 + y, z0 + z, stone, 0)
+                      || streamer.worldTick()->blockAt(x0 + x, y0 + y, z0 + z) == stone);
+            }
+        }
+    }
+    settle(streamer, renderer, kChunkX, kChunkZ, budget, &counter, 900);
+    CHECK(!renderer.field()
+               .visibility(kChunkX, kSectionY, kChunkZ)
+               .connects(mesh::kFaceNegY, mesh::kFacePosY));
+
+    for (int y = 0; y < 16; ++y) {
+        CHECK(streamer.setBlock(renderer, x0 + 8, y0 + y, z0 + 8, air, 0));
+    }
+    settle(streamer, renderer, kChunkX, kChunkZ, budget, &counter, 900);
+    CHECK(renderer.field()
+              .visibility(kChunkX, kSectionY, kChunkZ)
+              .connects(mesh::kFaceNegY, mesh::kFacePosY));
 
     streamer.close(kNow);
 }

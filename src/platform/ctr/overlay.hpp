@@ -95,6 +95,7 @@
 #include "core/entity/arrow.hpp"
 #include "core/entity/item_entity.hpp"
 #include "core/gui/container_layout.hpp"
+#include "core/gui/stick_pointer.hpp"
 #include "core/gui/stick_cursor.hpp"
 #include "core/gui/paint.hpp"
 #include "core/item/container_session.hpp"
@@ -459,6 +460,12 @@ public:
     // on a cell -- so it cannot come through `ContainerKind`, which names a
     // block. See `item::ContainerSession::openMinecartChest`.
     void openMinecartChest(tick::TickWorld& world, entity::MinecartSystem& carts, u32 cartId);
+    // The open screen, for a guest's mirror of what its host owns. See
+    // core/net/tile_sync.hpp. `containerClicks` moves on every click that changed
+    // anything; only the difference is ever read.
+    const item::ContainerSession& containerSession() const { return session_; }
+    item::ScreenKind containerKind() const { return session_.kind(); }
+    u32 containerClicks() const { return containerClicks_; }
     bool containerOpen() const
     {
         return session_.isOpen() && session_.kind() != item::ScreenKind::Inventory;
@@ -872,6 +879,7 @@ private:
     // acts on, and the world its furnace or chest is in -- borrowed from the
     // frame loop, which hands it over again every tickContainer.
     item::ContainerSession session_;
+    u32 containerClicks_ = 0;
     gui::ContainerLayout layout_;
     int containerCursor_ = 0;
     // **The top chest row on the screen**, for a chest with more rows than the
@@ -915,6 +923,22 @@ private:
     // moves and the ones after it are slow enough to stop on -- so the state
     // lives here and the rule lives in core/gui/stick_cursor.hpp.
     gui::StickRepeat stick_;
+    // **The pointer over a container window**, and what it has drawn over: the page
+    // only repaints when something on it changes, so the pointer's own move puts back
+    // the pixels it covered rather than asking for a whole page of icons a frame. Big
+    // enough for a carried stack's icon as well as the plus. See `drawPointerOver`.
+    gui::StickPointer pointer_;
+    bool pointerDirty_ = false;
+    bool pointerHovering_ = true;
+    bool pointerDrawn_ = false;
+    int pointerSavedX_ = 0;
+    int pointerSavedY_ = 0;
+    static constexpr int kPointerSaveEdge = 40;
+    gui::Pixel pointerSaved_[kPointerSaveEdge * kPointerSaveEdge] = {};
+    void savePointerPixels(const gui::Surface& surface, int x, int y);
+    void restorePointerPixels(const gui::Surface& surface);
+    bool drawPointerOver(const gui::Surface& surface);
+    void pointerMoved();
 
     // The game-over screen: whether it is up, the score it shows, which of its
     // two buttons the d-pad is on, and a press not yet collected.
@@ -927,6 +951,7 @@ private:
     // the items one stays null for a pack that has no gui/items.png, which
     // core/gui/item_icon.hpp falls back from rather than fails on.
     gui::IconSheets sheets_;
+    gui::DollSheets dollSheets_;
 
     // **Two dirty flags rather than one**, because the hotbar and the page
     // above it change at completely different rates: a shoulder press moves the

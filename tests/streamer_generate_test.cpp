@@ -240,31 +240,52 @@ TEST(closing_a_world_reports_what_it_is_writing)
 
     struct Report {
         int calls = 0;
-        u32 owed = 0;
-        u32 lastWritten = 0;
-        bool monotonic = true;
-        bool withinOwed = true;
+        const char* stage = nullptr;
+        u32 total = 0;
+        u32 lastDone = 0;
+        bool monotonic = true;   // within a phase, `done` only goes up
+        bool withinTotal = true;
+        bool sawCollecting = false;
+        bool sawWriting = false;
+        bool sawFinishing = false;
+        u32 writingTotal = 0;
+        u32 writingLast = 0;
     };
     Report report;
 
-    streamer.close(kNow, &report, [](void* context, u32 written, u32 owed) {
+    streamer.close(kNow, &report, [](void* context, const char* stage, u32 done, u32 total) {
         Report& seen = *static_cast<Report*>(context);
-        if (seen.calls > 0) {
-            seen.monotonic = seen.monotonic && written >= seen.lastWritten && owed == seen.owed;
+        if (seen.calls > 0 && stage == seen.stage) {
+            seen.monotonic = seen.monotonic && done >= seen.lastDone && total == seen.total;
         }
-        seen.withinOwed = seen.withinOwed && written <= owed;
-        seen.owed = owed;
-        seen.lastWritten = written;
+        seen.withinTotal = seen.withinTotal && (total == 0 || done <= total);
+        seen.sawCollecting =
+            seen.sawCollecting || stage == WorldStreamer::kSaveStageCollecting;
+        seen.sawWriting = seen.sawWriting || stage == WorldStreamer::kSaveStageWriting;
+        seen.sawFinishing = seen.sawFinishing || stage == WorldStreamer::kSaveStageFinishing;
+        if (stage == WorldStreamer::kSaveStageWriting) {
+            seen.writingTotal = total;
+            seen.writingLast = done;
+        }
+        seen.stage = stage;
+        seen.total = total;
+        seen.lastDone = done;
         ++seen.calls;
     });
 
-    // Called at least once even with nothing owed -- that is the "already
-    // saved" answer rather than the absence of one.
-    CHECK(report.calls >= 1);
+    // **Every phase reports, whatever it had to do.** The drain used to be the
+    // only one with a callback in it, so a world the autosave had already
+    // written drew one frame and then nothing while the rest of the close ran.
+    CHECK(report.calls >= 3);
+    CHECK(report.sawCollecting);
+    CHECK(report.sawWriting);
+    CHECK(report.sawFinishing);
+    // Finishing is last: level.dat and the commit are what a close ends with.
+    CHECK(report.stage == WorldStreamer::kSaveStageFinishing);
     CHECK(report.monotonic);
-    CHECK(report.withinOwed);
-    // Whatever it started with, it finished.
-    CHECK_EQ(int(report.lastWritten), int(report.owed));
+    CHECK(report.withinTotal);
+    // Whatever the drain started with, it finished.
+    CHECK_EQ(int(report.writingLast), int(report.writingTotal));
 
     // And the world really is on the card, which is what the count was about.
     {

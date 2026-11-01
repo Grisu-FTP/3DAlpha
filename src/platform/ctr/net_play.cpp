@@ -29,6 +29,8 @@ void NetPlay::pump(render::WorldStreamer& world, render::ChunkRenderer& chunks, 
         switch (event_.kind) {
         case net::PacketChannel::Event::Kind::LoggedIn:
             entityId_ = event_.entityId;
+            // So "they are in it" can tell this player from everybody else.
+            entities_.setSelf(entityId_);
             // **Who this console is, said once**: the host attributes the page
             // to this connection whatever id is on it.
             if (extensions_ && ownSkin_.size() == net::kSkinPageBytes) {
@@ -81,7 +83,7 @@ void NetPlay::apply(const net::Packet& p, render::WorldStreamer& world,
         // z written into it -- the server ignores every move until that echo
         // matches what it sent.
         if (teleport.hasPosition) {
-            body.setFeet(teleport.x, teleport.eyeY - double(entity::kEyeHeight), teleport.z);
+            body.setFeet(teleport.x, teleport.feetY, teleport.z);
             body.motionX = 0.0;
             body.motionY = 0.0;
             body.motionZ = 0.0;
@@ -115,6 +117,7 @@ void NetPlay::apply(const net::Packet& p, render::WorldStreamer& world,
 
     // **The entities first**, because everything below is about the world or
     // this player and nothing below is about them. See core/net/entities.hpp.
+    entities_.setLocalFeet(body.x, body.box.minY, body.z);
     if (entities_.apply(p, world.worldTick())) {
         return;
     }
@@ -134,35 +137,12 @@ void NetPlay::apply(const net::Packet& p, render::WorldStreamer& world,
         if (i32(p.integer(1)) != entityId_ || p.integer(2) == 0) {
             break;
         }
-        const net::RemotePlayer* from = nullptr;
-        for (int i = 0; i < entities_.playerCount(); ++i) {
-            if (entities_.player(i).id == i32(p.integer(0))) {
-                from = &entities_.player(i);
-                break;
-            }
+        // Another player, one of the host's arrows or one of its mobs -- see
+        // `RemoteEntities::hitFrom`.
+        net::IncomingHit hit;
+        if (entities_.hitFrom(i32(p.integer(0)), &hit)) {
+            hit_ = hit;
         }
-        if (from == nullptr) {
-            // **An arrow the host fired**, named as the attacker -- see
-            // `WorldServer::arrowStruck`. Knocked back from where the arrow
-            // is, as the host's own player is.
-            entity::ArrowSystem* arrows = entities_.arrows();
-            const entity::Arrow* arrow =
-                arrows != nullptr ? arrows->findById(i32(p.integer(0))) : nullptr;
-            if (arrow == nullptr) {
-                break;
-            }
-            hit_.present = true;
-            hit_.arrow = true;
-            hit_.item = 0;
-            hit_.fromX = arrow->x;
-            hit_.fromZ = arrow->z;
-            break;
-        }
-        hit_.present = true;
-        hit_.arrow = false;
-        hit_.item = int(from->heldItem);
-        hit_.fromX = from->x;
-        hit_.fromZ = from->z;
         break;
     }
 
@@ -205,6 +185,61 @@ void NetPlay::apply(const net::Packet& p, render::WorldStreamer& world,
         break;
     }
 
+    case net::packet::TileSync: {
+        // The host's word about a container this console asked for. Written into
+        // the column's own tile entity, where the container screen already
+        // reads and clicks, and remembered so the next click is the only thing
+        // that reads as a change.
+        net::TileSnapshot snapshot;
+        tick::TickWorld* tick = world.worldTick();
+        if (!net::readTileSync(p, &snapshot)) {
+            break;
+        }
+        // **A chest cart's**, into this console's copy of the cart.
+        const bool cart = snapshot.y == net::kCartTileY;
+        entity::MinecartSystem* carts = entities_.minecarts();
+        if (cart ? carts == nullptr || !net::writeCart(*carts, snapshot)
+                 : tick == nullptr || !net::writeTile(*tick, snapshot, true)) {
+            break;
+        }
+        net::TileSnapshot now;
+        TileMirror* slot = nullptr;
+        for (TileMirror& mirror : tiles_) {
+            if (mirror.used && mirror.x == snapshot.x && mirror.y == snapshot.y
+                && mirror.z == snapshot.z) {
+                slot = &mirror;
+                break;
+            }
+        }
+        for (TileMirror& mirror : tiles_) {
+            if (slot == nullptr && !mirror.used) {
+                slot = &mirror;
+            }
+        }
+        const bool readBack = cart ? net::readCart(*carts, snapshot.x, &now)
+                                   : net::readTile(*tick, snapshot.x, snapshot.y, snapshot.z,
+                                                   &now);
+        if (slot != nullptr && readBack) {
+            slot->used = true;
+            slot->x = snapshot.x;
+            slot->y = snapshot.y;
+            slot->z = snapshot.z;
+            net::encodeTile(now, &slot->last);
+        }
+        if (tileAsked_ && snapshot.x == tileAskX_ && snapshot.y == tileAskY_
+            && snapshot.z == tileAskZ_) {
+            tileArrived_ = true;
+        }
+        break;
+    }
+
+    case net::packet::TileClose:
+        tileClosed_ = true;
+        for (TileMirror& mirror : tiles_) {
+            mirror = TileMirror{};
+        }
+        break;
+
     case net::packet::PlayerInventory:
         if (net::applyInventory(p, &overlay.editInventory())) {
             overlay.inventoryEdited();
@@ -227,6 +262,100 @@ void NetPlay::apply(const net::Packet& p, render::WorldStreamer& world,
     }
 }
 
+void NetPlay::openTile(i32 x, int y, i32 z)
+{
+    if (!extensions_) {
+        return;
+    }
+    for (TileMirror& mirror : tiles_) {
+        mirror = TileMirror{};
+    }
+    tileAsked_ = true;
+    tileArrived_ = false;
+    tileClosed_ = false;
+    tileAskX_ = x;
+    tileAskY_ = y;
+    tileAskZ_ = z;
+    session_.send(net::makeTileOpen(x, y, z));
+}
+
+bool NetPlay::tileArrived(i32 x, int y, i32 z) const
+{
+    return tileAsked_ && tileArrived_ && x == tileAskX_ && y == tileAskY_ && z == tileAskZ_;
+}
+
+void NetPlay::closeTile()
+{
+    if (!tileAsked_) {
+        return;
+    }
+    if (extensions_) {
+        session_.send(net::makeTileClose(tileAskX_, tileAskY_, tileAskZ_));
+    }
+    tileAsked_ = false;
+    tileArrived_ = false;
+    for (TileMirror& mirror : tiles_) {
+        mirror = TileMirror{};
+    }
+}
+
+void NetPlay::sendCartEdits(entity::MinecartSystem& carts, u32 cartId)
+{
+    const int index = carts.indexOfId(cartId);
+    if (!extensions_ || !tileAsked_ || index < 0) {
+        return;
+    }
+    net::TileSnapshot snapshot;
+    if (!net::readCart(carts, carts[index].entityId, &snapshot)) {
+        return;
+    }
+    std::vector<u8> encoded;
+    net::encodeTile(snapshot, &encoded);
+    for (TileMirror& mirror : tiles_) {
+        if (!mirror.used || mirror.x != snapshot.x || mirror.y != snapshot.y) {
+            continue;
+        }
+        if (mirror.last != encoded) {
+            mirror.last = encoded;
+            session_.send(net::makeTileSync(snapshot));
+        }
+        return;
+    }
+}
+
+void NetPlay::sendTileEdits(const tick::TickWorld& world, i32 x, int y, i32 z)
+{
+    if (!extensions_ || !tileAsked_) {
+        return;
+    }
+    tick::ChestPart parts[tick::kMaxChestParts];
+    const int count = net::tileParts(world, x, y, z, parts);
+    std::vector<u8> encoded;
+    for (int i = 0; i < count; ++i) {
+        net::TileSnapshot snapshot;
+        if (!net::readTile(world, parts[i].x, parts[i].y, parts[i].z, &snapshot)) {
+            continue;
+        }
+        net::encodeTile(snapshot, &encoded);
+        for (TileMirror& mirror : tiles_) {
+            if (!mirror.used || mirror.x != snapshot.x || mirror.y != snapshot.y
+                || mirror.z != snapshot.z) {
+                continue;
+            }
+            // Slots only: the burn and the cook are the host's, so a furnace
+            // that merely kept cooking here is not an edit.
+            net::TileSnapshot before;
+            if (net::decodeTile(mirror.last.data(), mirror.last.size(), &before)
+                && net::sameTile(before, snapshot, false)) {
+                break;
+            }
+            mirror.last = encoded;
+            session_.send(net::makeTileSync(snapshot));
+            break;
+        }
+    }
+}
+
 void NetPlay::tick(const entity::PlayerBody& body, const Camera& camera,
                    const item::Inventory& inventory, const tick::TickWorld* world, bool alive)
 {
@@ -236,6 +365,18 @@ void NetPlay::tick(const entity::PlayerBody& body, const Camera& camera,
     const int sent = inventory_.tick(inventory, scratch_);
     for (int i = 0; i < sent; ++i) {
         session_.send(scratch_[i]);
+    }
+
+    // **What is in the hand, the tick it changes.** a1.1.2's `nj.e()` reports
+    // it only ahead of a dig or a place, so everybody else saw a player's hand
+    // empty until they next used it; later versions' `updateController` checks
+    // it every tick, and so does this. Changing slots reaches a Java server as
+    // the packet it always parsed.
+    {
+        net::Packet held;
+        if (held_.changed(int(inventory.selectedItem()), &held)) {
+            session_.send(held);
+        }
     }
 
     net::PlayerPose pose;
@@ -254,6 +395,11 @@ void NetPlay::tick(const entity::PlayerBody& body, const Camera& camera,
         const int n = stance_.tick(entityId_, body.sneaking, alive, scratch_);
         for (int i = 0; i < n; ++i) {
             session_.send(scratch_[i]);
+        }
+        // **The boat or cart this player is steering**, after it moved this
+        // tick: where it went, that they got out, or that it broke.
+        if (entities_.driveReport(&scratch_[0]) > 0) {
+            session_.send(scratch_[0]);
         }
     }
 }
@@ -315,6 +461,30 @@ void NetPlay::attackEntity(i32 targetEntityId, int heldItem)
     session_.send(net::makeUseEntity(entityId_, targetEntityId, true));
 }
 
+void NetPlay::ride(i32 vehicleEntityId, int heldItem)
+{
+    if (!extensions_ || vehicleEntityId == 0 || entityId_ == 0) {
+        return;
+    }
+    net::Packet held;
+    if (held_.changed(heldItem, &held)) {
+        session_.send(held);
+    }
+    session_.send(net::makeUseEntity(entityId_, vehicleEntityId, false));
+}
+
+void NetPlay::placeBoat(int heldItem, i32 x, int y, i32 z)
+{
+    if (!extensions_) {
+        return;
+    }
+    net::Packet held;
+    if (held_.changed(heldItem, &held)) {
+        session_.send(held);
+    }
+    session_.send(net::makePlace(heldItem, x, y, z, net::kPlaceOnCell));
+}
+
 bool NetPlay::useItem(int heldItem, const entity::PlayerBody& body, const Camera& camera)
 {
     if (!extensions_) {
@@ -369,7 +539,7 @@ void NetPlay::forwardDrops(entity::ItemEntitySystem& drops)
     // `RemoteEntities::predictDrop`. Past the few that can wait at once, a
     // throw goes the original way: sent and let go.
     for (int i = 0; i < drops.count(); ++i) {
-        if (drops[i].entityId == 0) {
+        if (drops[i].entityId == 0 && !drops[i].collecting()) {
             session_.send(net::pickupSpawnFor(drops[i]));
             entities_.predictDrop(drops.at(i));
         }

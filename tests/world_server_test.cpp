@@ -11,16 +11,25 @@
 
 #include "framework.hpp"
 
+#include "core/entity/boat.hpp"
+#include "core/entity/falling_block.hpp"
 #include "core/entity/item_entity.hpp"
+#include "core/entity/minecart.hpp"
 #include "core/entity/mob.hpp"
+#include "core/entity/primed_tnt.hpp"
 #include "core/net/chunk_payload.hpp"
 #include "core/net/entities.hpp"
 #include "core/net/player_skin.hpp"
 #include "core/net/player_sync.hpp"
+#include "core/net/tile_sync.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/net/packets.hpp"
 #include "core/net/world_server.hpp"
 #include "items.hpp"  // generated; see tools/configure.py
+
+#include "blocks.hpp"  // generated; see tools/configure.py
+#include "items.hpp"   // generated; see tools/configure.py
+#include "scene_world.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -100,6 +109,18 @@ public:
 
     entity::MobSystem* mobs() override { return herd; }
 
+    entity::PaintingSystem* paintings() override { return hung; }
+    tick::TickWorld* tickWorld() override { return tickw; }
+    entity::BoatSystem* boats() override { return fleet; }
+    entity::MinecartSystem* minecarts() override { return carts; }
+    entity::FallingBlockSystem* fallingBlocks() override { return falling; }
+    entity::PrimedTntSystem* primedTnt() override { return tnt; }
+    entity::PaintingSystem* hung = nullptr;
+    tick::TickWorld* tickw = nullptr;
+    entity::BoatSystem* fleet = nullptr;
+    entity::MinecartSystem* carts = nullptr;
+    entity::FallingBlockSystem* falling = nullptr;
+    entity::PrimedTntSystem* tnt = nullptr;
     entity::ArrowSystem* arrows() override { return quiver; }
     void useItem(const UseRequest& request) override { used.push_back(request); }
     entity::ArrowSystem* quiver = nullptr;
@@ -247,8 +268,6 @@ void settle(WorldServer& server, int pumps = 220)
     }
 }
 
-constexpr u8 kGuest = 2;
-
 std::vector<u8> skinPage(u8 shade)
 {
     std::vector<u8> page(kSkinPageBytes);
@@ -260,6 +279,9 @@ std::vector<u8> skinPage(u8 shade)
     }
     return page;
 }
+
+
+constexpr u8 kGuest = 2;
 
 
 }  // namespace
@@ -1394,7 +1416,8 @@ TEST(a_guests_punch_reaches_the_animal_here)
     CHECK(fixture.world.hits[0].item == 268);
     CHECK(fixture.world.hits[0].playerX > 9.4 && fixture.world.hits[0].playerX < 9.6);
 
-    // A right click is not a hit, and nothing sends one yet.
+    // A right click is not a hit: it asks to ride, and an animal is not a
+    // vehicle.
     feedPacket(server, kGuest, makeUseEntity(1, mobId, false));
     CHECK(fixture.world.hits.size() == 1);
     server.close();
@@ -1531,7 +1554,13 @@ TEST(a_punch_between_two_guests_is_forwarded_to_the_one_who_was_hit)
     CHECK(blow.integer(1) == i64(kOther));   // and at whom
     CHECK(blow.integer(2) == 1);
     // The attacker is not told about their own blow, and neither is the world.
-    CHECK(sink.count(kGuest, packet::UseEntity) == 0);
+    // (A right click is who rides what -- the host's "I am in nothing" at
+    // login -- and not a blow.)
+    int blowsToAttacker = 0;
+    for (const Packet& packet : sink.packets(kGuest)) {
+        blowsToAttacker += int(packet.id == packet::UseEntity && packet.integer(2) != 0);
+    }
+    CHECK(blowsToAttacker == 0);
     CHECK(world.hits.empty());
     CHECK(world.hostHits.empty());
     server.close();
@@ -1566,7 +1595,679 @@ TEST(the_host_can_swing_at_a_guest_and_the_guest_hears_about_it)
     server.close();
 }
 
-// ---- arrows -----------------------------------------------------------------
+// ---- paintings and containers ----------------------------------------------
+
+// **A painting is the host's to hang and every guest sees the same one.** a1.1.2
+// has no painting packet, so a wall hung here was bare on the other console,
+// and one hung there was a different picture.
+TEST(a_painting_is_announced_once_and_destroyed_when_it_goes)
+{
+    MobWorldFixture fixture;
+    entity::PaintingSystem hung{5};
+    fixture.world.hung = &hung;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    // A painting is one of ours, so it goes only to a guest that has shown it
+    // understands ours -- by sending a skin. A 3DS guest never does.
+    CHECK(hung.place(*fixture.ticks, 8, 39, 8, 2));
+    server.pump(9000);
+    CHECK_EQ(sink.count(kGuest, packet::Painting), 0);
+    const std::vector<u8> ada = skinPage(1);
+    feedPacket(server, kGuest, makePlayerSkin(kGuest, ada.data()));
+    server.pump(9050);
+    CHECK_EQ(sink.count(kGuest, packet::Painting), 1);
+    const Packet spawn = sink.last(kGuest, packet::Painting);
+    CHECK(spawn.integer(0) != 0);
+    CHECK(spawn.text(0) == std::string(hung[0].artwork().name));
+    CHECK_EQ(int(spawn.integer(1)), 8);
+    CHECK_EQ(int(spawn.integer(2)), 39);
+    CHECK_EQ(int(spawn.integer(3)), 8);
+    CHECK_EQ(int(spawn.integer(4)), hung[0].direction);
+
+    server.pump(9100);
+    CHECK_EQ(sink.count(kGuest, packet::Painting), 1);
+
+    const int destroyed = sink.count(kGuest, packet::DestroyEntity);
+    CHECK(hung.attack(*fixture.ticks, 0));
+    server.pump(9200);
+    CHECK_EQ(sink.count(kGuest, packet::DestroyEntity), destroyed + 1);
+    server.close();
+}
+
+namespace {
+
+constexpr i32 kChestX = 9;
+constexpr int kChestY = 42;
+constexpr i32 kChestZ = 8;
+
+item::ItemStack stackOf(int id, int count, int slot)
+{
+    item::ItemStack stack;
+    stack.id = i16(id);
+    stack.count = i8(count);
+    stack.slot = i8(slot);
+    return stack;
+}
+
+}  // namespace
+
+// **A chest a guest opens is the host's, sent whole, and what the guest does to
+// it comes back.** There are no window packets in a1.1.2, so this is ours:
+// `TileOpen`, then `TileSync` both ways -- see core/net/tile_sync.hpp.
+TEST(a_chest_a_guest_opens_is_sent_to_them_and_their_clicks_come_back)
+{
+    MobWorldFixture fixture;
+    fixture.world.tickw = fixture.ticks.get();
+    fixture.world.mutableColumn(0, 0)->setBlock(int(kChestX & 15), kChestY, int(kChestZ & 15),
+                                                 block::BlockId(mcver::Block::Chest));
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    // The host puts three sticks in slot 3 before anybody looks.
+    TileSnapshot seeded;
+    CHECK(readTile(*fixture.ticks, kChestX, kChestY, kChestZ, &seeded));
+    seeded.slots[3] = stackOf(280, 3, 3);
+    CHECK(writeTile(*fixture.ticks, seeded, true));
+
+    feedPacket(server, kGuest, makeTileOpen(kChestX, kChestY, kChestZ));
+    server.pump(20000);
+    CHECK_EQ(sink.count(kGuest, packet::TileSync), 1);
+    TileSnapshot got;
+    CHECK(readTileSync(sink.last(kGuest, packet::TileSync), &got));
+    CHECK(got.kind == TileKind::Chest);
+    CHECK_EQ(int(got.slots[3].id), 280);
+    CHECK_EQ(int(got.slots[3].count), 3);
+    CHECK(got.slots[0].empty());
+
+    // Nothing changed, so nothing more is sent.
+    server.pump(20200);
+    server.pump(20400);
+    CHECK_EQ(sink.count(kGuest, packet::TileSync), 1);
+
+    // The host's own change reaches the guest who has it open.
+    seeded.slots[5] = stackOf(4, 9, 5);
+    CHECK(writeTile(*fixture.ticks, seeded, true));
+    server.pump(20600);
+    CHECK_EQ(sink.count(kGuest, packet::TileSync), 2);
+    CHECK(readTileSync(sink.last(kGuest, packet::TileSync), &got));
+    CHECK_EQ(int(got.slots[5].count), 9);
+
+    // The guest takes the sticks and the host's copy follows -- without
+    // sending the guest back its own click.
+    TileSnapshot edited = got;
+    edited.slots[3] = item::ItemStack{};
+    feedPacket(server, kGuest, makeTileSync(edited));
+    server.pump(20800);
+    server.pump(21000);
+    TileSnapshot host;
+    CHECK(readTile(*fixture.ticks, kChestX, kChestY, kChestZ, &host));
+    CHECK(host.slots[3].empty());
+    CHECK_EQ(int(host.slots[5].count), 9);
+    CHECK_EQ(sink.count(kGuest, packet::TileSync), 2);
+
+    // Shut, and the host stops watching: a later change is not sent.
+    feedPacket(server, kGuest, makeTileClose(kChestX, kChestY, kChestZ));
+    server.pump(21200);
+    host.slots[7] = stackOf(5, 1, 7);
+    CHECK(writeTile(*fixture.ticks, host, true));
+    server.pump(21400);
+    CHECK_EQ(sink.count(kGuest, packet::TileSync), 2);
+
+    // A guest cannot edit a chest it has not opened.
+    edited.slots[0] = stackOf(264, 64, 0);
+    feedPacket(server, kGuest, makeTileSync(edited));
+    server.pump(21600);
+    CHECK(readTile(*fixture.ticks, kChestX, kChestY, kChestZ, &host));
+    CHECK(host.slots[0].empty());
+    server.close();
+}
+
+TEST(a_tile_payload_survives_the_wire_and_refuses_a_short_one)
+{
+    TileSnapshot furnace;
+    furnace.kind = TileKind::Furnace;
+    furnace.slotCount = 3;
+    furnace.burn = 1200;
+    furnace.cook = 77;
+    furnace.currentBurn = 1600;
+    furnace.slots[0] = stackOf(15, 12, 0);
+    furnace.slots[2] = stackOf(265, 7, 2);
+    furnace.slots[2].damage = 3;
+
+    std::vector<u8> bytes;
+    encodeTile(furnace, &bytes);
+    TileSnapshot back;
+    CHECK(decodeTile(bytes.data(), bytes.size(), &back));
+    CHECK(sameTile(furnace, back, true));
+    CHECK_EQ(int(back.slots[2].damage), 3);
+
+    CHECK(!decodeTile(bytes.data(), bytes.size() - 1, &back));
+    CHECK(!decodeTile(bytes.data(), 0, &back));
+    u8 wrongKind = 9;
+    CHECK(!decodeTile(&wrongKind, 1, &back));
+}
+
+
+// **A guest's skin is the host's to attribute.** Whatever entity id the packet
+// carries, it is worn by the guest who sent it, it is passed to the others, a
+// second one is dropped, and a guest who joins later is sent everybody's.
+TEST(a_guests_skin_is_attributed_to_that_guest_passed_on_once_and_sent_to_late_joiners)
+{
+    FakeWorld world;
+    world.add(0, 0);
+    Sink sink;
+    WorldServer server;
+    server.open(&world, &Sink::send, &sink, "host");
+    const std::vector<u8> hostSkin = skinPage(10);
+    server.setHostSkin(hostSkin.data(), hostSkin.size());
+
+    constexpr u8 kOther = 3;
+    server.addPlayer(kGuest, "Ada");
+    server.addPlayer(kOther, "Bea");
+    settle(server, 60);
+    // **Nobody is sent anything of ours until they send a skin**: a 3DS guest
+    // has no `0xE3` in its table and drops the connection over one.
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 0);
+    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 0);
+
+    // Bea says hers, and is sent the host's.
+    const std::vector<u8> bea = skinPage(33);
+    feedPacket(server, kOther, makePlayerSkin(kOther, bea.data()));
+    settle(server, 20);
+    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 1);
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 0);
+
+    // Ada says her skin is entity 1 -- the host's. It is taken as hers, passed
+    // to Bea, and Ada is sent the host's and Bea's.
+    const std::vector<u8> ada = skinPage(77);
+    feedPacket(server, kGuest, makePlayerSkin(1, ada.data()));
+    settle(server, 20);
+    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 2);
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
+    i32 id = 0;
+    u8 page[kSkinPageBytes];
+    CHECK(readPlayerSkin(sink.last(kOther, packet::PlayerSkin), &id, page));
+    CHECK_EQ(id, i32(kGuest));
+    CHECK_EQ(int(page[(20 * 64 + 20) * 4]), 77);
+    // She is not sent her own back.
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
+
+    // A second one from her is ignored.
+    const std::vector<u8> again = skinPage(5);
+    feedPacket(server, kGuest, makePlayerSkin(kGuest, again.data()));
+    settle(server, 20);
+    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 2);
+
+    // A payload that is not a page is ignored for the one who sent it.
+    Packet wrong = makePlayerSkin(kOther, again.data());
+    wrong.bytes.resize(64);
+    feedPacket(server, kOther, wrong);
+    settle(server, 20);
+    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
+
+    // Somebody who joins afterwards hears nothing until they say theirs, and
+    // then is sent the host's, Ada's and Bea's.
+    constexpr u8 kLate = 4;
+    server.addPlayer(kLate, "Cy");
+    settle(server, 60);
+    CHECK_EQ(sink.count(kLate, packet::PlayerSkin), 0);
+    const std::vector<u8> cy = skinPage(99);
+    feedPacket(server, kLate, makePlayerSkin(kLate, cy.data()));
+    settle(server, 20);
+    CHECK_EQ(sink.count(kLate, packet::PlayerSkin), 3);
+}
+
+// ---- vehicles, falling blocks and lit TNT -----------------------------------
+
+namespace {
+
+struct VehicleFixture : MobWorldFixture {
+    entity::BoatSystem fleet{3};
+    entity::MinecartSystem carts{4};
+    entity::FallingBlockSystem falling;
+    entity::PrimedTntSystem tnt{5};
+
+    VehicleFixture()
+    {
+        world.fleet = &fleet;
+        world.carts = &carts;
+        world.falling = &falling;
+        world.tnt = &tnt;
+        world.tickw = ticks.get();
+    }
+};
+
+constexpr u8 kRider = 3;
+
+// The last packet of a kind about one entity, or a KeepAlive when there is none.
+Packet lastAbout(Sink& sink, u8 playerId, u8 id, i32 entityId)
+{
+    Packet found;
+    found.reset(packet::KeepAlive);
+    for (Packet& packet : sink.packets(playerId)) {
+        if (packet.id == id && packet.integer(0) == i64(entityId)) {
+            found = std::move(packet);
+        }
+    }
+    return found;
+}
+
+int countAbout(Sink& sink, u8 playerId, u8 id, i32 entityId)
+{
+    int n = 0;
+    for (const Packet& packet : sink.packets(playerId)) {
+        n += int(packet.id == id && packet.integer(0) == i64(entityId));
+    }
+    return n;
+}
+
+// Whether this player was told `rider` is in `vehicle` (or out of everything).
+// The last such word about that rider is the one that counts.
+bool toldRiding(Sink& sink, u8 playerId, i32 rider, i32 vehicle)
+{
+    i64 last = 0;
+    bool any = false;
+    for (const Packet& packet : sink.packets(playerId)) {
+        if (packet.id == packet::UseEntity && packet.integer(2) == 0
+            && packet.integer(0) == i64(rider)) {
+            last = packet.integer(1);
+            any = true;
+        }
+    }
+    return any && last == i64(vehicle);
+}
+
+Packet vehicleReport(i32 id, double x, double y, double z, int yawByte)
+{
+    Packet p;
+    p.reset(packet::EntityTeleport);
+    p.pushInt(id);
+    p.pushInt(toWirePosition(x));
+    p.pushInt(toWirePosition(y));
+    p.pushInt(toWirePosition(z));
+    p.pushInt(yawByte);
+    p.pushInt(0);
+    return p;
+}
+
+}  // namespace
+
+// **A boat is a1.1.2's own Vehicle Spawn, type 1**, followed at once by its
+// heading -- the spawn has no angles -- and then moved, rocked and destroyed as
+// the host's pool says.
+TEST(a_boat_is_announced_with_its_heading_moved_rocked_and_destroyed)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    CHECK(fixture.fleet.place(*fixture.ticks, 8, 41, 8));
+    server.pump(9000);
+    const i32 id = fixture.fleet[0].entityId;
+    CHECK(id != 0);
+    const Packet spawn = lastAbout(sink, kGuest, packet::VehicleSpawn, id);
+    CHECK(spawn.id == packet::VehicleSpawn);
+    CHECK_EQ(int(spawn.integer(1)), kVehicleBoat);
+    CHECK_EQ(spawn.integer(2), i64(toWirePosition(fixture.fleet[0].x)));
+    CHECK_EQ(spawn.integer(3), i64(toWirePosition(fixture.fleet[0].y)));
+    CHECK_EQ(spawn.integer(4), i64(toWirePosition(fixture.fleet[0].z)));
+    CHECK_EQ(countAbout(sink, kGuest, packet::EntityTeleport, id), 1);
+
+    // Once.
+    server.pump(9100);
+    CHECK_EQ(countAbout(sink, kGuest, packet::VehicleSpawn, id), 1);
+
+    fixture.fleet.at(0).setPosition(12.5, 42.8, 14.5);
+    fixture.fleet.at(0).yaw = 90.0f;
+    server.pump(9200);
+    const Packet moved = lastAbout(sink, kGuest, packet::EntityTeleport, id);
+    CHECK_EQ(moved.integer(1), i64(12 * 32 + 16));
+    CHECK_EQ(moved.integer(3), i64(14 * 32 + 16));
+    CHECK_EQ(int(moved.integer(4)), 64);
+
+    // A blow that does not break it: the hull rocks on every screen.
+    CHECK(fixture.fleet.attack(*fixture.ticks, 0, 1));
+    server.pump(9300);
+    const Packet struck = lastAbout(sink, kGuest, packet::EntityStatus, id);
+    CHECK_EQ(int(struck.integer(1)), entity::kStatusHurt);
+    CHECK_EQ(countAbout(sink, kGuest, packet::EntityStatus, id), 1);
+
+    fixture.fleet.clear();
+    server.pump(9400);
+    CHECK_EQ(countAbout(sink, kGuest, packet::DestroyEntity, id), 1);
+    server.close();
+}
+
+TEST(a_cart_is_announced_as_the_type_it_is)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    fixture.ticks->setBlockAndDataRaw(8, 42, 8, block::BlockId(mcver::Block::Rail), 0);
+    CHECK(fixture.carts.place(*fixture.ticks, 8, 42, 8, entity::MinecartType::Chest));
+    server.pump(9000);
+    const i32 id = fixture.carts[0].entityId;
+    CHECK(id != 0);
+    // `gy`'s own numbering: 10 plain, 11 chest, 12 furnace.
+    CHECK_EQ(int(lastAbout(sink, kGuest, packet::VehicleSpawn, id).integer(1)), 11);
+    server.close();
+}
+
+// **Whoever sits in a vehicle steers it**: the guest asks, everybody is told
+// who is in it, the guest's reports move the host's copy and reach everybody
+// but the guest, and getting out hands it back.
+TEST(a_guest_asks_for_a_boat_steers_it_and_gets_out)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    server.addPlayer(kRider, "Bea");
+    settle(server, 60);
+    movePlayer(server, kGuest, 9.5, 8.5);
+    movePlayer(server, kRider, 7.5, 8.5);
+
+    CHECK(fixture.fleet.place(*fixture.ticks, 8, 41, 8));
+    server.pump(9000);
+    const i32 id = fixture.fleet[0].entityId;
+
+    feedPacket(server, kGuest, makeUseEntity(kGuest, id, false));
+    CHECK_EQ(fixture.fleet[0].riderId, i32(kGuest));
+    CHECK(fixture.fleet[0].remote);
+    CHECK(fixture.fleet[0].ridden);
+    server.pump(9100);
+    // The rider is told too: that is how its console learns it may steer.
+    CHECK(toldRiding(sink, kGuest, kGuest, id));
+    CHECK(toldRiding(sink, kRider, kGuest, id));
+
+    // Nobody climbs in on top of them -- not the other guest, not the host.
+    feedPacket(server, kRider, makeUseEntity(kRider, id, false));
+    CHECK_EQ(fixture.fleet[0].riderId, i32(kGuest));
+    CHECK(!fixture.fleet.mount(0));
+
+    // Where the rider says it went.
+    const int toRider = countAbout(sink, kGuest, packet::EntityTeleport, id);
+    feedPacket(server, kGuest, vehicleReport(id, 14.5, 42.8, 9.5, 64));
+    CHECK(std::fabs(fixture.fleet[0].track.x - 14.5) < 1e-9);
+    server.pump(9200);
+    const Packet seen = lastAbout(sink, kRider, packet::EntityTeleport, id);
+    CHECK_EQ(seen.integer(1), i64(14 * 32 + 16));
+    CHECK_EQ(int(seen.integer(4)), 64);
+    CHECK_EQ(countAbout(sink, kGuest, packet::EntityTeleport, id), toRider);
+
+    // ...and from anybody else, nothing.
+    feedPacket(server, kRider, vehicleReport(id, 20.5, 42.8, 9.5, 0));
+    CHECK(std::fabs(fixture.fleet[0].track.x - 14.5) < 1e-9);
+
+    feedPacket(server, kGuest, makeUseEntity(kGuest, kNoVehicle, false));
+    CHECK_EQ(fixture.fleet[0].riderId, i32(0));
+    CHECK(!fixture.fleet[0].remote);
+    CHECK(!fixture.fleet[0].ridden);
+    server.pump(9300);
+    CHECK(toldRiding(sink, kRider, kGuest, kNoVehicle));
+    server.close();
+}
+
+TEST(a_guest_who_leaves_mid_ride_hands_the_boat_back)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    server.addPlayer(kRider, "Bea");
+    settle(server, 60);
+    movePlayer(server, kGuest, 9.5, 8.5);
+
+    CHECK(fixture.fleet.place(*fixture.ticks, 8, 41, 8));
+    server.pump(9000);
+    const i32 id = fixture.fleet[0].entityId;
+    feedPacket(server, kGuest, makeUseEntity(kGuest, id, false));
+    server.pump(9100);
+    CHECK(toldRiding(sink, kRider, kGuest, id));
+
+    server.removePlayer(kGuest);
+    CHECK_EQ(fixture.fleet[0].riderId, i32(0));
+    CHECK(!fixture.fleet[0].remote);
+    server.pump(9200);
+    CHECK(toldRiding(sink, kRider, kGuest, kNoVehicle));
+    server.close();
+}
+
+// **A boat that broke on the guest's side breaks here**, because a guest's world
+// drops nothing: the planks and sticks are this world's.
+TEST(a_boat_a_guest_broke_while_steering_breaks_here_and_drops)
+{
+    VehicleFixture fixture;
+    std::vector<int> dropped;
+    fixture.ticks->setDropSink(
+        [](void* ctx, double, double, double, u16 item, int count) {
+            for (int n = 0; n < count; ++n) {
+                static_cast<std::vector<int>*>(ctx)->push_back(int(item));
+            }
+        },
+        &dropped);
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    server.addPlayer(kRider, "Bea");
+    settle(server, 60);
+    movePlayer(server, kGuest, 9.5, 8.5);
+
+    CHECK(fixture.fleet.place(*fixture.ticks, 8, 41, 8));
+    server.pump(9000);
+    const i32 id = fixture.fleet[0].entityId;
+
+    // Only the one steering it can say it broke.
+    Packet broke;
+    broke.reset(packet::DestroyEntity);
+    broke.pushInt(id);
+    feedPacket(server, kRider, broke);
+    CHECK_EQ(fixture.fleet.count(), 1);
+
+    feedPacket(server, kGuest, makeUseEntity(kGuest, id, false));
+    server.pump(9050);
+    CHECK(toldRiding(sink, kRider, kGuest, id));
+    feedPacket(server, kGuest, broke);
+    CHECK_EQ(fixture.fleet.count(), 0);
+    CHECK_EQ(int(dropped.size()), entity::kBoatPlanksDropped + entity::kBoatSticksDropped);
+    server.pump(9100);
+    CHECK_EQ(countAbout(sink, kRider, packet::DestroyEntity, id), 1);
+    CHECK(toldRiding(sink, kRider, kGuest, kNoVehicle));
+    server.close();
+}
+
+TEST(the_host_in_its_own_boat_is_seen_sitting_in_it)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    CHECK(fixture.fleet.place(*fixture.ticks, 8, 41, 8));
+    CHECK(fixture.fleet.mount(0));
+    server.pump(9000);
+    const i32 id = fixture.fleet[0].entityId;
+    CHECK(toldRiding(sink, kGuest, kFirstPlayerEntityId, id));
+
+    // And a guest cannot take it from under the host.
+    movePlayer(server, kGuest, 9.5, 8.5);
+    feedPacket(server, kGuest, makeUseEntity(kGuest, id, false));
+    CHECK_EQ(fixture.fleet[0].riderId, i32(0));
+    CHECK(!fixture.fleet[0].remote);
+
+    fixture.fleet.dismount();
+    server.pump(9100);
+    CHECK(toldRiding(sink, kGuest, kFirstPlayerEntityId, kNoVehicle));
+    server.close();
+}
+
+// **Ours, at the numbers later protocols gave them**: 70 and 71 for falling
+// sand and gravel, 50 for lit TNT, moved like anything else and destroyed when
+// they land or go off.
+TEST(a_falling_block_and_lit_tnt_are_announced_moved_and_destroyed)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    CHECK(fixture.falling.spawn(*fixture.ticks, 8, 50, 8, block::BlockId(mcver::Block::Sand)));
+    CHECK(fixture.falling.spawn(*fixture.ticks, 9, 50, 8,
+                                block::BlockId(mcver::Block::Gravel)));
+    CHECK(fixture.tnt.spawn(*fixture.ticks, 10, 50, 8));
+    server.pump(9000);
+    const i32 sand = fixture.falling[0].entityId;
+    const i32 gravel = fixture.falling[1].entityId;
+    const i32 lit = fixture.tnt[0].entityId;
+    CHECK(sand != 0 && gravel != 0 && lit != 0);
+    CHECK_EQ(int(lastAbout(sink, kGuest, packet::VehicleSpawn, sand).integer(1)),
+             kObjectFallingSand);
+    CHECK_EQ(int(lastAbout(sink, kGuest, packet::VehicleSpawn, gravel).integer(1)),
+             kObjectFallingGravel);
+    const Packet tnt = lastAbout(sink, kGuest, packet::VehicleSpawn, lit);
+    CHECK_EQ(int(tnt.integer(1)), kObjectPrimedTnt);
+    CHECK_EQ(tnt.integer(3), i64(toWirePosition(50.5)));
+
+    fixture.tnt.at(0).moveTo(10.5, 49.25, 8.5);
+    server.pump(9100);
+    CHECK_EQ(lastAbout(sink, kGuest, packet::EntityTeleport, lit).integer(2),
+             i64(toWirePosition(49.25)));
+
+    fixture.falling.clear();
+    fixture.tnt.clear();
+    server.pump(9200);
+    CHECK_EQ(countAbout(sink, kGuest, packet::DestroyEntity, sand), 1);
+    CHECK_EQ(countAbout(sink, kGuest, packet::DestroyEntity, gravel), 1);
+    CHECK_EQ(countAbout(sink, kGuest, packet::DestroyEntity, lit), 1);
+    server.close();
+}
+
+// **The whole loop, through the bytes**: the host announces a boat, a guest's
+// `RemoteEntities` draws it, the guest asks to ride, the host says yes, the
+// guest's own physics moves it and its reports move the host's copy, and
+// getting out hands it back. Every packet here is encoded and parsed exactly
+// as the link carries it.
+TEST(a_boat_crosses_the_link_and_the_guest_in_it_steers_it)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+    movePlayer(server, kGuest, 9.5, 8.5);
+
+    test::SceneWorld guestWorld(0, 0);
+    entity::BoatSystem guestBoats(11);
+    entity::MinecartSystem guestCarts(12);
+    RemoteEntities guest;
+    guest.bindVehicles(&guestBoats, &guestCarts);
+    guest.setSelf(kGuest);
+    usize applied = 0;
+    const auto deliver = [&]() {
+        const std::vector<Packet> all = sink.packets(kGuest);
+        for (; applied < all.size(); ++applied) {
+            guest.apply(all[applied], &guestWorld.w());
+        }
+    };
+
+    CHECK(fixture.fleet.place(*fixture.ticks, 8, 41, 8));
+    fixture.fleet.at(0).yaw = 45.0f;
+    server.pump(9000);
+    deliver();
+    CHECK_EQ(guestBoats.count(), 1);
+    const i32 id = fixture.fleet[0].entityId;
+    CHECK_EQ(guestBoats[0].entityId, id);
+    CHECK(guestBoats[0].remote);
+    CHECK_EQ(toWirePosition(guestBoats[0].x), toWirePosition(fixture.fleet[0].x));
+    CHECK_EQ(toWirePosition(guestBoats[0].y), toWirePosition(fixture.fleet[0].y));
+    CHECK_EQ(toWireAngle(guestBoats[0].yaw), toWireAngle(45.0f));
+
+    // "Let me in" -- and the answer.
+    feedPacket(server, kGuest, makeUseEntity(kGuest, id, false));
+    server.pump(9100);
+    deliver();
+    CHECK_EQ(guest.driving(), id);
+    CHECK_EQ(guestBoats.riddenIndex(), 0);
+
+    // Paddling east: a fifth of the rider's motion, every tick, here.
+    entity::VehicleRider paddle;
+    paddle.present = true;
+    paddle.motionX = 0.5;
+    Packet report;
+    for (int t = 0; t < 6; ++t) {
+        guestBoats.tick(guestWorld.w(), paddle);
+        if (guest.driveReport(&report) > 0) {
+            feedPacket(server, kGuest, report);
+        }
+    }
+    CHECK(guestBoats[0].x > 9.0);
+    CHECK_EQ(toWirePosition(fixture.fleet[0].track.x), toWirePosition(guestBoats[0].x));
+    CHECK_EQ(toWirePosition(fixture.fleet[0].track.y), toWirePosition(guestBoats[0].y));
+    // The host's copy follows it there, and stops on the last word it heard.
+    for (int t = 0; t < 40; ++t) {
+        fixture.fleet.tick(*fixture.ticks, entity::VehicleRider{});
+    }
+    CHECK(std::fabs(fixture.fleet[0].x - fixture.fleet[0].track.x) < 1e-9);
+
+    // Out, and the host's again.
+    guestBoats.dismount();
+    CHECK_EQ(guest.driveReport(&report), 1);
+    feedPacket(server, kGuest, report);
+    CHECK(!fixture.fleet[0].remote);
+    CHECK_EQ(fixture.fleet[0].riderId, i32(0));
+    server.pump(9200);
+    deliver();
+    CHECK(guestBoats[0].remote);
+    CHECK_EQ(guest.driving(), i32(0));
+    server.close();
+}
+
+// **A host that shares its vehicles says so to every guest as it logs in**, in
+// the one form every console of this family already parses: "the host is in
+// nothing". A guest that never hears it keeps its own boats, as an older or a
+// 3DS host needs it to.
+TEST(a_joining_guest_is_told_the_host_rides_nothing_which_says_vehicles_are_shared)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+    CHECK(toldRiding(sink, kGuest, kFirstPlayerEntityId, kNoVehicle));
+
+    RemoteEntities guest;
+    CHECK(!guest.sharesVehicles());
+    for (const Packet& packet : sink.packets(kGuest)) {
+        guest.apply(packet, nullptr);
+    }
+    CHECK(guest.sharesVehicles());
+    server.close();
+}
+
+// ---- arrows, as 3DAlpha shares them ------------------------------------------
 
 namespace {
 
@@ -1743,71 +2444,178 @@ TEST(an_arrow_that_strikes_a_guest_is_named_to_them)
     server.close();
 }
 
-// **A guest's skin is the host's to attribute.** Whatever entity id the packet
-// carries, it is worn by the guest who sent it, it is passed to the others, a
-// second one is dropped, and a guest who joins later is sent everybody's.
-TEST(a_guests_skin_is_attributed_to_that_guest_passed_on_once_and_sent_to_late_joiners)
+
+// ---- what else a guest does with the host's vehicles and TNT -----------------
+
+// **Lit TNT's fuse follows its spawn in the yaw byte**, so a guest swells it on
+// the host's schedule rather than a fresh 80's.
+TEST(lit_tnt_goes_out_with_its_fuse)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    CHECK(fixture.tnt.spawn(*fixture.ticks, 10, 50, 8, 23));
+    server.pump(9000);
+    const i32 lit = fixture.tnt[0].entityId;
+    const Packet heading = lastAbout(sink, kGuest, packet::EntityTeleport, lit);
+    CHECK(heading.id == packet::EntityTeleport);
+    CHECK_EQ(int(heading.integer(4)), 23);
+    server.close();
+}
+
+// **A furnace cart takes a guest's coal**, `oc.a(Ldm;)Z`'s third body run on
+// the host's cart with what the guest holds, and its chimney is told to
+// everybody as it lights and goes out.
+TEST(a_guest_fuels_the_hosts_furnace_cart_and_everybody_sees_it_smoke)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+    movePlayer(server, kGuest, 6.5, 8.5);
+
+    fixture.ticks->setBlockAndDataRaw(8, 42, 8, block::BlockId(mcver::Block::Rail), 0);
+    CHECK(fixture.carts.place(*fixture.ticks, 8, 42, 8, entity::MinecartType::Furnace));
+    server.pump(9000);
+    const i32 id = fixture.carts[0].entityId;
+    CHECK_EQ(countAbout(sink, kGuest, packet::EntityStatus, id), 0);
+
+    feedPacket(server, kGuest, makeHoldingChange(int(mcver::Item::Coal)));
+    feedPacket(server, kGuest, makeUseEntity(kGuest, id, false));
+    CHECK_EQ(fixture.carts[0].fuel, entity::kMinecartCoalFuel);
+    // Pointed away from the guest, who stands to the west of it.
+    CHECK(fixture.carts[0].pushX > 0.0);
+    // Not ridden: a furnace cart is pushed, not sat in.
+    CHECK_EQ(fixture.carts[0].riderId, i32(0));
+
+    server.pump(9100);
+    const Packet lit = lastAbout(sink, kGuest, packet::EntityStatus, id);
+    CHECK_EQ(int(lit.integer(1)), entity::kStatusFlagSet);
+    fixture.carts.at(0).pushX = 0.0;
+    fixture.carts.at(0).pushZ = 0.0;
+    server.pump(9200);
+    CHECK_EQ(int(lastAbout(sink, kGuest, packet::EntityStatus, id).integer(1)),
+             entity::kStatusFlagClear);
+    server.close();
+}
+
+// **A chest cart opens on a guest the way a chest does**: asked for by entity id
+// at `kCartTileY`, its slots sent, the guest's clicks believed, the host's own
+// changes passed on, and a close when the cart goes.
+TEST(a_guest_opens_the_hosts_chest_cart_and_its_clicks_come_back)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+    movePlayer(server, kGuest, 8.5, 10.5);
+
+    fixture.ticks->setBlockAndDataRaw(8, 42, 8, block::BlockId(mcver::Block::Rail), 0);
+    CHECK(fixture.carts.place(*fixture.ticks, 8, 42, 8, entity::MinecartType::Chest));
+    item::ItemStack* slots = fixture.carts.chestSlots(fixture.carts[0].id);
+    CHECK(slots != nullptr);
+    slots[4] = stackOf(4, 12, 4);  // cobblestone
+    server.pump(9000);
+    const i32 id = fixture.carts[0].entityId;
+
+    feedPacket(server, kGuest, makeTileOpen(id, kCartTileY, 0));
+    server.pump(9050);
+    TileSnapshot sent;
+    CHECK(readTileSync(sink.last(kGuest, packet::TileSync), &sent));
+    CHECK_EQ(sent.x, id);
+    CHECK_EQ(sent.y, kCartTileY);
+    CHECK_EQ(int(sent.slots[4].id), 4);
+    CHECK_EQ(int(sent.slots[4].count), 12);
+
+    // The guest takes half.
+    TileSnapshot edit = sent;
+    edit.slots[4].count = 6;
+    feedPacket(server, kGuest, makeTileSync(edit));
+    CHECK_EQ(int(fixture.carts.chestSlots(fixture.carts[0].id)[4].count), 6);
+
+    // The host puts something in: the guest is told.
+    const int syncs = sink.count(kGuest, packet::TileSync);
+    fixture.carts.chestSlots(fixture.carts[0].id)[0] = stackOf(3, 1, 0);
+    server.pump(9300);
+    CHECK_EQ(sink.count(kGuest, packet::TileSync), syncs + 1);
+
+    // The cart breaks under the screen.
+    fixture.carts.clear();
+    server.pump(9500);
+    const Packet closed = sink.last(kGuest, packet::TileClose);
+    CHECK(closed.id == packet::TileClose);
+    CHECK_EQ(int(closed.integer(0)), int(id));
+    CHECK_EQ(int(closed.integer(1)), kCartTileY);
+    server.close();
+}
+
+// **A mob's blow on a guest is named to that guest** -- a Use Entity from the
+// mob's id, which the guest prices from the mob it has (`hitFrom`). Nobody else
+// is told: the others see the swing, not the cost.
+TEST(a_mob_that_strikes_a_guest_is_named_to_that_guest_alone)
+{
+    VehicleFixture fixture;
+    Sink sink;
+    WorldServer server;
+    server.open(&fixture.world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    server.addPlayer(kRider, "Bo");
+    settle(server, 40);
+
+    const int othersBefore = sink.count(kRider, packet::UseEntity);
+    server.mobStruck(i32(kGuest), 55);
+    server.pump(9000);
+    const Packet blow = sink.last(kGuest, packet::UseEntity);
+    CHECK(blow.id == packet::UseEntity);
+    CHECK_EQ(i32(blow.integer(0)), i32(55));  // "that mob hit you"
+    CHECK_EQ(i32(blow.integer(1)), i32(kGuest));
+    CHECK(blow.integer(2) != 0);  // a blow, not a ride
+    CHECK_EQ(sink.count(kRider, packet::UseEntity), othersBefore);
+
+    // A mob nobody was told about has no id to name.
+    const int guestBefore = sink.count(kGuest, packet::UseEntity);
+    server.mobStruck(i32(kGuest), 0);
+    server.pump(9100);
+    CHECK_EQ(sink.count(kGuest, packet::UseEntity), guestBefore);
+    server.close();
+}
+
+// **What is in the host's hand reaches its guests when it changes**, and a
+// guest who joins later is spawned holding it.
+TEST(the_hosts_held_item_reaches_its_guests_once_per_change_and_a_later_joiner)
 {
     FakeWorld world;
     world.add(0, 0);
     Sink sink;
     WorldServer server;
     server.open(&world, &Sink::send, &sink, "host");
-    const std::vector<u8> hostSkin = skinPage(10);
-    server.setHostSkin(hostSkin.data(), hostSkin.size());
-
-    constexpr u8 kOther = 3;
     server.addPlayer(kGuest, "Ada");
-    server.addPlayer(kOther, "Bea");
-    settle(server, 60);
-    // **Nobody is sent anything of ours until they send a skin**: a 3DS guest
-    // has no `0xE3` in its table and drops the connection over one.
-    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 0);
-    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 0);
+    settle(server, 40);
 
-    // Bea says hers, and is sent the host's.
-    const std::vector<u8> bea = skinPage(33);
-    feedPacket(server, kOther, makePlayerSkin(kOther, bea.data()));
-    settle(server, 20);
-    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 1);
-    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 0);
+    const int before = sink.count(kGuest, packet::BlockItemSwitch);
+    server.setHostHeld(276);
+    server.setHostHeld(276);  // unchanged: nothing more to say
+    server.pump(9000);
+    CHECK_EQ(sink.count(kGuest, packet::BlockItemSwitch), before + 1);
+    const Packet held = sink.last(kGuest, packet::BlockItemSwitch);
+    CHECK_EQ(int(held.integer(1)), 276);
 
-    // Ada says her skin is entity 1 -- the host's. It is taken as hers, passed
-    // to Bea, and Ada is sent the host's and Bea's.
-    const std::vector<u8> ada = skinPage(77);
-    feedPacket(server, kGuest, makePlayerSkin(1, ada.data()));
-    settle(server, 20);
-    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 2);
-    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
-    i32 id = 0;
-    u8 page[kSkinPageBytes];
-    CHECK(readPlayerSkin(sink.last(kOther, packet::PlayerSkin), &id, page));
-    CHECK_EQ(id, i32(kGuest));
-    CHECK_EQ(int(page[(20 * 64 + 20) * 4]), 77);
-    // She is not sent her own back.
-    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
-
-    // A second one from her is ignored.
-    const std::vector<u8> again = skinPage(5);
-    feedPacket(server, kGuest, makePlayerSkin(kGuest, again.data()));
-    settle(server, 20);
-    CHECK_EQ(sink.count(kOther, packet::PlayerSkin), 2);
-
-    // A payload that is not a page is ignored for the one who sent it.
-    Packet wrong = makePlayerSkin(kOther, again.data());
-    wrong.bytes.resize(64);
-    feedPacket(server, kOther, wrong);
-    settle(server, 20);
-    CHECK_EQ(sink.count(kGuest, packet::PlayerSkin), 2);
-
-    // Somebody who joins afterwards hears nothing until they say theirs, and
-    // then is sent the host's, Ada's and Bea's.
-    constexpr u8 kLate = 4;
-    server.addPlayer(kLate, "Cy");
-    settle(server, 60);
-    CHECK_EQ(sink.count(kLate, packet::PlayerSkin), 0);
-    const std::vector<u8> cy = skinPage(99);
-    feedPacket(server, kLate, makePlayerSkin(kLate, cy.data()));
-    settle(server, 20);
-    CHECK_EQ(sink.count(kLate, packet::PlayerSkin), 3);
+    server.addPlayer(kRider, "Bo");
+    settle(server, 40);
+    bool spawnedHolding = false;
+    for (const Packet& p : sink.packets(kRider)) {
+        if (p.id == packet::NamedEntitySpawn && p.integer(0) == i64(kFirstPlayerEntityId)) {
+            spawnedHolding = p.integer(6) == 276;
+        }
+    }
+    CHECK(spawnedHolding);
+    server.close();
 }

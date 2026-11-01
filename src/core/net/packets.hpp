@@ -132,6 +132,23 @@ inline constexpr u8 MapChunk = 0x33;
 inline constexpr u8 MultiBlockChange = 0x34;
 inline constexpr u8 BlockChange = 0x35;
 inline constexpr u8 ComplexEntity = 0x3B;
+// **Ours: a chest's or a furnace's contents, shared** -- a1.1.2 has no window
+// packets, so no guest could ever open one. Three packets, all about a block:
+//
+//   * `TileOpen` (guest to host): "I opened the container at x, y, z".
+//   * `TileSync` (both ways): the contents of one tile entity -- see
+//     core/net/tile_sync.hpp for the payload. The host sends it on open and
+//     whenever it changes under a watching guest; a guest sends it after each
+//     click on the open screen, which is how the host learns what was moved.
+//   * `TileClose` (guest to host, and host to guest when the block has gone):
+//     the window is shut.
+//
+// The ids are well clear of every protocol's -- `0x64` and the window packets
+// that follow it are a later version's, and the registry test says they stay
+// out of this table -- so none of them can be a real server's.
+inline constexpr u8 TileSync = 0xE0;
+inline constexpr u8 TileOpen = 0xE1;
+inline constexpr u8 TileClose = 0xE2;
 // **Ours: the skin a player is wearing**, one 64 x 32 RGBA page -- see
 // core/net/player_skin.hpp. A guest sends its own to the host, which attributes
 // it to that guest and passes it to everybody else; the host sends its own and
@@ -219,6 +236,32 @@ Packet makePositionLook(double x, double feetY, double eyeY, double z, float yaw
                         bool onGround);
 Packet makeDig(int status, i32 x, int y, i32 z, int face);
 Packet makePlace(int itemId, i32 x, int y, i32 z, int face);
+// **A right click with nothing under the crosshair, from a guest of this
+// family.** a1.1.2's `Minecraft.clickMouse`
+// hands such a click straight to `ItemStack.useItemRightClick` and never to the
+// controller, so a bow shot never reaches the server: the arrow lives in the
+// shooter's world alone and nobody else ever sees it. A guest says it with the
+// shape later protocols chose -- a Place at (-1, 255, -1) facing 255 -- and the
+// host fires the arrow. **Never sent to a Java server**.
+inline constexpr int kUseItemFace = 255;
+Packet makeUseItem(int itemId);
+bool isUseItem(const Packet& place);
+
+// **Ours: "my boat went down on this cell"**, a Place facing 255 at the cell's
+// real coordinates -- which a use-item never has, its y being 255 in a world
+// 128 high. A boat is not a block placement: `me.a(...)` casts its own ray
+// with liquids on, so the cell is the one the guest's ray found, and the host
+// puts its boat there. Sent only to a host that shares its vehicles. See
+// `HostPlay::placeBlock`.
+inline constexpr int kPlaceOnCell = kUseItemFace;
+
+// **The object type an arrow is announced under**, in a Vehicle Spawn from a
+// host of this family. a1.1.2's `gy.a(kj)` knows 1 (boat) and 10-12 (carts) only;
+// 60 is the number later versions gave `EntityArrow`, and it is used here at the
+// packet's own shape so nothing new has to be parsed. A host sends it only to its
+// own guests, never to a Java client. Every port uses the same number, so an
+// arrow crosses between them.
+inline constexpr int kObjectArrow = 60;
 Packet makeHoldingChange(int itemId);
 Packet makeArmSwing(i32 entityId);
 // See `packet::UseEntity`. `leftClick` false is a right click, which nothing
@@ -236,34 +279,18 @@ Packet makeEntityAction(i32 entityId, int action);
 // See `packet::Respawn`.
 Packet makeRespawn();
 
-// **A right click with nothing under the crosshair, from a 3DAlpha guest.**
-// a1.1.2's `Minecraft.clickMouse` hands such a click straight to
-// `ItemStack.useItemRightClick` and never to the controller, so a bow shot
-// never reaches the server: the arrow lives in the shooter's world alone and
-// nobody else ever sees it. Between two consoles running this port that is a
-// hole rather than a decision, so a guest says it with the shape later
-// protocols chose for it -- a Place at (-1, 255, -1) facing 255 -- and the
-// host fires the arrow. **Never sent to a Java server**; see
-// `NetPlay::allowExtensions`.
-inline constexpr int kUseItemFace = 255;
-Packet makePainting(i32 entityId, std::string_view title, i32 tileX, i32 tileY, i32 tileZ,
-                    int direction);
-Packet makeUseItem(int itemId);
-bool isUseItem(const Packet& place);
-
-// **The object type an arrow is announced under**, in a Vehicle Spawn from a
-// 3DAlpha host. a1.1.2's `gy.a(kj)` knows 1 (boat) and 10-12 (carts) only;
-// 60 is the number later versions gave `EntityArrow`, and it is used here at
-// the packet's own shape so nothing new has to be parsed. A host sends it
-// only to its own guests, never to a Java client.
-inline constexpr int kObjectArrow = 60;
-
 Packet makeInventory(int type, const WireStack* stacks, int count);
 // Position in 1/32 of a block and motion in 1/128 of a block per tick, the way
 // `ha(dx)` packs a thrown item: **the last three bytes are its velocity**, not a
 // rotation, which is how the server's `id.a(k)` reads them back.
 Packet makePickupSpawn(i32 entityId, int item, int count, i32 x, i32 y, i32 z, int motionX,
                        int motionY, int motionZ);
+// See `packet::Painting`. `title` is the art's name.
+Packet makePainting(i32 entityId, std::string_view title, i32 tileX, i32 tileY, i32 tileZ,
+                    int direction);
+// See `packet::TileOpen`/`packet::TileClose`.
+Packet makeTileOpen(i32 x, int y, i32 z);
+Packet makeTileClose(i32 x, int y, i32 z);
 Packet makeDisconnect(std::string_view reason);
 
 }  // namespace mc::net

@@ -128,10 +128,13 @@ TEST(the_shipped_ratio_covers_a_section_with_room_to_spare)
 
 TEST(a_ratio_too_fine_to_reach_the_top_reports_failure_rather_than_truncating)
 {
+    // 2^31, not 2^40: usize is 32 bits on both consoles, and 2^40 there is 0.
+    // At ratio 1.01 reaching 2^31 from 16 takes ~1,880 classes, far past
+    // kMaxClasses, so the top is just as unreachable.
     SizeClasses classes;
-    CHECK(!classes.build(16, usize(1) << 40, 1.01));
+    CHECK(!classes.build(16, usize(1) << 31, 1.01));
     CHECK_EQ(classes.count(), SizeClasses::kMaxClasses);
-    CHECK(classes.capacity() < (usize(1) << 40));
+    CHECK(classes.capacity() < (usize(1) << 31));
 }
 
 TEST(a_ratio_close_to_one_still_terminates)

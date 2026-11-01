@@ -19,7 +19,10 @@ constexpr double kLimit = 32000.0 / kUnits;
 constexpr float kPi = 3.1415927f;
 constexpr float kDegrees = kPi / 180.0f;
 
-constexpr u8 kSignShade = 255;
+// **Black ink.** The original passes colour 0 to `drawString`, and the font
+// sheet's glyphs are white, tinted by the vertex colour -- so 255 here drew
+// white text on the board.
+constexpr u8 kSignInk = 0;
 
 // The font sheet is 128 x 128 of 8-pixel cells, sixteen across.
 constexpr int kFontSheetEdge = texture::kFontEdge;
@@ -330,9 +333,9 @@ int buildSignText(const world::SignStore& store, const texture::FontImage& font,
                     v.face = 0;
                     v.u = fontUv(uv[c][0]);
                     v.v = fontUv(uv[c][1]);
-                    v.r = kSignShade;
-                    v.g = kSignShade;
-                    v.b = kSignShade;
+                    v.r = kSignInk;
+                    v.g = kSignInk;
+                    v.b = kSignInk;
                     v.light = light;
                     ++written;
                 }

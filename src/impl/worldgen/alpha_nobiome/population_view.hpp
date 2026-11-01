@@ -62,6 +62,9 @@
 // setBlock in the .cpp.
 
 #include "core/util/types.hpp"
+#include "core/world/chunk.hpp"
+
+#include <vector>
 
 namespace mc::worldgen {
 
@@ -75,6 +78,12 @@ public:
     // slowest -- column (ix, iz) is columns[ix * countZ + iz] and covers chunk
     // (originChunkX + ix, originChunkZ + iz).
     void reset(i32 originChunkX, i32 originChunkZ, int countX, int countZ, u8* const* columns);
+
+    // Where to note the cells whose `onBlockAdded` would schedule a tick: sand,
+    // gravel and moving fluids. `Chunk.setBlock` runs that hook on every write
+    // in a non-multiplayer world, which the raw store below does not. Null
+    // (the default) records nothing. Not cleared by `reset`.
+    void setAddedSink(std::vector<world::PendingAdd>* sink) { added_ = sink; }
 
     // Absolute block coordinates. Reads outside the window, or outside
     // [0, 128) in y, come back as air -- which is what a generator testing for
@@ -148,6 +157,7 @@ private:
     int countZ_ = 0;
     u32 refusedOutOfWindow_ = 0;
     u32 writtenColumns_ = 0;
+    std::vector<world::PendingAdd>* added_ = nullptr;
 };
 
 }  // namespace mc::worldgen

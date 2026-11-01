@@ -481,9 +481,18 @@ void ChunkGenerator::populate(i32 px, i32 pz)
     // on the generation worker.
     sideEffects_.spawners.clear();
     sideEffects_.chests.clear();
+    added_.clear();
+    view_.setAddedSink(&added_);
     populateChunk(provider_, view_, px, pz, &sideEffects_);
+    view_.setAddedSink(nullptr);
     ++stats_.populated;
     recordDungeons();
+    for (const world::PendingAdd& add : added_) {
+        Entry* e = find(add.x >> 4, add.z >> 4);
+        if (e != nullptr) {
+            e->pendingAdds.push_back(add);
+        }
+    }
 
     stats_.refusedOutOfWindow += view_.refusedOutOfWindow();
 
@@ -605,6 +614,7 @@ bool ChunkGenerator::finish(i32 chunkX, i32 chunkZ, world::ChunkColumn* out)
 
     Entry* centre = find(chunkX, chunkZ);
     out->tileEntities = centre->tileEntities;
+    out->pendingAdds = centre->pendingAdds;
     centre->delivered = true;
     return true;
 }
@@ -677,7 +687,7 @@ void ChunkGenerator::growCacheTo(int cacheColumns)
     }
 }
 
-void ChunkGenerator::flush()
+void ChunkGenerator::flush(FlushStep step, void* ctx)
 {
     if (store_.deliver == nullptr) {
         return;
@@ -685,6 +695,18 @@ void ChunkGenerator::flush()
     if (handover_ == nullptr) {
         handover_ = std::make_unique<world::ChunkColumn>();
     }
+
+    // How many there are, for the caller's counter. Only asked for when someone
+    // is watching.
+    u32 total = 0;
+    if (step != nullptr) {
+        for (const Entry& e : entries_) {
+            if (e.used && !e.delivered && e.popMask == kFinalMask && lightable(e.x, e.z)) {
+                ++total;
+            }
+        }
+    }
+    u32 done = 0;
 
     // A pass over the cache rather than a queue, because finishing one column
     // does not make another finishable -- only a population does, and those
@@ -701,6 +723,9 @@ void ChunkGenerator::flush()
         }
         finish(x, z, handover_.get());
         store_.deliver(store_.context, *handover_);
+        if (step != nullptr) {
+            step(ctx, ++done, total);
+        }
     }
 }
 

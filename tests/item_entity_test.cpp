@@ -118,9 +118,34 @@ TEST(a_players_own_drop_cannot_be_walked_back_into_for_two_seconds)
         g.items.tick(g.world.w());
     }
     CHECK_EQ(g.items.collect(everywhere, inventory), 1);
-    CHECK_EQ(g.items.count(), 0);
     CHECK_EQ(int(inventory.main[0].id), int(stoneItem()));
     CHECK_EQ(int(inventory.main[0].count), 1);
+
+    // Taken, but still flying to the player for kCollectTicks.
+    CHECK_EQ(g.items.count(), 1);
+    CHECK(g.items[0].collecting());
+    g.run(entity::kCollectTicks);
+    CHECK_EQ(g.items.count(), 0);
+}
+
+TEST(a_collected_stack_cannot_be_taken_twice_or_removed_as_a_loose_drop)
+{
+    Ground g;
+    CHECK(g.items.spawn(g.world.w(), 0.5, 66.0, 0.5, stoneItem(), 1, 0, 0));
+    Inventory inventory;
+    inventory.clear();
+    const AABB everywhere{-8.0, 60.0, -8.0, 8.0, 80.0, 8.0};
+    CHECK_EQ(g.items.collect(everywhere, inventory), 1);
+    // Mid-flight: not collectable again, and not swept up as an unowned drop
+    // (which a guest would forward to the server as a fresh throw).
+    CHECK_EQ(g.items.collect(everywhere, inventory), 0);
+    CHECK_EQ(int(inventory.main[0].count), 1);
+    CHECK(g.items[0].collecting());
+    g.run(1);
+    CHECK_EQ(g.items.removeUnowned(), 0);
+    CHECK_EQ(g.items.count(), 1);
+    g.run(entity::kCollectTicks);
+    CHECK_EQ(g.items.count(), 0);
 }
 
 TEST(a_thrown_item_leaves_the_hand_below_the_eye_and_goes_where_it_is_looking)

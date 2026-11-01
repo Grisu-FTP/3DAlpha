@@ -73,6 +73,10 @@ struct IconSheets {
 void drawItemIcon(const Surface& surface, int x, int y, int size, const IconSheets& sheets,
                   item::ItemId id);
 
+// One tile of a 256x256 sheet as a `size` x `size` icon, for pictures that are
+// not an item: the empty-armour outline in an armour slot.
+void drawSheetTile(const Surface& surface, int x, int y, int size, const u8* sheet, int tile);
+
 // Whether this item is drawn as a cube. Exposed because the layout wants to
 // know: a cube fills its box corner to corner and a flat sprite does not, so a
 // row of mixed icons reads better when the flat ones are inset by a pixel.

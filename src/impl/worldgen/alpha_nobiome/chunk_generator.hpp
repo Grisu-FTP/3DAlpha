@@ -266,7 +266,13 @@ public:
     // provide() calls this itself; it is public because a caller that has
     // stopped requesting columns -- the player standing still -- still wants
     // the last sweep's work put away rather than held.
-    void flush();
+    //
+    // **`step` is told how far it has got after each column**, because a world
+    // exit hands over every column still held and each is a lighting pass: on
+    // the console that is long enough to look like a hang with nothing drawn.
+    // The caller draws a frame from it.
+    using FlushStep = void (*)(void* ctx, u32 done, u32 total);
+    void flush(FlushStep step = nullptr, void* ctx = nullptr);
 
     // **Forgets everything further than `radius` from (centreX, centreZ)**, and
     // it is what keeps the cache from growing without bound.
@@ -370,6 +376,10 @@ private:
         // Empty for the overwhelming majority of entries: eight tries a chunk
         // and nearly all of them refused.
         std::vector<world::TileEntity> tileEntities;
+
+        // Sand, gravel and spring cells a pass wrote into this column, owed an
+        // `onBlockAdded` -- see ChunkColumn::pendingAdds. Handed over by `finish`.
+        std::vector<world::PendingAdd> pendingAdds;
     };
 
     static constexpr u8 kFinalMask = 0x0F;
@@ -484,6 +494,7 @@ private:
     // Reused across populations so a chunk with no dungeon in it -- nearly
     // every one -- allocates nothing on the generation worker.
     PopulationSideEffects sideEffects_;
+    std::vector<world::PendingAdd> added_;  // scratch for the pass in flight
     std::unique_ptr<world::ChunkColumn> loaded_;
 
     Stats stats_;

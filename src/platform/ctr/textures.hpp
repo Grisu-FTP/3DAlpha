@@ -134,12 +134,14 @@ public:
 
     bool hasEntities() const { return entityReady_; }
     bool hasArt() const { return artReady_; }
+    bool hasArmour() const { return armourReady_; }
 
     void bindEntity(int unit) const
     {
         C3D_TexBind(unit, const_cast<C3D_Tex*>(&entity_));
     }
     void bindArt(int unit) const { C3D_TexBind(unit, const_cast<C3D_Tex*>(&art_)); }
+    void bindArmour(int unit) const { C3D_TexBind(unit, const_cast<C3D_Tex*>(&armour_)); }
 
     void bindItems(int unit) const
     {
@@ -279,6 +281,7 @@ private:
     bool iconsReady_ = false;
     C3D_Tex entity_{};
     C3D_Tex art_{};
+    C3D_Tex armour_{};
     C3D_Tex font_{};
     C3D_Tex particles_{};
     C3D_Tex waterOverlay_{};
@@ -312,6 +315,7 @@ private:
     bool entityReady_ = false;
     std::vector<u8> ownSkin_;
     bool artReady_ = false;
+    bool armourReady_ = false;
     bool fontReady_ = false;
     bool particlesReady_ = false;
     bool waterOverlayReady_ = false;

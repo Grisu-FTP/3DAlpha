@@ -8,6 +8,7 @@
 #include "core/entity/block_contact.hpp"
 #include "core/entity/fire_entry.hpp"
 #include "core/entity/sweep.hpp"
+#include "core/entity/wire_settle.hpp"
 #include "core/tick/tick_world.hpp"
 #include "core/util/math_helper.hpp"
 
@@ -419,11 +420,14 @@ void MinecartSystem::collideWithPlayer(const AABB& playerBox, double playerX, do
         }
         dx /= distance;
         dz /= distance;
-        const double push = (distance < 1.0 ? 1.0 : 1.0 / distance) * 0.1;
+        // `oc.f(kh)`: the same 0.1 shove the carts give each other, then
+        // `* (1 - entityCollisionReduction)` (0) and `* 0.5`. **It is not
+        // equal and opposite**: the cart takes `-d` and the player `d / 4`.
+        const double push = (distance < 1.0 ? 1.0 : 1.0 / distance) * 0.1 * 0.5;
         dx *= push;
         dz *= push;
-        *playerMotionX += dx;
-        *playerMotionZ += dz;
+        *playerMotionX += dx / 4.0;
+        *playerMotionZ += dz / 4.0;
         c.motionX -= dx;
         c.motionZ -= dz;
     }
@@ -450,6 +454,9 @@ bool MinecartSystem::attack(const tick::TickWorld& world, int index, int amount)
         return false;
     }
     Minecart& c = carts_[index];
+    if (guest_ && c.remote) {
+        return true;  // the host's; see `setGuest`
+    }
     c.forwardDirection = -c.forwardDirection;
     c.timeSinceHit = kVehicleHitTime;
     c.damage += amount * kVehicleDamageScale;
@@ -536,6 +543,156 @@ void MinecartSystem::removeAt(int index)
     carts_.swapRemove(index);
 }
 
+int MinecartSystem::indexOfEntity(i32 entityId) const
+{
+    if (entityId == 0) {
+        return -1;
+    }
+    for (int i = 0; i < carts_.size(); ++i) {
+        if (carts_[i].alive && carts_[i].entityId == entityId) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool MinecartSystem::spawnRemote(const tick::TickWorld& world, i32 entityId, MinecartType type,
+                                 double x, double y, double z)
+{
+    removeById(entityId);
+    Minecart* slot = carts_.push();
+    if (slot == nullptr) {
+        ++refused_;
+        return false;
+    }
+    Minecart c{};
+    c.alive = true;
+    c.type = type;
+    c.id = nextId_++;
+    c.entityId = entityId;
+    c.remote = true;
+    c.forwardDirection = 1;
+    // The wire's `posY`, not `oc(cn, DDDI)`'s `+ yOffset` -- see
+    // `BoatSystem::spawnRemote`.
+    c.setPosition(x, y, z);
+    c.prevX = x;
+    c.prevY = y;
+    c.prevZ = z;
+    c.track.reset(x, y, z, 0.0f);
+    c.light = packedLightAt(world, x, y, z);
+    *slot = c;
+    return true;
+}
+
+bool MinecartSystem::placeRemote(i32 entityId, double x, double y, double z, float yaw)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || !carts_[index].remote) {
+        return false;
+    }
+    auto& c = carts_[index];
+    if (c.track.aim(x, y, z, yaw)) {
+        c.yaw = c.prevYaw = yaw;
+    }
+    return true;
+}
+
+bool MinecartSystem::removeById(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    removeAt(index);
+    return true;
+}
+
+bool MinecartSystem::hurtRemote(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    Minecart& c = carts_[index];
+    c.forwardDirection = -c.forwardDirection;
+    c.timeSinceHit = kVehicleHitTime;
+    c.damage += kVehicleDamageScale;
+    return true;
+}
+
+bool MinecartSystem::setRemoteBurning(i32 entityId, bool burning)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || !carts_[index].remote) {
+        return false;
+    }
+    carts_[index].fuel = burning ? 1 : 0;
+    return true;
+}
+
+bool MinecartSystem::driveHere(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || carts_[index].type != MinecartType::Rideable) {
+        return false;
+    }
+    Minecart& c = carts_[index];
+    c.remote = false;
+    c.riderId = 0;
+    c.ridden = false;
+    c.motionX = c.motionY = c.motionZ = 0.0;
+    c.track.reset(c.x, c.y, c.z, c.yaw);
+    c.settle = true;
+    return mount(index);
+}
+
+bool MinecartSystem::driveElsewhere(i32 entityId, i32 riderId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    if (ridden_ == index) {
+        ridden_ = -1;
+    }
+    Minecart& c = carts_[index];
+    c.remote = true;
+    c.riderId = riderId;
+    c.ridden = riderId != 0;
+    c.motionX = c.motionY = c.motionZ = 0.0;
+    c.track.reset(c.x, c.y, c.z, c.yaw);
+    return true;
+}
+
+bool MinecartSystem::takeBack(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    // From rest where the rider left it: a cart on a slope rolls off again by
+    // the slope push alone, which is what one let go of here would do.
+    Minecart& c = carts_[index];
+    c.remote = false;
+    c.riderId = 0;
+    c.ridden = ridden_ == index;
+    c.motionX = c.motionY = c.motionZ = 0.0;
+    c.track.reset(c.x, c.y, c.z, c.yaw);
+    c.settle = true;
+    return true;
+}
+
+bool MinecartSystem::setRider(i32 entityId, i32 riderId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || ridden_ == index) {
+        return false;
+    }
+    carts_[index].riderId = riderId;
+    carts_[index].ridden = riderId != 0;
+    return true;
+}
+
 void MinecartSystem::tick(const tick::TickWorld& world, const VehicleRider& rider)
 {
     for (int index = 0; index < carts_.size();) {
@@ -545,6 +702,49 @@ void MinecartSystem::tick(const tick::TickWorld& world, const VehicleRider& ride
                                  MathHelper::floorDouble(c.z) >> 4)) {
             ++index;
             continue;
+        }
+
+        // **`oc.e_()`'s multiplayer branch**, which is the whole of what a
+        // client does with a cart it is told about: a share of the way to the
+        // server's position, and return. The rocking a hit started runs down
+        // as well -- the jar's client never hears of a hit, this one does.
+        if (c.remote) {
+            if (c.timeSinceHit > 0) {
+                --c.timeSinceHit;
+            }
+            if (c.damage > 0) {
+                --c.damage;
+            }
+            c.prevX = c.x;
+            c.prevY = c.y;
+            c.prevZ = c.z;
+            c.prevYaw = c.yaw;
+            double px = c.x;
+            double py = c.y;
+            double pz = c.z;
+            float yaw = c.yaw;
+            if (c.track.step(&px, &py, &pz, &yaw)) {
+                c.setPosition(px, py, pz);
+                c.yaw = yaw;
+            }
+            c.light = packedLightAt(world, c.x, c.y, c.z);
+            // The chimney, on the host's word -- see `setRemoteBurning`.
+            if (c.type == MinecartType::Furnace && c.fuel > 0 && rand_.nextInt(4) == 0) {
+                world.spawnParticle(int(entity::ParticleKind::LargeSmoke), c.x, c.y + 0.8,
+                                    c.z);
+            }
+            ++index;
+            continue;
+        }
+
+        // Out of the floor the wire's rounding sank it into, once, before the
+        // first sweep can let it fall through. See core/entity/wire_settle.hpp.
+        if (c.settle) {
+            c.settle = false;
+            const double lift = wireSettleLift(world, c.box);
+            if (lift > 0.0) {
+                c.setPosition(c.x, c.y + lift, c.z);
+            }
         }
 
         if (c.timeSinceHit > 0) {

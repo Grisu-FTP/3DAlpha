@@ -190,6 +190,53 @@ bool Explosion::effectOn(const TickWorld& world, double ex, double ey, double ez
     return true;
 }
 
+// Two particles per cell, from a random point inside it: an `explode` **halfway
+// back towards the centre of the blast** and a `smoke` at the point itself, both
+// thrown outward at a speed that falls off with distance. The halving is what
+// makes the fireball read as a ball and the smoke as a shell around it.
+void Explosion::puffCell(TickWorld& world, i32 bx, int by, i32 bz) const
+{
+    JavaRandom& rand = world.random();
+    const double px = double(bx) + double(rand.nextFloat());
+    const double py = double(by) + double(rand.nextFloat());
+    const double pz = double(bz) + double(rand.nextFloat());
+    double ox = px - x_;
+    double oy = py - y_;
+    double oz = pz - z_;
+    const double length = MathHelper::sqrtDouble(ox * ox + oy * oy + oz * oz);
+    ox /= length;
+    oy /= length;
+    oz /= length;
+    // `0.5 / (distance / strength + 0.1)` times a product of two draws plus 0.3
+    // -- so a cell near the middle is thrown hard and one at the rim barely
+    // moves.
+    const double speed = 0.5 / (length / double(strength_) + 0.1)
+                         * double(rand.nextFloat() * rand.nextFloat() + 0.3f);
+    const double mx = ox * speed;
+    const double my = oy * speed;
+    const double mz = oz * speed;
+    world.spawnParticle(int(ParticleKind::Explode), (px + x_) / 2.0, (py + y_) / 2.0,
+                        (pz + z_) / 2.0, mx, my, mz);
+    world.spawnParticle(int(ParticleKind::Smoke), px, py, pz, mx, my, mz);
+}
+
+void Explosion::puff(TickWorld& world)
+{
+    // The same walk `destroy` takes, back to front, so the draws land on the
+    // same cells in the same order.
+    for (int index = kExplosionSpan * kExplosionSpan * kExplosionSpan - 1; index >= 0;
+         --index) {
+        const int iz = index % kExplosionSpan;
+        const int iy = (index / kExplosionSpan) % kExplosionSpan;
+        const int ix = index / (kExplosionSpan * kExplosionSpan);
+        if (!marked(ix, iy, iz)) {
+            continue;
+        }
+        puffCell(world, originX_ + ix - kExplosionMaxRadius, originY_ + iy - kExplosionMaxRadius,
+                 originZ_ + iz - kExplosionMaxRadius);
+    }
+}
+
 void Explosion::destroy(TickWorld& world)
 {
     // Back to front, which is `for (i = list.size() - 1; i >= 0; i--)`. The
@@ -215,36 +262,7 @@ void Explosion::destroy(TickWorld& world)
         // out anyway. `je` runs its particle block on every recorded cell and
         // only then asks whether there is a block there to drop, so a blast
         // through open air still smokes.
-        //
-        // Two particles per cell, from a random point inside it: an `explode`
-        // **halfway back towards the centre of the blast** and a `smoke` at the
-        // point itself, both thrown outward at a speed that falls off with
-        // distance. The halving is what makes the fireball read as a ball and
-        // the smoke as a shell around it.
-        {
-            JavaRandom& rand = world.random();
-            const double px = double(bx) + double(rand.nextFloat());
-            const double py = double(by) + double(rand.nextFloat());
-            const double pz = double(bz) + double(rand.nextFloat());
-            double ox = px - x_;
-            double oy = py - y_;
-            double oz = pz - z_;
-            const double length = MathHelper::sqrtDouble(ox * ox + oy * oy + oz * oz);
-            ox /= length;
-            oy /= length;
-            oz /= length;
-            // `0.5 / (distance / strength + 0.1)` times a product of two draws
-            // plus 0.3 -- so a cell near the middle is thrown hard and one at
-            // the rim barely moves.
-            const double speed = 0.5 / (length / double(strength_) + 0.1)
-                                 * double(rand.nextFloat() * rand.nextFloat() + 0.3f);
-            const double mx = ox * speed;
-            const double my = oy * speed;
-            const double mz = oz * speed;
-            world.spawnParticle(int(ParticleKind::Explode), (px + x_) / 2.0,
-                                (py + y_) / 2.0, (pz + z_) / 2.0, mx, my, mz);
-            world.spawnParticle(int(ParticleKind::Smoke), px, py, pz, mx, my, mz);
-        }
+        puffCell(world, bx, by, bz);
 
         const block::BlockId id = world.blockAt(bx, by, bz);
         if (id == block::kAir) {

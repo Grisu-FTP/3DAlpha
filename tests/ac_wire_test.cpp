@@ -150,6 +150,7 @@ TEST(every_server_message_decodes_to_what_the_server_put_in_it)
     CHECK(msg.hasAccount);
     CHECK_EQ(msg.accountHandle, std::string("Grisu"));
     CHECK(!msg.firstClaim);
+    CHECK(msg.hasKeyFingerprint);
     CHECK_EQ(msg.keyFingerprint, std::string("abcd-ef01-2345-6789"));
     CHECK_EQ(int(msg.transferPort), 7719);
 
@@ -163,6 +164,12 @@ TEST(every_server_message_decodes_to_what_the_server_put_in_it)
     // A server with sharing off says so, rather than leaving a console to find
     // a closed port.
     CHECK_EQ(int(msg.transferPort), 0);
+
+    // Protocol 5: a password login has no key, so the fingerprint is absent
+    // rather than empty -- and the u16 behind it must still land in place.
+    CHECK(decodes(test::kAcAuthOkPc, sizeof(test::kAcAuthOkPc), &msg));
+    CHECK(!msg.hasKeyFingerprint);
+    CHECK(msg.keyFingerprint.empty());
 
     CHECK(decodes(test::kAcAuthFail, sizeof(test::kAcAuthFail), &msg));
     CHECK(msg.kind == ServerKind::AuthFail);

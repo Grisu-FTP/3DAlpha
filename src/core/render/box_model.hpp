@@ -131,7 +131,11 @@ Placement placeAt(double x, double y, double z, float yawRadians, float scale = 
 // `fallRadians` is a dying body's turn about the model's Z -- `deathFall` --
 // which `rotateCorpse` applies inside the yaw and before the flip's lift, so
 // the body tips over about its feet.
-Placement placeModel(double x, double y, double z, float yawRadians, float fallRadians = 0.0f);
+//
+// `scale` is `preRenderCallback`'s `glScalef`, which runs after the flip and
+// before the lift and so multiplies both -- 0.9375 for a player (`bu.b`).
+Placement placeModel(double x, double y, double z, float yawRadians, float fallRadians = 0.0f,
+                     float scale = 1.0f);
 
 // **`dn.a(ge, F)`'s fall**, in radians: `sqrt((deathTime + partial - 1) / 20 *
 // 1.6)`, clamped at one, of ninety degrees -- quickly at first, and flat on its

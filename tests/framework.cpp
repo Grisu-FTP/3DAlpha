@@ -1,6 +1,7 @@
 #include "framework.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace mc::test {
@@ -21,6 +22,13 @@ std::vector<Case>& registry()
 int failures()
 {
     return g_failures;
+}
+
+int slowScale()
+{
+    const char* value = std::getenv("MC_TEST_SLOW");
+    const int scale = value != nullptr ? std::atoi(value) : 1;
+    return scale > 1 ? scale : 1;
 }
 
 void reportFailure(const char* file, int line, const std::string& message)

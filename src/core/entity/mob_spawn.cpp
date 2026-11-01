@@ -422,11 +422,7 @@ int runSpawner(tick::TickWorld& world, MobSystem& mobs, JavaRandom& rand,
                     // No player within 24 blocks, and not within 24 of the
                     // world's spawn point -- so a player standing in a
                     // field never watches one appear.
-                    const double px = context.playerX - fx;
-                    const double py = context.playerY - fy;
-                    const double pz = context.playerZ - fz;
-                    if (px * px + py * py + pz * pz
-                        < kSpawnPlayerClear * kSpawnPlayerClear) {
+                    if (anyPlayerWithin(context, fx, fy, fz, kSpawnPlayerClear)) {
                         ++count.tooNear;
                         continue;
                     }

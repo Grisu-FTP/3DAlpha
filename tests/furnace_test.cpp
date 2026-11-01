@@ -226,3 +226,52 @@ TEST(a_double_chest_puts_the_lower_coordinate_half_first)
     CHECK_EQ(int(parts[0].x), kX);
     CHECK_EQ(int(parts[1].x), kX + 1);
 }
+
+// **Somebody else's right click opens nothing on this screen.** A host applies
+// a guest's place through the same `blockActivated` its own hand goes through,
+// and nothing in that call says whose click it was -- so a guest right-clicking
+// a chest opened that chest on the *host's* television. The click still lands;
+// only the screen is held back. See `TickWorld::SilenceContainers` and
+// `cafe::HostPlay::placeBlock`.
+TEST(a_silenced_world_takes_the_click_and_opens_no_screen)
+{
+    Opened opened;
+    SceneWorld scene(0, 0);
+    scene.w().setContainerSink(&Opened::sink, &opened);
+    scene.place(kX, kY, kZ, block::BlockId(Block::Chest), 0);
+    {
+        TickWorld::SilenceContainers quiet(scene.w());
+        // True: the block took the click, exactly as it does for the host's own
+        // hand. A click the guest's own client was told was refused would be a
+        // block they could then place into.
+        CHECK(tick::blockActivated(scene.w(), kX, kY, kZ));
+        CHECK_EQ(opened.count, 0);
+    }
+    // ...and the sink is still installed, so the host's next click of its own
+    // opens the chest. Clearing and reinstating the sink instead would be one
+    // early return away from losing it for the rest of the session.
+    CHECK(tick::blockActivated(scene.w(), kX, kY, kZ));
+    CHECK_EQ(opened.count, 1);
+}
+
+TEST(silencing_restores_whatever_it_found_rather_than_unsilencing)
+{
+    // Nested, because `placeBlock` is reached from inside a pump that may
+    // already be inside one: the inner scope must put the outer silence back
+    // rather than clear it.
+    Opened opened;
+    SceneWorld scene(0, 0);
+    scene.w().setContainerSink(&Opened::sink, &opened);
+    scene.place(kX, kY, kZ, block::BlockId(Block::CraftingTable), 0);
+    {
+        TickWorld::SilenceContainers outer(scene.w());
+        {
+            TickWorld::SilenceContainers inner(scene.w());
+            CHECK(tick::blockActivated(scene.w(), kX, kY, kZ));
+        }
+        CHECK(tick::blockActivated(scene.w(), kX, kY, kZ));
+        CHECK_EQ(opened.count, 0);
+    }
+    CHECK(tick::blockActivated(scene.w(), kX, kY, kZ));
+    CHECK_EQ(opened.count, 1);
+}

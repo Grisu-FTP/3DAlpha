@@ -79,6 +79,12 @@ public:
     // owes nothing and has not failed to save.
     void setCounts(u32 done, u32 total);
 
+    // **The phase a save is in**, or null for none. With a total of 0 the phase is
+    // not counted in anything: the bar shows no number and the line under it is the
+    // phase's name, rather than the "already saved" that total means otherwise.
+    // Borrowed for the length of the next present() only.
+    void setStage(const char* stage);
+
     // The line under the bar. Null clears it. Borrowed for the length of the
     // next present() only, so a caller may point it at a stack buffer.
     void setNote(const char* note);
@@ -107,6 +113,7 @@ private:
     void label(const char* text, float x, float y, float scale, u32 colour, u32 flags);
 
     C2D_TextBuf textBuf_ = nullptr;
+    const char* stage_ = nullptr;
 
     Kind kind_ = Kind::Generating;
 

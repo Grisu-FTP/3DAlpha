@@ -114,6 +114,11 @@ struct AtlasImage {
     // never empty; the stand-in is a grid of framed cells.
     std::vector<u8> artRgba;
 
+    // **The ten `armor/<material>_<layer>.png` pages**, `kArmourSheetBytes`, for
+    // the player's own body in the third-person views. See
+    // core/texture/entity_skins.hpp. A page the pack lacks is transparent.
+    std::vector<u8> armourRgba;
+
     // **`gui/icons.png`**, 256 x 256, the sheet the hearts, the armour row and
     // the air bubbles are cut from -- see core/texture/icon_sheet.hpp. Never
     // empty for a built atlas: Dev Art, and a pack that has no such file or one

@@ -80,6 +80,83 @@ bool PrimedTntSystem::spawn(const tick::TickWorld& world, i32 x, int y, i32 z, i
     return true;
 }
 
+int PrimedTntSystem::indexOfEntity(i32 entityId) const
+{
+    if (entityId == 0) {
+        return -1;
+    }
+    for (int i = 0; i < items_.size(); ++i) {
+        if (items_[i].alive() && items_[i].entityId == entityId) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool PrimedTntSystem::spawnRemote(const tick::TickWorld& world, i32 entityId, double x,
+                                  double y, double z, int fuse)
+{
+    removeById(entityId);
+    PrimedTnt* e = allocate();
+    if (e == nullptr) {
+        return false;
+    }
+    *e = PrimedTnt{};
+    e->active = true;
+    e->fuse = fuse;
+    e->entityId = entityId;
+    e->remote = true;
+    e->setPosition(x, y, z);
+    e->track.reset(x, y, z, 0.0f);
+    e->light = packedLightAt(world, x, y, z);
+    return true;
+}
+
+bool PrimedTntSystem::placeRemote(i32 entityId, double x, double y, double z)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || !items_[index].remote) {
+        return false;
+    }
+    items_[index].track.aim(x, y, z, 0.0f);
+    return true;
+}
+
+bool PrimedTntSystem::removeById(i32 entityId)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    removeAt(index);
+    return true;
+}
+
+bool PrimedTntSystem::setRemoteFuse(i32 entityId, int fuse)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0 || !items_[index].remote) {
+        return false;
+    }
+    items_[index].fuse = fuse < 0 ? 0 : fuse;
+    return true;
+}
+
+bool PrimedTntSystem::takeRemote(i32 entityId, double* x, double* y, double* z)
+{
+    const int index = indexOfEntity(entityId);
+    if (index < 0) {
+        return false;
+    }
+    // **Where the host said, not where this copy has walked to**: the blast is
+    // the host's and its centre is the host's last word.
+    *x = items_[index].track.x;
+    *y = items_[index].track.y;
+    *z = items_[index].track.z;
+    removeAt(index);
+    return true;
+}
+
 void PrimedTntSystem::tick(tick::TickWorld& world, MobSystem* mobs,
                            const MobSurroundings* around)
 {
@@ -88,6 +165,29 @@ void PrimedTntSystem::tick(tick::TickWorld& world, MobSystem* mobs,
         // Restored entities can precede the chunks beneath them.
         if (!world.chunkResident(MathHelper::floorDouble(e.x) >> 4,
                                  MathHelper::floorDouble(e.z) >> 4)) {
+            ++i;
+            continue;
+        }
+
+        // **The host's TNT walks, smokes and swells here, and goes off there.**
+        // The fuse runs down so the flash and the swell are drawn, and stops at
+        // nothing rather than going off: the host's Destroy Entity is the blast
+        // (`goOffRemote`), and a guest that ran out first holds the last frame.
+        if (e.remote) {
+            e.prevX = e.x;
+            e.prevY = e.y;
+            e.prevZ = e.z;
+            double px = e.x;
+            double py = e.y;
+            double pz = e.z;
+            if (e.track.step(&px, &py, &pz, nullptr)) {
+                e.moveTo(px, py, pz);
+            }
+            e.light = packedLightAt(world, e.x, e.y, e.z);
+            if (e.fuse > 0) {
+                --e.fuse;
+                world.spawnParticle(int(ParticleKind::Smoke), e.x, e.y + 0.5, e.z);
+            }
             ++i;
             continue;
         }

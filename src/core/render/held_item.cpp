@@ -81,6 +81,15 @@ struct Transform {
         }
     }
 
+    void scale(float sx, float sy, float sz)
+    {
+        for (int i = 0; i < 3; ++i) {
+            m[i][0] *= sx;
+            m[i][1] *= sy;
+            m[i][2] *= sz;
+        }
+    }
+
     void scale(float s)
     {
         for (int i = 0; i < 3; ++i) {
@@ -493,6 +502,14 @@ float HeldItemState::swingProgress(float partial) const
     return prevSwing_ + f * partial;
 }
 
+// `Item.isFull3D` (`di.a()Z`): the stick, and the three classes that override
+// it -- `bs` (shovels, pickaxes, axes), `iu` (swords) and `fu` (hoes).
+static bool isFull3D(item::ItemId id)
+{
+    return (id >= 256 && id <= 258) || (id >= 267 && id <= 280) || (id >= 283 && id <= 286)
+           || (id >= 290 && id <= 294);
+}
+
 HeldItemMesh buildHeldItem(item::ItemId item, float equipped, float swing, float aspect,
                            u8 light, mesh::DetailVertex* out, int max)
 {
@@ -608,6 +625,84 @@ HeldItemMesh buildHeldItem(item::ItemId item, float equipped, float swing, float
     }
 
     result.vertices = addSprite(icon, t, light, out, max);
+    return result;
+}
+
+HeldSheet heldSheetOf(item::ItemId item)
+{
+    return item < 256 ? HeldSheet::Terrain : HeldSheet::Items;
+}
+
+HeldItemMesh buildHeldItemInHand(item::ItemId item, const ModelPart& arm, const Placement& place,
+                                 u8 light, mesh::DetailVertex* out, int max)
+{
+    HeldItemMesh result;
+    if (out == nullptr || max < 4 || item == 0 || !item::def(item).known) {
+        return result;
+    }
+    const item::ItemDef& def = item::def(item);
+    AABB boxes[block::kMaxRenderBoxes];
+    int faceMask[block::kMaxRenderBoxes];
+    const u16 block = blockOf(def, item);
+    int boxCount = 0;
+    if (def.sheet == item::IconSheet::Terrain && block != 0) {
+        boxCount = block::itemRenderBoxes(block::BlockId(block), boxes, block::kMaxRenderBoxes,
+                                          faceMask);
+    }
+    const bool asBlock = boxCount > 0;
+    result.sheet = heldSheetOf(item);
+
+    // The model's own space is `place`'s axes per *block*, since the original
+    // draws parts at 1/16 and the placement already carries that factor.
+    Transform t;
+    for (int i = 0; i < 3; ++i) {
+        t.m[i][0] = place.ax[i] / kModelUnit;
+        t.m[i][1] = place.ay[i] / kModelUnit;
+        t.m[i][2] = place.az[i] / kModelUnit;
+    }
+    t.m[0][3] = float(place.x);
+    t.m[1][3] = float(place.y);
+    t.m[2][3] = float(place.z);
+
+    // `ModelPart.postRender(0.0625)`, then the move out to the hand.
+    t.translate(arm.pivotX * kModelUnit, arm.pivotY * kModelUnit, arm.pivotZ * kModelUnit);
+    t.rotateZ(arm.angleZ * (180.0f / kPi));
+    t.rotateY(arm.angleY * (180.0f / kPi));
+    t.rotateX(arm.angleX * (180.0f / kPi));
+    t.translate(-0.0625f, 0.4375f, 0.0625f);
+
+    if (asBlock && item < 256) {
+        constexpr float f = 0.5f * 0.75f;
+        t.translate(0.0f, 0.1875f, -0.3125f);
+        t.rotateX(20.0f);
+        t.rotateY(45.0f);
+        t.scale(f, -f, f);
+        t.translate(-0.5f, -0.5f, -0.5f);
+        const block::BlockDef& bd = block::def(block::BlockId(block));
+        int written = 0;
+        for (int b = 0; b < boxCount; ++b) {
+            const int room = max - written;
+            if (room < boxVertices(faceMask[b])) {
+                break;
+            }
+            written += addBox(boxes[b], t, bd.faces, faceMask[b], light, out + written, room);
+        }
+        result.vertices = written;
+        return result;
+    }
+    if (isFull3D(item)) {
+        t.translate(0.0f, 0.1875f, 0.0f);
+        t.scale(0.625f, -0.625f, 0.625f);
+        t.rotateX(-100.0f);
+        t.rotateY(45.0f);
+    } else {
+        t.translate(0.25f, 0.1875f, -0.1875f);
+        t.scale(0.375f);
+        t.rotateZ(60.0f);
+        t.rotateX(-90.0f);
+        t.rotateZ(20.0f);
+    }
+    result.vertices = addSprite(int(def.icon), t, light, out, max);
     return result;
 }
 

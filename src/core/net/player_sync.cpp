@@ -3,6 +3,7 @@
 #include "core/net/player_sync.hpp"
 
 #include "core/entity/mob.hpp"
+#include "core/entity/player_body.hpp"
 
 #include <cmath>
 
@@ -85,6 +86,12 @@ bool readTeleport(const Packet& packet, Teleport* out)
     out->x = packet.real(0);
     out->eyeY = packet.real(1);
     out->z = packet.real(3);
+    // A server whose third number is not the feet -- nothing known does that,
+    // but a wild one would stand the player in the sky -- falls back to the eye.
+    const double feet = packet.real(2);
+    const double height = out->eyeY - feet;
+    out->feetY = height > 1.5 && height < 1.75 ? feet
+                                               : out->eyeY - double(entity::kEyeHeight);
     return true;
 }
 

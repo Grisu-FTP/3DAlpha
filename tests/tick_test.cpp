@@ -89,6 +89,12 @@ public:
         c->setBlockLight(int(x & 15), y, int(z & 15), v);
     }
 
+    // Leaves a block owing its `onBlockAdded`, as population does.
+    void owe(i32 x, int y, i32 z, mcver::Block b)
+    {
+        columnAt(this, x >> 4, z >> 4)->pendingAdds.push_back({x, z, u8(y), u8(bid(b))});
+    }
+
     // A flat floor of the given block at y, across every column held.
     void floorOf(mcver::Block b, int y)
     {
@@ -370,6 +376,20 @@ TEST(sand_falls_to_the_bottom_of_the_hole_under_it)
 
     CHECK_EQ((long long) t.get(0, 60, 0), (long long) bid(mcver::Block::Air));
     CHECK_EQ((long long) t.get(0, 51, 0), (long long) bid(mcver::Block::Sand));
+}
+
+TEST(gravel_population_left_over_air_falls_when_its_owed_tick_runs)
+{
+    TestWorld t;
+    t.floorOf(mcver::Block::Stone, 50);
+    t.set(0, 60, 0, mcver::Block::Gravel);  // written raw, as population does
+    t.owe(0, 60, 0, mcver::Block::Gravel);
+
+    const TickWorld::Centre centre{0, 0};
+    for (int i = 0; i < 10; ++i) t.w().tick(&centre, 1, 0);
+
+    CHECK_EQ((long long) t.get(0, 60, 0), (long long) bid(mcver::Block::Air));
+    CHECK_EQ((long long) t.get(0, 51, 0), (long long) bid(mcver::Block::Gravel));
 }
 
 TEST(sand_uses_its_own_tick_rate_of_three)

@@ -451,6 +451,46 @@ bool decodePlayerSkinPage(io::FileSystem& fs, std::string_view path, bool fromPa
     return true;
 }
 
+namespace {
+constexpr const char* kArmourFiles[kArmourMaterials][2] = {
+    {"armor/cloth_1.png", "armor/cloth_2.png"},
+    {"armor/chain_1.png", "armor/chain_2.png"},
+    {"armor/iron_1.png", "armor/iron_2.png"},
+    {"armor/diamond_1.png", "armor/diamond_2.png"},
+    {"armor/gold_1.png", "armor/gold_2.png"},
+};
+}  // namespace
+
+bool armourPageOrigin(int material, int layer, int* x, int* y)
+{
+    if (material < 0 || material >= kArmourMaterials || layer < 1 || layer > 2) {
+        return false;
+    }
+    const int index = material * 2 + (layer - 1);
+    *x = (index % 4) * kSkinPageWidth;
+    *y = (index / 4) * kSkinPageHeight;
+    return true;
+}
+
+void buildArmourSheet(io::FileSystem& fs, std::string_view packPath, std::vector<u8>* out)
+{
+    out->assign(kArmourSheetBytes, 0);
+    if (packPath.empty()) {
+        return;
+    }
+    for (int material = 0; material < kArmourMaterials; ++material) {
+        for (int layer = 1; layer <= 2; ++layer) {
+            int x = 0;
+            int y = 0;
+            if (armourPageOrigin(material, layer, &x, &y)) {
+                const Slot slot{x, y, kSkinPageWidth, kSkinPageHeight,
+                                kArmourFiles[material][layer - 1]};
+                pageFromPack(fs, packPath, slot, out, kArmourSheetEdge);
+            }
+        }
+    }
+}
+
 void buildArtSheet(io::FileSystem& fs, std::string_view packPath, std::vector<u8>* out)
 {
     buildDevArtArt(out);

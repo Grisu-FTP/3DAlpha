@@ -306,6 +306,7 @@ PackError buildAtlasInner(io::FileSystem& fs, std::string_view packPath, AtlasIm
     // than a boat with no skin. See core/texture/entity_skins.hpp.
     buildEntitySkins(fs, packPath, &out->entityRgba);
     buildArtSheet(fs, packPath, &out->artRgba);
+    buildArmourSheet(fs, packPath, &out->armourRgba);
 
     const PackError terrain = buildTerrainInner(fs, packPath, out);
     if (terrain != PackError::Ok) {
@@ -342,6 +343,7 @@ PackError buildAtlas(io::FileSystem& fs, std::string_view packPath, AtlasImage* 
     out->itemsRgba.clear();
     out->entityRgba.clear();
     out->artRgba.clear();
+    out->armourRgba.clear();
     out->iconsRgba.clear();
     out->sourceEdge = 0;
     return buildAtlasInner(fs, packPath, out);
@@ -353,6 +355,7 @@ PackError buildTerrainAtlas(io::FileSystem& fs, std::string_view packPath, Atlas
     out->itemsRgba.clear();
     out->entityRgba.clear();
     out->artRgba.clear();
+    out->armourRgba.clear();
     out->iconsRgba.clear();
     out->sourceEdge = 0;
     return buildTerrainInner(fs, packPath, out);

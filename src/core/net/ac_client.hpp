@@ -256,6 +256,8 @@ public:
     const ServerMsg& introduction() const { return introduction_; }
 
 private:
+    // Moves every timer by a gap long enough to be a suspension. See the .cpp.
+    void advanceClock(u32 nowMs);
     // What is waiting for an answer. One at a time: the server answers each
     // message it is sent, and a console with two errands in flight cannot tell
     // which `Error` belongs to which.

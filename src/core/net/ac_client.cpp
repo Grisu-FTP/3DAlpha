@@ -8,8 +8,8 @@ namespace mc::net::ac {
 
 namespace {
 
-// The game tag a session is filed under. Cross-play is allowed, and a player
-// should still be able to see what they are joining.
+// The game tag a session is filed under ("3ds", "wiiu" or "switch"). Cross-play
+// is allowed, and a player should still be able to see what they are joining.
 constexpr char kGame[] = "3ds";
 
 }  // namespace
@@ -164,8 +164,10 @@ void Client::sendPending(u32 nowMs)
         break;
     case Pending::List:
         msg.kind = ClientKind::ListSessions;
-        msg.hasGameFilter = true;
-        msg.game = kGame;
+        // **Every port's sessions, not this one's.** The filter is what a port
+        // that refuses cross-play would send; with it a console sees only
+        // sessions filed under its own tag, and the other ports never appear. Each listed session still carries its own tag.
+        msg.hasGameFilter = false;
         break;
     case Pending::Join:
         msg.kind = ClientKind::JoinRequest;
@@ -182,38 +184,51 @@ void Client::sendPending(u32 nowMs)
     transmit(msg);
 }
 
+// **Back from a suspension.** Nothing was read while the loop was stopped, so
+// the time away is nobody's silence: every clock that measures the server moves
+// forward by it. A request asked for during the gap was started on the old clock
+// and comes forward with them. The keep-alive goes now, because a NAT may have
+// dropped the mapping meanwhile and the server has to learn the new one before
+// it can answer anything.
+//
+// **Every way in that carries a time calls this first** -- `pump`, `onDatagram`
+// and `notePlaying` -- so that whatever it then stamps is already on the new
+// clock. `Connection::pump` reads the socket before it pumps, and when only
+// `pump` moved the clock, an answer read across a jump was stamped with the new
+// time and then moved forward by the jump again: the next check read four
+// billion milliseconds of silence and the login failed on the spot.
+void Client::advanceClock(u32 nowMs)
+{
+    const u32 gap = nowMs - clockMs_;
+    clockMs_ = nowMs;
+    if (gap <= kSuspendGapMs) {
+        return;
+    }
+    lastHeardMs_ += gap;
+    startedAtMs_ += gap;
+    sentAtMs_ += gap;
+    if (state_ == State::Ready && transport_ != nullptr) {
+        keepAliveAtMs_ = nowMs;
+        ClientMsg msg;
+        msg.kind = ClientKind::Keepalive;
+        std::memcpy(msg.token, token_, kTokenSize);
+        transmit(msg);
+    }
+    // The playtime ping is *not* sent here. The stretch is left open and its
+    // next ping simply arrives late: the server measures from the mark it holds
+    // and caps what a gap can buy, so a HOME menu visit credits the time it was
+    // worth without this end having to guess. Only the cadence moves, so the
+    // ping does not go out on the resuming frame.
+    stillPlayingAtMs_ = nowMs;
+}
+
 void Client::pump(u32 nowMs)
 {
     if (state_ == State::Idle || state_ == State::Failed || transport_ == nullptr) {
         return;
     }
 
-    // **Back from a suspension.** Nothing was read while the loop was stopped,
-    // so the time away is nobody's silence: every clock that measures the
-    // server moves forward by it. A request asked for during the gap was
-    // started on the old clock and comes forward with them. The keep-alive
-    // goes now, because a NAT may have dropped the mapping meanwhile and the
-    // server has to learn the new one before it can answer anything.
-    const u32 gap = nowMs - clockMs_;
-    clockMs_ = nowMs;
-    if (gap > kSuspendGapMs) {
-        lastHeardMs_ += gap;
-        startedAtMs_ += gap;
-        sentAtMs_ += gap;
-        if (state_ == State::Ready) {
-            keepAliveAtMs_ = nowMs;
-            ClientMsg msg;
-            msg.kind = ClientKind::Keepalive;
-            std::memcpy(msg.token, token_, kTokenSize);
-            transmit(msg);
-        }
-        // The playtime ping is *not* sent here. The stretch is left open and
-        // its next ping simply arrives late: the server measures from the mark
-        // it holds and caps what a gap can buy, so a HOME menu visit credits
-        // the time it was worth without this end having to guess. Only the
-        // cadence moves, so the ping does not go out on the resuming frame.
-        stillPlayingAtMs_ = nowMs;
-    }
+    advanceClock(nowMs);
 
     // A console that has heard nothing for this long has lost the server --
     // wireless off, a walk out of range, or a server that stopped. Said plainly
@@ -287,6 +302,9 @@ void Client::pump(u32 nowMs)
 
 void Client::notePlaying(u32 nowMs)
 {
+    if (state_ != State::Idle && state_ != State::Failed) {
+        advanceClock(nowMs);
+    }
     playingAtMs_ = nowMs;
     notedPlaying_ = true;
 }
@@ -297,6 +315,7 @@ bool Client::onDatagram(const u8* data, usize size, u32 nowMs)
     if (!decodeServer(data, size, &msg)) {
         return false;
     }
+    advanceClock(nowMs);
     lastHeardMs_ = nowMs;
 
     switch (msg.kind) {

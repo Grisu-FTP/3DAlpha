@@ -134,7 +134,8 @@ public:
     //     grid half-taken.
     //   * **The player's slots go into the chest**; into the furnace's input if
     //     they smelt and its fuel if they burn; onto the matching armour slot
-    //     on the inventory screen. Anything with nowhere of that kind to go
+    //     on the inventory screen; into the crafting grid on the inventory and
+    //     workbench screens. Anything with nowhere of that kind to go
     //     crosses between the backpack and the hand.
     //
     // A stack is topped up onto what is already there before an empty slot is

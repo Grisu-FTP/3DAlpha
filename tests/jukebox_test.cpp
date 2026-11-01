@@ -298,3 +298,44 @@ TEST(the_two_discs_carry_the_track_they_play)
     CHECK(item::recordTrack(kStoneItem) == nullptr);
     CHECK(item::recordTrack(0) == nullptr);
 }
+
+// ---------------------------------------------------------------------------
+// Another console's disc
+// ---------------------------------------------------------------------------
+
+// **A disc the host put in plays here too.** The block change carries the
+// metadata, which is the whole state of a jukebox; `jukeboxChangedByServer`
+// plays what it now holds. The same write applied the way a guest applies the
+// host's (`setBlockAndDataRaw`, then the call) is what is tested.
+TEST(a_disc_another_console_put_in_plays_here_and_stops_when_it_comes_out)
+{
+    Jukebox fixture;
+    const BlockId juke = BlockId(mcver::Block::Jukebox);
+
+    CHECK(fixture.w().setBlockAndDataRaw(0, 63, 0, juke, 2));
+    tick::jukeboxChangedByServer(fixture.w(), 0, 63, 0, juke, 0);
+    CHECK_EQ(fixture.records.calls.size(), usize(1));
+    CHECK(!fixture.records.calls[0].stop);
+    CHECK_EQ(fixture.records.calls[0].track, std::string("cat"));
+
+    // The same word again -- a re-sent column, the host's echo of this
+    // console's own click -- is not a second start.
+    tick::jukeboxChangedByServer(fixture.w(), 0, 63, 0, juke, 2);
+    CHECK_EQ(fixture.records.calls.size(), usize(1));
+
+    // **Taken out over there, quiet here**: the write runs the removal hook,
+    // which ejects -- and the eject is the stop. Nothing for the new call to
+    // start.
+    CHECK(fixture.w().setBlockAndDataRaw(0, 63, 0, juke, 0));
+    tick::jukeboxChangedByServer(fixture.w(), 0, 63, 0, juke, 2);
+    CHECK_EQ(fixture.records.calls.size(), usize(2));
+    CHECK(fixture.records.calls[1].stop);
+}
+
+TEST(a_block_change_that_is_not_a_jukebox_plays_nothing)
+{
+    Jukebox fixture;
+    CHECK(fixture.w().setBlockAndDataRaw(0, 63, 0, BlockId(mcver::Block::Stone), 0));
+    tick::jukeboxChangedByServer(fixture.w(), 0, 63, 0, BlockId(mcver::Block::Jukebox), 0);
+    CHECK_EQ(fixture.records.calls.size(), usize(0));
+}

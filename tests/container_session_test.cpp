@@ -199,7 +199,7 @@ TEST(a_quick_move_tops_up_what_is_there_before_it_takes_an_empty_slot)
     CHECK(inventory.at(9).empty());
 }
 
-TEST(a_quick_move_crosses_between_backpack_and_hand_and_puts_armour_on)
+TEST(a_quick_move_on_a_workbench_fills_the_grid_and_the_inventory_grid_is_left_alone)
 {
     Inventory inventory;
     inventory.set(9, item::ItemId(Block::Cobblestone), 10);
@@ -214,19 +214,33 @@ TEST(a_quick_move_crosses_between_backpack_and_hand_and_puts_armour_on)
     CHECK(helmet != 0);
     inventory.set(10, helmet, 1);
 
-    ContainerSession s;
-    s.openInventory();
+    ContainerSession plain;
+    plain.openInventory();
+    // The inventory's own 2x2 is not a target: the stack crosses to the hotbar.
+    CHECK(plain.quickMove(nullptr, inventory, backpack(plain, 0)).changed);
+    CHECK(inventory.at(9).empty());
+    for (int i = 1; i <= 4; ++i) {
+        CHECK(plain.slotAt(inventory, i).empty());
+    }
+    inventory.set(9, item::ItemId(Block::Cobblestone), 10);
+    for (int i = 0; i < 9; ++i) {
+        inventory.main[i] = item::ItemStack{};
+    }
 
-    // Backpack to the hand's first empty slot...
+    ContainerSession s;
+    s.openWorkbench(kX, kY, kZ);
+
+    // Backpack into the crafting grid's first cell (slot 0 is the result)...
     CHECK(s.quickMove(nullptr, inventory, backpack(s, 0)).changed);
     CHECK(inventory.at(9).empty());
-    CHECK_EQ(int(inventory.at(0).count), 10);
-    // ...and back again, to the backpack's.
-    CHECK(s.quickMove(nullptr, inventory, backpack(s, item::kBackpackSlots)).changed);
-    CHECK(inventory.at(0).empty());
+    CHECK_EQ(int(s.slotAt(inventory, 1).count), 10);
+    // ...and back out of it, to the backpack's first slot.
+    CHECK(s.quickMove(nullptr, inventory, 1).changed);
+    CHECK(s.slotAt(inventory, 1).empty());
     CHECK_EQ(int(inventory.at(9).count), 10);
 
-    // A helmet goes on the head rather than across.
+    // A helmet goes on the head rather than into the grid.
+    s.openInventory();
     CHECK(s.quickMove(nullptr, inventory, backpack(s, 1)).changed);
     CHECK(inventory.at(10).empty());
     CHECK_EQ(int(inventory.armour[item::kArmourSlots - 1].id), int(helmet));

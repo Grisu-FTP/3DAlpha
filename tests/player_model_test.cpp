@@ -138,3 +138,38 @@ TEST(player_pose_crouched_leans_the_body_and_draws_the_legs_up_under_it)
     CHECK(near(parts[kBipedLegRight].pivotZ, 0.0f));
     CHECK(near(parts[kBipedHead].pivotY, 0.0f));
 }
+
+TEST(armour_is_drawn_per_slot_from_the_parts_that_slot_shows)
+{
+    ModelPart parts[kBipedParts];
+    bipedModel(parts);
+    Placement place;
+    mesh::DetailVertex out[kArmourPreviewVertices];
+
+    // Helmet: head and hat. Chestplate: body and arms. Leggings: body and legs.
+    // Boots: legs.
+    const int helmet[4] = {0, -1, -1, -1};
+    const int chest[4] = {-1, 2, -1, -1};
+    const int legs[4] = {-1, -1, 3, -1};
+    const int boots[4] = {-1, -1, -1, 4};
+    const int none[4] = {-1, -1, -1, -1};
+    const int full[4] = {1, 1, 1, 1};
+    CHECK(buildPlayerArmour(parts, helmet, place, out, kArmourPreviewVertices) == 2 * kBoxVertices);
+    CHECK(buildPlayerArmour(parts, chest, place, out, kArmourPreviewVertices) == 3 * kBoxVertices);
+    CHECK(buildPlayerArmour(parts, legs, place, out, kArmourPreviewVertices) == 3 * kBoxVertices);
+    CHECK(buildPlayerArmour(parts, boots, place, out, kArmourPreviewVertices) == 2 * kBoxVertices);
+    CHECK(buildPlayerArmour(parts, none, place, out, kArmourPreviewVertices) == 0);
+    CHECK(buildPlayerArmour(parts, full, place, out, kArmourPreviewVertices) == kArmourPreviewVertices);
+}
+
+TEST(armour_material_is_four_items_to_a_render_index)
+{
+    CHECK(armourMaterialOf(298) == 0);
+    CHECK(armourMaterialOf(301) == 0);
+    CHECK(armourMaterialOf(302) == 1);
+    CHECK(armourMaterialOf(309) == 2);
+    CHECK(armourMaterialOf(313) == 3);
+    CHECK(armourMaterialOf(317) == 4);
+    CHECK(armourMaterialOf(297) == -1);
+    CHECK(armourMaterialOf(318) == -1);
+}

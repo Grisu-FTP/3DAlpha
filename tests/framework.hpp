@@ -24,6 +24,12 @@ std::vector<Case>& registry();
 int failures();
 void reportFailure(const char* file, int line, const std::string& message);
 
+// How many times slower than a native host this run is, from MC_TEST_SLOW
+// (default 1). Tests that give a threaded worker a fixed number of frames to
+// finish multiply that cap by it; tools/test_big_endian.sh sets it for qemu,
+// where the worker runs ~20x slower and a native cap reads as a hang.
+int slowScale();
+
 struct Registrar {
     Registrar(const char* name, TestFn fn) { registry().push_back({name, fn}); }
 };

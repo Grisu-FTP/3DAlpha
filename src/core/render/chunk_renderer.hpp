@@ -85,6 +85,13 @@ public:
     // False when the column is outside the render distance.
     bool publishColumn(i32 chunkX, i32 chunkZ, const mesh::SectionVisibility* perSection);
 
+    // Re-publishes one section's visibility mask after its blocks changed. The
+    // walk reads the published masks, so one left over from before a tunnel was
+    // dug still says the section is solid. No-op for a column the field does
+    // not hold.
+    void setSectionVisibility(i32 chunkX, int sectionY, i32 chunkZ,
+                              const mesh::SectionVisibility& mask);
+
     // Hands back everything the column holds and forgets it.
     void dropColumn(i32 chunkX, i32 chunkZ);
 
@@ -100,6 +107,13 @@ public:
     // Puts a section back in the mesh queue, releasing whatever it held. This
     // is what a block edit, a lighting update or a neighbour arriving calls.
     void invalidateSection(i32 chunkX, int sectionY, i32 chunkZ);
+
+    // **Bumped whenever what a mesh of this section would contain may have
+    // changed**: an invalidation, or the cell being published or dropped. A
+    // mesh built on another thread carries the value it was started under and
+    // is only worth uploading if it still matches. 0 for a section the field
+    // does not hold.
+    u32 sectionRevision(i32 chunkX, int sectionY, i32 chunkZ) const;
     void invalidateColumn(i32 chunkX, i32 chunkZ);
 
     // Runs the walk and touches everything it is about to draw, which is what
@@ -168,6 +182,7 @@ private:
     VisibleSet visible_;
     std::vector<VisibleSection> meshQueue_;
     std::vector<Resident> residents_;
+    std::vector<u32> revisions_;  // indexed by token, like residents_
 
     FrameStats frameStats_;
 };

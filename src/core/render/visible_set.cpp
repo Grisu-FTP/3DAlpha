@@ -26,12 +26,7 @@ int floorMod(i32 value, int modulus)
     return r < 0 ? r + modulus : r;
 }
 
-struct Step {
-    i32 chunkX;
-    i32 chunkZ;
-    i16 sectionY;
-    i16 entryFace;  // -1 at the camera, which may be left by any face
-};
+using Step = VisibleWalkStep;
 
 }  // namespace
 
@@ -186,6 +181,17 @@ void SectionField::clearColumn(i32 chunkX, i32 chunkZ)
     }
 }
 
+void SectionField::setSectionVisibility(i32 chunkX, int sectionY, i32 chunkZ,
+                                        SectionVisibility mask)
+{
+    if (sectionY < 0 || sectionY >= kSectionsY) {
+        return;
+    }
+    if (Cell* cell = find(chunkX, chunkZ)) {
+        cell->visibility[sectionY] = mask.mask();
+    }
+}
+
 SectionVisibility SectionField::visibility(i32 chunkX, int sectionY, i32 chunkZ) const
 {
     const Cell* cell = find(chunkX, chunkZ);
@@ -256,16 +262,17 @@ void buildVisibleSet(const SectionField& field, const Frustum& frustum,
     const usize cellCount = static_cast<usize>(edge) * edge * SectionField::kSectionsY;
 
     // Both of these keep their capacity across frames, so a steady render
-    // distance means no allocation in the render loop at all.
+    // distance means no allocation in the render loop at all. They live in
+    // `out` -- see VisibleSet on why they are not thread_local statics.
     //
     // **`visited` holds a stamp, not a flag**, and that is what removes the
     // clear. Assigning zero over every entry was a memset of edge^2 * 8 bytes
     // on every frame -- 19 KB at the debug page's render distance of 24, on a
     // console whose old model has no L2 cache at all. A counter that only goes
     // up needs the array cleared once every 65,535 frames instead.
-    static thread_local std::vector<u16> visited;
-    static thread_local std::vector<Step> queue;
-    static thread_local u16 visitStamp = 0;
+    std::vector<u16>& visited = out->visited;
+    std::vector<Step>& queue = out->queue;
+    u16& visitStamp = out->visitStamp;
 
     // A different render distance is a different grid, and a stamp left over
     // from the old one means nothing in it. Same clear on the wrap, so that the
@@ -360,6 +367,26 @@ void buildVisibleSet(const SectionField& field, const Frustum& frustum,
             }
 
             const mesh::FaceOffset& offset = mesh::kFaceOffset[face];
+
+            // **Never step back toward the camera along an axis.** A straight
+            // line out of the eye crosses each section plane at most once, so
+            // the sections it passes through are monotone in x, y and z: if it
+            // is going away along an axis it never comes back. A section that
+            // can only be reached by doubling back is therefore not on any
+            // line of sight, and the mask-only walk would still reach it
+            // through any connected lattice -- a strip-mined grid, or over a
+            // hill and down the far side below the camera. A section level
+            // with the camera on an axis may be left either way, because the
+            // eye can be anywhere inside the camera's own section.
+            if ((offset.dx > 0 && step.chunkX < cameraChunkX)
+                || (offset.dx < 0 && step.chunkX > cameraChunkX)
+                || (offset.dy > 0 && step.sectionY < startY)
+                || (offset.dy < 0 && step.sectionY > startY)
+                || (offset.dz > 0 && step.chunkZ < cameraChunkZ)
+                || (offset.dz < 0 && step.chunkZ > cameraChunkZ)) {
+                continue;
+            }
+
             const i32 nx = step.chunkX + offset.dx;
             const int ny = step.sectionY + offset.dy;
             const i32 nz = step.chunkZ + offset.dz;

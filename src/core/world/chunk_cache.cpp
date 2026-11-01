@@ -490,8 +490,20 @@ bool ChunkCache::save(const ChunkColumn& column, SavePressure pressure)
                 break;  // everything owed is already in somebody else's hands
             }
         }
+        u32 failedBefore = 0;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            failedBefore = stats_.writeFailures;
+        }
         runJob(job);
         std::lock_guard<std::mutex> guard(mutex_);
+        // **A write that failed did not make room**, so asking again would
+        // fail the same way: this loop used to spin on it for ever, on the
+        // generation thread, which is a world exit that never gets past
+        // joining it.
+        if (stats_.writeFailures != failedBefore) {
+            break;
+        }
         overCap = dirtyBytes_ > dirtyCapLocked();
     }
     return true;
@@ -544,6 +556,12 @@ void ChunkCache::flush(bool blocking)
         std::lock_guard<std::mutex> guard(mutex_);
         for (auto& [k, entry] : entries_) {
             if (entry.dirty && !entry.queuedWrite && !entry.writing) {
+                // A fresh set of attempts: this is somebody asking for it.
+                if (entry.abandoned) {
+                    entry.abandoned = false;
+                    --abandonedColumns_;
+                }
+                entry.failedWrites = 0;
                 entry.queuedWrite = true;
                 writeQueue_.push_back(k);
             }
@@ -720,7 +738,8 @@ ChunkCache::Stats ChunkCache::stats() const
     out.dirtyBytes = dirtyBytes_;
     out.dirtyCapBytes = dirtyCap_;
     out.cleanColumns = cleanColumns_;
-    out.dirtyColumns = dirtyColumns_;
+    out.dirtyColumns = dirtyColumns_ > abandonedColumns_ ? dirtyColumns_ - abandonedColumns_ : 0;
+    out.abandonedColumns = abandonedColumns_;
     out.readsQueued = u32(readQueue_.size());
     out.writesQueued = u32(writeQueue_.size());
     out.groupsQueued = u32(groupQueue_.size() + urgentGroups_.size());
@@ -792,6 +811,12 @@ void ChunkCache::installColumn(i64 k, std::shared_ptr<const ChunkColumn> column,
         (entry.dirty ? dirtyBytes_ : cleanBytes_) -= entry.bytes;
         --(entry.dirty ? dirtyColumns_ : cleanColumns_);
     }
+    // A new column is a new write to attempt, whatever happened to the old one.
+    if (entry.abandoned) {
+        entry.abandoned = false;
+        --abandonedColumns_;
+    }
+    entry.failedWrites = 0;
     entry.bytes = column->memoryUsage();
     entry.column = std::move(column);
     entry.used = ++clock_;
@@ -1161,9 +1186,31 @@ void ChunkCache::runJob(const Job& job)
                 --dirtyColumns_;
                 ++cleanColumns_;
                 evictLocked();
+            } else if (!ok) {
+                // **The card refused it.** Counted, and retried a few times --
+                // a busy card is not a dead one -- and then given up on until
+                // somebody flushes again. Retrying for ever, which this used to
+                // do, is a loop that nothing outside it can break: the
+                // generation thread pays for writes when the dirty set is over
+                // its cap, and a world exit waits for the queue to empty.
+                ++stats_.writeFailures;
+                stats_.lastFailedX = keyX(job.chunk);
+                stats_.lastFailedZ = keyZ(job.chunk);
+                if (entry->failedWrites < 255) {
+                    ++entry->failedWrites;
+                }
+                if (entry->failedWrites >= kMaxWriteAttempts) {
+                    if (!entry->abandoned) {
+                        entry->abandoned = true;
+                        ++abandonedColumns_;
+                    }
+                } else if (!entry->queuedWrite) {
+                    entry->queuedWrite = true;
+                    writeQueue_.push_back(job.chunk);
+                }
             } else if (!entry->queuedWrite) {
-                // Saved again while this was in flight, or the write failed.
-                // Either way the card does not hold what the cache holds.
+                // Saved again while this was in flight: the card does not hold
+                // what the cache holds now.
                 entry->queuedWrite = true;
                 writeQueue_.push_back(job.chunk);
             }

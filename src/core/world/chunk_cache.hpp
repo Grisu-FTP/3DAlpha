@@ -170,8 +170,25 @@ public:
         // about to cost a stall look the same.
         usize dirtyCapBytes = 0;
         u32 cleanColumns = 0;
+        // Dirty columns still owed a write: **not counting the ones given up
+        // on**, which would otherwise keep a save's drain from ever reaching
+        // zero. See `abandonedColumns`.
         u32 dirtyColumns = 0;
         u32 evicted = 0;
+
+        // **A write the card refused**, counted every time. Before this a failed
+        // write put the column straight back on the queue and tried again for
+        // ever -- on the I/O thread, on the generation thread when the dirty set
+        // was over its cap, and in the drain a world exit waits on -- so a card
+        // that stopped taking one file froze the game with nothing to say why.
+        u32 writeFailures = 0;
+        // Columns that failed `kMaxWriteAttempts` times in a row and are held
+        // in memory unwritten. They stay dirty, so nothing evicts them, and the
+        // next flush tries them again.
+        u32 abandonedColumns = 0;
+        // The last column that would not write, for the screen to name.
+        i32 lastFailedX = 0;
+        i32 lastFailedZ = 0;
 
         // **Must read zero on the console.** Microseconds the main thread spent
         // inside a storage call -- which after this class exists means the
@@ -435,6 +452,11 @@ public:
     // hundreds of milliseconds of frozen frame for the renderer. The tick
     // system made the render thread an edit path for the first time, so the
     // choice has to be explicit rather than a comment saying it cannot happen.
+    // How many times in a row a column's write may fail before it is given up
+    // on until the next flush. Five is a card that is busy or briefly unhappy;
+    // past that it is not going to take it, and retrying for ever helps nobody.
+    static constexpr int kMaxWriteAttempts = 5;
+
     enum class SavePressure : u8 {
         // Write a column here when over the cap. For worker threads.
         PayHere,
@@ -487,6 +509,8 @@ private:
         bool writing = false;      // handed to the I/O thread
         bool queuedWrite = false;  // on writeQueue_, so flush() does not queue it twice
         bool prefetched = false;   // read ahead rather than asked for, for the stats
+        u8 failedWrites = 0;       // in a row, since the last install or flush
+        bool abandoned = false;    // failed `kMaxWriteAttempts` times; see Stats
     };
 
     // What one listing answers. `listed` separates "this group is empty" from
@@ -658,6 +682,7 @@ private:
     // See stats().
     u32 cleanColumns_ = 0;
     u32 dirtyColumns_ = 0;
+    u32 abandonedColumns_ = 0;
 
     // The last answer dirtyCapLocked computed, which is what the stats publish.
     // A member rather than a call on the stats path because the call reaches

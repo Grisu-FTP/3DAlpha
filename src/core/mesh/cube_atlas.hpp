@@ -234,12 +234,22 @@ constexpr bool cubeAtlasSource(int x, int y, int* atlasX, int* atlasY)
 }
 
 // The UV of a run's near edge, and of a point `tiles` copies into it, both on
-// one axis. `cubeUvStart` / `cubeUvEnd` are what a quad's two edges carry: past
-// the slot's gutter, and in by kCubeUvInset from the copies' start at one end
-// and from the end of the run at the other.
+// one axis. `cubeUvStart` / `cubeUvEnd` are what a quad's two edges carry: at
+// the slot's gutter, both shifted *in* by kCubeUvInset. **Both the same way**,
+// so a run of any length spans exactly `tiles` tiles of UV and one block is
+// always one tile: pulling only the far end in made a block's texture scale
+// depend on how many of its neighbours merged with it, and breaking a block
+// shifted the texture of the ones beside it by up to an eighth of a texel.
+//
+// **The shift is toward the start, not the end.** Shifted the other way, the
+// far edge of a run shorter than three overshot into the next copy of the tile
+// and a close-up block showed that copy's top row as a thin strip along its
+// bottom -- a green line under a grass side. Shifted back, the far edge stays
+// inside the last texel, and the near edge lands in the gutter, which repeats
+// the first texel, so it reads the same one.
 constexpr i16 cubeUvStart(int slotAxis)
 {
-    return i16(slotAxis * kCubeUvPerSlot + kCubeUvGutter + kCubeUvInset);
+    return i16(slotAxis * kCubeUvPerSlot + kCubeUvGutter - kCubeUvInset);
 }
 
 constexpr i16 cubeUvEnd(int slotAxis, int tiles)

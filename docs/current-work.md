@@ -1,7 +1,39 @@
 # Current work
 
-Last verified: 2026-09-26. A compact handoff, not a substitute for inspecting the current diff.
+Last verified: 2026-11-01. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
+
+## 47 features taken back from AlphaU and AlphaSwitch (2026-11-01)
+
+Picked from a checklist of 57, merged three-way against the ports' fork point `8e569b1` and then
+wired into `src/platform/ctr` by hand. **Builds for 3DS and passes host tests and TSan. Almost none
+of it has run on a console**, and nothing here has been measured on one. Left out on purpose:
+invert look, save error detail, SD driver quirks, section timer, tile helpers, core wear bar,
+horizon culling, self check and a1.1.2 HUD placement. The ports' Wii U and Switch code stays there.
+
+- **Online:** ACMP protocol 5, regenerated vectors, clocks moved first on every way in.
+- **Guests:** boats, carts, falling blocks, lit TNT and blasts cross the link; whoever sits in a
+  vehicle steers it; chests, furnaces and chest carts open through `net/tile_sync` (packets
+  0xE0-0xE2); mobs, spawners, plates, carts and arrows treat guests as players; held items,
+  shoving, hurt flash, flags and jukeboxes cross too.
+- **`ServerTrack` stays 3DAlpha's prediction.** The ports' same-named three-tick walk did not come
+  across: vehicles and fallers use `reset`/`aim` and a four-argument `step` on the predicting
+  track, because a cart walking three ticks behind leaves a predicted rider a block ahead of the
+  seat. Tests written for the walk were changed to say where a body ends up.
+- **Riding:** the end of the player's tick is one lambda, `finishPlayerTick`, that both branches
+  reach. It used to be skipped by a `continue`.
+- **Third person:** a lone tap of SELECT cycles the view. Armour draws only on this console's own
+  body, since the wire does not carry anybody else's.
+- **Inventory:** `gui/player_doll` draws the player in software, because that page is a software
+  surface; `gui/stick_pointer` is the container pointer. Both are this repo's and not the ports'.
+- **Entity units:** the ports' player mesh built boxes in detail units, which silently compiled
+  against 3DAlpha's `buildBox` default and drew other players at the wrong scale. Bodies use
+  `kEntityUnitsPerBlock`; held items and armour are a second draw in detail units, and a held item
+  past 30 blocks is left off rather than wrapped.
+- **To measure on hardware:** `WorkerRole::Mesh` (core 2 at the main thread's priority on New, core
+  0 at +3 on Old, above generation on purpose because of SCHED_FIFO); `Budget::meshNanos` (4 ms New,
+  8 ms Old, both guesses); autosave's 2 columns a frame; the extra body in third person; about
+  360 KB more linear memory (the 256 KB armour sheet, 104 KB of player buffers) and four mesh slots.
 
 ## Skins and paintings across the link, taken back from AlphaU (2026-10-25)
 

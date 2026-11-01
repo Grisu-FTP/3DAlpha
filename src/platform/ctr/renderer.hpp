@@ -9,6 +9,8 @@
 
 #include "core/mesh/vertex.hpp"
 #include "core/net/entities.hpp"
+#include "core/render/remote_player_mesh.hpp"
+#include "core/render/player_model.hpp"
 #include "core/render/break_overlay.hpp"
 #include "core/render/chat_mesh.hpp"
 #include "core/render/hud_mesh.hpp"
@@ -454,6 +456,11 @@ public:
         remotePlayers_ = entities;
     }
 
+    // **This console's own body**, for the third-person views. Null in first
+    // person, which is most of the time and costs a compare. Borrowed: the caller
+    // keeps it alive and up to date. See core/render/remote_player_mesh.hpp.
+    void setSelfPlayer(const mc::net::RemotePlayer* self) { selfPlayer_ = self; }
+
     // **The skin this console is wearing**, for a session to send -- the page of
     // the entity sheet `buildEntitySkins` filled. Empty until there is a sheet.
     // See core/net/player_skin.hpp.
@@ -862,8 +869,23 @@ private:
     // draw call with them: they are the same models out of the same sheet, and
     // the only thing that differs is the transform. Four more models is 1,152
     // vertices and 18 KB. See core/render/spawner_mesh.hpp.
+    //
+    // **And every player**, with room of their own so a herd can never take this
+    // console's own body out of a third-person view: the eight a session tracks and
+    // the one that is here. 1,512 vertices and 24 KB.
+    static constexpr int kMaxPlayerBodies = mc::net::RemoteEntities::kMaxPlayers + 1;
     static constexpr int kMaxMobVertices =
-        mc::render::kMobMaxVertices + mc::render::kSpawnerMaxVertices;
+        mc::render::kMobMaxVertices + mc::render::kSpawnerMaxVertices
+        + kMaxPlayerBodies * mc::render::kRemotePlayerVerticesEach;
+
+    // What those players carry, one buffer per sheet because a sheet is a draw:
+    // blocks off terrain, and tools and flat items off gui/items.png. A flat item's
+    // edge strips make it the largest thing here; 264 vertices a hand is 4 KB, so
+    // 38 KB a buffer with everybody holding one. And the worn armour, 4 KB, which
+    // only this console's body has -- the wire does not carry anybody else's.
+    static constexpr int kMaxPlayerHeldVertices =
+        kMaxPlayerBodies * mc::render::kMaxHeldItemVertices;
+    static constexpr int kMaxPlayerArmourVertices = mc::render::kArmourPreviewVertices;
 
     // Thirty-two burning entities at once -- the frame's twenty-four mobs plus
     // the carts, boats and stacks a fire in a storeroom lights -- at four
@@ -914,6 +936,9 @@ private:
     const mc::entity::MobSystem* mobs_ = nullptr;
     const mc::entity::MobSpawnerStore* spawners_ = nullptr;
     const mc::net::RemoteEntities* remotePlayers_ = nullptr;
+    const mc::net::RemotePlayer* selfPlayer_ = nullptr;
+    void* playerHeldVerts_[2] = {nullptr, nullptr};
+    void* playerArmourVerts_ = nullptr;
     // The revision of each remote-skin slot as last written into the entity
     // sheet; all-ones after the sheet is replaced, so every slot is owed again.
     u32 skinRevision_[mc::net::PlayerSkins::kSlots] = {};

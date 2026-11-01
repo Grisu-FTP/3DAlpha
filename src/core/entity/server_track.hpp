@@ -28,6 +28,11 @@
 //
 // The body never jumps to the aim: it closes half the gap a tick, which is the
 // interpolation, unless the gap is a teleport's.
+//
+// **Boats, carts, falling blocks and lit TNT ride the same track**, through
+// `reset`, `aim` and the four-argument `step`, which add the heading a vehicle
+// carries. A rider's body is predicted, so a vehicle walking a1.1.2's three
+// ticks behind would leave its rider a block ahead of the seat at cart speed.
 
 #include "core/util/types.hpp"
 
@@ -62,6 +67,13 @@ struct ServerTrack {
     // Predictions taken back since this entity was seen. For the debug page and
     // the tests; nothing reads it to decide anything.
     u16 reverts = 0;
+    // The heading last sent, for an entity that has one.
+    float yaw = 0.0f;
+    // Whether any move has arrived since the spawn. A Vehicle Spawn carries no
+    // angles, so the first heading is taken outright rather than turned to --
+    // otherwise every boat a guest meets would swing round from north as it
+    // appeared.
+    bool aimed = false;
 
     // A spawn: here, at rest, nothing owed.
     void place(double px, double py, double pz);
@@ -78,6 +90,19 @@ struct ServerTrack {
     // One tick: measures, aims, and moves the body (`bx/by/bz`, the feet) half
     // way to the aim. Returns true when the body was put straight there.
     bool step(double* bx, double* by, double* bz);
+
+    // `place` for something with a heading: a fresh spawn, or a hand-over in
+    // either direction. Nothing is owed and the next heading is taken outright.
+    void reset(double px, double py, double pz, float pyaw);
+
+    // `receive` with a heading. True for the first since `reset`, whose heading
+    // the caller takes as it is.
+    bool aim(double px, double py, double pz, float pyaw);
+
+    // `step` for something with a heading, turning the short way round at the
+    // same half a tick. `byaw` may be null. Always true: there is always a
+    // position to write back, even if it is the one the entity already has.
+    bool step(double* bx, double* by, double* bz, float* byaw);
 };
 
 }  // namespace mc::entity

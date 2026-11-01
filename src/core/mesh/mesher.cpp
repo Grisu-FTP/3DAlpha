@@ -142,8 +142,8 @@ void MeshBuilder::emitQuad(int x, int y, int z, int face, int slot, u8 light, in
         // kFaceCornerUV in tiles, stretched over the run: u follows i and v
         // follows j the way the table already says, so a merged quad is its
         // faces' texture laid end to end and not one tile stretched across
-        // them. Inset off the slot boundary at the near end and off the end of
-        // the run at the far one; see kCubeUvInset.
+        // them. Pulled back off the slot boundary at both ends by the same
+        // amount; see kCubeUvInset and cubeUvStart.
         const int uTiles = kFaceCornerUV[face][c][0] * width;
         const int vTiles = kFaceCornerUV[face][c][1] * height;
         v.u = uTiles == 0 ? cubeUvStart(slotX) : cubeUvEnd(slotX, uTiles);

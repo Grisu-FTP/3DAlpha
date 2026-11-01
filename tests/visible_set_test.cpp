@@ -243,6 +243,75 @@ TEST(a_corridor_is_followed_and_its_walls_are_not)
     CHECK(!contains(set.draw, 0, 6, 0));
 }
 
+// One column with its own mask per section, every section marked meshed.
+void setSections(SectionField& field, i32 cx, i32 cz, const u16 (&masks)[kSectionsY])
+{
+    SectionVisibility vis[kSectionsY];
+    for (int sy = 0; sy < kSectionsY; ++sy) {
+        vis[sy] = SectionVisibility(masks[sy]);
+    }
+    field.setColumn(cx, cz, vis);
+    for (int sy = 0; sy < kSectionsY; ++sy) {
+        field.setMeshSlot(cx, sy, cz, u16(0));
+    }
+}
+
+TEST(a_path_that_doubles_back_toward_the_camera_is_not_followed)
+{
+    // Open columns run (0,0) -> (1,0) -> (1,1) -> (1,2) -> (0,2); everything
+    // else is stone. The last step goes -X from a column that is already east
+    // of the camera, which no straight line out of the eye can do, so (0,2) is
+    // not on any line of sight even though the air connects to it.
+    SectionField field;
+    field.reset(3);
+    field.setCentre(0, 0);
+    fillAll(field, 0, true);
+    for (const auto& c : {std::pair<i32, i32>{0, 0}, {1, 0}, {1, 1}, {1, 2}, {0, 2}}) {
+        fillColumn(field, c.first, c.second, mesh::kVisibilityAll, true);
+    }
+
+    VisibleSet set;
+    render::buildVisibleSet(field, openFrustum(), 0, 4, 0, &set);
+
+    CHECK(contains(set.draw, 1, 4, 0));
+    CHECK(contains(set.draw, 1, 4, 1));
+    CHECK(contains(set.draw, 1, 4, 2));
+    CHECK(!contains(set.draw, 0, 4, 2));
+}
+
+TEST(ground_level_with_the_camera_behind_a_rise_is_not_reached_by_dropping_back_down)
+{
+    // The section ahead of the camera is stone, with open air above it and open
+    // ground beyond. The way round is up, over and down -- and the "down" is a
+    // step back toward the camera's height, which a line of sight starting
+    // inside section 4 cannot take after rising out of it. What is beyond the
+    // rise at the camera's own level is hidden by the rise; what is beyond it
+    // above the camera's level is not.
+    SectionField field;
+    field.reset(3);
+    field.setCentre(0, 0);
+    fillAll(field, 0, true);
+
+    u16 open[kSectionsY];
+    u16 rise[kSectionsY];
+    for (int sy = 0; sy < kSectionsY; ++sy) {
+        open[sy] = mesh::kVisibilityAll;
+        rise[sy] = sy <= 4 ? u16(0) : mesh::kVisibilityAll;
+    }
+    setSections(field, 0, 0, open);
+    setSections(field, 1, 0, rise);
+    setSections(field, 2, 0, open);
+
+    VisibleSet set;
+    render::buildVisibleSet(field, openFrustum(), 0, 4, 0, &set);
+
+    CHECK(contains(set.draw, 1, 5, 0));
+    CHECK(contains(set.draw, 2, 5, 0));
+    CHECK(contains(set.draw, 2, 6, 0));
+    CHECK(!contains(set.draw, 2, 4, 0));
+    CHECK(!contains(set.draw, 2, 3, 0));
+}
+
 TEST(the_camera_section_is_kept_even_when_the_frustum_rejects_it)
 {
     // You are standing inside it and the near plane cuts through it. Dropping

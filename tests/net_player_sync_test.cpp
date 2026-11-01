@@ -7,7 +7,10 @@
 #include "core/entity/item_entity.hpp"
 #include "core/item/inventory.hpp"
 #include "core/entity/mob.hpp"
+#include "core/entity/player_body.hpp"
 #include "core/net/player_sync.hpp"
+
+#include <cmath>
 
 using namespace mc;
 using namespace mc::net;
@@ -72,10 +75,40 @@ TEST(the_server_s_teleport_carries_the_eye_second_and_the_feet_third)
     CHECK(t.hasLook);
     CHECK_EQ(t.x, 68.5);
     CHECK_EQ(t.eyeY, 67.24);
+    CHECK_EQ(t.feetY, 65.62);
     CHECK_EQ(t.z, 115.5);
     CHECK_EQ(t.yaw, 180.0f);
 
     CHECK(!readTeleport(makeChat("hi"), &t));
+}
+
+TEST(a_player_the_server_stood_on_the_floor_is_on_the_floor_and_not_a_hair_under_it)
+{
+    // The host writes `feet + 1.62, feet`. Worked back from the eye with the
+    // body's own 1.62f, the feet came out under the floor -- and a box that
+    // starts inside a block falls straight through it. The feet are read as
+    // sent.
+    const double feet = 65.0;
+    Packet p;
+    p.reset(packet::PlayerPositionLook);
+    for (double v : {8.5, feet + 1.62, feet, 8.5, 0.0, 0.0}) {
+        p.pushReal(v);
+    }
+    p.pushInt(0);
+    Teleport t;
+    CHECK(readTeleport(p, &t));
+    CHECK_EQ(t.feetY, feet);
+    CHECK(t.eyeY - double(entity::kEyeHeight) < feet);  // what it used to be
+
+    // A third number that cannot be the feet is not believed.
+    Packet odd;
+    odd.reset(packet::PlayerPositionLook);
+    for (double v : {8.5, 66.62, 0.0, 8.5, 0.0, 0.0}) {
+        odd.pushReal(v);
+    }
+    odd.pushInt(0);
+    CHECK(readTeleport(odd, &t));
+    CHECK(std::abs(t.feetY - 65.0) < 0.001);
 }
 
 TEST(the_inventory_goes_every_twentieth_tick_and_only_when_it_changed)

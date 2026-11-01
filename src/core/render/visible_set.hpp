@@ -85,6 +85,11 @@ public:
     void setColumn(i32 chunkX, i32 chunkZ, const mesh::SectionVisibility* perSection);
     void clearColumn(i32 chunkX, i32 chunkZ);
 
+    // Replaces one section's mask in a column that is already published, leaving
+    // its meshes alone. A block edit can open or seal a path through a section,
+    // and the mask published with the column is otherwise never revisited.
+    void setSectionVisibility(i32 chunkX, int sectionY, i32 chunkZ, mesh::SectionVisibility mask);
+
     mesh::SectionVisibility visibility(i32 chunkX, int sectionY, i32 chunkZ) const;
 
     // **One column resolved once**, for a caller that is about to ask several
@@ -223,6 +228,14 @@ struct VisibleSection {
     u16 slotGeneration = 0;
 };
 
+// One step of the walk: a section, and the face it was entered through.
+struct VisibleWalkStep {
+    i32 chunkX;
+    i32 chunkZ;
+    i16 sectionY;
+    i16 entryFace;  // -1 at the camera, which may be left by any face
+};
+
 struct VisibleSet {
     // Reached, loaded and holding geometry. Breadth-first order, which is
     // near-enough front-to-back for the early-depth test to pay off.
@@ -234,6 +247,15 @@ struct VisibleSet {
 
     int sectionsVisited = 0;
     int rejectedByFrustum = 0;
+
+    // **The walk's scratch, owned by the set it fills** rather than kept in
+    // function statics: every caller already owns its VisibleSet, so this is one
+    // copy per walker, and it keeps its capacity across frames. clear() leaves
+    // it alone on purpose. `visited` holds a stamp, not a flag -- see
+    // buildVisibleSet.
+    std::vector<u16> visited;
+    std::vector<VisibleWalkStep> queue;
+    u16 visitStamp = 0;
 
     void clear()
     {
@@ -250,6 +272,9 @@ struct VisibleSet {
 //
 // The camera's section is always included even when it fails the frustum test
 // or is not loaded: you are standing inside it.
+//
+// Steps never move back toward the camera along an axis -- a line of sight
+// cannot -- which is what keeps a connected lattice from being walked in full.
 void buildVisibleSet(const SectionField& field, const Frustum& frustum,
                      i32 cameraChunkX, int cameraSectionY, i32 cameraChunkZ,
                      VisibleSet* out);

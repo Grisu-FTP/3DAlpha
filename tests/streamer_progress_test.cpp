@@ -363,7 +363,7 @@ TEST(the_save_progress_callback_can_still_read_the_world)
         int worldLost = 0;
     } watcher{&streamer};
 
-    streamer.close(kNow, &watcher, [](void* context, u32, u32) {
+    streamer.close(kNow, &watcher, [](void* context, const char*, u32, u32) {
         Watcher& w = *static_cast<Watcher*>(context);
         ++w.calls;
         const tick::TickWorld* world = w.streamer->worldTick();

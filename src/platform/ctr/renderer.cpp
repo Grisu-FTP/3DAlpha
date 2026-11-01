@@ -372,6 +372,18 @@ constexpr float kGpuDrainSeconds = 0.5f;
 // Translation first, from the unscaled columns, because the scale belongs
 // inside it. `drawSigns` does the same at 1/512. See
 // core/render/entity_range.hpp.
+// The same translate with detail-vertex units left as they are, for the passes that
+// share a frame with an entity pass but were built in those.
+C3D_Mtx detailMatrix(const C3D_Mtx& viewProjection, float tx, float ty, float tz)
+{
+    C3D_Mtx mvp = viewProjection;
+    for (int row = 0; row < 4; ++row) {
+        const float* r = viewProjection.r[row].c;
+        mvp.r[row].c[0] = r[3] * tx + r[2] * ty + r[1] * tz + r[0];
+    }
+    return mvp;
+}
+
 C3D_Mtx entityMatrix(const C3D_Mtx& viewProjection, float tx, float ty, float tz)
 {
     C3D_Mtx mvp = viewProjection;
@@ -498,6 +510,11 @@ bool Renderer::buildOutlinePipeline(const void* shbin, u32 shbinSize)
         linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMinecartBlockVertices));
     // 108 KB more: twenty-four mobs at up to twelve boxes each.
     mobVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxMobVertices));
+    // What the players carry and wear. Nothing is lost if these are refused but
+    // the things they would have drawn.
+    playerHeldVerts_[0] = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxPlayerHeldVertices));
+    playerHeldVerts_[1] = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxPlayerHeldVertices));
+    playerArmourVerts_ = linearAlloc(sizeof(mesh::DetailVertex) * usize(kMaxPlayerArmourVertices));
     // 6 KB more, and a buffer of its own for the same reason the flames have
     // one: the slime's shell is a *pass* and not a box, so it cannot share a
     // draw with the models it is drawn over. See `drawMobs`.
@@ -1228,10 +1245,15 @@ void Renderer::drawBoats(const C3D_Mtx& viewProjection, i32 originChunkX, i32 or
 
 void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 originChunkZ)
 {
+    // Every quad in the pass indexes the one shared buffer, which a section's worth
+    // of quads sizes.
+    static_assert(kMaxMobVertices / 4 <= mesh::kMaxQuadsPerSection,
+                  "the players must not outgrow the shared index buffer");
     const int liveMobs = mobs_ != nullptr ? mobs_->count() : 0;
     const int liveSpawners = spawners_ != nullptr ? spawners_->count() : 0;
     const int livePlayers = remotePlayers_ != nullptr ? remotePlayers_->playerCount() : 0;
-    if ((liveMobs == 0 && liveSpawners == 0 && livePlayers == 0) || mobVerts_ == nullptr
+    if ((liveMobs == 0 && liveSpawners == 0 && livePlayers == 0 && selfPlayer_ == nullptr)
+        || mobVerts_ == nullptr
         || !atlas_.hasEntities()) {
         return;
     }
@@ -1254,13 +1276,28 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
                                             itemPartial_, verts + written,
                                             kMaxMobVertices - written);
     }
-    // ...and the other players on the same terms again, for the same reason.
+    // ...and the players on the same terms again, for the same reason, with what
+    // they carry and wear in buffers of their own: a different sheet is a different
+    // draw. See core/render/remote_player_mesh.hpp.
+    render::PlayerPasses players;
+    players.body = verts + written;
+    players.bodyMax = kMaxMobVertices - written;
+    players.armour = static_cast<mesh::DetailVertex*>(playerArmourVerts_);
+    players.armourMax = players.armour != nullptr ? kMaxPlayerArmourVertices : 0;
+    for (int sheet = 0; sheet < 2; ++sheet) {
+        players.held[sheet] = static_cast<mesh::DetailVertex*>(playerHeldVerts_[sheet]);
+        players.heldMax[sheet] = players.held[sheet] != nullptr ? kMaxPlayerHeldVertices : 0;
+    }
     if (livePlayers > 0) {
         syncPlayerSkins(remotePlayers_->skins());
-        written += render::buildRemotePlayers(*remotePlayers_, eyeBlockX, eyeBlockY, eyeBlockZ,
-                                              itemPartial_, verts + written,
-                                              kMaxMobVertices - written);
+        render::buildRemotePlayers(*remotePlayers_, eyeBlockX, eyeBlockY, eyeBlockZ, itemPartial_,
+                                   &players);
     }
+    if (selfPlayer_ != nullptr) {
+        render::buildSelfPlayer(*selfPlayer_, eyeBlockX, eyeBlockY, eyeBlockZ, itemPartial_,
+                                &players);
+    }
+    written += players.bodyCount;
     // **`gq`'s render pass 0, in its own buffer**: the slime's outer jelly,
     // which is the one thing in the game that is neither opaque nor cut out.
     // Built here so the pass below can draw it with blending after everything
@@ -1283,11 +1320,22 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
                                            render::kMobEyeMaxVertices);
     }
 
-    if (written < 4 && shellVertices < 4 && eyeVertices < 4) {
+    const bool carried =
+        players.armourCount >= 4 || players.heldCount[0] >= 4 || players.heldCount[1] >= 4;
+    if (written < 4 && shellVertices < 4 && eyeVertices < 4 && !carried) {
         return;
     }
     if (written > 0) {
         GSPGPU_FlushDataCache(verts, sizeof(mesh::DetailVertex) * u32(written));
+    }
+    if (players.armourCount > 0) {
+        GSPGPU_FlushDataCache(players.armour, sizeof(mesh::DetailVertex) * u32(players.armourCount));
+    }
+    for (int sheet = 0; sheet < 2; ++sheet) {
+        if (players.heldCount[sheet] > 0) {
+            GSPGPU_FlushDataCache(players.held[sheet],
+                                  sizeof(mesh::DetailVertex) * u32(players.heldCount[sheet]));
+        }
     }
     if (shellVertices > 0) {
         GSPGPU_FlushDataCache(mobShellVerts_, sizeof(mesh::DetailVertex) * u32(shellVertices));
@@ -1317,6 +1365,36 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
         C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
         ++frameStats_.drawCalls;
         frameStats_.quads += usize(quads);
+    }
+
+    // **What the players wear and carry**, each off its own sheet and in detail
+    // units, and then the entity sheet and matrix put back for the passes below.
+    if (carried) {
+        const C3D_Mtx detail = detailMatrix(viewProjection, tx, ty, tz);
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &detail);
+        const auto drawCarried = [&](const mesh::DetailVertex* from, int count) {
+            BufInfo_Init(&bufInfo);
+            BufInfo_Add(&bufInfo, from, sizeof(mesh::DetailVertex), 3, 0x210);
+            C3D_SetBufInfo(&bufInfo);
+            const int quads = count / 4;
+            C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+            ++frameStats_.drawCalls;
+            frameStats_.quads += usize(quads);
+        };
+        if (players.armourCount >= 4 && atlas_.hasArmour()) {
+            atlas_.bindArmour(0);
+            drawCarried(players.armour, players.armourCount);
+        }
+        if (players.heldCount[0] >= 4) {
+            atlas_.bind(0, wireframe_);
+            drawCarried(players.held[0], players.heldCount[0]);
+        }
+        if (players.heldCount[1] >= 4 && atlas_.hasItems()) {
+            atlas_.bindItems(0);
+            drawCarried(players.held[1], players.heldCount[1]);
+        }
+        atlas_.bindEntity(0);
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &mvp);
     }
 
     if (shellVertices >= 4) {
@@ -2923,6 +3001,7 @@ void Renderer::shutdown()
                           &fallingVerts_, &tntVerts_, &tntFlashVerts_, &paintingVerts_,
                           &arrowVerts_, &boatVerts_,
                           &minecartVerts_, &minecartBlockVerts_, &mobVerts_,
+                          &playerHeldVerts_[0], &playerHeldVerts_[1], &playerArmourVerts_,
                           &entityFireVerts_, &signVerts_,
                           &heldVerts_, &fireOverlayVerts_, &waterOverlayVerts_,
                           &chatVerts_, &chatStrips_, &skyVerts_}) {

@@ -328,6 +328,29 @@ TEST(the_uv_inset_is_a_tenth_of_a_texel_and_pulls_inwards)
     CHECK(near(lowest, 0.1, 0.03));
 }
 
+TEST(a_corner_past_the_short_range_clamps_instead_of_wrapping)
+{
+    // A model whose centre is well inside the callers' `kLimit` (about 31.25
+    // blocks) but wide enough that one corner reaches past the 32767-unit
+    // range a signed short can hold. `toUnits` must pin that corner at the
+    // format's own edge, not let it wrap around through zero and come out
+    // negative -- which is what turns a distant mob into a stretched sliver
+    // reaching back across the whole section.
+    ModelPart part;
+    part.w = part.h = part.d = 16;
+    // 16 model units wide (one block) centred on a placement far enough out
+    // that the +x corner alone crosses 32767 / 1024 = 31.999... blocks.
+    const Placement place = render::placeAt(31.9, 0.0, 0.0, 0.0f);
+    const Built b = build(part, place);
+
+    for (int i = 0; i < b.count; ++i) {
+        // Clamped to the same 32000-unit ceiling every caller's `kLimit` is
+        // built from, and never negative -- a wrapped short would be.
+        CHECK(b.v[i].x <= 32000);
+        CHECK(b.v[i].x >= 0);
+    }
+}
+
 TEST(the_sheet_pages_do_not_overlap)
 {
     // Four fixed slots in a 128 x 64 sheet. The offsets are compiled into every

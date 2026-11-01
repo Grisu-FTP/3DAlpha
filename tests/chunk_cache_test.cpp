@@ -64,6 +64,8 @@ public:
     int stats = 0;
     int listings = 0;
     int opens = 0;
+    // A card that refuses every write, for the tests that need one.
+    bool failWrites = false;
 
     void resetCounts() { reads = writes = stats = listings = opens = 0; }
 
@@ -77,6 +79,9 @@ public:
     bool writeFileAtomic(const char* path, ConstByteSpan data) override
     {
         ++writes;
+        if (failWrites) {
+            return false;
+        }
         return inner_.writeFileAtomic(path, data);
     }
     bool exists(const char* path) override
@@ -1449,5 +1454,44 @@ TEST(closing_a_world_drops_the_surveys_it_had_not_answered)
     drain(cache);
     CHECK_EQ(log.calls, 0);
 
+    cache.close(kNow);
+}
+
+// **A card that refuses a write must not freeze the game.** A failed write used
+// to go straight back on the queue, and the generation thread's pay-here loop,
+// the I/O thread and a world exit's drain all waited on a queue that could not
+// empty -- the freeze at "Stopping world generation" on the console. Now it is
+// tried a few times, counted, held in memory and given up on until the next
+// flush asks again.
+TEST(a_refused_write_is_retried_a_few_times_and_then_given_up_on_not_for_ever)
+{
+    TempDir temp;
+    CHECK(temp.path[0] != '\0');
+    CountingFileSystem fs;
+    const std::string dir = temp.world("World");
+    CHECK(createWorld(fs, dir));
+
+    ChunkCache cache(fs);
+    CHECK(cache.open(dir.c_str(), kNow) == OpenResult::Ok);
+    CHECK(cache.save(makeChunk(-3, -17, 5)));
+    CHECK_EQ(int(cache.stats().dirtyColumns), 1);
+
+    fs.failWrites = true;
+    cache.flush(true);  // returns: that is the whole claim
+    ChunkCache::Stats now = cache.stats();
+    CHECK_EQ(int(now.writeFailures), ChunkCache::kMaxWriteAttempts);
+    CHECK_EQ(int(now.abandonedColumns), 1);
+    // The drain a world exit waits on reads zero, so the exit finishes.
+    CHECK_EQ(int(now.dirtyColumns), 0);
+    CHECK_EQ(int(now.lastFailedX), -3);
+    CHECK_EQ(int(now.lastFailedZ), -17);
+
+    // The column is still held, unwritten, and asking again with a working card
+    // writes it.
+    fs.failWrites = false;
+    cache.flush(true);
+    now = cache.stats();
+    CHECK_EQ(int(now.abandonedColumns), 0);
+    CHECK_EQ(int(now.dirtyColumns), 0);
     cache.close(kNow);
 }

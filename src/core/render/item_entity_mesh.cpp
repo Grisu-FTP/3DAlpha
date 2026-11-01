@@ -211,9 +211,19 @@ int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegre
         if (e.item == 0 || !item::def(e.item).known) {
             return false;
         }
-        *px = e.prevX + (e.x - e.prevX) * double(partial) - originX;
-        *pz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
-        *py = e.prevY + (e.y - e.prevY) * double(partial) - originY;
+        if (e.collecting()) {
+            // `EntityPickupFX.renderParticle`: the square of the fraction of
+            // its three ticks, from where it lay to the collector.
+            float f = (float(e.collectTicks - 1) + partial) / float(entity::kCollectTicks);
+            f = f > 1.0f ? 1.0f : f * f;
+            *px = e.x + (e.collectX - e.x) * double(f) - originX;
+            *py = e.y + (e.collectY - e.y) * double(f) - originY;
+            *pz = e.z + (e.collectZ - e.z) * double(f) - originZ;
+        } else {
+            *px = e.prevX + (e.x - e.prevX) * double(partial) - originX;
+            *pz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
+            *py = e.prevY + (e.y - e.prevY) * double(partial) - originY;
+        }
         return entityInDrawRange(*px, *py, *pz, entity::kItemSize, entity::kItemSize, kLimit);
     };
     // At most what the build below writes for it: every copy, and every box of

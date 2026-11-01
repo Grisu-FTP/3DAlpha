@@ -76,9 +76,14 @@ struct Screen {
     float x, y;
 };
 
+// The horizontal edge of a unit cube runs (cos 30, sin 30) * 0.5 on screen, as
+// in the original's matrix: the vertical edge is 0.5 and the cube is
+// 0.866 wide, not square. Half of 0.866 * 0.5 per unit of x + z.
+constexpr float kHalfWidth = 0.4330127f;
+
 Screen project(float bx, float by, float bz)
 {
-    return Screen{0.5f + (bx + bz - 1.0f) * 0.5f,
+    return Screen{0.5f + (bx + bz - 1.0f) * kHalfWidth,
                   0.25f + (bz - bx) * 0.25f + (1.0f - by) * 0.5f};
 }
 
@@ -235,8 +240,29 @@ void drawFace(const Surface& surface, int x, int y, int size, const u8* sheet,
     const int tileIndex = int(def.faces[face.meshFace]);
     const float tile = float(kTilePixels);
 
-    for (int py = 0; py < size; ++py) {
-        for (int pxi = 0; pxi < size; ++pxi) {
+    // **Only the pixels the parallelogram can touch are asked.** The loop below
+    // rejects everything outside it with the same two tests, so narrowing the
+    // range to the face's bounding box (a pixel of slack each side, for the
+    // centre offset and float rounding) changes no pixel -- it only stops a
+    // face that covers a third of the icon from visiting all of it.
+    const float cornerX[4] = {origin.x, origin.x + ux, origin.x + vx, origin.x + ux + vx};
+    const float cornerY[4] = {origin.y, origin.y + uy, origin.y + vy, origin.y + uy + vy};
+    float loX = cornerX[0], hiX = cornerX[0], loY = cornerY[0], hiY = cornerY[0];
+    for (int c = 1; c < 4; ++c) {
+        loX = cornerX[c] < loX ? cornerX[c] : loX;
+        hiX = cornerX[c] > hiX ? cornerX[c] : hiX;
+        loY = cornerY[c] < loY ? cornerY[c] : loY;
+        hiY = cornerY[c] > hiY ? cornerY[c] : hiY;
+    }
+    int pxLo = int(loX * edge) - 1, pxHi = int(hiX * edge) + 2;
+    int pyLo = int(loY * edge) - 1, pyHi = int(hiY * edge) + 2;
+    pxLo = pxLo < 0 ? 0 : pxLo;
+    pyLo = pyLo < 0 ? 0 : pyLo;
+    pxHi = pxHi > size ? size : pxHi;
+    pyHi = pyHi > size ? size : pyHi;
+
+    for (int py = pyLo; py < pyHi; ++py) {
+        for (int pxi = pxLo; pxi < pxHi; ++pxi) {
             // Pixel centres, so a face's edge falls between two pixels
             // rather than on one and the three faces tile without a seam.
             const float dx = (float(pxi) + 0.5f) / edge - origin.x;
@@ -447,6 +473,11 @@ void drawItemIcon(const Surface& surface, int x, int y, int size, const IconShee
     if (block != 0) {
         drawFlat(surface, x, y, size, sheets.terrain, int(block::def(block::BlockId(block)).texture));
     }
+}
+
+void drawSheetTile(const Surface& surface, int x, int y, int size, const u8* sheet, int tile)
+{
+    drawFlat(surface, x, y, size, sheet, tile);
 }
 
 }  // namespace mc::gui

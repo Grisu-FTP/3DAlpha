@@ -383,6 +383,18 @@ bool Atlas::initEntitySheets(const texture::AtlasImage& image)
         C3D_TexDelete(&art_);
         artReady_ = false;
     }
+    if (armourReady_) {
+        C3D_TexDelete(&armour_);
+        armourReady_ = false;
+    }
+
+    // **Not worth failing a world over.** Armour is drawn only on this console's
+    // own body in a third-person view, so a sheet that would not fit is armour
+    // left off that one body, and nothing else notices.
+    if (image.armourRgba.size() == texture::kArmourSheetBytes) {
+        armourReady_ = uploadSheet(&armour_, image.armourRgba.data(), texture::kArmourSheetEdge,
+                                   texture::kArmourSheetEdge);
+    }
 
     if (image.entityRgba.size() == texture::kEntitySheetBytes) {
         entityReady_ = uploadSheet(&entity_, image.entityRgba.data(),
@@ -764,6 +776,10 @@ void Atlas::shutdown()
     if (artReady_) {
         C3D_TexDelete(&art_);
         artReady_ = false;
+    }
+    if (armourReady_) {
+        C3D_TexDelete(&armour_);
+        armourReady_ = false;
     }
     if (fontReady_) {
         C3D_TexDelete(&font_);

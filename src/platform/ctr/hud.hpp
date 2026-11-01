@@ -87,6 +87,7 @@
 #include "core/gui/container_layout.hpp"
 #include "core/gui/paint.hpp"
 #include "core/gui/item_icon.hpp"
+#include "core/gui/player_doll.hpp"
 #include "core/item/inventory.hpp"
 #include "core/util/types.hpp"
 
@@ -312,8 +313,10 @@ int itemsCellForSlot(int slot);
 // `carried` is where it is now. See `Overlay::carriedPosition` for how the two
 // are decided, and `drawCarried` in hud.cpp for why the stack is drawn exactly
 // once.
+// `doll` may have null sheets, which leaves the player off the page.
 void drawItemsPage(const gui::Surface& surface, const item::Inventory& inventory,
-                   const gui::IconSheets& sheets, int cursor, int held, int carried);
+                   const gui::IconSheets& sheets, int cursor, int held, int carried,
+                   const gui::DollSheets& doll);
 
 // Which cell of the Items page a touch landed on, or -1. Covers the armour
 // column as well as the backpack grid; put it through `itemsSlotForCell`.
@@ -361,7 +364,11 @@ int hotbarSlotAt(int touchX, int touchY);
 // has to redraw both while a furnace's arrow redraws neither.
 void drawContainerPage(const gui::Surface& surface, const gui::ContainerLayout& layout,
                        const item::ContainerSession& session, const item::Inventory& inventory,
-                       const gui::IconSheets& sheets, int cursor, bool showCursor);
+                       const gui::IconSheets& sheets, int cursor, bool showCursor,
+                       bool carriedOnCursor = true);
+
+// The stick's pointer over a container window. See core/gui/stick_pointer.hpp.
+void drawPointer(const gui::Surface& surface, int x, int y);
 void drawContainerBand(const gui::Surface& surface, const gui::ContainerLayout& layout,
                        const item::ContainerSession& session, const item::Inventory& inventory,
                        const gui::IconSheets& sheets, int cursor, bool showCursor);

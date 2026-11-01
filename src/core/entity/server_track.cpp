@@ -129,4 +129,37 @@ bool ServerTrack::step(double* bx, double* by, double* bz)
     return false;
 }
 
+void ServerTrack::reset(double px, double py, double pz, float pyaw)
+{
+    place(px, py, pz);
+    yaw = pyaw;
+}
+
+bool ServerTrack::aim(double px, double py, double pz, float pyaw)
+{
+    const bool first = !aimed;
+    receive(px, py, pz);
+    yaw = pyaw;
+    aimed = true;
+    return first;
+}
+
+bool ServerTrack::step(double* bx, double* by, double* bz, float* byaw)
+{
+    step(bx, by, bz);
+    if (byaw != nullptr) {
+        float turn = yaw - *byaw;
+        while (turn < -180.0f) {
+            turn += 360.0f;
+        }
+        while (turn >= 180.0f) {
+            turn -= 360.0f;
+        }
+        // As with the position, a body that has arrived stops exactly.
+        constexpr float kArrivedDegrees = 1.0f / 64.0f;
+        *byaw = std::fabs(turn) < kArrivedDegrees ? yaw : *byaw + turn * float(kBlend);
+    }
+    return true;
+}
+
 }  // namespace mc::entity

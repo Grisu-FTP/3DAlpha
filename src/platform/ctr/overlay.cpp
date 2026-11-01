@@ -315,6 +315,12 @@ void Overlay::setAtlas(const texture::AtlasImage& atlas)
     // Borrowed. `empty()` is the atlas's own "not built yet", and null is what
     // the icon blit treats as "draw nothing" rather than "draw tile zero".
     sheets_.terrain = atlas.empty() ? nullptr : atlas.rgba.data();
+    dollSheets_.entity = atlas.entityRgba.size() == texture::kEntitySheetBytes
+                             ? atlas.entityRgba.data()
+                             : nullptr;
+    dollSheets_.armour = atlas.armourRgba.size() == texture::kArmourSheetBytes
+                             ? atlas.armourRgba.data()
+                             : nullptr;
     // **Optional, and its absence is not a failure.** A pack with no
     // gui/items.png leaves this null and every icon that wanted it falls back
     // to the terrain tile of the block the item places, which is what this
@@ -1228,6 +1234,38 @@ void Overlay::tickCursorStick(float dt)
     const float x = float(pad.dx) / 156.0f;
     const float y = float(pad.dy) / 156.0f;
 
+    // **A container window takes it as a pointer**: a light tilt snaps slot to slot
+    // and a firm one moves freely. See core/gui/stick_pointer.hpp. The pad's +y is up
+    // and the page's is down.
+    if (session_.isOpen()) {
+        // Out of hiding on the slot the cursor is on, not wherever it was last put.
+        if (!pointer_.shown() && containerCursor_ >= 0 && containerCursor_ < layout_.slots) {
+            const gui::SlotRect& r = layout_.rect[containerCursor_];
+            pointer_.placeAt(float(r.x + r.w / 2), float(r.y + r.h / 2));
+            pointer_.hide();
+        }
+        const gui::StickPointer::Result moved =
+            pointer_.tick(x, -y, dt, 0.0f, 0.0f, float(hud::kScreenWidth) - 1.0f,
+                          float(hud::kTabTop) - 1.0f);
+        if (moved.moved) {
+            pointerMoved();
+        } else if (moved.stepX != 0 || moved.stepY != 0) {
+            handleContainerInput(moved.stepX > 0   ? KEY_DRIGHT
+                                 : moved.stepX < 0 ? KEY_DLEFT
+                                 : moved.stepY > 0 ? KEY_DDOWN
+                                                   : KEY_DUP);
+            // A step leaves the pointer on the slot it landed on, if it was out.
+            if (pointer_.shown() && containerCursor_ >= 0
+                && containerCursor_ < layout_.slots) {
+                const gui::SlotRect& r = layout_.rect[containerCursor_];
+                pointer_.placeAt(float(r.x + r.w / 2), float(r.y + r.h / 2));
+                pointerHovering_ = true;
+                pointerDirty_ = true;
+            }
+        }
+        return;
+    }
+
     u32 direction = 0;
     switch (stick_.step(x, y, dt)) {
     case gui::StickStep::Left:  direction = KEY_DLEFT; break;
@@ -1455,9 +1493,95 @@ void Overlay::stepTab(bool forward)
 // the same number `container_layout.cpp` lays the grid out in.
 constexpr int kChestColumns = 9;
 
+// The pointer has gone somewhere new: the slot under it is the cursor, and off every
+// slot a press means nothing rather than whatever the cursor was last on.
+void Overlay::pointerMoved()
+{
+    pointerDirty_ = true;
+    const int slot = gui::containerSlotAt(layout_, int(pointer_.x()), int(pointer_.y()));
+    pointerHovering_ = slot >= 0;
+    if (slot >= 0 && slot != containerCursor_) {
+        containerCursor_ = slot;
+        selectUnderContainerCursor();
+        bodyDirty_ = true;
+        hotbarDirty_ = true;
+    }
+}
+
+void Overlay::savePointerPixels(const gui::Surface& surface, int x, int y)
+{
+    pointerSavedX_ = x;
+    pointerSavedY_ = y;
+    for (int row = 0; row < kPointerSaveEdge; ++row) {
+        for (int column = 0; column < kPointerSaveEdge; ++column) {
+            const int px = x + column;
+            const int py = y + row;
+            pointerSaved_[row * kPointerSaveEdge + column] =
+                px >= 0 && py >= 0 && px < surface.width && py < surface.height
+                    ? *surface.at(px, py)
+                    : gui::Pixel(0);
+        }
+    }
+    pointerDrawn_ = true;
+}
+
+void Overlay::restorePointerPixels(const gui::Surface& surface)
+{
+    if (!pointerDrawn_) {
+        return;
+    }
+    for (int row = 0; row < kPointerSaveEdge; ++row) {
+        for (int column = 0; column < kPointerSaveEdge; ++column) {
+            const int px = pointerSavedX_ + column;
+            const int py = pointerSavedY_ + row;
+            if (px >= 0 && py >= 0 && px < surface.width && py < surface.height) {
+                *surface.at(px, py) = pointerSaved_[row * kPointerSaveEdge + column];
+            }
+        }
+    }
+    pointerDrawn_ = false;
+}
+
+// Last, over whatever the page has just drawn or left alone. True when it wrote.
+bool Overlay::drawPointerOver(const gui::Surface& surface)
+{
+    if (!pointer_.shown()) {
+        return false;
+    }
+    const int x = int(pointer_.x());
+    const int y = int(pointer_.y());
+    savePointerPixels(surface, x - kPointerSaveEdge / 2, y - kPointerSaveEdge / 2);
+    // **A held stack hangs from it.** Whatever is on the cursor goes where the pointer
+    // is rather than on the slot under it.
+    if (!session_.cursor().empty()) {
+        constexpr int kHanging = hud::kIconPixels;
+        gui::drawItemIcon(surface, x - kHanging / 2, y - kHanging / 2, kHanging, sheets_,
+                          item::ItemId(session_.cursor().id));
+    }
+    hud::drawPointer(surface, x, y);
+    return true;
+}
+
 bool Overlay::handleContainerInput(u32 down)
 {
     const bool worldScreen = containerOpen();
+    // **The real d-pad puts the pointer away**, and the cursor carries on from where
+    // the pointer left it. The stick's own steps arrive at `tickCursorStick`, which
+    // keeps it out.
+    if ((down & (KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT)) != 0
+        && (hidKeysDown() & (KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT)) != 0
+        && pointer_.shown()) {
+        pointer_.hide();
+        pointerHovering_ = true;
+        pointerDirty_ = true;
+        bodyDirty_ = true;
+        hotbarDirty_ = true;
+    }
+    // **Off every slot a press does nothing**, rather than acting on whichever slot
+    // the pointer last crossed.
+    if (pointer_.shown() && !pointerHovering_ && (down & (KEY_A | KEY_X | KEY_Y)) != 0) {
+        return true;
+    }
     // B shuts a world container. On the inventory page it is the usual B --
     // the focus goes and the grid stays, since the page is still up.
     if ((down & KEY_B) != 0) {
@@ -1572,6 +1696,7 @@ void Overlay::clickContainer(int index, int button)
     if (click.changed) {
         // A click can land on the hand or the backpack, and those save.
         inventoryWritten();
+        ++containerClicks_;
     }
     bodyDirty_ = true;
     hotbarDirty_ = true;
@@ -1582,6 +1707,7 @@ void Overlay::quickMoveContainer(int index)
     const item::SlotClick click = session_.quickMove(containerWorld_, inventory_, index);
     if (click.changed) {
         inventoryWritten();
+        ++containerClicks_;
     }
     bodyDirty_ = true;
     hotbarDirty_ = true;
@@ -1623,6 +1749,9 @@ void Overlay::openContainer(tick::TickWorld& world, tick::TickWorld::ContainerKi
     // The first of the screen's own slots that takes a stack: a crafting
     // grid's first cell rather than its take-only result.
     containerCursor_ = kind == tick::TickWorld::ContainerKind::Workbench ? 1 : 0;
+    pointer_.reset();
+    pointerHovering_ = true;
+    pointerDrawn_ = false;
     shownCook_ = -1;
     shownBurn_ = -1;
     focus_ = true;
@@ -1652,6 +1781,9 @@ void Overlay::openMinecartChest(tick::TickWorld& world, entity::MinecartSystem& 
     containerScroll_ = 0;
     gui::buildContainerLayout(session_, hud::pageTop(), &layout_, containerScroll_);
     containerCursor_ = 0;
+    pointer_.reset();
+    pointerHovering_ = true;
+    pointerDrawn_ = false;
     shownCook_ = -1;
     shownBurn_ = -1;
     focus_ = true;
@@ -1704,6 +1836,9 @@ void Overlay::syncInventorySession()
         // The first backpack cell, which is where the Creative page's cursor
         // starts too.
         containerCursor_ = session_.containerSlots();
+        pointer_.reset();
+        pointerHovering_ = true;
+        pointerDrawn_ = false;
         dirty_ = true;
     }
 }
@@ -2142,9 +2277,18 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
     // nine of its slots. The furnace's arrow has a cheaper redraw of its own.
     if (session_.isOpen()) {
         bool drewContainer = cleared;
+        // What the pointer covered goes back before anything is drawn on top of it
+        // or saved from under it. A cleared screen has nothing of the pointer's left.
+        if (cleared) {
+            pointerDrawn_ = false;
+        }
+        const bool repainting = bodyDirty_ || hotbarDirty_ || progressDirty_ || pointerDirty_;
+        if (repainting) {
+            restorePointerPixels(screen);
+        }
         if (bodyDirty_) {
             hud::drawContainerPage(screen, layout_, session_, inventory_, sheets_,
-                                   containerCursor_, cursorShown());
+                                   containerCursor_, cursorShown(), !pointer_.shown());
             drewContainer = true;
         } else if (progressDirty_) {
             hud::drawContainerProgress(screen, layout_, session_, sheets_);
@@ -2155,6 +2299,11 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
                                    containerCursor_, cursorShown());
             drewContainer = true;
         }
+        if (repainting || cleared) {
+            drewContainer = drawPointerOver(screen) || drewContainer;
+            drewContainer = drewContainer || pointerDirty_;
+        }
+        pointerDirty_ = false;
         bodyDirty_ = false;
         hotbarDirty_ = false;
         progressDirty_ = false;
@@ -2180,7 +2329,7 @@ bool Overlay::drawPlayerPage(const Camera& camera, bool cleared)
         if (bodyDirty_) {
             hud::drawItemsPage(screen, inventory_, sheets_,
                                cursorShown() && focusGrid_ ? itemsCursor_ : -1, heldSlot_,
-                               carriedCell);
+                               carriedCell, dollSheets_);
             drew = true;
         }
         break;

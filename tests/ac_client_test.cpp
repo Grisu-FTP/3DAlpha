@@ -104,6 +104,19 @@ bool same(const std::vector<u8>& got, const u8* expected, usize size)
 
 #define CHECK_SENT(transport, vector) CHECK(same((transport).last(), vector, sizeof(vector)))
 
+// The server's List Sessions with its game filter taken off: the header and
+// token are its bytes, and the optional string after them is absent (0).
+std::vector<u8> unfiltered(const u8* vector, usize size)
+{
+    const usize header = size - 6;  // 0x01, then u16 length 3, then "3ds"
+    std::vector<u8> out(vector, vector + header);
+    out.push_back(0x00);
+    return out;
+}
+
+#define CHECK_SENT_BYTES(transport, bytes) \
+    CHECK(same((transport).last(), (bytes).data(), (bytes).size()))
+
 const Endpoint kServer = v4(203, 0, 113, 1, kDefaultPort);
 
 // Drives a client all the way to Ready using the server's own Challenge and
@@ -439,6 +452,44 @@ TEST(time_spent_suspended_is_not_counted_against_the_server)
     CHECK(client.takeEvent() == Event::PunchNow);
 }
 
+// **A datagram read just before the pump that sees the jump is heard once.**
+// `Connection::pump` reads the socket first and pumps the client after, so the
+// server's answer arrives stamped with the new clock while the client's own
+// clock is still the old one. The suspension then moved `lastHeard` forward by
+// the jump a second time, and the check after it read four billion milliseconds
+// of silence: "Lost the connection to the server", on the frame the joiner's
+// lobby first serviced the link on its own clock while the menu used another.
+TEST(a_datagram_stamped_before_the_clock_jump_is_not_moved_twice)
+{
+    FakeTransport transport;
+    Client client;
+    logIn(&client, &transport, test::kAcAuthOkUnlinked, sizeof(test::kAcAuthOkUnlinked), 1000);
+    (void)client.takeEvent();
+    client.pump(1016);
+    CHECK(client.ready());
+
+    // One answer read under a clock that jumped, then the pump.
+    constexpr u32 kOther = 0x80000000u;
+    client.onDatagram(test::kAcKeepaliveAck, sizeof(test::kAcKeepaliveAck), kOther);
+    client.pump(kOther);
+    CHECK(client.ready());
+
+    // And ten seconds of two pumps a frame on two clocks, each reading an
+    // answer first, which is what the lobby did.
+    for (u32 frame = 1; frame <= 600; ++frame) {
+        const u32 a = 1016 + frame * 16;
+        const u32 b = kOther + frame * 16;
+        client.onDatagram(test::kAcKeepaliveAck, sizeof(test::kAcKeepaliveAck), a);
+        client.pump(a);
+        client.onDatagram(test::kAcKeepaliveAck, sizeof(test::kAcKeepaliveAck), b);
+        client.pump(b);
+        if (!client.ready()) {
+            break;
+        }
+    }
+    CHECK(client.ready());
+}
+
 TEST(a_logged_in_console_says_it_is_still_there_every_ten_seconds)
 {
     FakeTransport transport;
@@ -690,7 +741,10 @@ TEST(hosting_listing_and_joining_are_the_servers_own_bytes)
 
     client.listSessions();
     client.pump(30);
-    CHECK_SENT(transport, test::kAcListSessions);
+    // The vector filters by `3ds`; this port lists every port's sessions.
+    CHECK_EQ(int(test::kAcListSessions[sizeof(test::kAcListSessions) - 6]), 1);
+    CHECK_SENT_BYTES(transport,
+                     unfiltered(test::kAcListSessions, sizeof(test::kAcListSessions)));
     client.onDatagram(test::kAcSessionList, sizeof(test::kAcSessionList), 40);
     CHECK(client.takeEvent() == Event::SessionsListed);
     CHECK_EQ(int(client.sessions().size()), 2);

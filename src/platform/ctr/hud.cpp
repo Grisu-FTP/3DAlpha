@@ -1,4 +1,5 @@
 #include "platform/ctr/hud.hpp"
+#include "core/render/player_model.hpp"
 #include "platform/ctr/bottom_screen.hpp"
 
 #include "core/block/registry.hpp"
@@ -750,11 +751,58 @@ int itemsCellForSlot(int slot)
     return -1;
 }
 
+// **The empty armour slot's outline**, `SlotArmor.getBackgroundIconIndex`: tiles 15,
+// 31, 47 and 63 of `gui/items.png`, helmet first, in the slot while nothing is worn
+// there. `row` is the slot's on the page, which runs helmet first too.
+void drawArmourOutline(const gui::Surface& surface, int x, int y, int cellPixels,
+                       const gui::IconSheets& sheets, int row)
+{
+    if (sheets.items == nullptr) {
+        return;
+    }
+    constexpr int kFirstTile = 15;
+    const int size = kIconPixels < cellPixels - 2 ? kIconPixels : cellPixels - 2;
+    gui::drawSheetTile(surface, x + (cellPixels - size) / 2, y + (cellPixels - size) / 2, size,
+                       sheets.items, kFirstTile + row * 16);
+}
+
 void drawItemsPage(const gui::Surface& surface, const item::Inventory& inventory,
-                   const gui::IconSheets& sheets, int cursor, int held, int carried)
+                   const gui::IconSheets& sheets, int cursor, int held, int carried,
+                   const gui::DollSheets& doll)
 {
     const ItemsLayout lay = itemsLayout(pageTop());
     panel(surface, kItemsPanelX, lay.panelY, kItemsPanelW, lay.panelH);
+
+    // **The player, in the corner the backpack leaves**, 25 pixels to the block so
+    // the 50 of them fit under the third row. a1.1.2's `lo` turns the figure toward
+    // the mouse through `atan(d / 40)`; the selected slot is the mouse here. The page
+    // repaints when the selection moves, so that is when the figure does.
+    if (doll.entity != nullptr) {
+        constexpr int kDollPixelsPerBlock = 25;
+        constexpr int kDollFootX = kItemsPanelX + kItemsPanelW - 32;
+        const int dollFootY = lay.gridY + kItemsGridHeight + 51;
+        gui::DollPose pose;
+        if (cursor >= 0 && cursor < kItemsCells) {
+            const bool armourCell = cursor >= item::kBackpackSlots;
+            const int cellX =
+                armourCell ? kItemsArmourX
+                           : kItemsGridX + (cursor % kItemsColumns) * kItemsSlotPixels;
+            const int cellY =
+                armourCell ? lay.gridY + (cursor - item::kBackpackSlots) * kItemsSlotPixels
+                           : lay.gridY + (cursor / kItemsColumns) * kItemsSlotPixels;
+            constexpr float kToDegrees = 20.0f;
+            const float dx = float(cellX + kItemsSlotPixels / 2 - kDollFootX);
+            const float dy = float(cellY + kItemsSlotPixels / 2 - (dollFootY - 42));
+            pose.bodyYaw = std::atan(dx / 40.0f) * kToDegrees;
+            pose.headPitch = std::atan(dy / 40.0f) * kToDegrees;
+        }
+        for (int slot = 0; slot < 4; ++slot) {
+            const item::ItemStack& piece = inventory.armour[3 - slot];
+            pose.armour[slot] = piece.empty() ? -1 : render::armourMaterialOf(piece.id);
+        }
+        gui::drawPlayerDoll(surface, kDollFootX, dollFootY, float(kDollPixelsPerBlock),
+                            kItemsPanelX, lay.panelY, kItemsPanelW, lay.panelH, doll, pose);
+    }
     textCentred(lay.titleRow, kItemsPanelX, kItemsPanelW, kPanelText, kPanelFace, "Inventory");
 
     // The backpack: slots 9..35, three rows of nine.
@@ -791,6 +839,10 @@ void drawItemsPage(const gui::Surface& surface, const item::Inventory& inventory
                  sheets, lifted || stack.empty() ? item::ItemId(0) : item::ItemId(stack.id),
                  lifted || cell == carried ? 0 : int(stack.count), int(stack.damage), false,
                  cell == cursor);
+        if (lifted || stack.empty()) {
+            drawArmourOutline(surface, kItemsArmourX, lay.gridY + row * kItemsSlotPixels,
+                              kItemsSlotPixels, sheets, row);
+        }
     }
 
     // **Last, over everything.** The stack in hand belongs on top of the grid
@@ -978,7 +1030,8 @@ void drawProgress(const gui::Surface& surface, const gui::ContainerLayout& layou
 
 void drawContainerPage(const gui::Surface& surface, const gui::ContainerLayout& layout,
                        const item::ContainerSession& session, const item::Inventory& inventory,
-                       const gui::IconSheets& sheets, int cursor, bool showCursor)
+                       const gui::IconSheets& sheets, int cursor, bool showCursor,
+                       bool carriedOnCursor)
 {
     panel(surface, layout.panel.x, layout.panel.y, layout.panel.w, layout.panel.h);
     for (int i = 0; i < layout.titles; ++i) {
@@ -999,16 +1052,35 @@ void drawContainerPage(const gui::Surface& surface, const gui::ContainerLayout& 
                  stack.empty() ? item::ItemId(0) : item::ItemId(stack.id),
                  here && !carried.empty() ? 0 : int(stack.count), int(stack.damage), false,
                  here && showCursor);
+        // `SlotArmor` is the inventory screen's slots 5 to 8, helmet first.
+        if (stack.empty() && session.kind() == item::ScreenKind::Inventory && i >= 5 && i <= 8
+            && sheets.items != nullptr) {
+            const int size = kIconPixels < r.w - 2 ? kIconPixels : r.w - 2;
+            const int fit = size < r.h - 2 ? size : r.h - 2;
+            gui::drawSheetTile(surface, r.x + (r.w - fit) / 2, r.y + (r.h - fit) / 2, fit,
+                               sheets.items, 15 + (i - 5) * 16);
+        }
     }
     drawProgress(surface, layout, session, sheets);
     drawScrollBar(surface, layout);
 
-    if (cursor >= 0 && cursor < pageSlots && !carried.empty()) {
+    if (carriedOnCursor && cursor >= 0 && cursor < pageSlots && !carried.empty()) {
         const gui::SlotRect& r = layout.rect[cursor];
         if (r.w > 0) {
             drawCarried(surface, r.x, r.y, r.w, r.h, sheets, carried);
         }
     }
+}
+
+void drawPointer(const gui::Surface& surface, int x, int y)
+{
+    // A plus, white on a dark edge so it reads over a slot's grey and an icon alike.
+    const gui::Pixel dark = gui::rgb565(0x202020u);
+    const gui::Pixel light = gui::rgb565(0xFFFFFFu);
+    gui::fillRect(surface, x - 5, y - 1, 11, 3, dark);
+    gui::fillRect(surface, x - 1, y - 5, 3, 11, dark);
+    gui::fillRect(surface, x - 4, y, 9, 1, light);
+    gui::fillRect(surface, x, y - 4, 1, 9, light);
 }
 
 void drawContainerBand(const gui::Surface& surface, const gui::ContainerLayout& layout,

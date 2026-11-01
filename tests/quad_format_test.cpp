@@ -76,19 +76,17 @@ WorldVertex expandCorner(const QuadVertex& q, int corner)
     v.seam = mesh::seamOf(q.face, w + h >= 3, corner);
 
     // u = slot + gutter + i*w copies of the tile; v = slot + gutter +
-    // ((1 - uvSign)/2 + j*uvSign) * h copies -- and both pulled kCubeUvInset in at
-    // the near end and off the end of the run at the far one, which quad.v.pica
-    // does with `nearU`/`farU` for u and with uvSign * inset for v. The
-    // direction has to follow which end the corner is on, or the two formats
-    // would texture a block differently and only hardware would say so.
+    // ((1 - uvSign)/2 + j*uvSign) * h copies -- and both pulled kCubeUvInset back
+    // at both ends, the same way, as cubeUvStart / cubeUvEnd have it -- or the
+    // two formats would texture a block differently and only hardware would say so.
     const int uTiles = i * w;
     const int vTiles = ((1 - b.uvSign) / 2 + j * b.uvSign) * h;
     v.u = i16(int(q.slotX) * mesh::kCubeUvPerSlot + mesh::kCubeUvGutter
               + uTiles * mesh::kCubeUvPerTile
-              + (uTiles == 0 ? mesh::kCubeUvInset : -mesh::kCubeUvInset));
+              + -mesh::kCubeUvInset);
     v.v = i16(int(q.slotY) * mesh::kCubeUvPerSlot + mesh::kCubeUvGutter
               + vTiles * mesh::kCubeUvPerTile
-              + (vTiles == 0 ? mesh::kCubeUvInset : -mesh::kCubeUvInset));
+              + -mesh::kCubeUvInset);
 
     const u8 shade = mesh::kFaceShade[q.face];
     v.r = shade;

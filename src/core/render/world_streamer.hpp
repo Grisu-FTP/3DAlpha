@@ -26,6 +26,7 @@
 #include "core/gui/progress.hpp"
 #include "core/item/use.hpp"
 #include "core/io/posix_file_system.hpp"
+#include "core/mesh/mesh_pool.hpp"
 #include "core/mesh/mesher.hpp"
 #include "core/mesh/scratch.hpp"
 #include "core/mesh/visibility.hpp"
@@ -41,6 +42,7 @@
 #include "core/world/light_update.hpp"
 #include "version_slots.hpp"
 
+#include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -57,6 +59,16 @@ public:
     struct Budget {
         int columnsPerFrame = 1;
         int meshesPerFrame = 4;
+
+        // **A time limit on top of the count**, for a platform that has a clock:
+        // meshing stops after the first section that takes the frame past
+        // `meshNanos` (at least one is always meshed), and the rest of the
+        // queue waits for the next frame. A count of sixteen is five frames of
+        // work on a bad frame and one on a good one; this is what keeps the bad
+        // ones from showing. It changes how soon a section appears, never what
+        // it looks like. Zero, or no clock, leaves the count as the only limit.
+        i64 meshNanos = 0;
+        i64 (*clockNanos)() = nullptr;
 
         // **Generated columns are not loaded columns and do not share their
         // budget.** Reading one is a gzip inflate; making one is terrain,
@@ -77,6 +89,13 @@ public:
         int columnsMissing = 0;   // in range, and there is no such chunk on disk
         int meshedThisFrame = 0;
         int emptyThisFrame = 0;
+        // Sections whose mesh came back from the mesh thread this frame and was
+        // uploaded, and ones that came back already out of date and were thrown
+        // away. The second over the first is the waste the thread costs.
+        int meshedAsyncThisFrame = 0;
+        int meshStaleThisFrame = 0;
+        u32 meshStaleTotal = 0;
+        u32 meshAsyncTotal = 0;
         usize blockBytes = 0;     // what the columns cost in the newlib heap
         int pendingColumns = 0;   // still to load inside the radius
 
@@ -148,15 +167,34 @@ public:
     // Closing a world writes everything it owes the card, which on a folder
     // world is a file per dirty column and long enough to look like a hang.
     //
-    // `progress` is called while that drains, with how many columns are written
-    // and how many were owed, so a caller can put a number in front of the
-    // player. It is called at least once even when nothing is owed -- that is
-    // the "nothing to do" answer rather than the absence of one -- and the
-    // wait happens here rather than inside the cache's own blocking close so
-    // there is something to report during it.
-    using SaveProgressFn = void (*)(void* context, u32 written, u32 owed);
+    // `progress` is called throughout, with the name of the phase that is
+    // running and how far through it this is, so a caller can put something
+    // truthful in front of the player. It is called at least once in every
+    // phase even when that phase has nothing to do -- that is the "nothing to
+    // do" answer rather than the absence of one.
+    //
+    // **Every phase reports, not only the drain**, and that is a fix rather
+    // than a decoration. The drain used to be the only thing with a callback in
+    // it, so a caller drew one frame before `close` and then nothing until the
+    // whole of it had run: joining the generation worker, cloning every column
+    // a tick had changed, flushing the generator, and the cache's own blocking
+    // close with level.dat and the commit in it. On a console that is most of
+    // the wait, and what it looked like was the save screen stuck on the first
+    // frame the caller drew -- "0 / 0 chunks", because the drain was over
+    // before it started. `total` is 0 for a phase that is not counted in
+    // columns; a caller shows the phase name and an indeterminate bar for it.
+    using SaveProgressFn = void (*)(void* context, const char* stage, u32 done, u32 total);
     void close(i64 nowMillis, void* progressContext = nullptr,
                SaveProgressFn progress = nullptr);
+
+    // The phase names `close` passes, as constants so a caller can compare
+    // rather than match text.
+    static const char* const kSaveStageCollecting;  // grid changes -> the cache
+    static const char* const kSaveStageEntities;    // the pools -> the player's save
+    static const char* const kSaveStageStopping;    // the generation thread, joined
+    static const char* const kSaveStageGenerated;   // columns the generator still holds
+    static const char* const kSaveStageWriting;     // the cache -> the card
+    static const char* const kSaveStageFinishing;   // level.dat, the commit
 
     // ---- a multiplayer world -------------------------------------------
     //
@@ -258,6 +296,11 @@ public:
     // generating inline, which is slow but not broken.
     void setGenerationThreaded(bool threaded) { generationThreaded_ = threaded; }
 
+    // Meshes sections on a thread of their own. On by default; call before
+    // open(). Off, or when the thread cannot start, every section is meshed on
+    // the calling thread as before.
+    void setMeshThreaded(bool threaded) { meshThreaded_ = threaded; }
+
     // The chunk cache's budget and whether it gets a thread. Call before
     // open(); resizing a table the I/O thread is walking is not something this
     // needs to support.
@@ -353,7 +396,15 @@ public:
     // calls -- and only when `dirtyColumns()` says there is something to write,
     // so pausing twice in a row costs one save. It also restarts the interval, so resuming does not immediately
     // trip an autosave over work that has just been written.
+    //
+    // **The sweep over the changed columns is spread over the next frames**
+    // (`kSaveColumnsPerFrame` a frame, advanced by tickSaves): cloning a column
+    // is 46 KB of copying, and a few hundred changed columns in one frame was a
+    // measured 350 ms stall. The housekeeping request waits for the last column,
+    // which is the order its comment below needs anyway.
     void saveNow(i64 nowMillis);
+    // True while a saveNow/autosave sweep is still handing columns to the cache.
+    bool saveSweeping() const { return saveSweepActive_; }
 
     // True when nothing is queued for the card either. What close() and the
     // tests wait on.
@@ -1085,6 +1136,14 @@ private:
         // grid with this set has edits the card has never seen.
         bool tickDirty = false;
 
+        // **Sections whose blocks changed since their visibility mask was
+        // computed**, one bit each. The mask is made when the column is adopted
+        // and nothing else remade it, so a shaft dug afterwards left the walk
+        // seeing solid rock where there was air, and the sections beyond it
+        // were culled. Settled once a frame by `refreshMasks`; the cell goes on
+        // `maskPending_` when the first bit is set.
+        u8 maskDirty = 0;
+
         // **When this column last became something a map would draw
         // differently**: adoption, or a block written into it. See
         // `blockChangeSerial` for why it is a serial off one session-wide
@@ -1169,7 +1228,33 @@ private:
     void warmAndPrefetch();
 
     bool startWorker();
-    void stopWorker();
+    struct SaveReport;
+    // `report` non-null draws the caller a frame while the thread winds down,
+    // saying what it is doing -- see `workerPhase_`.
+    void stopWorker(SaveReport* report = nullptr);
+
+public:
+    // **Asks the generation thread to finish up and stop, and does not wait.**
+    // Called as a world begins to close, so the thread is already winding down
+    // by the time the save needs it joined. Safe to call twice and from any
+    // point before `close`.
+    void requestWorkerStop();
+
+    // **Columns the card refused and the last save lost**, as of `close`. Zero
+    // is a save that wrote everything. See `ChunkCache::Stats::abandonedColumns`.
+    u32 saveFailures() const { return saveFailures_; }
+
+    // **Writes the card has refused so far this session**, and the last column
+    // that was refused, for the game to say so while it is still being played.
+    u32 writeFailures() const { return cache_.stats().writeFailures; }
+    void lastFailedWrite(i32* chunkX, i32* chunkZ) const
+    {
+        const world::ChunkCache::Stats stats = cache_.stats();
+        *chunkX = stats.lastFailedX;
+        *chunkZ = stats.lastFailedZ;
+    }
+
+private:
     void waitForWorkerIdle();
     void workerMain();
     static void workerEntry(void* self);
@@ -1342,6 +1427,39 @@ private:
 
     bool workerRunning_ = false;
     bool workerStop_ = false;
+    // **The same request, readable without the lock.** The worker re-takes
+    // `queueLock_` on every job, and a run of jobs that finish at once -- every
+    // column of a world already on the card is a no-op -- makes it release and
+    // re-take it in microseconds. A thread waiting for that lock to set
+    // `workerStop_` can be starved by it on hardware with an unfair mutex, which
+    // is a world exit that never gets past joining the worker. This is set
+    // first, with no lock, and the worker looks at it before it takes one.
+    std::atomic<bool> workerStopRequested_{false};
+
+    // **What the generation thread is doing, for a join that does not come.**
+    // Written by the worker at every place it can wait on something, read by
+    // the main thread while it waits for the join so the save screen can say
+    // where the thread is -- on a console a hang is otherwise a still picture.
+    // `workerExited_` is set as the thread's last act.
+    enum WorkerPhase : int {
+        kPhaseStarting,
+        kPhaseIdle,        // asleep on `wake_`
+        kPhaseTaking,      // between a wake and a job
+        kPhaseNoopCheck,   // `generateColumn`'s "is it already stored" read
+        kPhaseRetire,      // retiring and growing the generator's cache
+        kPhaseProvide,     // inside the generator
+        kPhaseLoad,        // the generator's read of a neighbour
+        kPhaseDeliver,     // the generator's hand-over: a cache save
+        kPhaseColumnWork,  // map sampling offered by the screen
+        kPhasePublish,     // back from the job, taking the lock to say so
+    };
+    std::atomic<int> workerPhase_{kPhaseStarting};
+    std::atomic<i32> workerPhaseX_{0};
+    std::atomic<i32> workerPhaseZ_{0};
+    std::atomic<u32> workerJobs_{0};
+    std::atomic<bool> workerExited_{false};
+    char stopText_[96] = {};
+    u32 saveFailures_ = 0;
     // ---------------------------------------------------------------------
     // **The slate: the nearest few columns that are owed, rewritten from the
     // grid every frame. There is no queue.**
@@ -1480,6 +1598,14 @@ private:
     int prefetchRings_ = 0;
     int autosaveSeconds_ = 0;
     i64 lastSaveMillis_ = 0;
+    // The sweep saveNow starts and tickSaves finishes. See saveNow.
+    bool saveSweepActive_ = false;
+    usize saveSweepCursor_ = 0;
+    i64 saveSweepMillis_ = 0;
+    static constexpr int kSaveColumnsPerFrame = 2;
+    // Hands up to `maxColumns` changed columns to the cache, from where the
+    // sweep left off. True once the sweep is over.
+    bool stepSaveSweep(int maxColumns);
 
     int meshDistance_ = 0;
 
@@ -1605,8 +1731,37 @@ private:
 
     static world::ChunkColumn* tickColumn(void* ctx, i32 chunkX, i32 chunkZ);
     static void tickBlockChanged(void* ctx, i32 x, int y, i32 z);
+
+    // Recomputes the masks of the sections `tickBlockChanged` marked and hands
+    // them to the renderer. Once per frame, so an explosion that changes
+    // hundreds of blocks in a section pays for one flood fill.
+    void refreshMasks(ChunkRenderer& renderer);
+    std::vector<std::pair<i32, i32>> maskPending_;
     static void lightSectionLit(void* ctx, i32 chunkX, int sectionY, i32 chunkZ);
-    void flushTickDirty();
+    // What `close` is telling the caller, carried through the phases so each
+    // one can report without every one of them taking four arguments.
+    struct SaveReport {
+        void* ctx = nullptr;
+        SaveProgressFn fn = nullptr;
+        u32 done = 0;
+        u32 total = 0;
+        void stage(const char* name, u32 newTotal)
+        {
+            done = 0;
+            total = newTotal;
+            step(name);
+        }
+        void step(const char* name)
+        {
+            if (fn != nullptr) {
+                fn(ctx, name, done, total);
+            }
+        }
+    };
+
+    // `report` non-null counts each column handed to the cache and draws the
+    // caller a frame per column; the autosave passes none.
+    void flushTickDirty(SaveReport* report = nullptr);
     int loadRadius_ = 0;
 
     // The cell grid, three rings wider than the load radius: that is a sweep's
@@ -1640,6 +1795,14 @@ private:
     mesh::MeshScratch scratch_;
     mesh::VisibilityScratch visScratch_;
     mesh::MeshBuilder builder_;
+
+    // Meshing off the main thread. `builder_` stays: it is the inline path for
+    // sections the player is standing beside and the fallback when no thread
+    // could be started, and it is what answers cubeFormat() and greedy().
+    mesh::MeshPool meshPool_;
+    bool meshThreaded_ = true;
+    void startMeshPool();
+    void drainMeshes(ChunkRenderer& renderer);
 
     // The two vertex streams laid end to end for the upload. Kept here so it
     // grows to the largest mesh once and never reallocates again.

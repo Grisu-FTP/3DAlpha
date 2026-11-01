@@ -59,6 +59,9 @@ constexpr Row kRows[] = {
     {packet::VehicleSpawn, {"VehicleSpawn kj/dl", 5, {F::Int, F::Byte, F::Int, F::Int, F::Int}}},
     {packet::MobSpawn,
      {"MobSpawn ez/gv", 7, {F::Int, F::Byte, F::Int, F::Int, F::Int, F::Byte, F::Byte}}},
+    // Ours; see the note beside `packet::Painting`.
+    {packet::Painting,
+     {"Painting (ours; a1.2.0's 0x19)", 6, {F::Int, F::String, F::Int, F::Int, F::Int, F::Int}}},
     {packet::DestroyEntity, {"DestroyEntity ju/ct", 1, {F::Int}}},
     // Ours; see the note beside `packet::EntityStatus`. Protocol 5's
     // `Packet38EntityStatus`: the entity and one signed byte.
@@ -86,6 +89,11 @@ constexpr Row kRows[] = {
      {"BlockChange li/et", 5, {F::Int, F::UByte, F::Int, F::UByte, F::UByte}}},
     {packet::ComplexEntity,
      {"ComplexEntity ny/ib", 4, {F::Int, F::Short, F::Int, F::ShortBytes}}},
+    // Ours; see the note beside `packet::TileSync`.
+    {packet::TileSync,
+     {"TileSync (ours; 0xE0)", 4, {F::Int, F::Short, F::Int, F::ShortBytes}}},
+    {packet::TileOpen, {"TileOpen (ours; 0xE1)", 3, {F::Int, F::Short, F::Int}}},
+    {packet::TileClose, {"TileClose (ours; 0xE2)", 3, {F::Int, F::Short, F::Int}}},
     {packet::PlayerSkin, {"PlayerSkin (ours; 0xE3)", 2, {F::Int, F::ShortBytes}}},
     {packet::KickDisconnect, {"KickDisconnect oh/io", 1, {F::String}}},
 };
@@ -442,20 +450,6 @@ Packet makePlace(int itemId, i32 x, int y, i32 z, int face)
     return p;
 }
 
-Packet makePainting(i32 entityId, std::string_view title, i32 tileX, i32 tileY, i32 tileZ,
-                    int direction)
-{
-    Packet p;
-    p.reset(packet::Painting);
-    p.pushInt(entityId);
-    p.pushString(title);
-    p.pushInt(tileX);
-    p.pushInt(tileY);
-    p.pushInt(tileZ);
-    p.pushInt(direction);
-    return p;
-}
-
 Packet makeUseItem(int itemId)
 {
     return makePlace(itemId, -1, 255, -1, kUseItemFace);
@@ -492,6 +486,40 @@ Packet makeUseEntity(i32 fromEntityId, i32 toEntityId, bool leftClick)
     p.pushInt(fromEntityId);
     p.pushInt(toEntityId);
     p.pushInt(leftClick ? 1 : 0);
+    return p;
+}
+
+Packet makePainting(i32 entityId, std::string_view title, i32 tileX, i32 tileY, i32 tileZ,
+                    int direction)
+{
+    Packet p;
+    p.reset(packet::Painting);
+    p.pushInt(entityId);
+    p.pushString(title);
+    p.pushInt(tileX);
+    p.pushInt(tileY);
+    p.pushInt(tileZ);
+    p.pushInt(direction);
+    return p;
+}
+
+Packet makeTileOpen(i32 x, int y, i32 z)
+{
+    Packet p;
+    p.reset(packet::TileOpen);
+    p.pushInt(x);
+    p.pushInt(y);
+    p.pushInt(z);
+    return p;
+}
+
+Packet makeTileClose(i32 x, int y, i32 z)
+{
+    Packet p;
+    p.reset(packet::TileClose);
+    p.pushInt(x);
+    p.pushInt(y);
+    p.pushInt(z);
     return p;
 }
 

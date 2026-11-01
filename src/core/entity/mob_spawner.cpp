@@ -14,16 +14,10 @@ namespace {
 
 // `World.getClosestPlayer(x, y, z, distance)` -- a **sphere**, and the distance
 // is compared squared against `getDistanceSq`, which measures from the player's
-// feet. Single player, so "the closest" is "the only".
+// feet. A host's guests are players to it too -- see `SpawnContext::guests`.
 bool playerWithinRange(const SpawnContext& context, double x, double y, double z)
 {
-    if (!context.playerPresent) {
-        return false;
-    }
-    const double dx = context.playerX - x;
-    const double dy = context.playerY - y;
-    const double dz = context.playerZ - z;
-    return dx * dx + dy * dy + dz * dz < kSpawnerPlayerRange * kSpawnerPlayerRange;
+    return anyPlayerWithin(context, x, y, z, kSpawnerPlayerRange);
 }
 
 // One `smoke` and one `flame` at the same point, which is every particle this

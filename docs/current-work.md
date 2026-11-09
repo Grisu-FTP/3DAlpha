@@ -3,6 +3,15 @@
 Last verified: 2026-11-01. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## CI red on 35047ce: a settle cap too small for the whole grid (2026-11-09)
+
+The new `an_autosave_spreads_...` case needs all 25 columns out to the corners, but copied the
+900-frame `settle` cap from cases that only need the ground under the camera. 900 frames is about
+a second, so on a slow machine a write hit a column that was not there, the `CHECK` returned with
+the worker still running, and the process died with exit 134 (the 2-in-18 single-core repro, and
+the CI run's exit code and log position). It now uses the 60000-frame full-grid cap. The CI log
+itself needs admin auth to read, so the match to CI is by those two facts.
+
 ## 47 features taken back from AlphaU and AlphaSwitch (2026-11-01)
 
 Picked from a checklist of 57, merged three-way against the ports' fork point `8e569b1` and then

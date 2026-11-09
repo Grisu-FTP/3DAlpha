@@ -635,7 +635,11 @@ TEST(an_autosave_spreads_its_changed_columns_over_frames_and_keeps_every_one)
     budget.generatedPerFrame = 2;
     budget.meshesPerFrame = 8;
     u32 counter = 1;
-    settle(streamer, renderer, -1, -1, budget, &counter, 900);
+    // **Every column out to the corners has to be here**, not just the ground
+    // under the camera, so this is the full-grid cap and only a hang guard. 900
+    // frames is about a second (settle sleeps 1 ms a frame), which a sanitized
+    // build on a loaded or four-core machine spends on a fraction of the grid.
+    settle(streamer, renderer, -1, -1, budget, &counter, 60000);
 
     tick::TickWorld* world = streamer.worldTick();
     CHECK(world != nullptr);
@@ -682,7 +686,7 @@ TEST(an_autosave_spreads_its_changed_columns_over_frames_and_keeps_every_one)
     ChunkRenderer renderer2;
     renderer2.reset(&allocator, config);
     u32 counter2 = 1;
-    settle(reopened, renderer2, -1, -1, budget, &counter2, 900);
+    settle(reopened, renderer2, -1, -1, budget, &counter2, 60000);
     CHECK(reopened.worldTick() != nullptr);
     for (int i = 0; i < n; ++i) {
         CHECK_EQ(reopened.worldTick()->blockAt(edits[i].x, 70, edits[i].z), edits[i].id);

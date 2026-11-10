@@ -44,6 +44,7 @@ public:
         details_.clear();
         translucent_.clear();
         dropped_ = 0;
+        cutoutQuads_ = 0;
         discardFaces();
     }
 
@@ -98,6 +99,20 @@ public:
 
     CubeFormat cubeFormat() const { return cubeFormat_; }
 
+    // **Whether a snow layer hides the top of the block under it**, which it
+    // does: the layer's box covers the cell's whole floor, so the only way that
+    // face can be seen is through a hole in the snow. A pack whose snow tile
+    // has holes is the one case that turns this off -- see `WorldStreamer` and
+    // `texture::tileHasHoles`. Like the two settings above, it only affects
+    // meshes built afterwards.
+    void setSnowHidesFloor(bool on)
+    {
+        snowHidesFloor_ = on;
+        clear();
+    }
+
+    bool snowHidesFloor() const { return snowHidesFloor_; }
+
     // One cube quad, written straight to the cube stream.
     //
     // (x, y, z) is the cell the quad starts at, and it covers `width` cells
@@ -111,8 +126,9 @@ public:
 
     // One visible cube face, which greedy meshing may merge with its
     // neighbours. **Nothing reaches the cube stream until flushFaces()**,
-    // which meshSection calls once the section has been walked; with greedy
-    // meshing off this is addQuad and the flush has nothing to do.
+    // which meshSection calls once the section has been walked. With greedy
+    // meshing off a solid face is addQuad at once; a cutout one still waits,
+    // because cutout faces have to end up behind all the solid ones.
     void addFace(int x, int y, int z, int face, u16 texture, u8 light);
     void flushFaces();
 
@@ -152,7 +168,8 @@ public:
     {
         return {quadCount() * cubeBytesPerQuad(cubeFormat_),
                 details_.size() * sizeof(DetailVertex),
-                translucent_.size() * sizeof(DetailVertex), cubeFormat_};
+                translucent_.size() * sizeof(DetailVertex), cubeFormat_,
+                cutoutQuads_ * cubeBytesPerQuad(cubeFormat_)};
     }
 
     usize byteSize() const { return ranges().total(); }
@@ -169,9 +186,11 @@ private:
 
     void ensureFaceGrid();
     void discardFaces();
+    void mergeFaces(bool cutout);
 
     CubeFormat cubeFormat_ = CubeFormat::Vertices;
     bool greedy_ = true;
+    bool snowHidesFloor_ = true;
 
     // **The faces waiting to be merged**, kept apart per face direction and
     // per layer along its normal, each layer a 16x16 grid in the face's own
@@ -182,6 +201,8 @@ private:
     //                                    the row bit says a face is there, so
     //                                    it is never cleared
     //   faceRows_   [face][layer][j]     bit i set for a face at (i, j)
+    //   faceCutouts_[face][layer][j]     bit i set if that face needs the
+    //                                    alpha test; always within faceRows_
     //   faceLayers_ [face]               bit `layer` set for a layer with any
     //
     // 51 KB, on the heap and allocated once: the builder can live wherever its
@@ -190,8 +211,10 @@ private:
     // next section starts without a memset.
     std::vector<u16> faceKeys_;
     std::vector<u16> faceRows_;
+    std::vector<u16> faceCutouts_;
     u16 faceLayers_[kFaceCount] = {};
     bool facesPending_ = false;
+    bool cutoutsPending_ = false;
 
     // Exactly one of these is ever non-empty. Two vectors rather than a union
     // because the capacity of the unused one costs nothing on the console --
@@ -201,6 +224,9 @@ private:
     std::vector<QuadVertex> quads_;
 
     u32 dropped_ = 0;
+
+    // How many quads at the end of the cube stream need the alpha test.
+    usize cutoutQuads_ = 0;
 
     std::vector<DetailVertex> details_;
     std::vector<DetailVertex> translucent_;

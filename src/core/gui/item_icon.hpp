@@ -16,10 +16,8 @@
 // **It is rasterised here rather than rendered.** The bottom screen has no GPU
 // behind it (core/gui/paint.hpp says why), so the cube is three parallelograms
 // filled by inverse-mapping each destination pixel back into its face's tile.
-// The projection is the flat 2:1 one every isometric sprite uses, not the
-// original's 30-degree matrix: at sixteen pixels across, the difference between
-// the two is under half a pixel and the 2:1 version lands its edges exactly on
-// pixel boundaries, so the silhouette has no stair-stepping to dither away.
+// The cube is as wide as the original's matrix makes it, and `kHalfWidth` in the
+// .cpp says why that matters at the size this console draws.
 //
 // The shades **are** the original's, and are the same table the world mesher
 // uses -- `mesh::kFaceShadeFloat`. A slot lit differently from the world would

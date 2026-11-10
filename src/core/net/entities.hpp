@@ -164,8 +164,9 @@ struct RemotePlayer {
     void turnBody(double movedX, double movedZ);
 
     // `ItemArmor.renderIndex` worn at each slot, helmet first, -1 for none.
-    // The wire says nothing about what a visitor wears, so only this console's
-    // own stand-in ever sets them.
+    // Protocol 2 says nothing about what a visitor wears, so a Java server's
+    // players stay bare, as they do in the original; a host of this family says
+    // -- see `isWornReport`. This console's own stand-in fills them itself.
     int armour[4] = {-1, -1, -1, -1};
 
     int ticksExisted = 0;

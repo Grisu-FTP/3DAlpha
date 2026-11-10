@@ -5,6 +5,8 @@
 #include "core/entity/explosion.hpp"
 #include "core/entity/particle.hpp"
 #include "core/entity/player_body.hpp"
+#include "core/net/player_sync.hpp"
+#include "core/render/player_model.hpp"
 #include "core/util/math_helper.hpp"
 
 #include "blocks.hpp"  // generated; see tools/configure.py
@@ -855,6 +857,22 @@ bool RemoteEntities::apply(const Packet& packet, tick::TickWorld* world)
         // `dz` towards a client is another player changing what they hold.
         if (RemotePlayer* player = findPlayer(i32(packet.integer(0)))) {
             player->heldItem = i16(packet.integer(1));
+        }
+        return true;
+
+    case packet::PlayerInventory:
+        // Ours when the type names somebody -- see `isWornReport`. The real
+        // types are this console's own pack, which is not an entity's business.
+        if (!isWornReport(packet)) {
+            return false;
+        }
+        if (RemotePlayer* player = findPlayer(i32(packet.integer(0)))) {
+            // The wire is boots first and `armour` is helmet first.
+            for (int slot = 0; slot < kWireArmourSlots; ++slot) {
+                const usize wire = usize(kWireArmourSlots - 1 - slot);
+                const int id = wire < packet.stacks.size() ? int(packet.stacks[wire].id) : -1;
+                player->armour[slot] = id < 0 ? -1 : render::armourMaterialOf(id);
+            }
         }
         return true;
 

@@ -492,6 +492,16 @@ struct MeshRanges {
     // one format, so they need no such field.
     CubeFormat cubeFormat = CubeFormat::Vertices;
 
+    // **How much of the end of `cubeBytes` needs the alpha test.** Faces whose
+    // tile has holes in it -- glass, leaves, a spawner's cage -- are written
+    // after every other cube face, so a renderer that gains from it can draw
+    // the front of the range with the test off. A fragment that might be
+    // dropped by the alpha test cannot write depth until the shader has run,
+    // so turning it off for the other nine faces in ten is what gets early
+    // depth rejection working on them. A renderer with nothing to gain draws
+    // `cubeBytes` whole, exactly as it always has.
+    usize cutoutCubeBytes = 0;
+
     // Vertex buffer bases are handed to the GPU as addresses, and the two
     // detail ranges start wherever the cube range ends -- so the cube range's
     // *length* decides their alignment. In CubeFormat::Vertices that is free:
@@ -531,6 +541,10 @@ struct MeshRanges {
     //
     // **The unpadded length, not detailOffset().** The pad is not geometry.
     usize cubeQuads() const { return cubeBytes / cubeBytesPerQuad(cubeFormat); }
+
+    // The two parts of the cube range. Solid starts at the front of it, cutout
+    // at this offset.
+    usize solidCubeBytes() const { return cubeBytes - cutoutCubeBytes; }
 
     // Where each range starts, for a caller holding the base pointer. Both are
     // multiples of kRangeAlign because detailBytes and translucentBytes are

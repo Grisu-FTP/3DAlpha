@@ -82,6 +82,7 @@
 #include "core/entity/mob.hpp"
 #include "core/mesh/vertex.hpp"
 #include "core/render/box_model.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/render/entity_range.hpp"
 #include "core/util/types.hpp"
 
@@ -108,7 +109,8 @@ inline constexpr int kMobMaxVertices = kMobDrawBudget * kMobVerticesEach;
 // **Everything except the slime's shell**, which is the one part of the one
 // model a1.1.2 draws in a second, blended pass -- see `buildMobShells`.
 int buildMobs(const entity::MobSystem& system, double originX, double originY, double originZ,
-              float partial, mesh::DetailVertex* out, int max);
+              float partial, mesh::DetailVertex* out, int max,
+              const EntityView* view = nullptr);
 
 // **`gq`'s render pass 0**: the slime's outer jelly, and nothing else in the
 // game. It is a separate call because it is a separate *pass* -- the shell's
@@ -119,7 +121,8 @@ int buildMobs(const entity::MobSystem& system, double originX, double originY, d
 // The same animals are admitted as `buildMobs` admits, so a shell is never
 // drawn around a face that was cut for want of room.
 int buildMobShells(const entity::MobSystem& system, double originX, double originY,
-                   double originZ, float partial, mesh::DetailVertex* out, int max);
+                   double originZ, float partial, mesh::DetailVertex* out, int max,
+                   const EntityView* view = nullptr);
 
 // One box per slime on screen, which is all this pass can ever hold.
 inline constexpr int kMobShellMaxVertices = kMobDrawBudget * kBoxVertices;
@@ -138,7 +141,8 @@ inline constexpr int kMobShellMaxVertices = kMobDrawBudget * kBoxVertices;
 // light coordinate its own vertices already carry. Every spider on screen gets
 // its own value out of one draw call. See `Renderer::drawMobs`.
 int buildMobEyes(const entity::MobSystem& system, double originX, double originY,
-                 double originZ, float partial, mesh::DetailVertex* out, int max);
+                 double originZ, float partial, mesh::DetailVertex* out, int max,
+                 const EntityView* view = nullptr);
 
 // One box per spider on screen.
 inline constexpr int kMobEyeMaxVertices = kMobDrawBudget * kBoxVertices;

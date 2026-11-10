@@ -568,10 +568,47 @@ TEST(a_button_icon_is_a_button_and_not_the_stone_block_it_is_made_of)
     CHECK(buttonPixels < stonePixels / 2);
 }
 
+// **How wide a block comes out is a matter of whole columns**, and the size a
+// console draws at decides which way it rounds. 24 is this console's, where a
+// true-isometric 0.866 came out at 20 columns and looked pinched; 22 is the same
+// icon in a palette cell, and the rest are what the other consoles' GUI scales
+// multiply 16 up to.
+TEST(a_block_icon_is_as_wide_as_the_originals_at_the_sizes_consoles_draw)
+{
+    std::vector<u8> terrain;
+    fillSheet(&terrain, 200, 100);
+    IconSheets sheets;
+    sheets.terrain = terrain.data();
+
+    const struct {
+        int size, columns;
+    } kCases[] = {{16, 14}, {22, 20}, {24, 22}, {32, 28}, {48, 42}, {64, 56}};
+    for (const auto& c : kCases) {
+        std::vector<gui::Pixel> pixels(usize(c.size) * usize(c.size), 0);
+        Surface surface;
+        surface.pixels = pixels.data();
+        surface.strideX = 1;
+        surface.strideY = c.size;
+        surface.width = c.size;
+        surface.height = c.size;
+        gui::drawItemIcon(surface, 0, 0, c.size, sheets, ItemId(1));
+        int first = c.size, last = -1;
+        for (int y = 0; y < c.size; ++y) {
+            for (int x = 0; x < c.size; ++x) {
+                if (pixels[usize(y) * usize(c.size) + usize(x)] != 0) {
+                    first = x < first ? x : first;
+                    last = x > last ? x : last;
+                }
+            }
+        }
+        CHECK_EQ(last - first + 1, c.columns);
+    }
+}
+
 // A golden hash over every item at five sizes, drawn from noisy sheets. The face
 // loop visits only the parallelogram's bounding box; this pins that narrowing
 // (and any later one) to the pixels the full-icon scan produced. The value was
-// taken from that scan before the bounding box existed.
+// taken from that scan, and retaken the same way when the cube's width changed.
 TEST(every_icon_at_every_size_is_pixel_stable)
 {
     std::vector<u8> terrain(texture::kAtlasBytes), items(texture::kAtlasBytes);
@@ -605,5 +642,5 @@ TEST(every_icon_at_every_size_is_pixel_stable)
             }
         }
     }
-    CHECK(hash == 0x4c72fb73a68a3084ull);
+    CHECK(hash == 0xcba331e4132d3f71ull);
 }

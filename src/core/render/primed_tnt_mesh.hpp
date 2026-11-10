@@ -38,6 +38,7 @@
 
 #include "core/entity/primed_tnt.hpp"
 #include "core/mesh/vertex.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/render/outline.hpp"
 #include "core/util/types.hpp"
 
@@ -96,7 +97,8 @@ inline bool primedTntFlashing(int fuse) { return (fuse / kPrimedTntFlashPeriod) 
 // gives a 0.98 box -- see core/render/entity_range.hpp. Past that it is
 // **skipped rather than clamped**, exactly as an item and a particle are.
 int buildPrimedTnt(const entity::PrimedTntSystem& system, double originX, double originY,
-                   double originZ, float partial, mesh::DetailVertex* out, int max);
+                   double originZ, float partial, mesh::DetailVertex* out, int max,
+                   const EntityView* view = nullptr);
 
 // One entity's white overlay, as triangles for the outline pipeline. Returns
 // the vertices written, which is `kPrimedTntFlashVerticesEach` or nothing.

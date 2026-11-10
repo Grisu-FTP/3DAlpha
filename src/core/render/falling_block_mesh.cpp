@@ -50,7 +50,8 @@ constexpr int kFace[6][4] = {
 
 int buildFallingBlocks(const entity::FallingBlockSystem& system, double originX,
                        double originY, double originZ, float partial,
-                       mesh::DetailVertex* out, int max)
+                       mesh::DetailVertex* out, int max,
+                       const EntityView* view)
 {
     if (out == nullptr || max < kFallingBlockVerticesEach) {
         return 0;
@@ -66,7 +67,8 @@ int buildFallingBlocks(const entity::FallingBlockSystem& system, double originX,
         *cx = e.prevX + (e.x - e.prevX) * double(partial) - originX;
         *cy = e.prevY + (e.y - e.prevY) * double(partial) - originY;
         *cz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
-        return entityInDrawRange(*cx, *cy, *cz, entity::kFallingBlockSize, entity::kFallingBlockSize);
+        return entityInDrawRange(*cx, *cy, *cz, entity::kFallingBlockSize, entity::kFallingBlockSize)
+               && canSee(view, *cx, *cy, *cz, 2.0);
     };
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
     DrawCutoff cutoff;

@@ -60,7 +60,8 @@ struct ModelQuad {
 }  // namespace
 
 int buildArrows(const entity::ArrowSystem& system, double originX, double originY,
-                double originZ, float partial, mesh::DetailVertex* out, int max)
+                double originZ, float partial, mesh::DetailVertex* out, int max,
+                const EntityView* view)
 {
     if (out == nullptr || max < kArrowVerticesEach) {
         return 0;
@@ -136,7 +137,8 @@ int buildArrows(const entity::ArrowSystem& system, double originX, double origin
         *ry = a.prevY + (a.y - a.prevY) * double(partial) - originY;
         *rz = a.prevZ + (a.z - a.prevZ) * double(partial) - originZ;
         return *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
-               && *rz >= -kLimit && *rz <= kLimit;
+               && *rz >= -kLimit && *rz <= kLimit
+               && canSee(view, *rx, *ry, *rz, 1.5);
     };
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
     DrawCutoff cutoff;

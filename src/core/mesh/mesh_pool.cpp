@@ -13,6 +13,7 @@ void MeshPool::start(int slots, bool threaded, int quadReserve)
         auto slot = std::make_unique<Slot>();
         slot->builder.setGreedy(greedy_);
         slot->builder.setCubeFormat(format_);
+        slot->builder.setSnowHidesFloor(snowHidesFloor_);
         slot->builder.reserveQuads(quadReserve);
         slots_.push_back(std::move(slot));
     }
@@ -206,6 +207,17 @@ void MeshPool::setGreedy(bool on)
     for (auto& slot : slots_) {
         if (slot->state == State::Free) {
             slot->builder.setGreedy(on);
+        }
+    }
+}
+
+void MeshPool::setSnowHidesFloor(bool on)
+{
+    snowHidesFloor_ = on;
+    std::lock_guard<std::mutex> guard(lock_);
+    for (auto& slot : slots_) {
+        if (slot->state == State::Free) {
+            slot->builder.setSnowHidesFloor(on);
         }
     }
 }

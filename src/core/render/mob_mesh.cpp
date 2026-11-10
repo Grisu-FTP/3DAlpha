@@ -727,7 +727,8 @@ bool partBelongsTo(entity::MobType type, int part, MobPass pass)
 }
 
 int buildMobRun(const entity::MobSystem& system, double originX, double originY,
-                double originZ, float partial, mesh::DetailVertex* out, int max, MobPass pass)
+                double originZ, float partial, mesh::DetailVertex* out, int max, MobPass pass,
+                const EntityView* view)
 {
     if (out == nullptr || max < kBoxVertices) {
         return 0;
@@ -744,7 +745,8 @@ int buildMobRun(const entity::MobSystem& system, double originX, double originY,
         *rx = mob.body.renderX(partial) - originX;
         *ry = mob.body.renderEyeY(partial) - originY;
         *rz = mob.body.renderZ(partial) - originZ;
-        return entityInDrawRange(*rx, *ry, *rz, mob.body.width, mob.body.height);
+        return entityInDrawRange(*rx, *ry, *rz, mob.body.width, mob.body.height)
+               && canSee(view, *rx, *ry, *rz, double(mob.body.width) + double(mob.body.height) + 1.0);
     };
 
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
@@ -810,21 +812,24 @@ int buildMobRun(const entity::MobSystem& system, double originX, double originY,
 }  // namespace
 
 int buildMobs(const entity::MobSystem& system, double originX, double originY, double originZ,
-              float partial, mesh::DetailVertex* out, int max)
+              float partial, mesh::DetailVertex* out, int max,
+              const EntityView* view)
 {
-    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Solid);
+    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Solid, view);
 }
 
 int buildMobShells(const entity::MobSystem& system, double originX, double originY,
-                   double originZ, float partial, mesh::DetailVertex* out, int max)
+                   double originZ, float partial, mesh::DetailVertex* out, int max,
+                   const EntityView* view)
 {
-    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Shell);
+    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Shell, view);
 }
 
 int buildMobEyes(const entity::MobSystem& system, double originX, double originY,
-                 double originZ, float partial, mesh::DetailVertex* out, int max)
+                 double originZ, float partial, mesh::DetailVertex* out, int max,
+                 const EntityView* view)
 {
-    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Eyes);
+    return buildMobRun(system, originX, originY, originZ, partial, out, max, MobPass::Eyes, view);
 }
 
 }  // namespace mc::render

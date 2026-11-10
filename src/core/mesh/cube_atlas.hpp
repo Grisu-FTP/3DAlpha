@@ -97,6 +97,10 @@ struct CubeAtlasLayout {
     u8 slotOfTile[kAtlasTileCount];  // kNoCubeSlot for a tile no cube face shows
     u16 tileOfSlot[kCubeSlotCount];  // meaningful below slotCount only
     int slotCount;
+    // Whether a slot's tile is named by a full cube that is not opaque -- glass,
+    // leaves, the spawner's cage -- which is to say a tile that needs the alpha
+    // test to look right. See `MeshRanges::cutoutCubeBytes`.
+    bool cutoutSlot[kCubeSlotCount];
 };
 
 namespace detail {
@@ -146,6 +150,7 @@ constexpr CubeAtlasLayout buildCubeAtlasLayout()
     }
 
     bool wanted[kAtlasTileCount] = {};
+    bool cutout[kAtlasTileCount] = {};
     detail::wantTile(wanted, 0);
     for (int face = 0; face < kFaceCount; ++face) {
         detail::wantTile(wanted, mcver::kUnknownBlock.faces[face]);
@@ -157,6 +162,9 @@ constexpr CubeAtlasLayout buildCubeAtlasLayout()
         }
         for (int face = 0; face < kFaceCount; ++face) {
             detail::wantTile(wanted, def.faces[face]);
+            if (def.unitCube && !def.opaque) {
+                detail::wantTile(cutout, def.faces[face]);
+            }
         }
         // A block whose faces are a rule rather than a row shows tiles its
         // `faces` never names -- without these four, a double chest samples
@@ -183,6 +191,9 @@ constexpr CubeAtlasLayout buildCubeAtlasLayout()
             detail::claimCubeSlot(layout, t);
         }
     }
+    for (int s = 0; s < layout.slotCount && s < kCubeSlotCount; ++s) {
+        layout.cutoutSlot[s] = cutout[layout.tileOfSlot[s]];
+    }
     return layout;
 }
 
@@ -201,6 +212,12 @@ constexpr int cubeSlotOf(int texture)
     const int tile = texture >= 0 && texture < kAtlasTileCount ? texture : 0;
     const u8 slot = kCubeAtlas.slotOfTile[tile];
     return slot != kNoCubeSlot ? slot : kCubeAtlas.slotOfTile[0];
+}
+
+// Whether faces in this slot go in the cutout part of the cube range.
+constexpr bool cubeSlotIsCutout(int slot)
+{
+    return kCubeAtlas.cutoutSlot[slot];
 }
 
 // Which texel of a tile a slot holds at `offset` texels along one axis: the

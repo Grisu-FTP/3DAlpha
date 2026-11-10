@@ -60,7 +60,8 @@ void writeCorner(mesh::DetailVertex& v, const Frame& f, float mx, float my, floa
 }  // namespace
 
 int buildPaintings(const entity::PaintingSystem& system, double originX, double originY,
-                   double originZ, mesh::DetailVertex* out, int max)
+                   double originZ, mesh::DetailVertex* out, int max,
+                   const EntityView* view)
 {
     if (out == nullptr || max < 4) {
         return 0;
@@ -77,7 +78,8 @@ int buildPaintings(const entity::PaintingSystem& system, double originX, double 
         *ry = p.y - originY;
         *rz = p.z - originZ;
         return *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
-               && *rz >= -kLimit && *rz <= kLimit;
+               && *rz >= -kLimit && *rz <= kLimit
+               && canSee(view, *rx, *ry, *rz, 4.0);
     };
     const auto cost = [&](int index) {
         const entity::PaintingArt& art = system[index].artwork();

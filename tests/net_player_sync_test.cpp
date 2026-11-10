@@ -145,6 +145,17 @@ TEST(the_inventory_goes_every_twentieth_tick_and_only_when_it_changed)
     CHECK(applyInventory(out[0], &other));
     CHECK_EQ(other.at(3).id, i16(4));
     CHECK(!applyInventory(out[1], &other));
+
+    // **Somebody else's armour is not this console's**: a build that has never
+    // heard of a worn report must read it and change nothing. See `isWornReport`.
+    WireStack worn[kWireArmourSlots];
+    worn[3].id = 310;
+    worn[3].count = 1;
+    const Packet report = makeWorn(2, worn);
+    CHECK(isWornReport(report));
+    CHECK(!applyInventory(report, &other));
+    CHECK(other.armour[3].empty());
+    CHECK(!isWornReport(out[2]));
 }
 
 TEST(digging_says_start_every_tick_and_stop_and_says_when_it_broke)

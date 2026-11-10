@@ -28,6 +28,7 @@
 
 #include "core/entity/falling_block.hpp"
 #include "core/mesh/vertex.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::render {
@@ -50,6 +51,7 @@ inline constexpr int kFallingBlockMaxVertices =
 // clamped one would be a block stuck to the edge of the world.
 int buildFallingBlocks(const entity::FallingBlockSystem& system, double originX,
                        double originY, double originZ, float partial,
-                       mesh::DetailVertex* out, int max);
+                       mesh::DetailVertex* out, int max,
+                       const EntityView* view = nullptr);
 
 }  // namespace mc::render

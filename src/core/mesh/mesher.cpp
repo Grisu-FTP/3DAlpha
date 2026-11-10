@@ -75,6 +75,8 @@ constexpr int kGridCells = kGridEdge * kGridEdge;
 static_assert(kGridEdge == 16, "a grid row is one u16 of face bits");
 static_assert(kCubeSlotCount <= 256, "a face key holds the slot in its high byte");
 
+constexpr BlockId kSnowLayer = BlockId(mcver::Block::SnowLayer);
+
 }  // namespace
 
 void MeshBuilder::addQuad(int x, int y, int z, int face, u16 texture, u8 light, int width,
@@ -171,6 +173,7 @@ void MeshBuilder::ensureFaceGrid()
     if (faceKeys_.empty()) {
         faceKeys_.assign(usize(kFaceCount) * kGridEdge * kGridCells, 0);
         faceRows_.assign(usize(kFaceCount) * kGridCells, 0);
+        faceCutouts_.assign(usize(kFaceCount) * kGridCells, 0);
     }
 }
 
@@ -180,14 +183,18 @@ void MeshBuilder::discardFaces()
         return;
     }
     std::memset(faceRows_.data(), 0, faceRows_.size() * sizeof(u16));
+    std::memset(faceCutouts_.data(), 0, faceCutouts_.size() * sizeof(u16));
     std::memset(faceLayers_, 0, sizeof(faceLayers_));
     facesPending_ = false;
+    cutoutsPending_ = false;
 }
 
 void MeshBuilder::addFace(int x, int y, int z, int face, u16 texture, u8 light)
 {
-    if (!greedy_) {
-        addQuad(x, y, z, face, texture, light);
+    const int slot = cubeSlotOf(texture);
+    const bool cutout = cubeSlotIsCutout(slot);
+    if (!greedy_ && !cutout) {
+        emitQuad(x, y, z, face, slot, light, 1, 1);
         return;
     }
     ensureFaceGrid();
@@ -199,8 +206,12 @@ void MeshBuilder::addFace(int x, int y, int z, int face, u16 texture, u8 light)
     const int j = a.flipJ ? kGridEdge - 1 - cell[a.axisJ] : cell[a.axisJ];
 
     const usize row = (usize(face) * kGridEdge + usize(layer)) * kGridEdge + usize(j);
-    faceKeys_[row * kGridEdge + usize(i)] = u16((cubeSlotOf(texture) << 8) | light);
+    faceKeys_[row * kGridEdge + usize(i)] = u16((slot << 8) | light);
     faceRows_[row] = u16(faceRows_[row] | (1u << i));
+    if (cutout) {
+        faceCutouts_[row] = u16(faceCutouts_[row] | (1u << i));
+        cutoutsPending_ = true;
+    }
     faceLayers_[face] = u16(faceLayers_[face] | (1u << layer));
     facesPending_ = true;
 }
@@ -219,11 +230,15 @@ void MeshBuilder::addFace(int x, int y, int z, int face, u16 texture, u8 light)
 // this finds are within a small factor of the best rectangle cover on terrain,
 // and the search that would close the gap costs main-thread time the mesh
 // budget is measured in.
-void MeshBuilder::flushFaces()
+//
+// **Solid faces first, then cutout ones**, one call each. A key names one slot,
+// so no run can ever cross from one kind to the other; only where a run may
+// *start* needs to ask, which is why the second bit grid is consulted there and
+// nowhere else. With greedy meshing off the runs are simply never longer than a
+// cell.
+void MeshBuilder::mergeFaces(bool cutout)
 {
-    if (!facesPending_) {
-        return;
-    }
+    const int longest = greedy_ ? kCubeRepeat : 1;
 
     for (int face = 0; face < kFaceCount; ++face) {
         const FaceAxes& a = kFaceAxes[face];
@@ -235,14 +250,19 @@ void MeshBuilder::flushFaces()
             const usize base = (usize(face) * kGridEdge + usize(layer)) * kGridEdge;
             u16* rows = &faceRows_[base];
             const u16* keys = &faceKeys_[base * kGridEdge];
+            u16* cutouts = &faceCutouts_[base];
 
             for (int j = 0; j < kGridEdge; ++j) {
-                while (rows[j] != 0) {
-                    const int i0 = __builtin_ctz(rows[j]);
+                for (;;) {
+                    const u32 starts = cutout ? cutouts[j] : u32(rows[j] & ~cutouts[j]);
+                    if (starts == 0) {
+                        break;
+                    }
+                    const int i0 = __builtin_ctz(starts);
                     const u16 key = keys[j * kGridEdge + i0];
 
                     int width = 1;
-                    while (width < kCubeRepeat && i0 + width < kGridEdge
+                    while (width < longest && i0 + width < kGridEdge
                            && (rows[j] >> (i0 + width) & 1u) != 0
                            && keys[j * kGridEdge + i0 + width] == key) {
                         ++width;
@@ -250,7 +270,7 @@ void MeshBuilder::flushFaces()
                     const u32 span = ((1u << width) - 1u) << i0;
 
                     int height = 1;
-                    while (height < kCubeRepeat && j + height < kGridEdge
+                    while (height < longest && j + height < kGridEdge
                            && (rows[j + height] & span) == span) {
                         const u16* next = keys + (j + height) * kGridEdge + i0;
                         bool same = true;
@@ -264,6 +284,7 @@ void MeshBuilder::flushFaces()
                     }
                     for (int k = 0; k < height; ++k) {
                         rows[j + k] = u16(rows[j + k] & ~span);
+                        cutouts[j + k] = u16(cutouts[j + k] & ~span);
                     }
 
                     // Back from the grid to the section: the run's first cell.
@@ -276,9 +297,25 @@ void MeshBuilder::flushFaces()
                 }
             }
         }
-        faceLayers_[face] = 0;
     }
+}
+
+void MeshBuilder::flushFaces()
+{
+    if (!facesPending_) {
+        return;
+    }
+
+    mergeFaces(false);
+    if (cutoutsPending_) {
+        const usize before = quadCount();
+        mergeFaces(true);
+        cutoutQuads_ += quadCount() - before;
+    }
+
+    std::memset(faceLayers_, 0, sizeof(faceLayers_));
     facesPending_ = false;
+    cutoutsPending_ = false;
 }
 
 void MeshBuilder::addDetailQuad(const i16 corner[4][3], const i16 uv[4][2], u8 shade, u8 light,
@@ -560,6 +597,8 @@ void emitNonCube(const MeshScratch& scratch, int x, int y, int z, BlockId id,
 
 void meshSection(const MeshScratch& scratch, MeshBuilder& out)
 {
+    const bool snowHidesFloor = out.snowHidesFloor();
+
     // X outer, Z middle, Y inner: the scratch is Y-fastest, so the inner loop
     // and its six neighbour probes stay inside a handful of cache lines.
     for (int x = 0; x < Section::kSize; ++x) {
@@ -598,7 +637,17 @@ void meshSection(const MeshScratch& scratch, MeshBuilder& out)
                     // kind, which is what makes a wall of glass a window
                     // rather than a stack of boxes. See
                     // core/block/side_rule.hpp.
-                    if (!block::sideVisible(id, def, scratch.block(nx, ny, nz), face)) {
+                    const BlockId neighbour = scratch.block(nx, ny, nz);
+                    if (!block::sideVisible(id, def, neighbour, face)) {
+                        continue;
+                    }
+
+                    // **The one face `shouldSideBeRendered` draws that nothing
+                    // can see.** A snow layer is not opaque, so a1.1.2 draws
+                    // the top of the block under it, but the layer's own box
+                    // covers that whole face. In a snow-covered world that is
+                    // the top of nearly every surface block.
+                    if (face == kFacePosY && neighbour == kSnowLayer && snowHidesFloor) {
                         continue;
                     }
 

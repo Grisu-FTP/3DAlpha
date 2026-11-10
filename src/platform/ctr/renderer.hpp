@@ -31,6 +31,7 @@
 #include "core/render/painting_mesh.hpp"
 #include "core/render/particle_mesh.hpp"
 #include "core/render/outline.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/util/frustum.hpp"
 #include "core/util/types.hpp"
 #include "core/world/view_fog.hpp"
@@ -202,6 +203,12 @@ public:
     // section that only the outer eye can see is not cut. Call before
     // ChunkRenderer::beginFrame.
     Frustum cullFrustum(const Camera& camera) const;
+
+    // The same frustum, for the entity passes to ask before each spends its
+    // budget (core/render/entity_view.hpp). `chunkX`/`chunkZ` is the camera
+    // chunk its planes are measured from. Until the first call they see
+    // everything.
+    void setEntityFrustum(const Frustum& frustum, i32 chunkX, i32 chunkZ);
 
     void setSkyDarken(int subtracted) { lightmap_.setSkyDarken(subtracted); }
 
@@ -608,6 +615,12 @@ public:
     usize freeLinearBytes() const;
 
 private:
+    render::EntityView entityView(double eyeBlockX, double eyeBlockY, double eyeBlockZ) const;
+    Frustum entityFrustum_;
+    i32 entityFrustumChunkX_ = 0;
+    i32 entityFrustumChunkZ_ = 0;
+    bool hasEntityFrustum_ = false;
+
     // One ring beyond the render distance, so the far plane never cuts through
     // a section the walk is willing to draw. Fog reaches full opacity a ring
     // earlier, at exactly the render distance, so nothing is ever seen being
@@ -881,11 +894,12 @@ private:
     // What those players carry, one buffer per sheet because a sheet is a draw:
     // blocks off terrain, and tools and flat items off gui/items.png. A flat item's
     // edge strips make it the largest thing here; 264 vertices a hand is 4 KB, so
-    // 38 KB a buffer with everybody holding one. And the worn armour, 4 KB, which
-    // only this console's body has -- the wire does not carry anybody else's.
+    // 38 KB a buffer with everybody holding one. And the worn armour, 4 KB a full
+    // suit, so 35 KB with everybody dressed: a host says what its players have on.
     static constexpr int kMaxPlayerHeldVertices =
         kMaxPlayerBodies * mc::render::kMaxHeldItemVertices;
-    static constexpr int kMaxPlayerArmourVertices = mc::render::kArmourPreviewVertices;
+    static constexpr int kMaxPlayerArmourVertices =
+        kMaxPlayerBodies * mc::render::kArmourPreviewVertices;
 
     // Thirty-two burning entities at once -- the frame's twenty-four mobs plus
     // the carts, boats and stacks a fire in a storeroom lights -- at four

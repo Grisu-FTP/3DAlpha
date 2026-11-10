@@ -198,7 +198,7 @@ int itemCopies(int stackSize)
 int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegrees,
                       double originX, double originY, double originZ, float partial,
                       item::IconSheet sheet, mesh::DetailVertex* out, int max,
-                      DrawCutoff* shared)
+                      DrawCutoff* shared, const EntityView* view)
 {
     if (out == nullptr || max < 4) {
         return 0;
@@ -224,7 +224,8 @@ int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegre
             *pz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
             *py = e.prevY + (e.y - e.prevY) * double(partial) - originY;
         }
-        return entityInDrawRange(*px, *py, *pz, entity::kItemSize, entity::kItemSize, kLimit);
+        return entityInDrawRange(*px, *py, *pz, entity::kItemSize, entity::kItemSize, kLimit)
+               && canSee(view, *px, *py, *pz, 1.5);
     };
     // At most what the build below writes for it: every copy, and every box of
     // a block or one quad of a sprite.

@@ -37,6 +37,7 @@
 
 #include "core/entity/painting.hpp"
 #include "core/mesh/vertex.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::render {
@@ -61,6 +62,7 @@ inline constexpr int kPaintingMaxVertices = entity::Painting::kMaxCells * 6 * 4;
 // is **skipped rather than clamped**, exactly as an item entity is: a clamped
 // one would be a picture stuck to the edge of the world.
 int buildPaintings(const entity::PaintingSystem& system, double originX, double originY,
-                   double originZ, mesh::DetailVertex* out, int max);
+                   double originZ, mesh::DetailVertex* out, int max,
+                   const EntityView* view = nullptr);
 
 }  // namespace mc::render

@@ -83,6 +83,21 @@ void ChunkProvider::carveCaves(i32 chunkX, i32 chunkZ, u8* blocks)
     caves_.generate(seed_, chunkX, chunkZ, blocks);
 }
 
+namespace {
+
+// Where a lattice sample sits between the two limit fields. One function
+// because two loops have to agree on it: the one deciding which limits to fill
+// and the one reading them.
+inline double limitBlend(double mainSample)
+{
+    return (mainSample / 10.0 + 1.0) / 2.0;
+}
+
+constexpr u8 kWantLowerLimit = 1;
+constexpr u8 kWantUpperLimit = 2;
+
+}  // namespace
+
 void ChunkProvider::initializeNoiseField(i32 x, i32 y, i32 z)
 {
     // Both spellings of 684.412 are separate locals in the original, one for
@@ -99,10 +114,27 @@ void ChunkProvider::initializeNoiseField(i32 x, i32 y, i32 z)
                     100.0, 0.0, 100.0);
     main_.populate(mainField_, kLatticeSize, double(x), double(y), double(z), kLatticeX, kLatticeY,
                    kLatticeZ, kHorizontal / 80.0, kVertical / 160.0, kHorizontal / 80.0);
-    minLimit_.populate(minLimitField_, kLatticeSize, double(x), double(y), double(z), kLatticeX,
-                       kLatticeY, kLatticeZ, kHorizontal, kVertical, kHorizontal);
-    maxLimit_.populate(maxLimitField_, kLatticeSize, double(x), double(y), double(z), kLatticeX,
-                       kLatticeY, kLatticeZ, kHorizontal, kVertical, kHorizontal);
+
+    // **Only the limit each sample will read.** The blend below takes the lower
+    // field alone when it is under 0, the upper alone when it is over 1, and
+    // both only in between -- and on real terrain 85 % of samples fall outside
+    // that range, so half of 32 octaves per sample were being computed and
+    // thrown away. Filling a field draws no random numbers, so which samples
+    // get filled cannot change anything but the time this takes; terrain_test
+    // compares whole chunks against the jar.
+    u8 limitWanted[kLatticeSize];
+    for (int i = 0; i < kLatticeSize; ++i) {
+        const double blend = limitBlend(mainField_[i]);
+        limitWanted[i] = blend < 0.0 ? kWantLowerLimit
+                                     : (blend > 1.0 ? kWantUpperLimit
+                                                    : u8(kWantLowerLimit | kWantUpperLimit));
+    }
+    minLimit_.populateWhere(minLimitField_, limitWanted, kWantLowerLimit, kLatticeSize, double(x),
+                            double(y), double(z), kLatticeX, kLatticeY, kLatticeZ, kHorizontal,
+                            kVertical, kHorizontal);
+    maxLimit_.populateWhere(maxLimitField_, limitWanted, kWantUpperLimit, kLatticeSize, double(x),
+                            double(y), double(z), kLatticeX, kLatticeY, kLatticeZ, kHorizontal,
+                            kVertical, kHorizontal);
 
     int index3d = 0;
     int index2d = 0;
@@ -158,7 +190,7 @@ void ChunkProvider::initializeNoiseField(i32 x, i32 y, i32 z)
 
                 const double lower = minLimitField_[index3d] / 512.0;
                 const double upper = maxLimitField_[index3d] / 512.0;
-                const double blend = (mainField_[index3d] / 10.0 + 1.0) / 2.0;
+                const double blend = limitBlend(mainField_[index3d]);
 
                 double density = 0.0;
                 if (blend < 0.0) {

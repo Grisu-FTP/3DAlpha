@@ -133,6 +133,11 @@ void toWire(const item::Inventory& inventory, WireStack* main, WireStack* armour
     for (int i = 0; i < kWireMainSlots; ++i) {
         main[i] = i < item::kMainSlots ? wireOf(inventory.main[i]) : WireStack{};
     }
+    wornToWire(inventory, armour);
+}
+
+void wornToWire(const item::Inventory& inventory, WireStack* armour)
+{
     for (int i = 0; i < kWireArmourSlots; ++i) {
         armour[i] = i < item::kArmourSlots ? wireOf(inventory.armour[i]) : WireStack{};
     }

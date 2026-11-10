@@ -31,6 +31,7 @@
 
 #include "core/entity/boat.hpp"
 #include "core/mesh/vertex.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::render {
@@ -47,6 +48,7 @@ inline constexpr int kBoatMaxVertices = kBoatDrawBudget * kBoatVerticesEach;
 // cannot hold them all -- and returns how many vertices it wrote. `partial` is the fraction of a tick elapsed, used for the position
 // and the yaw exactly as `doRender` uses it.
 int buildBoats(const entity::BoatSystem& system, double originX, double originY,
-               double originZ, float partial, mesh::DetailVertex* out, int max);
+               double originZ, float partial, mesh::DetailVertex* out, int max,
+               const EntityView* view = nullptr);
 
 }  // namespace mc::render

@@ -211,7 +211,8 @@ bool cartFrame(const entity::Minecart& c, const tick::TickWorld& world, double o
 
 int buildMinecarts(const entity::MinecartSystem& system, const tick::TickWorld& world,
                    double originX, double originY, double originZ, float partial,
-                   mesh::DetailVertex* out, int max)
+                   mesh::DetailVertex* out, int max,
+                   const EntityView* view)
 {
     if (out == nullptr || max < kMinecartVerticesEach) {
         return 0;
@@ -230,7 +231,8 @@ int buildMinecarts(const entity::MinecartSystem& system, const tick::TickWorld& 
         *ry = c.prevY + (c.y - c.prevY) * double(partial) - originY;
         *rz = c.prevZ + (c.z - c.prevZ) * double(partial) - originZ;
         return entityInDrawRange(*rx, *ry, *rz, entity::kMinecartWidth,
-                                 entity::kMinecartHeight);
+                                 entity::kMinecartHeight)
+               && canSee(view, *rx, *ry, *rz, 3.0);
     };
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
     DrawCutoff cutoff;
@@ -288,7 +290,8 @@ int buildMinecarts(const entity::MinecartSystem& system, const tick::TickWorld& 
 
 int buildMinecartBlocks(const entity::MinecartSystem& system, const tick::TickWorld& world,
                         double originX, double originY, double originZ, float partial,
-                        mesh::DetailVertex* out, int max)
+                        mesh::DetailVertex* out, int max,
+                        const EntityView* view)
 {
     if (out == nullptr || max < kMinecartBlockVerticesEach) {
         return 0;
@@ -305,7 +308,8 @@ int buildMinecartBlocks(const entity::MinecartSystem& system, const tick::TickWo
         *ry = c.prevY + (c.y - c.prevY) * double(partial) - originY;
         *rz = c.prevZ + (c.z - c.prevZ) * double(partial) - originZ;
         return entityInDrawRange(*rx, *ry, *rz, entity::kMinecartWidth,
-                                 entity::kMinecartHeight);
+                                 entity::kMinecartHeight)
+               && canSee(view, *rx, *ry, *rz, 3.0);
     };
     DrawCutoff cutoff;
     if (system.count() * kMinecartBlockVerticesEach > max) {

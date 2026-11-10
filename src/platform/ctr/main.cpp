@@ -83,6 +83,7 @@
 #include "core/texture/compass_fx.hpp"
 #include "core/texture/fluid_fx.hpp"
 #include "core/texture/texture_fx.hpp"
+#include "core/texture/tile_alpha.hpp"
 #include "core/tick/tick_timer.hpp"
 #include "core/render/player_model.hpp"
 #include "core/render/held_item.hpp"
@@ -2524,6 +2525,11 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // Greedy meshing the same way, and for the same reason: it has to be
         // what the page says before the first section is meshed.
         world.setGreedy(settings.greedyMeshing, renderer.chunks());
+        // Whether a snow layer hides what is under it depends on the pack's snow.
+        if (!choice.atlas.empty()) {
+            world.setSnowHidesFloor(!texture::snowLayerHasHoles(choice.atlas.rgba.data()),
+                                    renderer.chunks());
+        }
     }
 
     render::WorldStreamer::Budget budget;
@@ -2650,6 +2656,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             }
 
             const Frustum frustum = renderer.cullFrustum(camera);
+            renderer.setEntityFrustum(frustum, camera.chunkX(), camera.chunkZ());
             renderer.chunks().beginFrame(++frameCounter, frustum, camera.chunkX(),
                                          camera.sectionY(), camera.chunkZ());
             // The radio, for a session next door: the bytes have to come off it
@@ -2730,6 +2737,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             }
 
             const Frustum frustum = renderer.cullFrustum(camera);
+            renderer.setEntityFrustum(frustum, camera.chunkX(), camera.chunkZ());
             renderer.chunks().beginFrame(++frameCounter, frustum, camera.chunkX(),
                                          camera.sectionY(), camera.chunkZ());
             world.update(renderer.chunks(), camera.chunkX(), camera.chunkZ(), budget);
@@ -2857,6 +2865,11 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
             if (!renderer.setAtlas(menu.atlas())) {
                 std::printf("\x1b[31mcould not upload that pack\x1b[0m\n");
                 overlay.invalidate();
+            }
+            // A pack can change whether snow hides what is under it.
+            if (!menu.atlas().empty()) {
+                world.setSnowHidesFloor(!texture::snowLayerHasHoles(menu.atlas().rgba.data()),
+                                        renderer.chunks());
             }
             // The font is its own file with its own absence, so it is
             // uploaded separately -- a pack with no `default.png` leaves
@@ -3559,6 +3572,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
         // eye: the walk has to reach what the boom can see.
         const ctr::Camera walkCamera = viewCameraOf(camera);
         const Frustum frustum = renderer.cullFrustum(walkCamera);
+        renderer.setEntityFrustum(frustum, walkCamera.chunkX(), walkCamera.chunkZ());
         renderer.chunks().beginFrame(++frameCounter, frustum, walkCamera.chunkX(),
                                      walkCamera.sectionY(), walkCamera.chunkZ());
 
@@ -4178,6 +4192,7 @@ int runGame(const ctr::MenuChoice& choice, ctr::Menu& menu, mc::audio::SoundEngi
                             host->tickEntities(tickWorld);
                             host->reportStance(body.sneaking, vitals.alive());
                             host->reportHeld(int(overlay.inventory().selectedItem()));
+                            host->reportArmour(overlay.inventory());
                         }
 
                         // **A blow from another console, on the tick it arrived.**

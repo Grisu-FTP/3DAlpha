@@ -1474,6 +1474,20 @@ void WorldStreamer::setGreedy(bool on, ChunkRenderer& renderer)
     }
 }
 
+void WorldStreamer::setSnowHidesFloor(bool on, ChunkRenderer& renderer)
+{
+    if (on == builder_.snowHidesFloor()) {
+        return;
+    }
+    // Set even while closed, as setGreedy is: a pack is applied at startup,
+    // before there is a world.
+    builder_.setSnowHidesFloor(on);
+    meshPool_.setSnowHidesFloor(on);
+    if (open_) {
+        republishAll(renderer);
+    }
+}
+
 void WorldStreamer::republishAll(ChunkRenderer& renderer)
 {
     // The grid keeps its columns -- this is a change of geometry, not of what
@@ -2780,6 +2794,7 @@ void WorldStreamer::startMeshPool()
     constexpr int kMeshSlots = 4;
     meshPool_.setGreedy(builder_.greedy());
     meshPool_.setCubeFormat(builder_.cubeFormat());
+    meshPool_.setSnowHidesFloor(builder_.snowHidesFloor());
     meshPool_.start(kMeshSlots, meshThreaded_, 4096);
 }
 

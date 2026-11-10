@@ -52,6 +52,7 @@
 
 #include "core/entity/minecart.hpp"
 #include "core/mesh/vertex.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::tick {
@@ -72,7 +73,7 @@ inline constexpr int kMinecartMaxVertices = kMinecartDrawBudget * kMinecartVerti
 // the tilt is read off the track rather than off the cart -- see the header.
 int buildMinecarts(const entity::MinecartSystem& system, const tick::TickWorld& world,
                    double originX, double originY, double originZ, float partial,
-                   mesh::DetailVertex* out, int max);
+                   mesh::DetailVertex* out, int max, const EntityView* view = nullptr);
 
 // One cube per chest or furnace cart, off **terrain.png** rather than the
 // entity sheet -- see the header. Same arguments, same origin, same partial;
@@ -84,6 +85,6 @@ inline constexpr int kMinecartBlockMaxVertices =
 
 int buildMinecartBlocks(const entity::MinecartSystem& system, const tick::TickWorld& world,
                         double originX, double originY, double originZ, float partial,
-                        mesh::DetailVertex* out, int max);
+                        mesh::DetailVertex* out, int max, const EntityView* view = nullptr);
 
 }  // namespace mc::render

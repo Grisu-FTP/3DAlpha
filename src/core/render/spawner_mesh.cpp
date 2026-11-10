@@ -110,7 +110,8 @@ Placement placeSpawnerMob(const entity::MobSpawnerBlock& spawner, double originX
 }
 
 int buildSpawnerMobs(const entity::MobSpawnerStore& store, double originX, double originY,
-                     double originZ, float partial, mesh::DetailVertex* out, int max)
+                     double originZ, float partial, mesh::DetailVertex* out, int max,
+                     const EntityView* view)
 {
     if (out == nullptr || max < kBoxVertices) {
         return 0;
@@ -132,7 +133,8 @@ int buildSpawnerMobs(const entity::MobSpawnerStore& store, double originX, doubl
         *rz = double(s.z) + 0.5 - originZ;
         return *rx * *rx + *ry * *ry + *rz * *rz < kTileEntityDrawDistanceSq
                && *rx >= -kLimit && *rx <= kLimit && *ry >= -kLimit && *ry <= kLimit
-               && *rz >= -kLimit && *rz <= kLimit;
+               && *rz >= -kLimit && *rz <= kLimit
+               && canSee(view, *rx, *ry, *rz, 3.0);
     };
 
     const auto cost = [&](int index) {

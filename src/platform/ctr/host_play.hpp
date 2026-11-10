@@ -228,6 +228,8 @@ public:
     void reportStance(bool sneaking, bool alive) { server_.setHostStance(sneaking, alive); }
     // ...and what is in its hand. See `net::WorldServer::setHostHeld`.
     void reportHeld(int heldItem) { server_.setHostHeld(heldItem); }
+    // ...and what it has on. See `net::WorldServer::setHostArmour`.
+    void reportArmour(const mc::item::Inventory& inventory) { server_.setHostArmour(inventory); }
 
     // The host's arm swinging, for the guests to draw. See
     // `net::WorldServer::hostSwing`.

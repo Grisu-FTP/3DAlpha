@@ -647,6 +647,7 @@ void Renderer::drawParticles(const C3D_Mtx& viewProjection, i32 originChunkX,
     const double eyeBlockX = std::floor(particleEyeX_);
     const double eyeBlockY = std::floor(particleEyeY_);
     const double eyeBlockZ = std::floor(particleEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(particleVerts_);
 
@@ -690,7 +691,7 @@ void Renderer::drawParticles(const C3D_Mtx& viewProjection, i32 originChunkX,
         span.count = render::buildParticles(*particles_, particleCamera_, eyeBlockX,
                                             eyeBlockY, eyeBlockZ, particlePartial_,
                                             span.sheet, verts + built,
-                                            kMaxParticleVertices - built, &cutoff);
+                                            kMaxParticleVertices - built, &cutoff, &view);
         built += span.count;
     }
     if (built < 4) {
@@ -776,6 +777,7 @@ void Renderer::drawItemEntities(const C3D_Mtx& viewProjection, i32 originChunkX,
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     bindPipeline(detailPipeline_);
 
@@ -812,7 +814,7 @@ void Renderer::drawItemEntities(const C3D_Mtx& viewProjection, i32 originChunkX,
     const int terrainCount = render::buildItemEntities(*items_, itemViewYaw_, eyeBlockX,
                                                        eyeBlockY, eyeBlockZ, itemPartial_,
                                                        item::IconSheet::Terrain, verts,
-                                                       kMaxItemVertices, &itemCutoff);
+                                                       kMaxItemVertices, &itemCutoff, &view);
     // A pack with no gui/items.png. The bottom screen falls back to a terrain
     // tile for these; here there is nothing to fall back to that would not be a
     // lie, so they are not drawn. See core/texture/atlas_image.hpp.
@@ -822,7 +824,7 @@ void Renderer::drawItemEntities(const C3D_Mtx& viewProjection, i32 originChunkX,
                                                       item::IconSheet::Items,
                                                       verts + terrainCount,
                                                       kMaxItemVertices - terrainCount,
-                                                      &itemCutoff)
+                                                      &itemCutoff, &view)
                           : 0;
     if (terrainCount + itemCount < 4) {
         return;
@@ -883,11 +885,12 @@ void Renderer::drawFallingBlocks(const C3D_Mtx& viewProjection, i32 originChunkX
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(fallingVerts_);
     const int written = render::buildFallingBlocks(*fallingBlocks_, eyeBlockX, eyeBlockY,
                                                    eyeBlockZ, itemPartial_, verts,
-                                                   kMaxFallingVertices);
+                                                   kMaxFallingVertices, &view);
     if (written < 4) {
         return;
     }
@@ -947,10 +950,11 @@ void Renderer::drawPrimedTnt(const C3D_Mtx& viewProjection, i32 originChunkX,
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(tntVerts_);
     const int written = render::buildPrimedTnt(*primedTnt_, eyeBlockX, eyeBlockY, eyeBlockZ,
-                                               itemPartial_, verts, kMaxPrimedTntVertices);
+                                               itemPartial_, verts, kMaxPrimedTntVertices, &view);
     if (written < 4) {
         return;
     }
@@ -1110,10 +1114,11 @@ void Renderer::drawPaintings(const C3D_Mtx& viewProjection, i32 originChunkX,
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(paintingVerts_);
     const int written = render::buildPaintings(*paintings_, eyeBlockX, eyeBlockY, eyeBlockZ,
-                                               verts, kMaxPaintingVertices);
+                                               verts, kMaxPaintingVertices, &view);
     if (written < 4) {
         return;
     }
@@ -1161,10 +1166,11 @@ void Renderer::drawArrows(const C3D_Mtx& viewProjection, i32 originChunkX, i32 o
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(arrowVerts_);
     const int written = render::buildArrows(*arrows_, eyeBlockX, eyeBlockY, eyeBlockZ,
-                                            itemPartial_, verts, kMaxArrowVertices);
+                                            itemPartial_, verts, kMaxArrowVertices, &view);
     if (written < 4) {
         return;
     }
@@ -1210,10 +1216,11 @@ void Renderer::drawBoats(const C3D_Mtx& viewProjection, i32 originChunkX, i32 or
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(boatVerts_);
     const int written = render::buildBoats(*boats_, eyeBlockX, eyeBlockY, eyeBlockZ,
-                                           itemPartial_, verts, kMaxBoatVertices);
+                                           itemPartial_, verts, kMaxBoatVertices, &view);
     if (written < 4) {
         return;
     }
@@ -1261,12 +1268,13 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(mobVerts_);
     int written = 0;
     if (liveMobs > 0) {
         written = render::buildMobs(*mobs_, eyeBlockX, eyeBlockY, eyeBlockZ, itemPartial_,
-                                    verts, render::kMobMaxVertices);
+                                    verts, render::kMobMaxVertices, &view);
     }
     // **The miniatures append to the same buffer**, so a spawner costs no bind
     // and no draw call of its own -- see the note on `kMaxMobVertices`. They
@@ -1274,7 +1282,7 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
     if (liveSpawners > 0) {
         written += render::buildSpawnerMobs(*spawners_, eyeBlockX, eyeBlockY, eyeBlockZ,
                                             itemPartial_, verts + written,
-                                            kMaxMobVertices - written);
+                                            kMaxMobVertices - written, &view);
     }
     // ...and the players on the same terms again, for the same reason, with what
     // they carry and wear in buffers of their own: a different sheet is a different
@@ -1307,7 +1315,7 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
         shellVertices = render::buildMobShells(*mobs_, eyeBlockX, eyeBlockY, eyeBlockZ,
                                                itemPartial_,
                                                static_cast<mesh::DetailVertex*>(mobShellVerts_),
-                                               render::kMobShellMaxVertices);
+                                               render::kMobShellMaxVertices, &view);
     }
 
     // **`ok`'s render pass 0**: the spider's head from the eye page, in its own
@@ -1317,7 +1325,7 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
         eyeVertices = render::buildMobEyes(*mobs_, eyeBlockX, eyeBlockY, eyeBlockZ,
                                            itemPartial_,
                                            static_cast<mesh::DetailVertex*>(mobEyeVerts_),
-                                           render::kMobEyeMaxVertices);
+                                           render::kMobEyeMaxVertices, &view);
     }
 
     const bool carried =
@@ -1367,24 +1375,29 @@ void Renderer::drawMobs(const C3D_Mtx& viewProjection, i32 originChunkX, i32 ori
         frameStats_.quads += usize(quads);
     }
 
-    // **What the players wear and carry**, each off its own sheet and in detail
-    // units, and then the entity sheet and matrix put back for the passes below.
-    if (carried) {
+    const auto drawCarried = [&](const mesh::DetailVertex* from, int count) {
+        BufInfo_Init(&bufInfo);
+        BufInfo_Add(&bufInfo, from, sizeof(mesh::DetailVertex), 3, 0x210);
+        C3D_SetBufInfo(&bufInfo);
+        const int quads = count / 4;
+        C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
+        ++frameStats_.drawCalls;
+        frameStats_.quads += usize(quads);
+    };
+
+    // **What the players wear**, off its own sheet but in the units and under
+    // the matrix of the bodies it is on, so it reaches as far as they do.
+    if (players.armourCount >= 4 && atlas_.hasArmour()) {
+        atlas_.bindArmour(0);
+        drawCarried(players.armour, players.armourCount);
+        atlas_.bindEntity(0);
+    }
+
+    // **What they carry**, each off its own sheet and in detail units, and then
+    // the entity sheet and matrix put back for the passes below.
+    if (players.heldCount[0] >= 4 || players.heldCount[1] >= 4) {
         const C3D_Mtx detail = detailMatrix(viewProjection, tx, ty, tz);
         C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, detailPipeline_.uLocMvp, &detail);
-        const auto drawCarried = [&](const mesh::DetailVertex* from, int count) {
-            BufInfo_Init(&bufInfo);
-            BufInfo_Add(&bufInfo, from, sizeof(mesh::DetailVertex), 3, 0x210);
-            C3D_SetBufInfo(&bufInfo);
-            const int quads = count / 4;
-            C3D_DrawElements(GPU_TRIANGLES, quads * 6, C3D_UNSIGNED_SHORT, indices_);
-            ++frameStats_.drawCalls;
-            frameStats_.quads += usize(quads);
-        };
-        if (players.armourCount >= 4 && atlas_.hasArmour()) {
-            atlas_.bindArmour(0);
-            drawCarried(players.armour, players.armourCount);
-        }
         if (players.heldCount[0] >= 4) {
             atlas_.bind(0, wireframe_);
             drawCarried(players.held[0], players.heldCount[0]);
@@ -1588,11 +1601,12 @@ void Renderer::drawMinecarts(const C3D_Mtx& viewProjection, i32 originChunkX,
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(minecartVerts_);
     const int written =
         render::buildMinecarts(*minecarts_, *minecartWorld_, eyeBlockX, eyeBlockY,
-                               eyeBlockZ, itemPartial_, verts, kMaxMinecartVertices);
+                               eyeBlockZ, itemPartial_, verts, kMaxMinecartVertices, &view);
     if (written < 4) {
         return;
     }
@@ -1639,11 +1653,12 @@ void Renderer::drawMinecartBlocks(const C3D_Mtx& viewProjection, i32 originChunk
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(minecartBlockVerts_);
     const int written =
         render::buildMinecartBlocks(*minecarts_, *minecartWorld_, eyeBlockX, eyeBlockY,
-                                    eyeBlockZ, itemPartial_, verts, kMaxMinecartBlockVertices);
+                                    eyeBlockZ, itemPartial_, verts, kMaxMinecartBlockVertices, &view);
     if (written < 4) {
         return;  // no chest or furnace cart in range, which is the usual answer
     }
@@ -1685,6 +1700,7 @@ void Renderer::drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 or
     const double eyeBlockX = std::floor(itemEyeX_);
     const double eyeBlockY = std::floor(itemEyeY_);
     const double eyeBlockZ = std::floor(itemEyeZ_);
+    const render::EntityView view = entityView(eyeBlockX, eyeBlockY, eyeBlockZ);
 
     auto* verts = static_cast<mesh::DetailVertex*>(signVerts_);
 
@@ -1698,14 +1714,14 @@ void Renderer::drawSigns(const C3D_Mtx& viewProjection, i32 originChunkX, i32 or
     const int boardCount =
         atlas_.hasEntities() && liveSigns > 0
             ? render::buildSignBoards(*signs_, eyeBlockX, eyeBlockY, eyeBlockZ, verts,
-                                      kMaxSignVertices, &signCutoff)
+                                      kMaxSignVertices, &signCutoff, &view)
             : 0;
     const bool haveFont = atlas_.hasFont() && signFont_ != nullptr && !signFont_->empty();
     int textCount =
         haveFont && liveSigns > 0
             ? render::buildSignText(*signs_, *signFont_, eyeBlockX, eyeBlockY, eyeBlockZ,
                                     verts + boardCount, kMaxSignVertices - boardCount,
-                                    &signCutoff)
+                                    &signCutoff, &view)
             : 0;
     if (haveFont && namedPlayers > 0) {
         textCount += render::buildNameTags(*remotePlayers_, *signFont_, particleCamera_,
@@ -3294,6 +3310,23 @@ C3D_Mtx Renderer::viewProjection(const Camera& camera, float iod, float fovRadia
     C3D_Mtx vp;
     Mtx_Multiply(&vp, &projection, &view);
     return vp;
+}
+
+void Renderer::setEntityFrustum(const Frustum& frustum, i32 chunkX, i32 chunkZ)
+{
+    entityFrustum_ = frustum;
+    entityFrustumChunkX_ = chunkX;
+    entityFrustumChunkZ_ = chunkZ;
+    hasEntityFrustum_ = true;
+}
+
+render::EntityView Renderer::entityView(double eyeBlockX, double eyeBlockY, double eyeBlockZ) const
+{
+    if (!hasEntityFrustum_) {
+        return render::EntityView{};
+    }
+    return render::EntityView(entityFrustum_, eyeBlockX - double(entityFrustumChunkX_) * 16.0,
+                              eyeBlockY, eyeBlockZ - double(entityFrustumChunkZ_) * 16.0);
 }
 
 Frustum Renderer::cullFrustum(const Camera& camera) const

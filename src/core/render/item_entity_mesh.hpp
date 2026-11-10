@@ -49,6 +49,7 @@
 #include "core/item/item_def.hpp"
 #include "core/mesh/vertex.hpp"
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::render {
@@ -79,6 +80,6 @@ int itemCopies(int stackSize);
 int buildItemEntities(const entity::ItemEntitySystem& system, float viewYawDegrees,
                       double originX, double originY, double originZ, float partial,
                       item::IconSheet sheet, mesh::DetailVertex* out, int max,
-                      DrawCutoff* shared = nullptr);
+                      DrawCutoff* shared = nullptr, const EntityView* view = nullptr);
 
 }  // namespace mc::render

@@ -33,6 +33,22 @@ inline constexpr int kInventoryMain = -1;
 inline constexpr int kInventoryCrafting = -2;
 inline constexpr int kInventoryArmour = -3;
 
+// **What somebody else has on**, which protocol 2 has no way to say. Ours, and
+// on a packet every console already parses: a Player Inventory from a host
+// whose type is positive is an entity id, and its four stacks are what that
+// player wears, in the armour array's boots-first order. `gy.a(m)` assigns only
+// for -1, -2 and -3 and does nothing otherwise, and `applyInventory` is the
+// same, so a console that has never heard of this reads it and ignores it.
+inline bool isWornReport(const Packet& packet)
+{
+    return packet.id == packet::PlayerInventory && packet.integer(0) > 0;
+}
+
+inline Packet makeWorn(i32 entityId, const WireStack* worn)
+{
+    return makeInventory(entityId, worn, kWireArmourSlots);
+}
+
 struct PlayerPose {
     double x = 0.0;
     double feetY = 0.0;  // `boundingBox.minY`
@@ -105,6 +121,9 @@ private:
 // The inventory's main and armour arrays in wire form. Crafting is always
 // empty: the 2x2 grid does not persist here.
 void toWire(const item::Inventory& inventory, WireStack* main, WireStack* armour);
+
+// Just the armour half, for a host looking at itself once a tick.
+void wornToWire(const item::Inventory& inventory, WireStack* armour);
 
 // Applies a Player Inventory from the server. False when the type is not one
 // this inventory holds (crafting) or the packet is not a Player Inventory.

@@ -36,6 +36,7 @@
 
 #include "core/mesh/vertex.hpp"
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/texture/font.hpp"
 #include "core/util/types.hpp"
 #include "core/world/sign_store.hpp"
@@ -92,13 +93,13 @@ inline constexpr int kSignMaxVertices =
 // draws the same signs into what is left.
 int buildSignBoards(const world::SignStore& store, double originX, double originY,
                     double originZ, mesh::DetailVertex* out, int max,
-                    DrawCutoff* shared = nullptr);
+                    DrawCutoff* shared = nullptr, const EntityView* view = nullptr);
 
 // Fills `out` with the text quads. `font` supplies the glyph widths; a store
 // with no font behind it draws no text, which is what a pack with no
 // `default.png` gets.
 int buildSignText(const world::SignStore& store, const texture::FontImage& font,
                   double originX, double originY, double originZ, mesh::DetailVertex* out,
-                  int max, DrawCutoff* shared = nullptr);
+                  int max, DrawCutoff* shared = nullptr, const EntityView* view = nullptr);
 
 }  // namespace mc::render

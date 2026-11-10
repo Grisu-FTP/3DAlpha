@@ -88,7 +88,7 @@ struct SignFrame {
 };
 
 SignFrame frameOf(const world::SignText& sign, double originX, double originY,
-                  double originZ, bool* inRange)
+                  double originZ, const EntityView* view, bool* inRange)
 {
     const SignPose pose = poseOf(sign);
     const float radians = -pose.degrees * kDegrees;
@@ -117,7 +117,8 @@ SignFrame frameOf(const world::SignText& sign, double originX, double originY,
     const double cz = double(sign.z) + 0.5 - originZ;
     *inRange = cx * cx + cy * cy + cz * cz < kSignDrawDistanceSq
                && !(f.x < -kLimit || f.x > kLimit || f.y < -kLimit || f.y > kLimit
-                    || f.z < -kLimit || f.z > kLimit);
+                    || f.z < -kLimit || f.z > kLimit)
+               && canSee(view, f.x, f.y, f.z, 2.0);
 
     // **`glScalef(f, -f, -f)`**, which is not the `(-1, -1, 1)` every entity
     // model gets: a sign is mirrored on z rather than on x. Times the model
@@ -141,7 +142,8 @@ SignFrame frameOf(const world::SignText& sign, double originX, double originY,
 constexpr int kSignDrawEach = kSignVerticesEach + kSignGlyphsEach * 4;
 
 DrawCutoff& settleSignCutoff(const world::SignStore& store, double originX, double originY,
-                             double originZ, int budget, DrawCutoff* shared, DrawCutoff* local)
+                             double originZ, int budget, DrawCutoff* shared, DrawCutoff* local,
+                             const EntityView* view)
 {
     DrawCutoff& cutoff = shared != nullptr ? *shared : *local;
     if (cutoff.computed()) {
@@ -158,7 +160,7 @@ DrawCutoff& settleSignCutoff(const world::SignStore& store, double originX, doub
             return false;
         }
         bool inRange = false;
-        const SignFrame f = frameOf(sign, originX, originY, originZ, &inRange);
+        const SignFrame f = frameOf(sign, originX, originY, originZ, view, &inRange);
         *dx = f.x;
         *dy = f.y;
         *dz = f.z;
@@ -171,7 +173,7 @@ DrawCutoff& settleSignCutoff(const world::SignStore& store, double originX, doub
 }  // namespace
 
 int buildSignBoards(const world::SignStore& store, double originX, double originY,
-                    double originZ, mesh::DetailVertex* out, int max, DrawCutoff* shared)
+                    double originZ, mesh::DetailVertex* out, int max, DrawCutoff* shared, const EntityView* view)
 {
     if (out == nullptr || max < kSignVerticesEach) {
         return 0;
@@ -179,7 +181,7 @@ int buildSignBoards(const world::SignStore& store, double originX, double origin
 
     DrawCutoff local;
     DrawCutoff& cutoff =
-        settleSignCutoff(store, originX, originY, originZ, max, shared, &local);
+        settleSignCutoff(store, originX, originY, originZ, max, shared, &local, view);
 
     int written = 0;
     for (int i = 0; i < store.count(); ++i) {
@@ -192,7 +194,7 @@ int buildSignBoards(const world::SignStore& store, double originX, double origin
         }
 
         bool inRange = false;
-        const SignFrame f = frameOf(sign, originX, originY, originZ, &inRange);
+        const SignFrame f = frameOf(sign, originX, originY, originZ, view, &inRange);
         if (!inRange || !cutoff.admit(f.x, f.y, f.z, kSignDrawEach)) {
             continue;
         }
@@ -229,7 +231,7 @@ int buildSignBoards(const world::SignStore& store, double originX, double origin
 
 int buildSignText(const world::SignStore& store, const texture::FontImage& font,
                   double originX, double originY, double originZ, mesh::DetailVertex* out,
-                  int max, DrawCutoff* shared)
+                  int max, DrawCutoff* shared, const EntityView* view)
 {
     // **A pack with no `default.png` shows a blank sign.** There is no
     // generated font the way there is generated art -- see
@@ -241,7 +243,7 @@ int buildSignText(const world::SignStore& store, const texture::FontImage& font,
 
     DrawCutoff local;
     DrawCutoff& cutoff =
-        settleSignCutoff(store, originX, originY, originZ, max, shared, &local);
+        settleSignCutoff(store, originX, originY, originZ, max, shared, &local, view);
 
     int written = 0;
     for (int i = 0; i < store.count(); ++i) {
@@ -251,7 +253,7 @@ int buildSignText(const world::SignStore& store, const texture::FontImage& font,
         }
 
         bool inRange = false;
-        const SignFrame f = frameOf(sign, originX, originY, originZ, &inRange);
+        const SignFrame f = frameOf(sign, originX, originY, originZ, view, &inRange);
         if (!inRange || !cutoff.admit(f.x, f.y, f.z, kSignDrawEach)) {
             continue;
         }

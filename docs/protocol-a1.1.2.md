@@ -172,6 +172,10 @@ move until the client has echoed its Position & Look back exactly, which is what
 - A place is answered with a Block Change for the target whether or not it worked.
 - The inventory belongs to the client: every 20 ticks, if it changed, the client sends all three
   arrays (-1 main of 37, -2 crafting of 4, -3 armour of 4) and the server adopts them.
+- **Ours, not the protocol's:** a host of this family also sends Player Inventory with a *positive*
+  type, an entity id, and that player's four armour stacks (boots first) so they are drawn dressed.
+  The client handler (`gy.a(m)`) only assigns for -1, -2 and -3, so any other console ignores it.
+  See `isWornReport` in `core/net/player_sync.hpp`.
 
 ## Deliberately absent at protocol 2
 

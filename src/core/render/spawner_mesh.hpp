@@ -61,6 +61,7 @@
 #include "core/entity/mob_spawner.hpp"
 #include "core/mesh/vertex.hpp"
 #include "core/render/box_model.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/render/mob_mesh.hpp"
 #include "core/util/types.hpp"
 
@@ -98,6 +99,7 @@ Placement placeSpawnerMob(const entity::MobSpawnerBlock& spawner, double originX
 // `r.a(Lbd;DDDF)V` for every spawner in the store, nearest first when the
 // buffer cannot hold them all. Returns how many vertices were written.
 int buildSpawnerMobs(const entity::MobSpawnerStore& store, double originX, double originY,
-                     double originZ, float partial, mesh::DetailVertex* out, int max);
+                     double originZ, float partial, mesh::DetailVertex* out, int max,
+                     const EntityView* view = nullptr);
 
 }  // namespace mc::render

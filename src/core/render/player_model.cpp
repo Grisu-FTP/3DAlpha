@@ -187,7 +187,7 @@ int armourMaterialOf(int itemId)
 }
 
 int buildPlayerArmour(const ModelPart* parts, const int* materials, const Placement& place,
-                      mesh::DetailVertex* out, int max, u8 light)
+                      mesh::DetailVertex* out, int max, u8 light, int unitsPerBlock)
 {
     constexpr int kUnitsPerTexel = mesh::kUvUnitsPerAtlas / 256;
     // Which parts each slot shows: `bu.a(dm, int)`'s seven `showModel` stores.
@@ -219,7 +219,7 @@ int buildPlayerArmour(const ModelPart* parts, const int* materials, const Placem
             ModelPart grown = parts[part];
             grown.grow += slot == 2 ? 0.5f : 1.0f;
             const int count = buildBox(grown, place, texture::EntitySkin::Player, light,
-                                       out + written, max - written);
+                                       out + written, max - written, unitsPerBlock);
             for (int v = written; v < written + count; ++v) {
                 out[v].u = i16(out[v].u + du);
                 out[v].v = i16(out[v].v + dv);

@@ -108,7 +108,7 @@ u8 particleLight(const Particle& p, float partial)
 int buildParticles(const entity::ParticleSystem& system, const Billboard& camera,
                    double originX, double originY, double originZ, float partial,
                    entity::ParticleSheet sheet, mesh::DetailVertex* out, int max,
-                   DrawCutoff* shared)
+                   DrawCutoff* shared, const EntityView* view)
 {
     if (out == nullptr || max < 4) {
         return 0;
@@ -130,7 +130,8 @@ int buildParticles(const entity::ParticleSystem& system, const Billboard& camera
         *py = p.prevY + (p.y - p.prevY) * double(partial) - originY;
         *pz = p.prevZ + (p.z - p.prevZ) * double(partial) - originZ;
         return *px >= -kLimit && *px <= kLimit && *py >= -kLimit && *py <= kLimit
-               && *pz >= -kLimit && *pz <= kLimit;
+               && *pz >= -kLimit && *pz <= kLimit
+               && canSee(view, *px, *py, *pz, 1.0);
     };
 
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.

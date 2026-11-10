@@ -1338,6 +1338,165 @@ TEST(the_hosts_crouch_and_death_reach_its_guests_and_a_later_joiner)
     server.close();
 }
 
+namespace {
+
+// The reports in one player's stream that name who is wearing what.
+std::vector<Packet> wornReports(Sink& sink, u8 playerId, i32 wearer)
+{
+    std::vector<Packet> out;
+    for (Packet& packet : sink.packets(playerId)) {
+        if (isWornReport(packet) && packet.integer(0) == i64(wearer)) {
+            out.push_back(std::move(packet));
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+// Protocol 2 cannot say what anybody wears, so a host's guests drew it bare.
+TEST(the_hosts_armour_reaches_its_guests_once_per_change_and_a_later_joiner)
+{
+    FakeWorld world;
+    world.add(0, 0);
+    Sink sink;
+    WorldServer server;
+    server.open(&world, &Sink::send, &sink, "host");
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+
+    // Nothing on, nothing said.
+    item::Inventory inventory;
+    server.setHostArmour(inventory);
+    server.pump(9000);
+    CHECK(wornReports(sink, kGuest, kFirstPlayerEntityId).empty());
+
+    inventory.armour[3].id = 310;  // a diamond helmet, in the array's last slot
+    inventory.armour[3].count = 1;
+    server.setHostArmour(inventory);
+    server.setHostArmour(inventory);  // unchanged: nothing more to say
+    inventory.armour[3].damage = 40;  // nor does a dent show
+    server.setHostArmour(inventory);
+    server.pump(10000);
+    std::vector<Packet> reports = wornReports(sink, kGuest, kFirstPlayerEntityId);
+    CHECK_EQ(int(reports.size()), 1);
+    CHECK_EQ(int(reports[0].stacks.size()), kWireArmourSlots);
+    CHECK_EQ(int(reports[0].stacks[3].id), 310);
+    CHECK(reports[0].stacks[0].empty());
+
+    // Somebody joining now is told after the spawn that would otherwise wipe it.
+    constexpr u8 kLate = 3;
+    server.addPlayer(kLate, "Bea");
+    settle(server, 40);
+    bool spawned = false;
+    bool dressedAfterSpawn = false;
+    for (const Packet& packet : sink.packets(kLate)) {
+        if (packet.id == packet::NamedEntitySpawn
+            && packet.integer(0) == i64(kFirstPlayerEntityId)) {
+            spawned = true;
+        }
+        if (isWornReport(packet) && packet.integer(0) == i64(kFirstPlayerEntityId)) {
+            dressedAfterSpawn = spawned && packet.stacks[3].id == 310;
+        }
+    }
+    CHECK(dressedAfterSpawn);
+
+    // Taking it off is news too.
+    inventory.armour[3].id = item::kEmptyItemId;
+    inventory.armour[3].count = 0;
+    server.setHostArmour(inventory);
+    server.pump(11000);
+    reports = wornReports(sink, kGuest, kFirstPlayerEntityId);
+    CHECK_EQ(int(reports.size()), 2);
+    CHECK(reports[1].stacks[3].empty());
+
+    // A fresh spawn for a host back from the dead starts bare, so it is said again.
+    inventory.armour[0].id = 301;
+    inventory.armour[0].count = 1;
+    server.setHostArmour(inventory);
+    server.setHostStance(false, false);
+    server.setHostStance(false, true);
+    server.pump(12000);
+    reports = wornReports(sink, kGuest, kFirstPlayerEntityId);
+    CHECK_EQ(int(reports.size()), 4);
+    CHECK_EQ(int(reports[3].stacks[0].id), 301);
+    server.close();
+}
+
+TEST(a_guests_armour_reaches_the_host_and_the_other_guests)
+{
+    struct Seen {
+        std::vector<Packet> packets;
+        static void take(void* ctx, const Packet& packet)
+        {
+            static_cast<Seen*>(ctx)->packets.push_back(packet);
+        }
+    };
+    Seen seen;
+
+    FakeWorld world;
+    world.add(0, 0);
+    Sink sink;
+    WorldServer server;
+    server.open(&world, &Sink::send, &sink, "host");
+    server.setLocalSink(&Seen::take, &seen);
+    constexpr u8 kOther = 3;
+    server.addPlayer(kGuest, "Ada");
+    server.addPlayer(kOther, "Bea");
+    settle(server, 40);
+    const i32 ada = i32(kGuest);
+
+    // A guest reports its whole pack; only the armour is anybody else's concern.
+    WireStack pack[kWireMainSlots];
+    pack[0].id = 4;
+    pack[0].count = 32;
+    feedPacket(server, kGuest, makeInventory(kInventoryMain, pack, kWireMainSlots));
+    WireStack worn[kWireArmourSlots];
+    feedPacket(server, kGuest, makeInventory(kInventoryArmour, worn, kWireArmourSlots));
+    server.pump(9000);
+    CHECK(wornReports(sink, kOther, ada).empty());
+
+    worn[2].id = 303;  // a chain chestplate
+    worn[2].count = 1;
+    feedPacket(server, kGuest, makeInventory(kInventoryArmour, worn, kWireArmourSlots));
+    feedPacket(server, kGuest, makeInventory(kInventoryArmour, worn, kWireArmourSlots));
+    server.pump(10000);
+
+    std::vector<Packet> reports = wornReports(sink, kOther, ada);
+    CHECK_EQ(int(reports.size()), 1);
+    CHECK_EQ(int(reports[0].stacks[2].id), 303);
+    // Not echoed to its owner, whose armour is its own...
+    CHECK(wornReports(sink, kGuest, ada).empty());
+    // ...and the host, which is nobody's client, hears it through the sink.
+    int local = 0;
+    for (const Packet& packet : seen.packets) {
+        if (isWornReport(packet) && packet.integer(0) == i64(ada)) {
+            ++local;
+        }
+    }
+    CHECK_EQ(local, 1);
+
+    // A guest back from the dead is a fresh spawn, and is dressed again.
+    feedPacket(server, kGuest, makeEntityStatus(ada, entity::kStatusDead));
+    Packet respawn;
+    respawn.reset(packet::Respawn);
+    feedPacket(server, kGuest, respawn);
+    server.pump(11000);
+    reports = wornReports(sink, kOther, ada);
+    CHECK_EQ(int(reports.size()), 2);
+    CHECK_EQ(int(reports[1].stacks[2].id), 303);
+
+    // Somebody who left in armour comes back in it, and the others see so.
+    server.removePlayer(kGuest);
+    sink.streams.clear();
+    server.addPlayer(kGuest, "Ada");
+    settle(server, 40);
+    reports = wornReports(sink, kOther, ada);
+    CHECK_EQ(int(reports.size()), 1);
+    CHECK_EQ(int(reports[0].stacks[2].id), 303);
+    server.close();
+}
+
 // **A guest whose link has fallen behind is not sent positions it cannot use.**
 // Every teleport used to be queued, in order, however far behind the link was,
 // so a slow link grew a queue of places animals used to be -- the guest saw

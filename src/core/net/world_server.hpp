@@ -51,6 +51,7 @@
 #include "core/entity/primed_tnt.hpp"
 #include "core/net/packet_channel.hpp"
 #include "core/net/packets.hpp"
+#include "core/net/player_sync.hpp"
 #include "core/net/tile_sync.hpp"
 #include "core/util/types.hpp"
 #include "core/world/chunk.hpp"
@@ -358,6 +359,11 @@ public:
     // the one time it used to go out. See `NetPlay::tick` for the guest's half.
     void setHostHeld(int heldItem);
 
+    // **What the host has on**, told to every guest when a piece changes so it
+    // is drawn there -- see `isWornReport`. A guest's own arrives in the
+    // inventory it reports anyway. Called every tick.
+    void setHostArmour(const item::Inventory& inventory);
+
     // **The skin the host is wearing**, a 64 x 32 RGBA page -- see
     // core/net/player_skin.hpp. Sent to every guest as they join, and at once to
     // those already here. A page of the wrong size is ignored.
@@ -500,6 +506,8 @@ private:
         // Respawn. Kept so a console that joins later is told too.
         bool sneaking = false;
         bool dead = false;
+        // What they have on, boots first, kept for the same reason.
+        WireStack worn[kWireArmourSlots];
 
         // **Their skin**, a sanitised page or empty for none, kept so a console
         // that joins later is sent it. A guest's is taken once per connection:
@@ -660,6 +668,8 @@ private:
     void acceptSkin(Player& player, const Packet& packet);
     // `broadcast`, to the guests that have said they understand our packets.
     void broadcastExtended(const Packet& packet, u8 exceptPlayerId);
+    // Records what `player` has on. True when a piece is a different item.
+    static bool adoptWorn(Player& player, const WireStack* worn, usize count);
     void acceptTile(Player& player, const TileSnapshot& snapshot);
     void collectFor(Player& player, entity::ItemEntitySystem& items);
 

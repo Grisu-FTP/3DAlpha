@@ -76,10 +76,16 @@ struct Screen {
     float x, y;
 };
 
-// The horizontal edge of a unit cube runs (cos 30, sin 30) * 0.5 on screen, as
-// in the original's matrix: the vertical edge is 0.5 and the cube is
-// 0.866 wide, not square. Half of 0.866 * 0.5 per unit of x + z.
-constexpr float kHalfWidth = 0.4330127f;
+// How far one unit of x + z moves a corner sideways, as a fraction of the icon.
+// `RenderItem` scales a block by 10 and turns it 45 degrees in a 16-unit slot,
+// so it comes out 10 * sqrt(2) = 14.14 of those 16 wide: 0.884, and this is half
+// of that.
+//
+// **Not the 0.866 of a true isometric cube**, which is what this was. A cube
+// centred on a pixel boundary can only cover an even number of columns, and at
+// the 24 pixels this console draws an icon 0.866 is 20.8 of them, which came out
+// as 20 and looked pinched. 0.884 is 22; at 16, 32, 48 and 64 the two agree.
+constexpr float kHalfWidth = 0.44194174f;
 
 Screen project(float bx, float by, float bz)
 {

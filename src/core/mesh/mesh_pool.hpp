@@ -77,6 +77,7 @@ public:
 
     void setGreedy(bool on);
     void setCubeFormat(CubeFormat format);
+    void setSnowHidesFloor(bool on);
 
 private:
     enum class State : u8 { Free, Queued, Running, Done };
@@ -106,6 +107,7 @@ private:
     std::thread thread_;
     bool greedy_ = true;
     CubeFormat format_ = CubeFormat::Vertices;
+    bool snowHidesFloor_ = true;
 };
 
 }  // namespace mc::mesh

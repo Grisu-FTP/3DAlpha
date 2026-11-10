@@ -28,9 +28,10 @@ PerlinNoise::PerlinNoise(JavaRandom& random)
     }
 }
 
-void PerlinNoise::populate(double* out, double x, double y, double z, int xSize, int ySize,
-                           int zSize, double xScale, double yScale, double zScale,
-                           double amplitude) const
+template <class Wanted>
+void PerlinNoise::fill(double* out, double x, double y, double z, int xSize, int ySize, int zSize,
+                       double xScale, double yScale, double zScale, double amplitude,
+                       Wanted wanted) const
 {
     int index = 0;
     const double inverseAmplitude = 1.0 / amplitude;
@@ -73,6 +74,11 @@ void PerlinNoise::populate(double* out, double x, double y, double z, int xSize,
     // gradients are ever passed. See cornerGradient.
     double corners[6];
 
+    // The cell the corners above were last built for, kept separately from
+    // building them so that a skipped first sample still names the slab.
+    double slabY = 0.0;
+    bool slabBuilt = false;
+
     for (int xi = 0; xi < xSize; ++xi) {
         double fx = (x + double(xi)) * xScale + xOffset_;
         const i32 xFloor = floorToInt(fx);
@@ -94,12 +100,24 @@ void PerlinNoise::populate(double* out, double x, double y, double z, int xSize,
             for (int yi = 0; yi < ySize; ++yi) {
                 const YStep step = yi < kHoisted ? ySteps[yi] : yStep(yi);
                 const i32 yCell = step.cell;
-                const double fadeY = step.fade;
 
                 if (yi == 0 || yCell != lastYCell) {
                     lastYCell = yCell;
-                    corners[2] = step.f;
-                    corners[3] = step.f - 1.0;
+                    slabY = step.f;
+                    slabBuilt = false;
+                }
+
+                if (!wanted(index)) {
+                    ++index;
+                    continue;
+                }
+
+                const double fadeY = step.fade;
+
+                if (!slabBuilt) {
+                    slabBuilt = true;
+                    corners[2] = slabY;
+                    corners[3] = slabY - 1.0;
 
                     // The eight cube corners, addressed the way Perlin's
                     // reference does: fold x into the table, add y, fold again,
@@ -131,6 +149,22 @@ void PerlinNoise::populate(double* out, double x, double y, double z, int xSize,
             }
         }
     }
+}
+
+void PerlinNoise::populate(double* out, double x, double y, double z, int xSize, int ySize,
+                           int zSize, double xScale, double yScale, double zScale,
+                           double amplitude) const
+{
+    fill(out, x, y, z, xSize, ySize, zSize, xScale, yScale, zScale, amplitude,
+         [](int) { return true; });
+}
+
+void PerlinNoise::populateWhere(double* out, const u8* wanted, u8 mask, double x, double y,
+                                double z, int xSize, int ySize, int zSize, double xScale,
+                                double yScale, double zScale, double amplitude) const
+{
+    fill(out, x, y, z, xSize, ySize, zSize, xScale, yScale, zScale, amplitude,
+         [wanted, mask](int index) { return (wanted[index] & mask) != 0; });
 }
 
 double PerlinNoise::sample(double x, double y, double z) const
@@ -214,6 +248,24 @@ void OctaveNoise::populate(double* out, int count, double x, double y, double z,
     for (int i = 0; i < octaves_; ++i) {
         generators_[i].populate(out, x, y, z, xSize, ySize, zSize, xScale * amplitude,
                                 yScale * amplitude, zScale * amplitude, amplitude);
+        amplitude /= 2.0;
+    }
+}
+
+void OctaveNoise::populateWhere(double* out, const u8* wanted, u8 mask, int count, double x,
+                                double y, double z, int xSize, int ySize, int zSize,
+                                double xScale, double yScale, double zScale) const
+{
+    for (int i = 0; i < count; ++i) {
+        out[i] = 0.0;
+    }
+
+    // The same octave walk as `populate`, for the same reasons.
+    double amplitude = 1.0;
+    for (int i = 0; i < octaves_; ++i) {
+        generators_[i].populateWhere(out, wanted, mask, x, y, z, xSize, ySize, zSize,
+                                     xScale * amplitude, yScale * amplitude, zScale * amplitude,
+                                     amplitude);
         amplitude /= 2.0;
     }
 }

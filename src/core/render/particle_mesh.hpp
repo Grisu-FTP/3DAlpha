@@ -43,6 +43,7 @@
 #include "core/entity/particle.hpp"
 #include "core/mesh/vertex.hpp"
 #include "core/render/draw_budget.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::render {
@@ -79,7 +80,7 @@ struct Billboard {
 int buildParticles(const entity::ParticleSystem& system, const Billboard& camera,
                    double originX, double originY, double originZ, float partial,
                    entity::ParticleSheet sheet, mesh::DetailVertex* out, int max,
-                   DrawCutoff* shared = nullptr);
+                   DrawCutoff* shared = nullptr, const EntityView* view = nullptr);
 
 // The quad's half-width for a particle at this point in its life, in blocks.
 //

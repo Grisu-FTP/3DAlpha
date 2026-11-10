@@ -461,6 +461,11 @@ public:
     // setCubeFormat does, and wants the pool reset first for the same reason.
     void setGreedy(bool on, ChunkRenderer& renderer);
 
+    // Whether the current pack's snow tile is solid, and so whether a snow layer
+    // hides the block under it; see MeshBuilder::setSnowHidesFloor. Re-meshes
+    // only when the answer changes, which takes a pack with holes in its snow.
+    void setSnowHidesFloor(bool on, ChunkRenderer& renderer);
+
     bool greedy() const { return builder_.greedy(); }
 
     bool isOpen() const { return open_; }

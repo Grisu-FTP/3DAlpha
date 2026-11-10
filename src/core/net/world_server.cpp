@@ -95,6 +95,17 @@ const world::ChunkColumn* lookupColumn(void* ctx, i32 chunkX, i32 chunkZ)
     return static_cast<const ServerWorld*>(ctx)->column(chunkX, chunkZ);
 }
 
+// Whether there is anything to say: a spawn already starts bare.
+bool wearsAnything(const WireStack* worn)
+{
+    for (int i = 0; i < kWireArmourSlots; ++i) {
+        if (!worn[i].empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 // ---- the oven --------------------------------------------------------------
@@ -624,6 +635,7 @@ void WorldServer::login(Player& player)
                                         int(saved->main.size())));
             write(player, makeInventory(kInventoryArmour, saved->armour.data(),
                                         int(saved->armour.size())));
+            adoptWorn(player, saved->armour.data(), saved->armour.size());
         }
     }
 
@@ -638,6 +650,10 @@ void WorldServer::login(Player& player)
         }
         fillNamedSpawn(other);
         write(player, packet_);
+        // What they have on, which a spawn starts without.
+        if (wearsAnything(other.worn)) {
+            write(player, makeWorn(other.entityId, other.worn));
+        }
         // **And how they stand**, which the spawn cannot say: somebody already
         // crouching is drawn crouching, and somebody lying dead falls over and
         // goes, as they did on everyone else's screen.
@@ -659,6 +675,9 @@ void WorldServer::login(Player& player)
     fillNamedSpawn(player);
     announce(packet_, player.id);
     player.spawned = true;
+    if (wearsAnything(player.worn)) {
+        announce(makeWorn(player.entityId, player.worn), player.id);
+    }
 
     // **Everything alive, again.** `knownItems_` and `knownMobs_` record what
     // the *session* has been told, not what each player has: an animal is
@@ -1064,6 +1083,9 @@ void WorldServer::setHostStance(bool sneaking, bool alive)
         self.sneaking = false;
         fillNamedSpawn(self);
         broadcast(packet_, self.id);
+        if (wearsAnything(self.worn)) {
+            broadcast(makeWorn(self.entityId, self.worn), self.id);
+        }
     }
     if (!self.dead && !alive) {
         self.dead = true;
@@ -1090,6 +1112,31 @@ void WorldServer::setHostHeld(int heldItem)
     packet_.pushInt(self.entityId);
     packet_.pushInt(heldItem);
     broadcast(packet_, self.id);
+}
+
+bool WorldServer::adoptWorn(Player& player, const WireStack* worn, usize count)
+{
+    bool changed = false;
+    for (usize i = 0; i < usize(kWireArmourSlots); ++i) {
+        const WireStack piece = i < count ? worn[i] : WireStack{};
+        // The id alone: a dent does not show, and is not worth a packet.
+        changed = changed || piece.id != player.worn[i].id;
+        player.worn[i] = piece;
+    }
+    return changed;
+}
+
+void WorldServer::setHostArmour(const item::Inventory& inventory)
+{
+    Player& self = players_[0];
+    if (!self.used || self.entityId == 0) {
+        return;
+    }
+    WireStack worn[kWireArmourSlots];
+    wornToWire(inventory, worn);
+    if (adoptWorn(self, worn, usize(kWireArmourSlots))) {
+        broadcast(makeWorn(self.entityId, self.worn), self.id);
+    }
 }
 
 void WorldServer::setHostPose(double x, double feetY, double z, float yaw, float pitch)
@@ -2458,6 +2505,15 @@ void WorldServer::onPacket(Player& player, const Packet& p)
         // 0.2.1 writes them straight into the player. So does this -- into the
         // record that outlives their visit, which is the whole reason the host
         // holds one. See core/net/player_sync.hpp.
+        //
+        // **What they have on is the one part anybody else can see**, and this
+        // is the only place the host hears it. See `isWornReport`.
+        const i64 type = p.integer(0);
+        if (type == kInventoryArmour && adoptWorn(player, p.stacks.data(), p.stacks.size())
+            && player.spawned) {
+            announce(makeWorn(player.entityId, player.worn), player.id);
+        }
+
         SavedPlayer* saved = savedFor(player.name);
         if (saved == nullptr && !player.name.empty()) {
             saved_.push_back(SavedPlayer{});
@@ -2467,7 +2523,6 @@ void WorldServer::onPacket(Player& player, const Packet& p)
         if (saved == nullptr) {
             break;
         }
-        const i64 type = p.integer(0);
         if (type == kInventoryMain) {
             saved->main = p.stacks;
             saved->haveInventory = true;
@@ -2657,6 +2712,9 @@ void WorldServer::onPacket(Player& player, const Packet& p)
             player.sneaking = false;
             fillNamedSpawn(player);
             announce(packet_, player.id);
+            if (wearsAnything(player.worn)) {
+                announce(makeWorn(player.entityId, player.worn), player.id);
+            }
         }
         break;
 

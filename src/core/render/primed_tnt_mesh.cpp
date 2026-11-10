@@ -80,7 +80,8 @@ float primedTntFlashAlpha(int fuse, float partial)
 }
 
 int buildPrimedTnt(const entity::PrimedTntSystem& system, double originX, double originY,
-                   double originZ, float partial, mesh::DetailVertex* out, int max)
+                   double originZ, float partial, mesh::DetailVertex* out, int max,
+                   const EntityView* view)
 {
     if (out == nullptr || max < kPrimedTntVerticesEach) {
         return 0;
@@ -94,7 +95,8 @@ int buildPrimedTnt(const entity::PrimedTntSystem& system, double originX, double
         *cx = e.prevX + (e.x - e.prevX) * double(partial) - originX;
         *cy = e.prevY + (e.y - e.prevY) * double(partial) - originY;
         *cz = e.prevZ + (e.z - e.prevZ) * double(partial) - originZ;
-        return entityInDrawRange(*cx, *cy, *cz, entity::kPrimedTntSize, entity::kPrimedTntSize);
+        return entityInDrawRange(*cx, *cy, *cz, entity::kPrimedTntSize, entity::kPrimedTntSize)
+               && canSee(view, *cx, *cy, *cz, 2.0);
     };
     DrawCutoff cutoff;
     if (system.count() * kPrimedTntVerticesEach > max) {

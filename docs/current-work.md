@@ -3,6 +3,40 @@
 Last verified: 2026-11-01. A compact handoff, not a substitute for inspecting the current diff.
 Replace superseded facts here; keep detailed history in `status.md`.
 
+## Performance mod ideas (2026-11-10)
+
+Ideas from Sodium, Entity Culling, More Culling and Fast Noise that do not change gameplay.
+
+* **Terrain noise** (`impl/worldgen/.../noise`, `chunk_provider`): a lattice sample reads only one limit
+  field unless its blend is inside 0..1, and 85 % are outside, so `populateWhere` fills only what will be read.
+  One transcription behind both fills. Byte-identical over 1,225 columns and 5 seeds including the Far Lands;
+  `generateTerrain` 31 % and whole generation 17 % faster on the host (not measured on a console).
+* **Snow** (`core/mesh/mesher`): the top of a block under a snow layer is not emitted. 9.2 % fewer cube quads in
+  a snow-covered world, nothing elsewhere. A pack whose snow tile has holes keeps the face
+  (`texture::snowLayerHasHoles` -> `WorldStreamer::setSnowHidesFloor`, which re-meshes only if the answer changes).
+* **Entities** (`core/render/entity_view.hpp`): each pass asks the frustum before its draw budget, as a1.1.2
+  does (`e.class`, `oe.a(Lcf;)Z`), so mobs behind the camera no longer take the room of mobs in front. A generous
+  sphere, so nothing pops at the screen edge. Remote players, name tags and entity fire are not culled.
+* **Cube range** (`MeshRanges::cutoutCubeBytes`): the mesher now writes solid faces first. **Inert here**: the
+  3DS draws `cubeBytes` whole, because the alpha test measured as no cost on the PICA. Kept so `core/mesh` stays
+  identical across the ports.
+* Host 2093/2093 (ASan/UBSan) and the 3DS build pass. **Not run on hardware.** Same change in AlphaU and
+  AlphaSwitch. The selective fill sits on this repo's own hoisted-Y and `cornerGradient` fill.
+
+
+## Armour on other players, and block icons at the jar's width (2026-11-09)
+
+- **Armour is drawn on other consoles' players**, AlphaU's patch: a host sends Player Inventory
+  with the wearer's entity id as a positive type (`isWornReport`), which `gy.a(m)` ignores.
+  `WorldServer::setHostArmour` covers the host and a guest's -3 report covers the guest.
+- **3DS only, beyond the patch:** the armour buffer now holds every body (35 KB, 31 KB more linear
+  memory) and armour is built in entity units under the body's matrix, because detail units run
+  out 31 blocks away and `buildBox` would leave the armour off.
+- **A block icon is 0.884 of its size wide** (`RenderItem`'s scale 10 and 45-degree turn), not
+  0.866. A centred cube covers an even number of columns, so at the 3DS's 24 pixels 0.866 came out
+  at 20 and looked pinched; it is 22 now. Sizes 16, 32, 48 and 64 are unchanged.
+- Host tests and a 3DS build only. Nothing here has run on a console.
+
 ## CI red on 35047ce: a settle cap too small for the whole grid (2026-11-09)
 
 The new `an_autosave_spreads_...` case needs all 25 columns out to the corners, but copied the
@@ -31,14 +65,13 @@ horizon culling, self check and a1.1.2 HUD placement. The ports' Wii U and Switc
   seat. Tests written for the walk were changed to say where a body ends up.
 - **Riding:** the end of the player's tick is one lambda, `finishPlayerTick`, that both branches
   reach. It used to be skipped by a `continue`.
-- **Third person:** a lone tap of SELECT cycles the view. Armour draws only on this console's own
-  body, since the wire does not carry anybody else's.
+- **Third person:** a lone tap of SELECT cycles the view.
 - **Inventory:** `gui/player_doll` draws the player in software, because that page is a software
   surface; `gui/stick_pointer` is the container pointer. Both are this repo's and not the ports'.
 - **Entity units:** the ports' player mesh built boxes in detail units, which silently compiled
-  against 3DAlpha's `buildBox` default and drew other players at the wrong scale. Bodies use
-  `kEntityUnitsPerBlock`; held items and armour are a second draw in detail units, and a held item
-  past 30 blocks is left off rather than wrapped.
+  against 3DAlpha's `buildBox` default and drew other players at the wrong scale. Bodies and armour
+  use `kEntityUnitsPerBlock`; held items are a second draw in detail units, and one past 30 blocks
+  is left off rather than wrapped.
 - **To measure on hardware:** `WorkerRole::Mesh` (core 2 at the main thread's priority on New, core
   0 at +3 on Old, above generation on purpose because of SCHED_FIFO); `Budget::meshNanos` (4 ms New,
   8 ms Old, both guesses); autosave's 2 columns a frame; the extra body in third person; about

@@ -33,6 +33,7 @@
 
 #include "core/entity/arrow.hpp"
 #include "core/mesh/vertex.hpp"
+#include "core/render/entity_view.hpp"
 #include "core/util/types.hpp"
 
 namespace mc::render {
@@ -56,6 +57,7 @@ inline constexpr int kArrowMaxVertices = kArrowDrawBudget * kArrowVerticesEach;
 // An arrow further from the origin than a 16-bit detail position can express is
 // **skipped rather than clamped**, as every entity here is.
 int buildArrows(const entity::ArrowSystem& system, double originX, double originY,
-                double originZ, float partial, mesh::DetailVertex* out, int max);
+                double originZ, float partial, mesh::DetailVertex* out, int max,
+                const EntityView* view = nullptr);
 
 }  // namespace mc::render

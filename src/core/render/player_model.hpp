@@ -97,10 +97,12 @@ int buildPlayerPreview(const ModelPart* parts, const Placement& place, int pageX
 //
 // `materials[slot]` is `ItemArmor.renderIndex` or -1 for an empty slot, and
 // `parts` is the already-posed player. The UVs are on the armour sheet's pages,
-// not the entity sheet's. Returns the vertex count.
+// not the entity sheet's. `unitsPerBlock` is what the positions are written in,
+// as for `buildBox`. Returns the vertex count.
 inline constexpr int kArmourPreviewVertices = 10 * kBoxVertices;
 int buildPlayerArmour(const ModelPart* parts, const int* materials, const Placement& place,
-                      mesh::DetailVertex* out, int max, u8 light = 0xFF);
+                      mesh::DetailVertex* out, int max, u8 light = 0xFF,
+                      int unitsPerBlock = mesh::kDetailUnitsPerBlock);
 
 // `bu.b(dm, F)`: a player is drawn at 15/16 of the biped's size.
 inline constexpr float kPlayerModelScale = 0.9375f;

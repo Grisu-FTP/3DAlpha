@@ -14,6 +14,8 @@
 #include "core/entity/mob.hpp"
 #include "core/entity/primed_tnt.hpp"
 #include "core/net/entities.hpp"
+#include "core/net/player_sync.hpp"
+#include "core/render/entity_range.hpp"
 #include "core/render/mob_mesh.hpp"
 #include "core/render/remote_player_mesh.hpp"
 #include "scene_world.hpp"
@@ -236,6 +238,42 @@ TEST(a_turn_past_north_goes_the_short_way_round)
     // The short way is a step *past* 180, not a long slide back through zero.
     CHECK(entities.player(0).yaw > from || entities.player(0).yaw < -170.0f);
     CHECK(std::fabs(double(entities.player(0).yaw) - double(from)) < 90.0);
+}
+
+TEST(a_worn_report_dresses_whoever_it_names_and_leaves_this_consoles_pack_alone)
+{
+    RemoteEntities entities;
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 0.0, 64.0, 0.0, 0, 0, 0), nullptr));
+    const RemotePlayer& player = entities.player(0);
+    for (int slot = 0; slot < 4; ++slot) {
+        CHECK_EQ(player.armour[slot], -1);
+    }
+
+    // Boots first on the wire, helmet first on the body; materials are
+    // cloth 0, chain 1, iron 2, diamond 3, gold 4.
+    WireStack worn[kWireArmourSlots];
+    worn[0].id = 317;  // gold boots
+    worn[0].count = 1;
+    worn[3].id = 310;  // a diamond helmet
+    worn[3].count = 1;
+    CHECK(entities.apply(makeWorn(7, worn), nullptr));
+    CHECK_EQ(player.armour[0], 3);
+    CHECK_EQ(player.armour[1], -1);
+    CHECK_EQ(player.armour[2], -1);
+    CHECK_EQ(player.armour[3], 4);
+
+    // Taken off again.
+    worn[3] = WireStack{};
+    CHECK(entities.apply(makeWorn(7, worn), nullptr));
+    CHECK_EQ(player.armour[0], -1);
+    CHECK_EQ(player.armour[3], 4);
+
+    // Nobody by that name is nothing to do, and still ours.
+    CHECK(entities.apply(makeWorn(8, worn), nullptr));
+
+    // The real types are this console's own, and go on to whoever handles those.
+    CHECK(!entities.apply(makeInventory(kInventoryArmour, worn, kWireArmourSlots), nullptr));
+    CHECK_EQ(player.armour[3], 4);
 }
 
 TEST(a_player_goes_when_the_server_destroys_them_and_the_pool_closes_up)
@@ -923,6 +961,45 @@ TEST(a_player_holding_a_sword_draws_it_in_the_hand)
     CHECK(render::buildRemotePlayers(entities, 0.0, 64.0, 0.0, 1.0f, &passes) > 0);
     CHECK(passes.heldCount[1] > 0);
     CHECK_EQ(passes.heldCount[0], 0);
+}
+
+// **Armour goes as far as the body it is on.** Detail units are 1/1024 of a
+// block, which is fine on this console's own body and out of range on somebody
+// 31 blocks away: `buildBox` writes nothing and their armour would vanish.
+TEST(a_dressed_player_far_from_the_camera_still_has_the_armour_on_them)
+{
+    RemoteEntities entities;
+    CHECK(entities.apply(namedSpawn(7, "Grisu", 100.5, 64.0, -90.5, 0, 0, 0), nullptr));
+    WireStack worn[kWireArmourSlots];
+    worn[2].id = 311;  // a diamond chestplate
+    worn[2].count = 1;
+    CHECK(entities.apply(makeWorn(7, worn), nullptr));
+
+    static std::vector<mesh::DetailVertex> body(render::kRemotePlayerVerticesEach * 2);
+    static std::vector<mesh::DetailVertex> armour(render::kArmourPreviewVertices * 2);
+    render::PlayerPasses passes;
+    passes.body = body.data();
+    passes.bodyMax = int(body.size());
+    passes.armour = armour.data();
+    passes.armourMax = int(armour.size());
+    CHECK(render::buildRemotePlayers(entities, 0.0, 64.0, 0.0, 1.0f, &passes) > 0);
+    CHECK(passes.armourCount > 0);
+
+    const auto middle = [](const std::vector<mesh::DetailVertex>& vertices, int count,
+                           i16 mesh::DetailVertex::*axis) {
+        double sum = 0.0;
+        for (int v = 0; v < count; ++v) {
+            sum += double(vertices[usize(v)].*axis);
+        }
+        return sum / double(count);
+    };
+    const double reach = double(render::kEntityUnitsPerBlock);
+    CHECK(std::fabs(middle(armour, passes.armourCount, &mesh::DetailVertex::x)
+                    - middle(body, passes.bodyCount, &mesh::DetailVertex::x))
+          < reach);
+    CHECK(std::fabs(middle(armour, passes.armourCount, &mesh::DetailVertex::z)
+                    - middle(body, passes.bodyCount, &mesh::DetailVertex::z))
+          < reach);
 }
 
 // ---- vehicles, falling blocks and lit TNT -----------------------------------

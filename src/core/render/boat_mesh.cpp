@@ -52,7 +52,8 @@ const ModelPart& boatPart(int index)
 }  // namespace
 
 int buildBoats(const entity::BoatSystem& system, double originX, double originY,
-               double originZ, float partial, mesh::DetailVertex* out, int max)
+               double originZ, float partial, mesh::DetailVertex* out, int max,
+               const EntityView* view)
 {
     if (out == nullptr || max < kBoatVerticesEach) {
         return 0;
@@ -69,7 +70,8 @@ int buildBoats(const entity::BoatSystem& system, double originX, double originY,
         *rx = b.prevX + (b.x - b.prevX) * double(partial) - originX;
         *ry = b.prevY + (b.y - b.prevY) * double(partial) - originY;
         *rz = b.prevZ + (b.z - b.prevZ) * double(partial) - originZ;
-        return entityInDrawRange(*rx, *ry, *rz, entity::kBoatWidth, entity::kBoatHeight);
+        return entityInDrawRange(*rx, *ry, *rz, entity::kBoatWidth, entity::kBoatHeight)
+               && canSee(view, *rx, *ry, *rz, 3.0);
     };
     // Nearest first when the buffer cannot take them all; see draw_budget.hpp.
     DrawCutoff cutoff;

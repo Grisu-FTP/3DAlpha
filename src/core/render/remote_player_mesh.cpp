@@ -132,12 +132,13 @@ bool appendPlayerBody(const net::RemotePlayer& player, const net::PlayerSkins* s
     passes->bodyCount += written;
 
     // **Worn armour**, `bu.a(dm, int)`: the same posed biped, grown, off the
-    // armour sheet. It is hurt-tinted with the body.
+    // armour sheet. It is hurt-tinted with the body, and in the body's units:
+    // `buildBox` refuses detail units past 31 blocks, and people can be 127 away.
     if (passes->armour != nullptr) {
         const int count = buildPlayerArmour(parts, player.armour, place,
                                             passes->armour + passes->armourCount,
                                             passes->armourMax - passes->armourCount,
-                                            player.light);
+                                            player.light, kEntityUnitsPerBlock);
         if (hurt) {
             for (int v = 0; v < count; ++v) {
                 passes->armour[passes->armourCount + v].g = kHurtChannel;

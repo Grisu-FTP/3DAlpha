@@ -266,3 +266,66 @@ TEST(a_lattice_fill_longer_than_the_hoisted_y_steps_agrees)
         }
     }
 }
+
+// The selective fill is the same transcription as the full one, so what it
+// writes has to be what the full fill writes, bit for bit, and what it was not
+// asked for has to stay as it was. A Y scale under one puts several samples in
+// each integer Y cell, which is the case the slab cache exists for: the
+// patterns below skip the first sample of a cell, and the ones after it still
+// have to come out built from that skipped sample's fractional Y.
+TEST(a_selective_fill_matches_the_full_fill_where_it_was_asked)
+{
+    constexpr int kXs = 3;
+    constexpr int kYs = 24;
+    constexpr int kZs = 3;
+    constexpr int kCount = kXs * kYs * kZs;
+
+    JavaRandom random(4242);
+    const OctaveNoise noise(random, 5);
+
+    for (const double yScale : {0.23, 0.9, 684.412 / 160.0}) {
+        std::vector<double> whole(kCount, 0.0);
+        noise.populate(whole.data(), kCount, 12.5, -3.0, 7.25, kXs, kYs, kZs, 0.9, yScale, 1.1);
+
+        for (int pattern = 0; pattern < 6; ++pattern) {
+            std::vector<u8> wanted(kCount, 0);
+            for (int i = 0; i < kCount; ++i) {
+                const int yi = i % kYs;
+                const bool lower = pattern == 0   ? true
+                                   : pattern == 1 ? (i & 1) == 0
+                                   : pattern == 2 ? (i & 1) == 1
+                                   : pattern == 3 ? yi % 4 != 0
+                                   : pattern == 4 ? yi % 3 == 2
+                                                  : false;
+                wanted[usize(i)] = lower ? u8(1) : u8(2);
+            }
+
+            std::vector<double> part(kCount, 0.0);
+            noise.populateWhere(part.data(), wanted.data(), 1, kCount, 12.5, -3.0, 7.25, kXs, kYs,
+                                kZs, 0.9, yScale, 1.1);
+            for (int i = 0; i < kCount; ++i) {
+                const u64 expected = wanted[usize(i)] == 1 ? bits(whole[usize(i)]) : bits(0.0);
+                if (bits(part[usize(i)]) != expected) {
+                    CHECK_EQ(bits(part[usize(i)]), expected);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+// A sample nobody asked for must be left alone rather than zeroed by the
+// lattice loop, because the octave loop sums into the same buffer.
+TEST(a_selective_fill_leaves_the_other_samples_alone)
+{
+    JavaRandom random(9);
+    const PerlinNoise noise(random);
+
+    double out[4] = {1.5, -2.5, 3.5, -4.5};
+    const u8 wanted[4] = {0, 1, 0, 1};
+    noise.populateWhere(out, wanted, 2, 0.0, 0.0, 0.0, 1, 4, 1, 1.0, 1.0, 1.0, 1.0);
+    CHECK_EQ(bits(out[0]), bits(1.5));
+    CHECK_EQ(bits(out[1]), bits(-2.5));
+    CHECK_EQ(bits(out[2]), bits(3.5));
+    CHECK_EQ(bits(out[3]), bits(-4.5));
+}

@@ -85,6 +85,20 @@ public:
     void populate(double* out, double x, double y, double z, int xSize, int ySize, int zSize,
                   double xScale, double yScale, double zScale, double amplitude) const;
 
+    // **`populate`, for only the samples somebody will read.** `wanted` holds
+    // one byte per sample in the fill's own order, and a sample whose byte has
+    // no bit of `mask` set is left exactly as it was. Sampling draws no random
+    // numbers, so skipping one cannot move anything else; the caller just must
+    // not read what it did not ask for.
+    //
+    // **The Y-slab cache behaves as if nothing had been skipped.** Its four
+    // corner values are built from the *first* sample of an integer Y cell --
+    // the quirk the header above describes -- so when that first sample is
+    // skipped, the slab is still built from its fractional Y, only later.
+    void populateWhere(double* out, const u8* wanted, u8 mask, double x, double y, double z,
+                       int xSize, int ySize, int zSize, double xScale, double yScale,
+                       double zScale, double amplitude) const;
+
     // `v.a(DDD)D`. **A single sample, not a slice of the lattice fill**, and it
     // is a separate method in the original for a reason: it has no Y-slab
     // cache, so it cannot reuse a neighbour's gradients the way populate can.
@@ -160,6 +174,13 @@ private:
     // the wall.
     static i32 floorToInt(double value) { return javaFloorToInt(value); }
 
+    // The one transcription of `v.a([DDDDIIIDDDD)V` behind both fills, so the
+    // selective one cannot drift from the original. `wanted(index)` says
+    // whether sample `index` is written.
+    template <class Wanted>
+    void fill(double* out, double x, double y, double z, int xSize, int ySize, int zSize,
+              double xScale, double yScale, double zScale, double amplitude, Wanted wanted) const;
+
     i32 permutation_[512] = {};
     double xOffset_ = 0.0;
     double yOffset_ = 0.0;
@@ -180,6 +201,12 @@ public:
     // null, which no caller in the generator does.
     void populate(double* out, int count, double x, double y, double z, int xSize, int ySize,
                   int zSize, double xScale, double yScale, double zScale) const;
+
+    // `populate`, writing only the samples whose byte in `wanted` has a bit of
+    // `mask` set; the rest come back zero. See PerlinNoise::populateWhere.
+    void populateWhere(double* out, const u8* wanted, u8 mask, int count, double x, double y,
+                       double z, int xSize, int ySize, int zSize, double xScale, double yScale,
+                       double zScale) const;
 
     // `lp.a(DD)D`. The two-argument sample, used by population to decide how
     // many trees a chunk gets.

@@ -58,6 +58,12 @@ ALPHAU_ICON_BASE = 128
 # SMDH and looking at it, not guessed.
 BADGE_LEGIBLE_AT = 32
 
+# The cube is pixel art: its blocks are this many console pixels square. The
+# 48x48 and 24x24 icons are already so small that one block per pixel is all
+# they can hold; the 256x128 banner has room for chunkier ones.
+CUBE_PIXEL = 1
+CUBE_BANNER_PIXEL = 2
+
 
 # **Both of the 3DS's formats for this art are 5 bits a channel** -- the SMDH
 # icon is RGB565 and the banner texture is RGBA5551 -- and AlphaU's background is
@@ -174,19 +180,46 @@ def background(w: int, h: int) -> Image.Image:
     return img
 
 
-def cube(draw: ImageDraw.ImageDraw, cx: float, cy: float, s: float) -> None:
-    """An isometric cube of edge `s`, centred on (cx, cy)."""
-    dx, dy = s * 0.866, s * 0.5
-    top = (cx, cy - s)
-    left = (cx - dx, cy - s + dy)
-    right = (cx + dx, cy - s + dy)
-    mid = (cx, cy - s + 2 * dy)
-    left_b = (left[0], left[1] + s)
-    right_b = (right[0], right[1] + s)
-    mid_b = (mid[0], mid[1] + s)
-    draw.polygon([top, right, mid, left], fill=FACE_TOP)
-    draw.polygon([left, mid, mid_b, left_b], fill=FACE_LEFT)
-    draw.polygon([mid, right, right_b, mid_b], fill=FACE_RIGHT)
+def snap(c):
+    """A colour a 5-bit channel represents exactly, so the flat cube colours
+    survive the console's quantiser untouched."""
+    return tuple((v >> 3) << 3 | (v >> 5) for v in c)
+
+
+def cube(img: Image.Image, cx: float, cy: float, s: float, k: int) -> None:
+    """A pixel-art isometric cube of edge `s`, centred on (cx, cy) like the
+    polygon it replaces, built from `k` x `k` pixel blocks.
+
+    Classic 2:1 pixel isometry: the top face's edges step one row per two
+    columns. The sprite is decided by integer column/row arithmetic on a grid
+    `k` times coarser than `img`, then enlarged by exactly `k` with
+    nearest-neighbour, so every art pixel is the same size and the edges are
+    clean staircases. It is pasted *after* the image is resampled and dithered
+    -- resampling would blur it, dithering would speckle it.
+    """
+    n = max(2, round(0.866 * s / k))      # half the sprite's width, in art pixels
+    h = max(2, round(2 * s / k) - n)      # vertical edge: total height matches 2s
+    sprite = Image.new("RGB", (2 * n, n + h))
+    px = sprite.load()
+    top, left, right = snap(FACE_TOP), snap(FACE_LEFT), snap(FACE_RIGHT)
+    for x in range(2 * n):
+        m = min(x, 2 * n - 1 - x) // 2
+        t0, t1 = n // 2 - 1 - m, n // 2 + 1 + m
+        for y in range(t0, t1):
+            px[x, y] = top
+        for y in range(t1, min(t1 + h, n + h)):
+            px[x, y] = left if x < n else right
+    mask = Image.new("L", sprite.size, 0)
+    mp = mask.load()
+    for x in range(2 * n):
+        m = min(x, 2 * n - 1 - x) // 2
+        for y in range(n // 2 - 1 - m, min(n // 2 + 1 + m + h, n + h)):
+            mp[x, y] = 255
+    big = (sprite.width * k, sprite.height * k)
+    x0 = round(cx - big[0] / 2)
+    y0 = round(cy - s)
+    img.paste(sprite.resize(big, Image.NEAREST), (x0, y0),
+              mask.resize(big, Image.NEAREST))
 
 
 def centred_text(draw, y, text, f, fill, w):
@@ -227,12 +260,15 @@ def icon(badge: str, size: int) -> Image.Image:
     img = background(size * SS, size * SS)
     d = ImageDraw.Draw(img)
     if size >= BADGE_LEGIBLE_AT:
-        cube(d, 64 * k, 62 * k, 34 * k)
         centred_text(d, 98 * k, badge, font(round(18 * k)), TEXT, size * SS)
+        cube_at = (64 * k / SS, 62 * k / SS, 34 * k / SS)
     else:
         # Centred, and a little larger, because it is now the whole picture.
-        cube(d, 64 * k, 72 * k, 40 * k)
-    return dithered(img.resize((size, size), Image.LANCZOS))
+        cube_at = (64 * k / SS, 72 * k / SS, 40 * k / SS)
+    out = dithered(img.resize((size, size), Image.LANCZOS))
+    # One art pixel per console pixel: at 48x48 a 2x block is a 11-wide cube.
+    cube(out, *cube_at, CUBE_PIXEL)
+    return out
 
 
 def banner(title: str, badge: str) -> Image.Image:
@@ -247,8 +283,6 @@ def banner(title: str, badge: str) -> Image.Image:
     w, h = 256 * SS, 128 * SS
     img = background(w, h)
     d = ImageDraw.Draw(img)
-
-    cube(d, 62 * SS, 74 * SS, 32 * SS)
 
     # **The right margin is insurance, not decoration.** The banner is drawn as
     # a 3D model and the outermost pixels of the texture are the first thing a
@@ -269,7 +303,9 @@ def banner(title: str, badge: str) -> Image.Image:
     box = d.textbbox((0, 0), badge, font=small)
     d.text((panel + 2 * SS - box[0], 84 * SS - box[1]), badge, font=small, fill=MUTED)
 
-    return dithered(img.resize((256, 128), Image.LANCZOS))
+    out = dithered(img.resize((256, 128), Image.LANCZOS))
+    cube(out, 62, 74, 32, CUBE_BANNER_PIXEL)
+    return out
 
 
 def banner_audio(path: Path) -> None:

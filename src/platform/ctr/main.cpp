@@ -5339,7 +5339,7 @@ int runShell(bool isNew3DS, bool haveCstick)
     // is the same idea and the same lack of reproducibility; the tests pass a
     // constant instead. See core/audio/music_ticker.hpp.
     mc::audio::SoundEngine sound(fs, audio, i64(ctr::nowMillis()));
-    sound.loadResources();
+    sound.loadResources(std::string(mc::audio::kResourcesDir) + "/" + mcver::kResources);
     sound.setMusicVolume(boot.musicVolume < 0 ? 1.0f
                                               : float(boot.musicVolume) / 100.0f);
     sound.setSoundVolume(boot.soundVolume < 0 ? 1.0f

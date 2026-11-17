@@ -225,12 +225,16 @@ folder in the original layout, unchanged, so a folder copied from any alpha- or 
 works as it is:
 
 ```
-sdmc:/alpha/resources/sound/<category>/<name>.ogg
-sdmc:/alpha/resources/newsound/...
-sdmc:/alpha/resources/streaming/...
-sdmc:/alpha/resources/music/...
-sdmc:/alpha/resources/newmusic/...
+sdmc:/alpha/resources/<set>/sound/<category>/<name>.ogg
+sdmc:/alpha/resources/<set>/newsound/...
+sdmc:/alpha/resources/<set>/streaming/...
+sdmc:/alpha/resources/<set>/music/...
+sdmc:/alpha/resources/<set>/newmusic/...
 ```
+
+`<set>` is the version manifest's `resources` field (`versions/*.json`), named exactly like the
+AlphaExtractor output folder: `p1.6Re` for everything before 1.6 (a1.1.2 included), `26.2Re` for 26.2.
+Versions sharing a set share the folder.
 
 Those five names are the whole of it — `Minecraft.installResource` splits the key at the first `/`
 and recognises exactly those, so a folder that also carries `pack.mcmeta`, `icons/`, `pe/` or
@@ -264,7 +268,7 @@ sdmc:/alpha/
 
   options.txt              not built -- a1.1.2's own options file, for when there
                            are gameplay options worth writing to it
-  resources/               user-supplied sounds, in a1.1.2's own layout -- read, never written
+  resources/<set>/         user-supplied sounds, in a1.1.2's own layout -- read, never written
   cache/music/             not built, and not currently planned -- see audio-a1.1.2.md
   cache/<pack>.3dtex       not built -- see below
   cache/<world>.idx        not built, and not planned -- the chunk index is built lazily in

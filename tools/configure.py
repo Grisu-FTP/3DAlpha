@@ -47,6 +47,9 @@ def load_manifest(version_id: str) -> dict:
     if missing:
         sys.exit(f"configure: {path.name} does not fill slot(s): {', '.join(missing)}")
 
+    if not manifest.get("resources"):
+        sys.exit(f"configure: {path.name} needs a \"resources\" folder name (e.g. \"p1.6Re\")")
+
     return manifest
 
 
@@ -58,6 +61,9 @@ def write_version_config(out: Path, m: dict) -> None:
         f'\ninline constexpr char kId[]       = "{m["id"]}";\n',
         f'inline constexpr char kDisplay[]  = "{m["display"]}";\n',
         f'inline constexpr char kAppTitle[] = "{m["appTitle"]}";\n',
+        # Subfolder of alpha/resources/ holding this version's sounds, named exactly
+        # like the AlphaExtractor output folder (pre-1.6 versions share one).
+        f'inline constexpr char kResources[] = "{m["resources"]}";\n',
         "\n",
     ]
 

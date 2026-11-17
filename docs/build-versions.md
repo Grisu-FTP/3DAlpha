@@ -122,6 +122,7 @@ Everything version-specific, in one file. `versions/a1.1.2.json`:
   "id": "a1.1.2",
   "display": "Alpha 1.1.2",
   "appTitle": "3DAlpha a1.1.2",
+  "resources": "p1.6Re",
   "releaseDate": "2010-09-18",
 
   "packaging": {
